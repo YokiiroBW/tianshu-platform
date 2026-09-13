@@ -14,12 +14,14 @@
     "typecheck": "tsc -p apps/web/tsconfig.json --noEmit",
     "format": "prettier --ignore-path .gitignore --write apps/web package.json README.md AGENTS.md docs",
     "format:check": "prettier --ignore-path .gitignore --check apps/web package.json README.md AGENTS.md docs",
-    "test:e2e": "playwright test --config apps/web/playwright.config.ts"
+    "test:e2e": "playwright test --config apps/web/playwright.config.ts",
+    "test:room": "playwright test --config apps/web/playwright.config.ts room.spec.ts --workers=1"
   },
   "dependencies": {
+    "lucide-react": "1.45.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "lucide-react": "1.45.0"
+    "three": "0.186.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
@@ -27,6 +29,7 @@
     "@types/node": "26.5.1",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@types/three": "0.186.0",
     "@vitejs/plugin-react": "6.1.1",
     "prettier": "3.9.6",
     "typescript": "7.0.2",

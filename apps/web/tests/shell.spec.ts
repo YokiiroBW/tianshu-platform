@@ -29,7 +29,7 @@ test("unconfigured shell, lazy room, no business requests or media", async ({
   await expect(page.locator("canvas, video, audio")).toHaveCount(0);
   await page.goto("/#/room");
   await expect(
-    page.getByRole("heading", { name: "小屋尚未开放" }),
+    page.getByRole("heading", { name: "小屋环境预览" }),
   ).toBeVisible();
   expect(requests.some((url) => /RoomPage-/.test(url))).toBe(true);
   expect(requests.filter((url) => /\/api\/|^https:/.test(url))).toEqual([]);
@@ -119,7 +119,7 @@ test("failed chunk retains navigation and reload recovery", async ({
   await page.unroute("**/RoomPage-*.js");
   await page.getByRole("button", { name: "重新加载", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "小屋尚未开放" }),
+    page.getByRole("heading", { name: "小屋环境预览" }),
   ).toBeVisible();
 });
 
@@ -138,7 +138,7 @@ test("pending chunk shows loading then real unconfigured state", async ({
   await expect(page.getByRole("status")).toContainText("正在加载页面");
   release();
   await expect(
-    page.getByRole("heading", { name: "小屋尚未开放" }),
+    page.getByRole("heading", { name: "小屋环境预览" }),
   ).toBeVisible();
 });
 

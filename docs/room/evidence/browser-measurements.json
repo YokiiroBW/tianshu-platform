@@ -1,0 +1,62 @@
+[
+  {
+    "project": "desktop",
+    "name": "pixel-evidence",
+    "body": {
+      "meanDay": 201.68016209096527,
+      "meanSheer": 199.3131165626655,
+      "meanBlackout": 178.43036085137138,
+      "meanNightOff": 164.3329560941227,
+      "deskPixels": 1152,
+      "bedPixels": 2098,
+      "common": 234
+    }
+  },
+  {
+    "project": "desktop",
+    "name": "renderer-sample",
+    "body": {
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "browser": "153.0.8010.12",
+      "seconds": 2,
+      "deliveredFramesPerSecond": 23.6144578313253,
+      "drawCalls": "423",
+      "triangles": "30802",
+      "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+      "condition": "Windows Chromium headless, warm scene, normal motion, test runner; not physical mobile"
+    }
+  },
+  {
+    "project": "mobile",
+    "name": "pixel-evidence",
+    "body": {
+      "meanDay": 180.62046103944817,
+      "meanSheer": 177.11691785899347,
+      "meanBlackout": 146.4935924728325,
+      "meanNightOff": 125.81978267852668,
+      "deskPixels": 3165,
+      "bedPixels": 5459,
+      "common": 587
+    }
+  },
+  {
+    "project": "mobile",
+    "name": "renderer-sample",
+    "body": {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "browser": "153.0.8010.12",
+      "seconds": 2,
+      "deliveredFramesPerSecond": 20.33730158730159,
+      "drawCalls": "423",
+      "triangles": "30802",
+      "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+      "condition": "Windows Chromium headless, warm scene, normal motion, test runner; not physical mobile"
+    }
+  }
+]
