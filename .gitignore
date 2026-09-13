@@ -7,6 +7,11 @@ node_modules/
 dist/
 __pycache__/
 *.pyc
+*.egg-info/
+.ruff_cache/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 apps/web/test-results/
 apps/web/rail-test-results/
 playwright-report/

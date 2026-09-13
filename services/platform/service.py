@@ -1,0 +1,36 @@
+"""Composition root for the two published endpoints and trusted local adapter ports."""
+
+import time
+
+from .auth import Auth
+from .contracts import Contracts, require
+from .models import Models
+from .origins import Origins
+from .projections import Projections
+from .storage import Store
+
+
+class Platform:
+    def __init__(self, settings, *, clock=time.time):
+        require(
+            set(settings)
+            <= {
+                "mode",
+                "storage",
+                "database_path",
+                "contract_directory",
+                "principals",
+                "entries",
+                "providers",
+                "config_max_lifetime_seconds",
+            },
+            "invalid_input",
+            400,
+        )
+        require(settings["storage"] == "sqlite_local", "dependency_unavailable", 503)
+        self.contracts = Contracts(settings["contract_directory"])
+        self.auth = Auth(settings, self.contracts)
+        self.store = Store(settings["database_path"])
+        self.origins = Origins(self.store, self.auth, self.contracts, clock)
+        self.models = Models(self.store, self.auth, self.contracts, self.origins, settings, clock)
+        self.projections = Projections(self.store, self.auth, self.contracts, clock)
