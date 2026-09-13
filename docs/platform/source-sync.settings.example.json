@@ -1,0 +1,157 @@
+{
+  "mode": "service_https",
+  "storage": "sqlite_local",
+  "database_path": "C:/local-rehearsal/platform/platform.sqlite",
+  "contract_directory": "C:/YOKI/Codex/tianshu-peiban-bot/contracts/text-dialogue/v1",
+  "source_contract_directory": "C:/YOKI/Codex/tianshu-peiban-bot/contracts/source-sync/v1",
+  "principals": {
+    "operator": {
+      "kind": "operator",
+      "service": "platform",
+      "token_env": "TS013_OPERATOR_TOKEN",
+      "account": {
+        "namespace": "web",
+        "immutable_account_id": "synthetic-operator"
+      },
+      "actions": [
+        "origin.revoke",
+        "entry.revoke",
+        "principal.revoke"
+      ]
+    },
+    "application": {
+      "kind": "service",
+      "service": "platform",
+      "token_env": "TS013_APPLICATION_TOKEN",
+      "actions": [
+        "source.register",
+        "source.dispatch",
+        "mapping.prepare",
+        "origin.issue"
+      ]
+    },
+    "core": {
+      "kind": "service",
+      "service": "companion",
+      "token_env": "TS013_CORE_PLATFORM_TOKEN",
+      "actions": [
+        "source.input",
+        "mapping.confirm",
+        "origin.resolve"
+      ],
+      "resolver": {
+        "caller": "platform",
+        "purpose": "dialogue"
+      }
+    },
+    "memory": {
+      "kind": "service",
+      "service": "memory",
+      "token_env": "TS013_MEMORY_PLATFORM_TOKEN",
+      "actions": [
+        "source.current",
+        "origin.resolve"
+      ],
+      "resolver": {
+        "caller": "companion",
+        "purpose": "dialogue"
+      }
+    }
+  },
+  "entries": {
+    "actor-a": {
+      "owner": "application",
+      "account": {
+        "namespace": "web",
+        "immutable_account_id": "synthetic-same-author"
+      },
+      "channel": {
+        "namespace": "web",
+        "binding_id": "binding:synthetic-group",
+        "channel_conversation_id": "channel:synthetic-group",
+        "thread_id": null
+      },
+      "audience": "group",
+      "ttl_seconds": 300,
+      "kind": "trusted_application",
+      "actor_id": "actor:a",
+      "routes": [
+        {
+          "caller": "platform",
+          "receiver": "companion",
+          "purpose": "dialogue"
+        },
+        {
+          "caller": "companion",
+          "receiver": "memory",
+          "purpose": "dialogue"
+        }
+      ]
+    },
+    "actor-b": {
+      "owner": "application",
+      "account": {
+        "namespace": "web",
+        "immutable_account_id": "synthetic-same-author"
+      },
+      "channel": {
+        "namespace": "web",
+        "binding_id": "binding:synthetic-group",
+        "channel_conversation_id": "channel:synthetic-group",
+        "thread_id": null
+      },
+      "audience": "group",
+      "ttl_seconds": 300,
+      "kind": "trusted_application",
+      "actor_id": "actor:b",
+      "routes": [
+        {
+          "caller": "platform",
+          "receiver": "companion",
+          "purpose": "dialogue"
+        },
+        {
+          "caller": "companion",
+          "receiver": "memory",
+          "purpose": "dialogue"
+        }
+      ]
+    }
+  },
+  "input_entries": {
+    "input-entry": {
+      "owner": "application",
+      "account": {
+        "namespace": "web",
+        "immutable_account_id": "synthetic-same-author"
+      },
+      "channel": {
+        "namespace": "web",
+        "binding_id": "binding:synthetic-group",
+        "channel_conversation_id": "channel:synthetic-group",
+        "thread_id": null
+      },
+      "audience": "group",
+      "ttl_seconds": 300,
+      "actor_entries": [
+        "actor-a",
+        "actor-b"
+      ],
+      "default_actor_ids": [
+        "actor:a"
+      ],
+      "routing_version": 1
+    }
+  },
+  "providers": {},
+  "core": {
+    "base_url": "https://127.0.0.1:9444",
+    "token_env": "TS013_PLATFORM_CORE_TOKEN",
+    "ca_file": "C:/local-rehearsal/platform/localhost.pem",
+    "timeout_seconds": 10
+  },
+  "tls": {
+    "certificate_file": "C:/local-rehearsal/platform/localhost.pem",
+    "private_key_file": "C:/local-rehearsal/platform/localhost-key.pem"
+  }
+}

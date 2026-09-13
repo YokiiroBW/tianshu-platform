@@ -5,7 +5,7 @@ import hmac
 import os
 import re
 
-from .contracts import digest, require
+from .contracts import canonical, digest, epoch, loads, require
 
 ACTIONS = {
     "origin.issue",
@@ -24,6 +24,10 @@ ACTIONS = {
     "capability.read",
     "task.read",
     "task.project",
+    "source.register",
+    "source.input",
+    "source.current",
+    "source.dispatch",
 }
 PURPOSES = {"dialogue", "config.snapshot"}
 
@@ -40,7 +44,10 @@ class Auth:
         self.principals = copy.deepcopy(settings.get("principals", {}))
         self.entries = copy.deepcopy(settings.get("entries", {}))
         self.mode = settings["mode"]
-        require(self.mode == "local_rehearsal", "dependency_unavailable", 503)
+        require(self.mode in {"local_rehearsal", "service_https"}, "dependency_unavailable", 503)
+        self.policy_digest = digest(
+            {k: settings.get(k) for k in ("mode", "principals", "entries", "input_entries")}
+        )
         envs = []
         for key, item in self.principals.items():
             contracts.check("common#id", key)
@@ -85,7 +92,7 @@ class Auth:
         for key, entry in self.entries.items():
             contracts.check("common#id", key)
             require(
-                set(entry)
+                set(entry) - {"expires_at"}
                 == {
                     "owner",
                     "kind",
@@ -102,7 +109,9 @@ class Auth:
             owner = self.principals.get(entry["owner"])
             require(owner is not None, "invalid_input", 400)
             require(
-                entry["kind"] in {"local_operator", "rehearsal_connector"}, "invalid_input", 400
+                entry["kind"] in {"local_operator", "rehearsal_connector", "trusted_application"},
+                "invalid_input",
+                400,
             )
             if entry["kind"] == "local_operator":
                 require(
@@ -134,8 +143,49 @@ class Auth:
                 "invalid_input",
                 400,
             )
+            if "expires_at" in entry:
+                epoch(entry["expires_at"])
+
+    def activate(self, store, clock):
+        self.clock = clock
+        with store.connect(write=True) as db:
+            row = db.execute("SELECT document FROM authority_policy WHERE singleton=1").fetchone()
+            previous = loads(row[0]) if row else None
+            state = {"policy": self.policy_digest, "effective": self.effective_digest()}
+            if previous != state:
+                db.execute(
+                    "INSERT OR REPLACE INTO authority_policy VALUES(1,?)", (canonical(state),)
+                )
+
+    def effective_digest(self):
+        # Persist only a combined fingerprint; never tokens or environment values.
+        return digest(
+            {
+                "credentials": {
+                    k: digest(secret(p["token_env"])) for k, p in self.principals.items()
+                },
+                "expired": sorted(
+                    k
+                    for k, e in self.entries.items()
+                    if "expires_at" in e and epoch(e["expires_at"]) <= self.clock()
+                ),
+            }
+        )
+
+    def sync(self, db):
+        row = db.execute("SELECT document FROM authority_policy WHERE singleton=1").fetchone()
+        require(row is not None, "dependency_unavailable", 503)
+        state = loads(row[0])
+        require(state["policy"] == self.policy_digest, "dependency_unavailable", 503)
+        effective = self.effective_digest()
+        if state["effective"] != effective:
+            state["effective"] = effective
+            db.execute(
+                "UPDATE authority_policy SET document=? WHERE singleton=1", (canonical(state),)
+            )
 
     def authenticate(self, header, db, action, *, operator=False):
+        self.sync(db)
         require(isinstance(header, str) and header.startswith("Bearer "), "unauthorized", 401)
         token = header[7:]
         require(token.isascii(), "unauthorized", 401)
@@ -164,6 +214,7 @@ class Auth:
             ).fetchone()
         )
         require(secret(self.principals[entry["owner"]]["token_env"]) is not None)
+        require("expires_at" not in entry or epoch(entry["expires_at"]) > self.clock())
         require(expected_digest is None or expected_digest == digest(entry))
         return entry
 

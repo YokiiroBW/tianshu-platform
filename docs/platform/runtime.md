@@ -1,5 +1,7 @@
 # TS-012 平台后端运行
 
+TS-013 增量已实现，当前来源授权、TLS、批量回填和迁移入口见 [source-sync 运行](source-sync.md)。下面保留 TS-012 的两条旧 HTTP 与本地演练说明；“仅两项”“仅 local_rehearsal”描述的是旧切片，不限制 TS-013 新发布入口。
+
 本切片是可运行的本地 Python 平台服务，消费主协调仓库 `contracts/text-dialogue/v1` 的发布版 1.0.0（`102d347`）。启动逐一核对 manifest 和五份 schema 的 LF-normalized SHA-256；manifest 必须为 `81e6cc4ddef7c6f82e055d4cb04b090db036dd5c52763473ce697aa02db478a1`。不复制旧 candidate、不改公共 schema、不从网络加载 schema。
 
 平台仅监听 `127.0.0.1`。设置必须显式为 `mode: local_rehearsal`、`storage: sqlite_local`；其他模式拒绝启动。SQLite/WAL 持久保存来源、撤销、关联回填、发布版本和投影，是隔离演练存储；没有生产 PostgreSQL 适配、迁移或生产启动默认值。认证过的本地 CLI 操作、真实网页登录、真实 QQ/TG 入站是三种不同证据，本次只有第一种。

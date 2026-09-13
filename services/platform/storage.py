@@ -1,6 +1,7 @@
 """SQLite is an explicitly selected local rehearsal store, not PostgreSQL."""
 
 import sqlite3
+import uuid
 from contextlib import closing, contextmanager
 from pathlib import Path
 
@@ -10,8 +11,21 @@ class Store:
         self.path = str(Path(path).resolve())
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path, timeout=5)) as db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if version not in (0, 1):
+                raise ValueError("unsupported platform store version")
+            if (
+                version == 0
+                and db.execute("SELECT 1 FROM sqlite_master WHERE name='origins'").fetchone()
+            ):
+                # SQLite backup includes WAL; retain a unique pre-migration copy.
+                with closing(
+                    sqlite3.connect(self.path + ".pre-source-" + uuid.uuid4().hex + ".sqlite")
+                ) as backup:
+                    db.backup(backup)
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
+                BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS origins (
                     ref TEXT PRIMARY KEY, entry_id TEXT NOT NULL, entry_digest TEXT NOT NULL,
                     expires_at REAL NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
@@ -49,7 +63,68 @@ class Store:
                     owner TEXT NOT NULL, job_id TEXT NOT NULL, version INTEGER NOT NULL,
                     document TEXT NOT NULL, PRIMARY KEY(owner, job_id)
                 );
+                CREATE TABLE IF NOT EXISTS authority_head (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                    generation TEXT NOT NULL, sequence INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS authority_policy (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1), document TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS input_observations (
+                    physical_key TEXT PRIMARY KEY, author TEXT NOT NULL,
+                    revision INTEGER NOT NULL, input_digest TEXT NOT NULL, kind TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS source_inputs (
+                    ref TEXT PRIMARY KEY, entry_id TEXT NOT NULL, entry_digest TEXT NOT NULL,
+                    ingress TEXT NOT NULL, input_digest TEXT NOT NULL,
+                    input_metadata TEXT NOT NULL, expires_at REAL NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS fanout_routes (
+                    command_key TEXT PRIMARY KEY, semantic_digest TEXT NOT NULL,
+                    effective TEXT NOT NULL, defaults TEXT NOT NULL, routing_version INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS actor_origins (
+                    ref TEXT PRIMARY KEY REFERENCES origins(ref), input_digest TEXT NOT NULL,
+                    entry_document TEXT NOT NULL, issued_at REAL NOT NULL, ingress TEXT NOT NULL,
+                    input_entry_id TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS fanout_exchanges (
+                    ticket TEXT PRIMARY KEY, command_key TEXT NOT NULL, prepared_by TEXT NOT NULL,
+                    request TEXT NOT NULL, access_request TEXT NOT NULL, authority TEXT NOT NULL,
+                    response TEXT
+                );
+                CREATE TABLE IF NOT EXISTS admission_history (
+                    receipt_id TEXT PRIMARY KEY, admission TEXT NOT NULL,
+                    entry_id TEXT NOT NULL, entry_document TEXT NOT NULL, account TEXT NOT NULL,
+                    selector_key TEXT NOT NULL, revision INTEGER NOT NULL,
+                    UNIQUE(selector_key, revision)
+                );
+                PRAGMA user_version=1;
+                COMMIT;
             """)
+            db.execute(
+                "INSERT OR IGNORE INTO authority_head VALUES(1,?,0)",
+                ("platform:" + uuid.uuid4().hex,),
+            )
+            for table in (
+                "origins",
+                "revoked_entries",
+                "revoked_principals",
+                "identities",
+                "channels",
+                "ingest_subjects",
+                "authority_policy",
+                "input_observations",
+                "source_inputs",
+                "fanout_routes",
+                "admission_history",
+            ):
+                for event in ("INSERT", "UPDATE", "DELETE"):
+                    db.execute(
+                        f"CREATE TRIGGER IF NOT EXISTS head_{table}_{event} AFTER {event} ON {table} BEGIN UPDATE authority_head SET sequence=sequence+1 WHERE singleton=1; END"
+                    )
+            db.commit()
 
     @contextmanager
     def connect(self, *, write=False):

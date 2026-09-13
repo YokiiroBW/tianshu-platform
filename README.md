@@ -4,6 +4,8 @@ React/TypeScript 网页基础：统一应用壳、八个目的型工作区入口
 
 后端安装、已发布 HTTP 入口、受信内部接点与验证命令见 [平台后端运行](docs/platform/runtime.md)。后端使用独立 Python 依赖，下面的前端命令和能力保持原有约定。
 
+TS-013 后端新增精确来源输入、逐角色 `input/current` 授权、持久撤销水位和 Core 批量回执事务回填，支持显式 HTTPS 服务模式。完整配置、TLS测试、响应丢失重取及迁移恢复见 [来源授权运行](docs/platform/source-sync.md)。真实 QQ/网页登录和 Core/Memory 完整联合链仍未验收，L0 未通过；前端没有接入这些新后端端口。
+
 ## 本地运行
 
 需要 Node.js 22.12+（本次使用 24.19.0）与 npm 11.6.2。根 `package-lock.json` 固定依赖，只有一个包清单和锁文件。

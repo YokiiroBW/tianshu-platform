@@ -18,7 +18,10 @@ def create_app(platform):
     async def boundary(request, handler):
         request_id = "request:" + uuid.uuid4().hex
         try:
-            require(request.remote and ipaddress.ip_address(request.remote).is_loopback)
+            if platform.auth.mode == "local_rehearsal":
+                require(request.remote and ipaddress.ip_address(request.remote).is_loopback)
+            else:
+                require(request.secure)
             # No browser session is implemented. Neither CORS nor browser credentials authorize I14.
             require("Origin" not in request.headers and "Cookie" not in request.headers)
             require(len(request.headers.getall("Authorization", [])) == 1, "unauthorized", 401)
@@ -40,6 +43,11 @@ def create_app(platform):
                 "/internal/v1/origins/resolve": "common#origin_resolve_request",
                 "/internal/v1/model-config/snapshot": "model#config_request",
             }.get(request.path)
+            if request.path == "/internal/v1/source-access/read":
+                schema = {
+                    "input": "sources#input_access_request",
+                    "current": "sources#current_access_request",
+                }.get(body.get("operation"))
             require(request.method == "POST" and schema is not None, "not_found", 404)
             platform.contracts.check(schema, body)
             request_id = body["query"]["request_id"] if "query" in body else body["request_id"]
@@ -81,8 +89,16 @@ def create_app(platform):
             )
         )
 
+    async def source_access(request):
+        return web.json_response(
+            await asyncio.to_thread(
+                platform.sources.read, request.headers["Authorization"], request[BODY]
+            )
+        )
+
     app = web.Application(middlewares=[boundary], client_max_size=1_048_576)
     app[PLATFORM] = platform
     app.router.add_post("/internal/v1/origins/resolve", resolve)
     app.router.add_post("/internal/v1/model-config/snapshot", snapshot)
+    app.router.add_post("/internal/v1/source-access/read", source_access)
     return app

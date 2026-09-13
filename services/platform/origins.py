@@ -24,7 +24,10 @@ class Origins:
             entry = self.auth.entry(db, entry_id)
             require(entry["owner"] == identity)
             ref = "origin:" + uuid.uuid4().hex
-            expires = self.clock() + entry["ttl_seconds"]
+            expires = min(
+                self.clock() + entry["ttl_seconds"],
+                epoch(entry["expires_at"]) if "expires_at" in entry else float("inf"),
+            )
             db.execute(
                 "INSERT INTO origins(ref,entry_id,entry_digest,expires_at) VALUES(?,?,?,?)",
                 (ref, entry_id, digest(entry), expires),
@@ -33,7 +36,7 @@ class Origins:
                 "INSERT INTO audit(principal,operation,object_id,observed_at) VALUES(?,?,?,?)",
                 (identity, "origin.issue", ref, self.clock()),
             )
-            return {"assertion_ref": ref, "expires_at": utc(expires), "mode": "local_rehearsal"}
+            return {"assertion_ref": ref, "expires_at": utc(expires), "mode": self.auth.mode}
 
     def scope(self, db, entry):
         identity = db.execute(
@@ -99,6 +102,12 @@ class Origins:
         with self.store.connect(write=True) as db:
             identity, _ = self.auth.authenticate(header, db, action, operator=True)
             if kind == "origin":
+                source = db.execute(
+                    "SELECT 1 FROM source_inputs WHERE ref=?", (object_id,)
+                ).fetchone()
+                if source:
+                    db.execute("UPDATE source_inputs SET revoked=1 WHERE ref=?", (object_id,))
+                    return
                 require(
                     db.execute("SELECT 1 FROM origins WHERE ref=?", (object_id,)).fetchone(),
                     "not_found",
@@ -106,7 +115,11 @@ class Origins:
                 )
                 db.execute("UPDATE origins SET revoked=1 WHERE ref=?", (object_id,))
             else:
-                known = self.auth.entries if kind == "entry" else self.auth.principals
+                known = (
+                    {**self.auth.entries, **getattr(self, "input_entries", {})}
+                    if kind == "entry"
+                    else self.auth.principals
+                )
                 require(object_id in known, "not_found", 404)
                 db.execute(f"INSERT OR IGNORE INTO {table}(id) VALUES(?)", (object_id,))
             db.execute(

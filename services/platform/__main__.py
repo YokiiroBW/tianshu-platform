@@ -1,6 +1,7 @@
 """Explicit local rehearsal command line; credentials come only from the server environment."""
 
 import argparse
+import asyncio
 import os
 import sqlite3
 from pathlib import Path
@@ -10,14 +11,18 @@ from aiohttp import web
 from .contracts import Fault, canonical, loads, require
 from .server import create_app
 from .service import Platform
+from .transport import server_tls
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", required=True)
     commands = parser.add_subparsers(dest="command", required=True)
-    serve = commands.add_parser("serve", help="loopback only, no production mode")
+    serve = commands.add_parser(
+        "serve", help="explicit local rehearsal or authenticated TLS service"
+    )
     serve.add_argument("--port", required=True, type=int)
+    serve.add_argument("--host", default="127.0.0.1")
     local = commands.add_parser("local", help="authenticated local adapter; not web/QQ login")
     local.add_argument("--credential-env", required=True)
     local.add_argument(
@@ -37,6 +42,11 @@ def main():
             "observe-source",
             "verify-current-sources",
             "project-task",
+            "register-input",
+            "prepare-fanout",
+            "confirm-fanout",
+            "dispatch-fanout",
+            "source-access",
         ],
     )
     local.add_argument("--input", help="local JSON input file; never service credentials")
@@ -45,7 +55,18 @@ def main():
         platform = Platform(loads(Path(args.settings).read_bytes()))
         if args.command == "serve":
             require(0 < args.port < 65536, "invalid_input", 400)
-            web.run_app(create_app(platform), host="127.0.0.1", port=args.port, access_log=None)
+            tls = None
+            if platform.auth.mode == "local_rehearsal":
+                require(args.host == "127.0.0.1")
+            else:
+                tls = server_tls(platform.settings.get("tls"))
+            web.run_app(
+                create_app(platform),
+                host=args.host,
+                port=args.port,
+                access_log=None,
+                ssl_context=tls,
+            )
             return 0
         header = "Bearer " + os.environ.get(args.credential_env, "")
         data = loads(Path(args.input).read_bytes()) if args.input else None
@@ -94,6 +115,23 @@ def main():
             result = {"observed": True, "mode": "local_rehearsal"}
         elif action == "verify-current-sources":
             result = platform.origins.verify_current_sources(header, data)
+        elif action == "register-input":
+            require(
+                isinstance(data, dict) and set(data) == {"entry_id", "input"}, "invalid_input", 400
+            )
+            result = platform.sources.register_input(header, data["entry_id"], data["input"])
+        elif action == "prepare-fanout":
+            result = {"ticket": platform.sources.prepare_mapping(header, data)}
+        elif action == "confirm-fanout":
+            require(
+                isinstance(data, dict) and set(data) == {"ticket", "response"}, "invalid_input", 400
+            )
+            platform.sources.confirm_mapping(header, data["ticket"], data["response"])
+            result = {"confirmed": True, "external_response": "adapter_owned"}
+        elif action == "dispatch-fanout":
+            result = asyncio.run(platform.sources.dispatch(header, data))
+        elif action == "source-access":
+            result = platform.sources.read(header, data)
         else:
             platform.projections.project(header, data)
             result = {"projected": True, "execution_owned_by": data["owner"]}

@@ -34,6 +34,15 @@ Python 3.12+，独立 `pyproject.toml` 与固定依赖 `requirements-dev.txt`。
 
 服务代码位于 `services/platform/`，测试位于 `tests/backend/`。不修改已发布合同、不猜新增公共 HTTP 写入协议。来源签发与映射/来源核验为受信内部端口，真实适配器不得把未验证 payload 注入。平台唯一写模型配置；网关只读。前端只能接脱敏投影，不获得服务 token、origin_ref 或完整 secret-ref。环境凭据、数据库、真实数据与本机设置不入库；测试必须隔离，明确区分 CLI 认证、真实登录/渠道以及局部 HTTP 子链和 L0/L1。
 
+## TS-013 来源同步增量
+
+- 唯一新运行包 `contracts/source-sync/v1` 1.0.0，固定 manifest SHA256 `178d0ce66210bdfad4cfb85d8b5f0905b0b67f834e2a530efe5636ff0373633d`；绑定旧 text/profile，不读 candidate。
+- [完整运行说明](docs/platform/source-sync.md) 与 [合成配置](docs/platform/source-sync.settings.example.json)。新增固定 `POST /internal/v1/source-access/read` 的 input/current；认证分别是 companion/memory。纯规则不是认证器，源输入/批量回填仍是受信应用端口，不新增映射 RPC。
+- 新最窄套件：`.venv/Scripts/python.exe -m unittest discover -s tests/backend -p test_sources.py -v`；TLS套件将 pattern 改为 `test_source_https.py`。完整后端仍用原 discover 命令。
+- TLS测试设置 `TS013_TLS_PYTHON` 为含 cryptography 50.0.1 的工具解释器，本机为 `C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe`。证书仅临时生成，不装系统信任；缺此变量明确 skip。设置 `PYTHONDONTWRITEBYTECODE=1` 后读取已集成网关，禁止写另一产品目录。
+- `mode=service_https` 为显式认证 TLS 模式，serve 使用设置中的绝对证书/私钥路径；默认 local_rehearsal 和旧回归保留。SQLite迁移先备份旧库；所有真实数据、生产恢复与新generation批准未执行。当前后端45项，完整L0仍待产品集成。
+- legacy 单actor回执和 partial source观察不得伪造新 input/admission 历史；未知历史 current 503。产品范围限定 services/tests/backend/docs/入口说明，不改网页及锁。
+
 ## 共享边界
 
 - 根清单/锁、`src/app/modules.ts`、应用壳、`src/design/tokens.css` 为集成人单写。模块作者仅改分配的 `src/features/<module>/`。
