@@ -7,3 +7,6 @@ node_modules/
 dist/
 __pycache__/
 *.pyc
+apps/web/test-results/
+apps/web/rail-test-results/
+playwright-report/

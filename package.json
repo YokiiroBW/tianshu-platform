@@ -1,0 +1,35 @@
+{
+  "name": "tianshu-platform",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "packageManager": "npm@11.6.2",
+  "scripts": {
+    "dev": "vite --config apps/web/vite.config.ts --host 127.0.0.1",
+    "build": "npm run typecheck && vite build --config apps/web/vite.config.ts",
+    "preview": "vite preview --config apps/web/vite.config.ts --host 127.0.0.1",
+    "typecheck": "tsc -p apps/web/tsconfig.json --noEmit",
+    "format": "prettier --ignore-path .gitignore --write apps/web package.json README.md AGENTS.md docs",
+    "format:check": "prettier --ignore-path .gitignore --check apps/web package.json README.md AGENTS.md docs",
+    "test:e2e": "playwright test --config apps/web/playwright.config.ts"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "lucide-react": "1.45.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.63.0",
+    "@types/node": "26.5.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "prettier": "3.9.6",
+    "typescript": "7.0.2",
+    "vite": "8.3.0"
+  }
+}
