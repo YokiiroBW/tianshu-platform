@@ -135,6 +135,8 @@ export function App() {
     );
   else if (current.id === "workbench") page = <pages.workbench />;
   else if (current.id === "room") page = <pages.room />;
+  else if (current.id === "companion" && section === 0)
+    page = <pages.companion />;
   else if (current.id === "settings")
     page = <pages.settings section={section} />;
   else page = <UnavailablePage module={current} section={section} />;
@@ -164,9 +166,9 @@ export function App() {
           </a>
           {navigation}
           <div className="sidebar-note">
-            本地网页基础
+            本地工作区
             <br />
-            <span>业务服务尚未接入</span>
+            <span>各页面显示实际接入状态</span>
           </div>
         </aside>
         <div className="main-column">
@@ -185,7 +187,7 @@ export function App() {
               <span aria-hidden="true">/</span>
               <strong>{current?.label ?? "页面不存在"}</strong>
             </p>
-            <span className="environment-label">服务未配置</span>
+            <span className="environment-label">本地网页</span>
             <button
               className="icon-button"
               aria-label="外观设置"
@@ -236,7 +238,7 @@ export function App() {
             </PageBoundary>
           </main>
           <footer>
-            天枢 · 个人空间<span>内容与状态将在服务接入后提供</span>
+            天枢 · 个人空间<span>服务状态以各页面为准</span>
           </footer>
         </div>
       </div>

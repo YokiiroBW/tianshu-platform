@@ -11,6 +11,51 @@ from .auth import secret
 from .contracts import Fault, loads, require
 
 
+class CoreFault(Fault):
+    def __init__(self, document, status):
+        super().__init__(document["code"], status)
+        self.document = document
+
+
+async def core_web_call(settings, path, payload, contracts, schema):
+    require(path in {"web-snapshot", "cancel", "ingest-actors"}, "invalid_input", 400)
+    _, timeout = core_settings(settings)
+    token = secret(settings["token_env"])
+    require(token is not None, "dependency_unavailable", 503)
+    try:
+        tls = ssl.create_default_context(cafile=settings.get("ca_file"))
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=timeout), trust_env=False
+        ) as session:
+            async with session.post(
+                settings["base_url"].rstrip("/") + "/internal/v1/conversation/" + path,
+                json=payload,
+                headers={"Authorization": "Bearer " + token},
+                ssl=tls,
+                allow_redirects=False,
+            ) as response:
+                require(response.content_type == "application/json", "dependency_unavailable", 503)
+                chunks, total = [], 0
+                async for chunk in response.content.iter_chunked(65536):
+                    total += len(chunk)
+                    require(total <= 1048576, "budget_exceeded", 413)
+                    chunks.append(chunk)
+                result = loads(b"".join(chunks))
+                if response.status != 200:
+                    contracts.check("common#error", result)
+                    require(
+                        result["request_id"]
+                        == payload.get("query", payload.get("command"))["request_id"],
+                        "dependency_unavailable",
+                        503,
+                    )
+                    raise CoreFault(result, response.status)
+                contracts.check(schema, result)
+                return result
+    except (aiohttp.ClientError, TimeoutError, OSError, ssl.SSLError):
+        raise Fault("dependency_unavailable", 503) from None
+
+
 def core_settings(settings):
     require(isinstance(settings, dict), "dependency_unavailable", 503)
     require(
@@ -39,7 +84,11 @@ def core_settings(settings):
     return settings["base_url"].rstrip("/") + "/internal/v1/conversation/ingest-actors", timeout
 
 
-async def core_post(settings, ingest):
+async def core_post(settings, ingest, contracts=None):
+    if contracts is not None:
+        return await core_web_call(
+            settings, "ingest-actors", ingest, contracts, "sources#fanout_response"
+        )
     url, timeout = core_settings(settings)
     token = secret(settings["token_env"])
     require(token is not None, "dependency_unavailable", 503)

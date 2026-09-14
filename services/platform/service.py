@@ -30,6 +30,7 @@ class Platform:
                 "core",
                 "tls",
                 "asset_connections",
+                "web",
             },
             "invalid_input",
             400,

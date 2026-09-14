@@ -1,10 +1,10 @@
 # 天枢平台
 
-React/TypeScript 网页基础：统一应用壳、八个目的型工作区入口、浅深主题、可访问抽屉、按需模块加载与未配置状态。另有独立的本地 Python 平台后端，提供持久来源解析与版本化模型配置；网页尚未接入该后端，没有真实登录或外部渠道连接。仅供本地开发和审查。
+React/TypeScript 网页：统一应用壳、八个目的型工作区入口、浅深主题、可访问抽屉和按需模块加载。Python 平台提供持久来源解析、版本化模型配置，以及 TS-014 的真实本地登录与同源对话入口；未配置的模块明确显示不可用。仅供本地开发和审查。
 
 后端安装、已发布 HTTP 入口、受信内部接点与验证命令见 [平台后端运行](docs/platform/runtime.md)。后端使用独立 Python 依赖，下面的前端命令和能力保持原有约定。
 
-TS-013 后端新增精确来源输入、逐角色 `input/current` 授权、持久撤销水位和 Core 批量回执事务回填，支持显式 HTTPS 服务模式。完整配置、TLS测试、响应丢失重取及迁移恢复见 [来源授权运行](docs/platform/source-sync.md)。真实 QQ/网页登录和 Core/Memory 完整联合链仍未验收，L0 未通过；前端没有接入这些新后端端口。
+TS-013 后端新增精确来源输入、逐角色 `input/current` 授权、持久撤销水位和 Core 批量回执事务回填，支持显式 HTTPS 服务模式。完整配置、TLS测试、响应丢失重取及迁移恢复见 [来源授权运行](docs/platform/source-sync.md)。TS-014网页通过平台适配器消费这些端口，实际验证范围见任务交接；不据此宣称完整L0通过。
 
 ## 本地运行
 
@@ -45,9 +45,13 @@ npm run preview
 - 应用壳和挂载入口：`apps/web/src/app/`。
 - 唯一令牌：`apps/web/src/design/tokens.css`；公共状态、抽屉与细轨：`apps/web/src/components/`。
 - 本地工作台与接入准备：`apps/web/src/features/workbench/`、`settings/`。
-- 小屋懒加载边界：`apps/web/src/features/room/RoomPage.tsx`，没有渲染引擎或生活状态。
+- 小屋懒加载边界：`apps/web/src/features/room/RoomPage.tsx`，保留已有环境渲染预览，未接权威生活状态。
 - 后续接入：[模块与视觉约定](docs/module-integration.md)。
 
-未配置页不请求猜测的 API，不回退示例成功。没有实时语音或观影入口。浏览器仅保存外观偏好，不保存角色、记忆、设备、任务或凭据。正式接入前需完成同源聚合、会话授权和版本化合同验收。
+未配置页不请求猜测的 API，不回退示例成功。没有实时语音或观影入口。localStorage仅保存外观偏好；登录使用HttpOnly会话Cookie，服务Bearer不进入浏览器。角色、记忆、设备与任务以各后台为权威。
 
 参考主工作区 V2 第 2、3.1、10、11 节、`docs/development/workstreams/platform-ui.md` 及认可的 `output/ui/management-v2`、`memory-diary-v2`、`docker-status-v3`。模块加载遵循 [React lazy](https://react.dev/reference/react/lazy) 与 [Suspense](https://react.dev/reference/react/Suspense)，构建使用 [Vite](https://vite.dev/guide/)。
+
+## 网页对话入口
+
+现有应用的 `/#/companion` 提供本地管理员登录、会话/角色选择和同源聊天控制台。配置、启动、模型未配置状态及实际接入边界见 [网页控制台运行说明](docs/platform/web-console.md)。默认关闭真实对话，没有内置账号或密码。

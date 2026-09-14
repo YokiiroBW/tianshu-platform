@@ -8,12 +8,15 @@ import uuid
 from aiohttp import web
 
 from .contracts import Fault, loads, require
+from .web_console import WebConsole
 
 PLATFORM = web.AppKey("platform", object)
 BODY = web.RequestKey("body", dict)
 
 
 def create_app(platform):
+    console = WebConsole(platform)
+
     @web.middleware
     async def boundary(request, handler):
         request_id = "request:" + uuid.uuid4().hex
@@ -22,7 +25,9 @@ def create_app(platform):
                 require(request.remote and ipaddress.ip_address(request.remote).is_loopback)
             else:
                 require(request.secure)
-            # No browser session is implemented. Neither CORS nor browser credentials authorize I14.
+            if not request.path.startswith("/internal/"):
+                return await console.handle(request)
+            # Browser sessions never authorize service RPCs.
             require("Origin" not in request.headers and "Cookie" not in request.headers)
             require(len(request.headers.getall("Authorization", [])) == 1, "unauthorized", 401)
             require(request.content_type == "application/json", "invalid_input", 400)
@@ -42,6 +47,7 @@ def create_app(platform):
             schema = {
                 "/internal/v1/origins/resolve": "common#origin_resolve_request",
                 "/internal/v1/model-config/snapshot": "model#config_request",
+                "/internal/v1/conversation/send": "conversation#send_request",
             }.get(request.path)
             if request.path == "/internal/v1/source-access/read":
                 schema = {
@@ -50,7 +56,7 @@ def create_app(platform):
                 }.get(body.get("operation"))
             require(request.method == "POST" and schema is not None, "not_found", 404)
             platform.contracts.check(schema, body)
-            request_id = body["query"]["request_id"] if "query" in body else body["request_id"]
+            request_id = body.get("query", body.get("command", body))["request_id"]
             request[BODY] = body
             response = await handler(request)
         except web.HTTPRequestEntityTooLarge:
@@ -96,9 +102,19 @@ def create_app(platform):
             )
         )
 
+    async def send(request):
+        require(console.config is not None, "dependency_unavailable", 503)
+        return web.json_response(
+            await asyncio.to_thread(
+                console.sender.send, request.headers["Authorization"], request[BODY]
+            )
+        )
+
     app = web.Application(middlewares=[boundary], client_max_size=1_048_576)
     app[PLATFORM] = platform
     app.router.add_post("/internal/v1/origins/resolve", resolve)
     app.router.add_post("/internal/v1/model-config/snapshot", snapshot)
     app.router.add_post("/internal/v1/source-access/read", source_access)
+    app.router.add_post("/internal/v1/conversation/send", send)
+    app.router.add_route("*", "/{path:.*}", console.handle)
     return app

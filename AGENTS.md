@@ -59,3 +59,12 @@ Python 3.12+，独立 `pyproject.toml` 与固定依赖 `requirements-dev.txt`。
 - TS-010 小屋仅入口。日记未授权不取全文。实时语音和观影不进网页。
 
 本地隔离开发和提交用于审查；不自动推送、部署或操作真实设备。交付短记录 docs/handoffs/<任务编号>.md，含实际变更、验证、风险及下一步。
+
+## TS-014 网页登录与对话
+
+- 运行与身份边界见 [网页控制台](docs/platform/web-console.md)。同源静态入口 `/#/companion`；无web配置503。`web.dialogue_enabled`默认false，模型未发布不可发送。Cookie/CSRF与内部Bearer严格隔离。
+- 正式web-conversation/v1 manifest LF SHA256 `e493a1b5d0f4cec8d55995553faf84042f4c33a59365d15423e57f4dc70a6c09`，来源/人格/发送仍复用旧包。候选目录仅留审查记录，不作运行入口。
+- 最窄后端：设置`TS012_CONTRACT_DIR`后 `.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_web*.py' -v`。
+- 真实网页登录浏览器：先构建，再 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.config.ts`；该配置用自己的临时合成后台4814。synthetic UI用例仅状态替身，不能替代真实四产品联合。
+- 受影响壳回归：`npm run test:e2e -- shell.spec.ts`；不重复小屋渲染输入未变的WebGL套件。
+- 当前SQLite权威库之外新增同路径`.web-inputs.sqlite`与`.web-replies.sqlite`，分别保存去重结果和持久sender；不通过sender数据库向网页绕过Core来源展示检查。

@@ -1,0 +1,121 @@
+{
+  "mode": "local_rehearsal",
+  "storage": "sqlite_local",
+  "database_path": "C:/local-rehearsal/platform/platform.sqlite",
+  "contract_directory": "C:/YOKI/Codex/tianshu-peiban-bot/contracts/text-dialogue/v1",
+  "principals": {
+    "admin": {
+      "kind": "operator",
+      "service": "platform",
+      "token_env": "WEB_ADMIN_INTERNAL_TOKEN",
+      "account": {
+        "namespace": "web",
+        "immutable_account_id": "household-admin"
+      },
+      "actions": [
+        "origin.issue",
+        "source.register",
+        "source.dispatch",
+        "mapping.prepare",
+        "origin.revoke",
+        "entry.revoke",
+        "principal.revoke",
+        "config.publish",
+        "config.view",
+        "config.revoke"
+      ]
+    },
+    "core-reader": {
+      "kind": "service",
+      "service": "companion",
+      "token_env": "CORE_PLATFORM_READER_TOKEN",
+      "actions": ["source.input", "mapping.confirm", "origin.resolve"],
+      "resolver": {
+        "caller": "platform",
+        "purpose": "dialogue"
+      }
+    },
+    "core-sender": {
+      "kind": "service",
+      "service": "companion",
+      "token_env": "CORE_PLATFORM_WEB_SENDER_TOKEN",
+      "actions": ["dialogue.send"]
+    },
+    "memory-reader": {
+      "kind": "service",
+      "service": "memory",
+      "token_env": "MEMORY_PLATFORM_READER_TOKEN",
+      "actions": ["source.current", "origin.resolve"],
+      "resolver": {
+        "caller": "companion",
+        "purpose": "dialogue"
+      }
+    }
+  },
+  "entries": {
+    "web-actor": {
+      "owner": "admin",
+      "kind": "local_operator",
+      "account": {
+        "namespace": "web",
+        "immutable_account_id": "household-admin"
+      },
+      "channel": {
+        "namespace": "web",
+        "binding_id": "web-household",
+        "channel_conversation_id": "private-chat",
+        "thread_id": null
+      },
+      "actor_id": "actor:household",
+      "audience": "self_private",
+      "ttl_seconds": 300,
+      "routes": [
+        {
+          "caller": "platform",
+          "receiver": "companion",
+          "purpose": "dialogue"
+        },
+        {
+          "caller": "companion",
+          "receiver": "memory",
+          "purpose": "dialogue"
+        },
+        {
+          "caller": "companion",
+          "receiver": "platform",
+          "purpose": "dialogue"
+        }
+      ]
+    }
+  },
+  "input_entries": {
+    "web-input": {
+      "owner": "admin",
+      "account": {
+        "namespace": "web",
+        "immutable_account_id": "household-admin"
+      },
+      "channel": {
+        "namespace": "web",
+        "binding_id": "web-household",
+        "channel_conversation_id": "private-chat",
+        "thread_id": null
+      },
+      "audience": "self_private",
+      "ttl_seconds": 300,
+      "actor_entries": ["web-actor"],
+      "default_actor_ids": ["actor:household"],
+      "routing_version": 1
+    }
+  },
+  "providers": {},
+  "web": {
+    "origin": "http://127.0.0.1:4814",
+    "username": "replace-with-local-admin-name",
+    "password_hash": "REPLACE_WITH_INTERACTIVE_SCRYPT_HASH",
+    "principal": "admin",
+    "input_entries": ["web-input"],
+    "static_directory": "C:/tianshu-platform/apps/web/dist",
+    "dialogue_enabled": false
+  }
+}

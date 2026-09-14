@@ -8,6 +8,7 @@ import re
 from .contracts import canonical, digest, epoch, loads, require
 
 ACTIONS = {
+    "dialogue.send",
     "asset.read",
     "origin.issue",
     "origin.resolve",

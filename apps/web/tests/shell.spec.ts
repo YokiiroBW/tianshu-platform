@@ -35,7 +35,7 @@ test("unconfigured shell, lazy room, no business requests or media", async ({
   expect(requests.filter((url) => /\/api\/|^https:/.test(url))).toEqual([]);
   await page.getByRole("link", { name: "前往陪伴" }).click();
   await expect(
-    page.getByRole("heading", { name: "文字对话尚未接入" }),
+    page.getByRole("heading", { name: "从自己的账号开始" }),
   ).toBeVisible();
   await expect(
     page.getByRole("link", { name: /实时语音|共同观影/ }),

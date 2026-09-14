@@ -1,0 +1,14 @@
+{
+  "status": "candidate-not-published",
+  "files": {
+    "authorization-examples.json": "0ffecb85fe8f3b1773c4788aa887fff0c9ba964440b9b53733efd7b6f26a9649",
+    "examples.json": "21a7e99d3d063e62026b7c5165016921a6f9d90109959104e1287f7ce85118de",
+    "negative-examples.json": "3806c1fced4084ec085929f58952d3daf28f2eb01484e7ef5a22000161a05b67",
+    "schema.json": "defc89ca63f92a772e6833ffade3e9872030c667e12e1832e88593be818ae2d8",
+    "semantics.md": "bd1965dbaff7122bcaeba6aeb7197b6ff63b961d98baf83d497dd64bdc38262e"
+  },
+  "validation": {
+    "schema_examples": 7,
+    "real_authorization_tests": "pending Core implementation; scenarios only"
+  }
+}

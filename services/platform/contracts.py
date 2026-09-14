@@ -12,6 +12,7 @@ from referencing import Registry, Resource
 
 MANIFEST_SHA256 = "81e6cc4ddef7c6f82e055d4cb04b090db036dd5c52763473ce697aa02db478a1"
 SOURCE_SHA256 = "178d0ce66210bdfad4cfb85d8b5f0905b0b67f834e2a530efe5636ff0373633d"
+WEB_SHA256 = "e493a1b5d0f4cec8d55995553faf84042f4c33a59365d15423e57f4dc70a6c09"
 
 
 class Fault(Exception):
@@ -118,11 +119,27 @@ class Contracts:
         )
         self.registry = Registry().with_resources(resources)
 
+    def load_web(self, directory):
+        root = Path(directory)
+        raw = (root / "manifest.json").read_bytes().replace(b"\r\n", b"\n")
+        require(hashlib.sha256(raw).hexdigest() == WEB_SHA256, "dependency_unavailable", 503)
+        manifest = loads(raw)
+        for name, expected in manifest["sha256"].items():
+            raw = (root / name).read_bytes().replace(b"\r\n", b"\n")
+            require(hashlib.sha256(raw).hexdigest() == expected, "dependency_unavailable", 503)
+            if name == "schema.json":
+                schema = loads(raw)
+                self.registry = self.registry.with_resource(
+                    schema["$id"], Resource.from_contents(schema)
+                )
+
     def check(self, name, document):
         family, kind = name.split("#")
         package = "text-dialogue/v1"
         if family in {"sources", "shared", "workflow"}:
             package = "source-sync/v1"
+        if family == "web-conversation":
+            package = "web-conversation/v1"
         try:
             Draft202012Validator(
                 {

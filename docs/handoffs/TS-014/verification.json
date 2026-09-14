@@ -1,0 +1,86 @@
+{
+  "scope": "synthetic data only; real Platform/Core/Memory/Gateway and Chromium; external model recorded",
+  "inputs": {
+    "products": {
+      "memory": "575941ee12e2a7d6dbd3d3374e34866eb82006fb",
+      "model-gateway": "b3b101faf3902f05d80818b39fe7c91367865d4e",
+      "companion": "195511ed055eaa6fce150dc245ce2a0e68a4d6c5"
+    },
+    "platform_base_head": "f4dac458d4a158e2087adad621bb6a7a91d75630",
+    "support_commit": "a472825dd983dca43862f9cb8be2e3a7834d3415",
+    "requirements_sha256": "124ceca32bc10c8eb841409522b9d90636d6b9a9ecc4e99fa9fb5b2ce498ad41",
+    "platform_source_sha256": "d037e6e77e8cd0af594f7315a0f21bb0a28adefa4af9cbdc94726deaf7a5ba7b"
+  },
+  "web_contract_manifest_lf_sha256": "e493a1b5d0f4cec8d55995553faf84042f4c33a59365d15423e57f4dc70a6c09",
+  "backend_web": {
+    "passed": 22,
+    "skipped": 0
+  },
+  "browser_web": {
+    "passed": 6,
+    "skipped": 0,
+    "desktop_mobile": true,
+    "light_dark_keyboard_axe": true,
+    "state_fixture": "explicitly mocked UI-only counterpart"
+  },
+  "shell": {
+    "passed": 17,
+    "skipped": 1,
+    "skip_reason": "mobile-only scenario in desktop project"
+  },
+  "previous_backend_regression": {
+    "ran": 59,
+    "skipped": 1,
+    "skip_reason": "optional gateway-source environment absent; actual Gateway exercised by web joint subsequently"
+  },
+  "affected_transport_after_wiring": {
+    "ran": 23,
+    "skipped": 1
+  },
+  "real_joint": {
+    "passed": 1,
+    "chat": {
+      "phase": "chat",
+      "login": "real",
+      "snapshots": "real Core",
+      "sender": "real Platform persistent",
+      "external_model": "recorded synthetic",
+      "bearer_or_origin_leaks": 0,
+      "lost_sender_receipt": "Core closed_unknown; body hidden; no retry"
+    },
+    "reconnect": {
+      "phase": "reconnect",
+      "login": "real",
+      "snapshots": "real Core",
+      "sender": "real Platform persistent",
+      "external_model": "recorded synthetic",
+      "bearer_or_origin_leaks": 0,
+      "lost_sender_receipt": "Core closed_unknown; body hidden; no retry"
+    },
+    "checks": [
+      {
+        "name": "real_TLS_four_products_web_sender",
+        "external_model": "recorded fixture",
+        "browser": "actual Chromium",
+        "no_nonebot_fallback": true
+      }
+    ],
+    "cleanup": {
+      "listeners_checked": 7,
+      "failures": [],
+      "gateway_process_stopped": true
+    },
+    "wire_owners": ["core", "memory"],
+    "wire_all_https": true,
+    "no_cross_product_SQL": true,
+    "raw_trace_sha256": "ceaf7ef1d01ab86ef5808f42d9649a0e4d5ccfacfdaf49aca0d5df3eee07e536"
+  },
+  "limitations": [
+    "No real external model or user credentials",
+    "No production deployment or device operations",
+    "Memory item revocation not yet communicated to Core has no display-level proof endpoint",
+    "Core source history projection is not model-recall authorization",
+    "Session owner restart tested; full process crash recovery is covered by component restart tests only",
+    "Web app disabled until explicit local configuration"
+  ]
+}

@@ -577,7 +577,7 @@ class Sources:
         with self.store.connect(write=True) as db:
             self.auth.authenticate(header, db, "source.dispatch")
         ticket = self.prepare_mapping(header, ingest)
-        response = await core_post(self.core, ingest)
+        response = await core_post(self.core, ingest, self.contracts)
         with self.store.connect(write=True) as db:
             principal, _ = self.auth.authenticate(header, db, "source.dispatch")
             exchange = db.execute(
