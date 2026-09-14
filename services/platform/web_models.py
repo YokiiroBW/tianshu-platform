@@ -48,6 +48,29 @@ TEMPLATE_KEYS = {
 }
 MANAGEMENT_ACTIONS = {"config.publish", "config.revoke", "config.view"}
 VERSION_HISTORY = 20
+# Two durable states: prepared means "claimed, outcome unknown", committed means "receipt held".
+PREPARED = "prepared"
+COMMITTED = "committed"
+INTENT_COLUMNS = (
+    "client_id",
+    "semantic",
+    "target",
+    "version",
+    "expected_version",
+    "digest",
+    "published_at",
+    "usable_until",
+    "state",
+    "result",
+    "prepared_at",
+)
+INTENT_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS publication_intents ("
+    "client_id TEXT PRIMARY KEY, semantic TEXT NOT NULL, target TEXT NOT NULL, "
+    "version INTEGER NOT NULL, expected_version INTEGER, digest TEXT NOT NULL, "
+    "published_at TEXT NOT NULL, usable_until TEXT NOT NULL, state TEXT NOT NULL, "
+    "result TEXT, prepared_at REAL NOT NULL, settled_at REAL)"
+)
 REQUIRED_REGISTRATION = {
     "base_url",
     "credential_ref",
@@ -89,11 +112,8 @@ class WebModels:
         if self.enabled:
             with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
                 db.execute("PRAGMA journal_mode=WAL")
-                db.execute(
-                    "CREATE TABLE IF NOT EXISTS publications (client_id TEXT PRIMARY KEY, "
-                    "semantic TEXT NOT NULL, target TEXT NOT NULL, version INTEGER NOT NULL, "
-                    "result TEXT NOT NULL, recorded_at REAL NOT NULL)"
-                )
+                # Prepared before the authoritative write, settled after: the recovery record.
+                db.execute(INTENT_SCHEMA)
                 db.commit()
 
     def _template(self, item):
@@ -242,7 +262,13 @@ class WebModels:
         require(set(body) == {"template_id"}, "invalid_input", 400)
         template = self._template_of(body["template_id"])
         expected = self._current(template["target"])
-        document = self._document(template, (expected or 0) + 1)
+        published = math.floor(self.p.models.clock())
+        document = self._document(
+            template,
+            (expected or 0) + 1,
+            utc(published),
+            utc(published + template["lifetime_seconds"]),
+        )
         version_key = TARGETS[template["target"]]["version_key"]
         return {
             "template": self._template_view(template),
@@ -256,7 +282,16 @@ class WebModels:
         }
 
     def publish(self, body, session):
-        """Publish one registered template at the version the operator last read."""
+        """Publish one registered template at the version the operator last read.
+
+        The authoritative configuration store and the console ledger are separate databases,
+        so the outcome is made recoverable instead of assumed: a durable intent is written
+        *before* the authoritative write, and every answer is reconciled against the
+        authoritative table. A request whose publication committed but whose receipt was lost
+        (I/O failure or process death between the two writes) therefore recovers as the same
+        result instead of a false conflict, and a failure is only reported when the
+        authoritative state really is unchanged.
+        """
         self._gate(session)
         require(set(body) == {"template_id", "expected_version", "client_id"}, "invalid_input", 400)
         template = self._template_of(body["template_id"])
@@ -268,23 +303,45 @@ class WebModels:
             uuid.UUID(client_id)
         except ValueError:
             raise Fault("invalid_input", 400) from None
-        target = template["target"]
         semantic = digest(
             {
                 "template_id": template["template_id"],
-                "target": target,
+                "target": template["target"],
                 "expected_version": expected,
                 "principal": self.console.config["principal"],
             }
         )
-        prior = self._prior(client_id)
-        if prior is not None:
-            # A retried publish returns the recorded outcome instead of a new version.
-            require(prior["semantic"] == semantic, "idempotency_conflict", 409)
-            return {**prior["result"], "state": "replayed", "deduplicated": True}
-        current = self._current(target)
-        require(current == expected, "version_conflict", 409)
-        document = self._document(template, (expected or 0) + 1)
+        intent = self._intent(client_id)
+        if intent is None:
+            intent = self._prepare(client_id, semantic, template, expected)
+        # One client id is one reviewed intent: different content never reuses the receipt.
+        require(intent["semantic"] == semantic, "idempotency_conflict", 409)
+        return self._settle(template, intent)
+
+    def _settle(self, template, intent):
+        """Answer from the authoritative table first; publish only if nothing is committed."""
+        target = intent["target"]
+        row = self._published(intent)
+        if row is not None:
+            # The intended document, at the intended version, is what the authority holds.
+            result = self._result(intent)
+            self._receipt(intent, result)
+            return result
+        if intent["state"] == COMMITTED:
+            # A receipt without its authoritative publication is never reported as success.
+            raise Fault("publication_unverified", 503)
+        require(self._current(target) == intent["expected_version"], "version_conflict", 409)
+        if (
+            not epoch(intent["published_at"])
+            <= self.p.models.clock()
+            < epoch(intent["usable_until"])
+        ):
+            # The prepared window is immutable; an expired one needs a fresh preview.
+            raise Fault("version_conflict", 409)
+        document = self._document(
+            template, intent["version"], intent["published_at"], intent["usable_until"]
+        )
+        require(digest(self._stable(document)) == intent["digest"], "version_conflict", 409)
         header = self.operator_header()
         if target == "native":
             outcome = self.p.models.native_publish(header, document)
@@ -293,12 +350,12 @@ class WebModels:
         result = {
             "target": target,
             "version": outcome[TARGETS[target]["version_key"]],
-            "expected_version": expected,
+            "expected_version": intent["expected_version"],
             "state": "published",
             "deduplicated": outcome["deduplicated"],
             "usable_until": document["usable_until"],
         }
-        self._record(client_id, semantic, target, result)
+        self._receipt(intent, result)
         return result
 
     def revoke(self, body, session):
@@ -319,8 +376,12 @@ class WebModels:
         require(template is not None, "not_found", 404)
         return template
 
-    def _document(self, template, version):
-        """Build the published shape from reviewed registration data and the server clock.
+    def _stable(self, document):
+        """The correlation-only request_id is excluded, exactly as the Models owner stores it."""
+        return {k: v for k, v in document.items() if k != "request_id"}
+
+    def _document(self, template, version, published_at, usable_until):
+        """Build the published shape from reviewed registration data and a fixed window.
 
         The window is anchored to the whole second the request was served in: a raw clock
         reading is rounded by the contract's date-time encoding, and a rounded-up reading
@@ -328,7 +389,6 @@ class WebModels:
         round-trip exactly, so the window stays exactly `lifetime_seconds` long and the
         publication is never rejected for a timestamp it created itself.
         """
-        now = math.floor(self.p.models.clock())
         registration = self.p.models.registrations[template["provider_id"]]
         target = TARGETS[template["target"]]
         provider = {
@@ -355,8 +415,8 @@ class WebModels:
             "request_id": "web-models:" + uuid.uuid4().hex,
             target["version_key"]: version,
             "status": "published",
-            "published_at": utc(now),
-            "usable_until": utc(now + template["lifetime_seconds"]),
+            "published_at": published_at,
+            "usable_until": usable_until,
             "providers": [provider],
             "bindings": [
                 {
@@ -445,26 +505,104 @@ class WebModels:
             for key in ("workload", "provider_id", "model_id", "timeout_ms", "fallback")
         }
 
-    def _prior(self, client_id):
+    def _prepare(self, client_id, semantic, template, expected):
+        """Durably claim one intent before the authoritative store is touched.
+
+        The row carries the reviewed window and the digest of the exact document this client
+        id stands for, so any later attempt can prove whether that document is the one the
+        authority holds. It stores no endpoint or credential reference.
+        """
+        # Claiming is the last point where the caller's expectation is known to hold; after
+        # that the intent is the record of truth for this client id.
+        require(self._current(template["target"]) == expected, "version_conflict", 409)
+        version = (expected or 0) + 1
+        published = math.floor(self.p.models.clock())
+        published_at = utc(published)
+        usable_until = utc(published + template["lifetime_seconds"])
+        document = self._document(template, version, published_at, usable_until)
+        record = (
+            client_id,
+            semantic,
+            template["target"],
+            version,
+            expected,
+            digest(self._stable(document)),
+            published_at,
+            usable_until,
+            PREPARED,
+            None,
+            self.p.models.clock(),
+        )
+        with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.execute(
+                    "INSERT INTO publication_intents ("
+                    + ",".join(INTENT_COLUMNS)
+                    + ") VALUES("
+                    + ",".join("?" * len(INTENT_COLUMNS))
+                    + ")",
+                    record,
+                )
+                db.commit()
+            except sqlite3.IntegrityError:
+                # Another attempt claimed this client id first; its intent wins.
+                db.rollback()
+        prepared = self._intent(client_id)
+        require(prepared is not None, "dependency_unavailable", 503)
+        return prepared
+
+    def _intent(self, client_id):
         with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
             db.row_factory = sqlite3.Row
             row = db.execute(
-                "SELECT semantic,result FROM publications WHERE client_id=?", (client_id,)
+                "SELECT * FROM publication_intents WHERE client_id=?", (client_id,)
             ).fetchone()
-        return {"semantic": row["semantic"], "result": loads(row["result"])} if row else None
+        return dict(row) if row else None
 
-    def _record(self, client_id, semantic, target, result):
+    def _published(self, intent):
+        """The authoritative row for this intent's version, if any (revocation is not deletion)."""
+        table = TARGETS[intent["target"]]["table"]
+        with self.p.store.connect() as db:
+            row = db.execute(
+                f"SELECT digest FROM {table} WHERE version=?", (intent["version"],)
+            ).fetchone()
+        if row is None or row["digest"] != intent["digest"]:
+            return None
+        return row
+
+    def _result(self, intent):
+        """The recorded outcome, or the shape a committed attempt of this intent produces."""
+        if intent["result"] is not None:
+            return {**loads(intent["result"]), "state": "replayed", "deduplicated": True}
+        return {
+            "target": intent["target"],
+            "version": intent["version"],
+            "expected_version": intent["expected_version"],
+            "state": "replayed",
+            "deduplicated": True,
+            "usable_until": intent["usable_until"],
+        }
+
+    def _record(self, intent, result):
+        """Write the durable receipt for an already verified publication."""
         with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute(
-                "INSERT OR REPLACE INTO publications VALUES(?,?,?,?,?,?)",
-                (
-                    client_id,
-                    semantic,
-                    target,
-                    result["version"],
-                    canonical(result),
-                    self.p.models.clock(),
-                ),
+                "UPDATE publication_intents SET state=?,result=?,settled_at=? WHERE client_id=?",
+                (COMMITTED, canonical(result), self.p.models.clock(), intent["client_id"]),
             )
             db.commit()
+
+    def _receipt(self, intent, result):
+        """Best-effort receipt write after the authoritative outcome is already verified.
+
+        This is the write the earlier design performed as the only record of success; it is
+        now an optimisation. When it fails the intent stays `prepared` and the next attempt
+        reconciles from the authoritative digest, so a lost receipt never turns a committed
+        publication into a reported failure and never becomes a later conflict.
+        """
+        try:
+            self._record(intent, result)
+        except (sqlite3.Error, OSError):
+            pass

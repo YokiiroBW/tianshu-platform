@@ -3,12 +3,19 @@
 The browser is treated as untrusted input here: it may only name a registered template,
 the version it last read and a client id. Provider endpoints, credential references and
 the validity window come from deployment settings, and every projection is redacted.
+
+The authoritative configuration store and the console ledger are separate databases, so a
+publication can commit while its receipt is lost (I/O failure or process death between the
+two writes). Those windows are exercised explicitly: a committed request must recover as the
+same result, must never be reported as a false failure, and must never create a new version.
 """
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,11 +36,18 @@ from services.platform.contracts import Fault, loads
 from services.platform.server import create_app
 from services.platform.service import Platform
 from services.platform.web_console import WebConsole
+from services.platform.web_models import WebModels
 from web_fixtures import CHAT_PROVIDER, PASSWORD, web_settings
 
 CHAT_TEMPLATE = "chat-local-text"
 NATIVE_TEMPLATE = "native-local-text"
 CLIENT = "11111111-2222-3333-4444-555555555555"
+TARGETS = {"chat": ("configs", CHAT_TEMPLATE), "native": ("native_configs", NATIVE_TEMPLATE)}
+
+
+def client_for(target):
+    """Distinct well-formed client ids per target, so each intent is its own request."""
+    return ("%08d" % (1 if target == "chat" else 2)) + "-1111-2222-3333-444444444444"
 
 
 class WebModelsTests(unittest.IsolatedAsyncioTestCase):
@@ -135,6 +149,149 @@ class WebModelsTests(unittest.IsolatedAsyncioTestCase):
             method(*args, **kwargs)
         self.assertEqual(found.exception.code, code)
         return found.exception
+
+    def intent(self, client_id=CLIENT):
+        with closing(sqlite3.connect(self.platform.store.path + ".web-models.sqlite")) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT * FROM publication_intents WHERE client_id=?", (client_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def lose_receipts(self):
+        """Reproduce the interruption window: claim and publish, but never settle the receipt."""
+        return patch.object(WebModels, "_record", lambda self, intent, result: None)
+
+    async def assert_recovered(self, logged, target, template, client_id, version):
+        """Retry the same request with the same session and require the committed result."""
+        replay = await self.publish(
+            logged,
+            template,
+            None if version == 1 else version - 1,
+            client_id=client_id,
+            expected_status=200,
+        )
+        self.assertEqual(replay["version"], version)
+        self.assertEqual(replay["state"], "replayed")
+        self.assertEqual(replay["target"], target)
+        self.assertEqual(self.versions(TARGETS[target][0]), [version])
+        return replay
+
+    async def test_lost_receipt_still_recovers_the_committed_publication(self):
+        # Both targets: the receipt is lost, the authoritative publication stays recoverable.
+        logged = await self.unlocked_login()
+        for target, (table, template) in TARGETS.items():
+            with self.subTest(target=target):
+                client_id = client_for(target)
+                with self.lose_receipts():
+                    first = await self.publish(
+                        logged, template, None, client_id=client_id, expected_status=200
+                    )
+                self.assertEqual(first["state"], "published")
+                self.assertEqual(first["version"], 1)
+                self.assertEqual(self.versions(table), [1])
+                # The crash window leaves exactly this durable state: claimed, not settled.
+                self.assertEqual(self.intent(client_id)["state"], "prepared")
+                self.assertIsNone(self.intent(client_id)["result"])
+                await self.assert_recovered(logged, target, template, client_id, 1)
+
+    async def test_receipt_write_failure_is_never_displayed_as_a_failed_publish(self):
+        # An I/O failure on the receipt must not contradict the authoritative state.
+        logged = await self.unlocked_login()
+
+        def broken(self, intent, result):
+            raise OSError("simulated ledger failure after the authoritative commit")
+
+        with patch.object(WebModels, "_record", broken):
+            result = await self.publish(logged, NATIVE_TEMPLATE, None)
+        self.assertEqual((result["state"], result["version"]), ("published", 1))
+        self.assertEqual(self.versions("native_configs"), [1])
+        view = await self.view(logged)
+        self.assertEqual(self.target(view, "native")["current_version"], 1)
+        await self.assert_recovered(logged, "native", NATIVE_TEMPLATE, CLIENT, 1)
+
+    async def test_restart_between_commit_and_receipt_recovers_the_same_version(self):
+        logged = await self.unlocked_login()
+        with self.lose_receipts():
+            first = await self.publish(logged, CHAT_TEMPLATE, None)
+        self.assertEqual(first["version"], 1)
+        # A new process on the same databases: in-memory state is gone, the intent is not.
+        await self.start(self.config)
+        logged = await self.unlocked_login()
+        await self.assert_recovered(logged, "chat", CHAT_TEMPLATE, CLIENT, 1)
+
+    async def test_interruption_before_the_authoritative_commit_publishes_exactly_once(self):
+        logged = await self.unlocked_login()
+        models = type(self.platform.models)
+        for target, (table, template) in TARGETS.items():
+            with self.subTest(target=target):
+                client_id = client_for(target)
+                operation = "native_publish" if target == "native" else "publish"
+                with patch.object(
+                    models, operation, side_effect=Fault("dependency_unavailable", 503)
+                ):
+                    failed = await self.publish(
+                        logged, template, None, client_id=client_id, expected_status=503
+                    )
+                self.assertEqual(failed["code"], "dependency_unavailable")
+                # The failure display matches reality: nothing was published.
+                self.assertEqual(self.versions(table), [])
+                self.assertEqual(self.intent(client_id)["state"], "prepared")
+                retried = await self.publish(logged, template, None, client_id=client_id)
+                self.assertEqual((retried["state"], retried["version"]), ("published", 1))
+                self.assertEqual(self.versions(table), [1])
+                again = await self.publish(logged, template, None, client_id=client_id)
+                self.assertEqual((again["state"], again["version"]), ("replayed", 1))
+                self.assertEqual(self.versions(table), [1])
+
+    async def test_receipt_without_its_publication_is_never_reported_as_success(self):
+        logged = await self.unlocked_login()
+        published = await self.publish(logged, CHAT_TEMPLATE, None)
+        self.assertEqual(published["version"], 1)
+        # An authoritative restore that lost the publication must not be answered as success
+        # and must not be answered as a plain conflict either.
+        with self.platform.store.connect(write=True) as db:
+            db.execute("DELETE FROM configs WHERE version=1")
+        refused = await self.publish(logged, CHAT_TEMPLATE, None, expected_status=503)
+        self.assertEqual(refused["code"], "publication_unverified")
+        self.assertEqual(self.versions("configs"), [])
+
+    async def test_a_version_taken_by_another_publication_is_a_real_conflict(self):
+        # The intended version is claimed, but a different publication takes it before the
+        # retry lands: refusing is the only honest answer, and no second version may appear.
+        logged = await self.unlocked_login()
+        models = type(self.platform.models)
+        with patch.object(models, "publish", side_effect=Fault("dependency_unavailable", 503)):
+            await self.publish(logged, CHAT_TEMPLATE, None, expected_status=503)
+        self.assertEqual(self.versions("configs"), [])
+        other = chat_config(version=1)
+        self.platform.models.publish(bearer("ADMIN"), other)
+        with self.platform.store.connect() as db:
+            stored = db.execute("SELECT digest FROM configs WHERE version=1").fetchone()["digest"]
+        self.assertNotEqual(stored, self.intent(CLIENT)["digest"])
+        refused = await self.publish(logged, CHAT_TEMPLATE, None, expected_status=409)
+        self.assertEqual(refused["code"], "version_conflict")
+        self.assertEqual(self.versions("configs"), [1])
+        self.assertEqual(self.intent(CLIENT)["state"], "prepared")
+
+    async def test_prepared_intent_with_an_expired_window_is_refused(self):
+        # The reviewed window is immutable: a stale one needs a fresh preview, never a reuse.
+        logged = await self.unlocked_login()
+        with self.lose_receipts():
+            first = await self.publish(logged, NATIVE_TEMPLATE, None)
+        self.assertEqual(first["version"], 1)
+        with self.platform.store.connect(write=True) as db:
+            db.execute("DELETE FROM native_configs WHERE version=1")
+        with closing(sqlite3.connect(self.platform.store.path + ".web-models.sqlite")) as db:
+            db.execute(
+                "UPDATE publication_intents SET published_at='2000-01-01T00:00:00Z',"
+                " usable_until='2000-01-01T00:05:00Z' WHERE client_id=?",
+                (CLIENT,),
+            )
+            db.commit()
+        refused = await self.publish(logged, NATIVE_TEMPLATE, None, expected_status=409)
+        self.assertEqual(refused["code"], "version_conflict")
+        self.assertEqual(self.versions("native_configs"), [])
 
     async def test_management_is_closed_by_default_and_without_config_authority(self):
         # No web_models section at all: the capability is absent, not merely locked.

@@ -114,17 +114,47 @@ principal 还必须拥有 `config.publish`、`config.revoke`、`config.view`，�
 - Chat 与原生各自独立的表、版本序列与撤销键空间在这里同样成立：网页发布 Chat 不会影响原生
   版本，反之亦然。
 
+### 中断恢复协议
+
+权威配置库与网页运行库是两个数据库，两次写入之间没有共同事务。因此发布不假设回执必然写成，
+而是**先写持久意图、再写权威库、最后对账**：
+
+1. `publish` 先在 `publication_intents` 里落一条 `prepared` 意图：`client_id`、语义摘要、目标、
+   版本号、`expected_version`、该版本文档的**摘要**与整秒窗口。这一步在权威库被触碰之前完成。
+2. 权威写入仍由 `Models` 完成（校验 + 单一事务），本模块不复制该逻辑。
+3. 每个回答——首次、重试、重启后重试——都先读权威表：当意图的版本存在且**存的摘要等于意图摘要**
+   时，就认定这次意图所指的文档确实已在该版本发布，返回同一结果（重试显示 `replayed`）并把意图
+   落为 `committed`；没有任何一行时报错只反映真实状态。
+
+由此得到的行为：
+
+| 情况                               | 结果                                                          |
+| ---------------------------------- | ------------------------------------------------------------- |
+| 权威提交成功，回执写失败或进程中断 | 重试恢复为同一版本、同一结果；不会 409，也不会新增版本        |
+| 权威提交**之前**中断               | 请求失败且权威库确实没有新版本；同 `client_id` 重试只发布一次 |
+| 回执写失败（I/O）                  | 回执只是优化：本次回答依据权威库已确认的结果，不报假失败      |
+| 权威行缺失，但回执存在             | 503 `publication_unverified`：既不报成功也不报普通冲突        |
+| 同 `client_id`、不同内容           | 409 `idempotency_conflict`，权威库不变                        |
+| 目标版本已被**别的**文档占用       | 409 `version_conflict`，不覆盖、不新增版本                    |
+| 意图窗口已过期且尚未发布           | 409 `version_conflict`：窗口不可改写，需重新预览              |
+
+意图行不含端点或凭据引用，也不能被任何消费者当作配置读取，因此不构成第二份配置权威。
+
 ## 本地存储
 
 除权威库与 TS-014 的两个 sidecar 之外，新增忽略的运行产物
-`<database_path>.web-models.sqlite`，只有一张重放账表：
+`<database_path>.web-models.sqlite`，只有一张意图/对账表：
 
 ```
-publications(client_id PRIMARY KEY, semantic, target, version, result, recorded_at)
+publication_intents(client_id PRIMARY KEY, semantic, target, version, expected_version,
+                    digest, published_at, usable_until, state, result,
+                    prepared_at, settled_at)
 ```
 
-它不保存任何配置内容（没有端点、凭据引用或密钥），只是「这次请求是否已经执行过」的记录，因此
-不构成第二份配置权威；删除它只会让重放不再被识别。权威库 schema 仍是 2，本任务不改迁移主线。
+`state` 只有 `prepared`（已认领、结果未知）与 `committed`（已持回执）两种；`digest` 是该
+`client_id` 所指文档（不含关联用的 `request_id`）的稳定摘要，用于与权威表逐字节对账。表里
+没有任何配置内容（没有端点、凭据引用或密钥）。删除它只会让重放与恢复不再被识别：权威库里
+已提交的配置不受影响。权威库 schema 仍是 2，本任务不改迁移主线。
 
 ## 实际验证
 
@@ -145,6 +175,15 @@ node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.
 两个浏览器上下文的旧版本冲突、同 client id 重放、清 Cookie 后的会话失效，以及只有状态替身的
 禁用/无权/过期面板状态。合成后台没有任何真实模型账号或供应商调用。
 
+中断恢复另有自检脚本（合成 fixture，全部断言失败即非零退出）：
+
+```powershell
+.runtime/venv/Scripts/python.exe .runtime/dsh-delivery/ts016-recovery-probe.py
+```
+
+它覆盖：两个目标各自的「已提交但回执丢失」恢复、提交后进程重启恢复、提交前中断只发布一次、
+异内容冲突、版本被别的文档占用、以及回执存在但权威行缺失时的 `publication_unverified`。
+
 ## 未验证与下一步
 
 - 没有任何真实模型账号、供应商调用、付费模型、真实设备或生产部署；全部证据为合成 fixture 与
@@ -152,5 +191,7 @@ node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.
 - 网关消费原生配置、`route_context`、原生 SSE/回执仍由其任务与协调联合验收，本任务不实现、
   不猜测其形状，也不改其工作树。
 - 未做：50 万级版本列表分页、生产 PostgreSQL、真实多用户并发压测、管理操作的双人复核。
+- 未做：用真实断电/进程终止以外的故障注入验证 SQLite 层面的写丢失（当前用回执写失败、回执写
+  被跳过与重启三类合成注入覆盖）。
 - 根 manifest 的 `runtime_routes_enabled=false` 与 `runtime_disabled_until_joint_acceptance`
   仍然有效：本地开启 `web_models` 只是隔离演练，不等于合同开放。

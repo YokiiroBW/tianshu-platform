@@ -81,6 +81,8 @@ const messages: Record<string, string> = {
   not_found: "找不到该配置模板或版本。",
   version_conflict: "后台版本已变化，已重新读取；请确认后再发布。",
   idempotency_conflict: "这次发布请求与之前的请求不一致，请重新预览后再发布。",
+  publication_unverified:
+    "这次发布的结果与权威配置不一致，请人工核对后再操作。",
   dependency_unavailable: "后台服务暂时不可用，请稍后重试。",
   invalid_input: "请求内容不符合当前接口要求。",
 };
