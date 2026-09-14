@@ -1,4 +1,5 @@
 import copy
+import math
 import os
 import sqlite3
 import tempfile
@@ -10,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import ENV, bearer, resolve
-from services.platform.contracts import Fault, canonical, digest, utc
+from services.platform.contracts import Fault, canonical, digest, epoch, utc
 from services.platform.service import Platform
 from source_fixtures import core_fixture, current_request, input_request, register, source_settings
 
@@ -336,6 +337,8 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM admission_history").fetchone()[0], 2)
 
     def test_stale_process_expired_entry_and_migration_backup(self):
+        # Exercise the upward microsecond rounding that made now += 5 flaky.
+        self.now = math.nextafter(epoch("2027-01-15T08:00:00.000001Z"), -math.inf)
         _, _, response = self.confirmed()
         stale = self.p
         self.settings["entries"]["actor-a"]["expires_at"] = utc(self.now + 5)
@@ -343,11 +346,18 @@ class SourceTests(unittest.TestCase):
         self.reject(
             "dependency_unavailable", stale.sources.read, bearer("MEMORY"), current_request()
         )
+        expires = epoch(self.settings["entries"]["actor-a"]["expires_at"])
+        self.now = math.nextafter(expires, -math.inf)
         before = self.p.sources.read(bearer("MEMORY"), current_request(response))
-        self.now += 5
+        self.assertEqual([g["state"] for g in before["grants"]], ["allowed", "allowed"])
+        self.now = expires
+        exact = self.p.sources.read(bearer("MEMORY"), current_request(response))
+        self.assertEqual([g["state"] for g in exact["grants"]], ["denied", "allowed"])
+        self.assertGreater(exact["head"]["sequence"], before["head"]["sequence"])
+        self.now = math.nextafter(expires, math.inf)
         after = self.p.sources.read(bearer("MEMORY"), current_request(response))
         self.assertEqual([g["state"] for g in after["grants"]], ["denied", "allowed"])
-        self.assertGreater(after["head"]["sequence"], before["head"]["sequence"])
+        self.assertEqual(after["head"], exact["head"])
         with self.p.store.connect(write=True) as db:
             db.execute("PRAGMA user_version=0")
         self.p = Platform(self.settings, clock=lambda: self.now)
