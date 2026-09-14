@@ -123,7 +123,16 @@ test("synthetic UI state fixture: receipt, collector, processing, segments, unkn
     page.getByRole("heading", { name: "第 1 轮 · 发送结果未知" }),
   ).toBeVisible();
   await expect(page.getByText("合成已送达片段", { exact: true })).toBeVisible();
-  await expect(page.getByText("正文不可展示 · unavailable")).toBeVisible();
+  await expect(page.getByText("正文暂不可展示")).toBeVisible();
+  const diagnostics = page.getByText("版本 3 · closed_unknown / unknown", {
+    exact: true,
+  });
+  await expect(diagnostics).toBeHidden();
+  await page.getByText("状态详情", { exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(diagnostics).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(diagnostics).toBeHidden();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 

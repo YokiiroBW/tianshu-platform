@@ -103,10 +103,15 @@ class WebSender:
                     409,
                 )
                 prior = db.execute(
-                    "SELECT semantic,receipt FROM replies WHERE reply_id=?", (request["reply_id"],)
+                    "SELECT semantic,receipt,command_key FROM replies WHERE reply_id=?",
+                    (request["reply_id"],),
                 ).fetchone()
                 if prior:
-                    require(prior[0] == semantic, "idempotency_conflict", 409)
+                    require(
+                        prior[0] == semantic and prior[2] == command_key,
+                        "idempotency_conflict",
+                        409,
+                    )
                     receipt = loads(prior[1])
                     receipt["request_id"] = command["request_id"]
                     return receipt

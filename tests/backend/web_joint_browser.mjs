@@ -88,7 +88,7 @@ try {
       { timeout: 20000 },
     );
     await page.getByRole("button", { name: "取消第 2 轮" }).click();
-    await expect(page.getByText(/取消结果：cancelled/)).toBeVisible({
+    await expect(page.getByText(/取消结果：已取消/)).toBeVisible({
       timeout: 15000,
     });
     await expect(
@@ -100,7 +100,7 @@ try {
     await expect(
       page.getByRole("heading", { name: "第 3 轮 · 发送结果未知" }),
     ).toBeVisible({ timeout: 30000 });
-    await expect(page.getByText("正文不可展示 · unavailable")).toBeVisible();
+    await expect(page.getByText("正文暂不可展示")).toBeVisible();
     await context.storageState({ path: process.env.TS014_BROWSER_STATE });
   } else {
     await expect(

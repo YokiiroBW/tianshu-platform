@@ -69,6 +69,11 @@ const states: Record<string, string> = {
   partial: "部分送达",
   not_started: "尚未开始",
   not_required: "无需发送",
+  partially_cancelled: "已部分取消",
+  too_late: "已无法取消",
+  edited: "原消息已编辑",
+  retracted: "原消息已撤回",
+  unavailable: "正文暂不可用",
 };
 
 function Messages({ messages }: { messages: Message[] }) {
@@ -85,7 +90,7 @@ function Messages({ messages }: { messages: Message[] }) {
           {message.state === "active" ? (
             message.parts.map((part, index) => <p key={index}>{part.text}</p>)
           ) : (
-            <p className="muted">正文不可用 · {message.state}</p>
+            <p className="muted">{states[message.state] ?? "正文暂不可用"}</p>
           )}
         </div>
       ))}
@@ -214,7 +219,7 @@ export function DialoguePanel({
       );
       if (alive.current) {
         setNotice(
-          `取消结果：${result.state} · 版本 ${result.version}。已送达内容不会撤回。`,
+          `取消结果：${states[result.state] ?? "请查看后台状态"}。已送达内容不会撤回。`,
         );
         setRefresh((n) => n + 1);
       }
@@ -298,11 +303,20 @@ export function DialoguePanel({
                 <div className="chat-turn-heading">
                   <h3>
                     第 {turn.turn_sequence} 轮 ·{" "}
-                    {states[turn.phase] ?? turn.phase}
+                    {states[turn.phase] ?? "状态待确认"}
                   </h3>
-                  <span className="muted">
-                    版本 {turn.version} · {turn.phase} / {turn.delivery_state}
-                  </span>
+                  <details className="muted">
+                    <summary>状态详情</summary>
+                    <p>
+                      版本 {turn.version} · {turn.phase} / {turn.delivery_state}
+                    </p>
+                    {replies.map((reply) => (
+                      <p key={reply.reply_id}>
+                        第 {reply.segment_sequence} 段：{reply.state} /{" "}
+                        {reply.content_state}
+                      </p>
+                    ))}
+                  </details>
                   {snapshot?.active_turns.some(
                     (t) => t.turn.turn_id === turn.turn_id,
                   ) && (
@@ -326,16 +340,14 @@ export function DialoguePanel({
                     <span className="chat-message-label">
                       {actor} · 第 {reply.segment_sequence}/
                       {reply.segment_count} 段 ·{" "}
-                      {states[reply.state] ?? reply.state}
+                      {states[reply.state] ?? "状态待确认"}
                     </span>
                     {reply.content_state === "available" &&
                     reply.state === "sent" &&
                     reply.text !== null ? (
                       <p>{reply.text}</p>
                     ) : (
-                      <p className="muted">
-                        正文不可展示 · {reply.content_state}
-                      </p>
+                      <p className="muted">正文暂不可展示</p>
                     )}
                   </div>
                 ))}
@@ -351,9 +363,14 @@ export function DialoguePanel({
                 <h3>正在合并续句</h3>
                 <p className="muted">
                   后台等待至{" "}
-                  {new Date(collector.deadline_at).toLocaleTimeString("zh-CN")}{" "}
-                  · 版本 {collector.revision}
+                  {new Date(collector.deadline_at).toLocaleTimeString(
+                    "zh-CN",
+                  )}{" "}
                 </p>
+                <details className="muted">
+                  <summary>合并状态详情</summary>
+                  <p>版本 {collector.revision}</p>
+                </details>
                 <Messages messages={collector.messages} />
               </article>
             ))}

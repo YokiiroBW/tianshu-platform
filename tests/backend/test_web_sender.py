@@ -70,6 +70,10 @@ class WebSenderTests(unittest.TestCase):
         self.assertEqual(restarted.send(bearer("COMPANION"), self.request), receipt)
         changed = copy.deepcopy(self.request)
         changed["command"]["request_id"] = "request:retry"
+        changed["command"]["deadline_at"] = utc(self.now + 45)
+        changed["command"]["origin"] = {
+            "assertion_ref": self.p.origins.issue(bearer("ADMIN"), "actor-a")["assertion_ref"]
+        }
         retried = restarted.send(bearer("COMPANION"), changed)
         self.assertEqual(retried, {**receipt, "request_id": "request:retry"})
         second = {
@@ -88,6 +92,19 @@ class WebSenderTests(unittest.TestCase):
         self.reject({**self.request, "text": "changed"}, "idempotency_conflict")
         self.reject({**self.request, "reply_id": "reply:other"}, "idempotency_conflict")
         self.reject({**self.request, "segment_sequence": 3}, "invalid_input")
+
+    def test_existing_reply_cannot_claim_a_new_command_key(self):
+        original = self.sender.send(bearer("COMPANION"), self.request)
+        alias = copy.deepcopy(self.request)
+        alias["command"]["idempotency_key"] = "command:second"
+        self.reject(alias, "idempotency_conflict")
+        self.sender = WebSender(Platform(self.settings, clock=lambda: self.now))
+        self.reject(alias, "idempotency_conflict")
+        self.assertEqual(self.sender.send(bearer("COMPANION"), self.request), original)
+        second = {**alias, "reply_id": "reply:second", "segment_sequence": 2, "text": "第二段"}
+        # The rejected alias did not succeed or consume this key; C is its first use.
+        self.assertEqual(self.sender.send(bearer("COMPANION"), second)["state"], "sent")
+        self.reject({**second, "text": "不同正文"}, "idempotency_conflict")
 
     def test_actor_destination_conversation_and_service_boundaries(self):
         self.reject({**self.request, "actor_id": "actor:b"})
