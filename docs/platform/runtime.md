@@ -181,6 +181,13 @@ view-config 仅给本地已认证操作者脱敏投影：provider/model、验证
 
 revoke-origin/revoke-entry/revoke-principal/revoke-config 输入均为 `{"id":...}`，配置版本使用整数。撤销不可通过重新发布同版或重签来源来绕过入口/主体撤销；后续需要显式新登记和审查。
 
+原生 `openai-responses` 配置是同一 `Models` owner 的第二套独立配置：独立 `native_configs` 表、
+`native_config_version` 序列、撤销键空间、`caller.native_config_versions` 显式授权，以及默认关闭的
+`POST /internal/v1/model-config/native/snapshot`（`model#config_request` / `model#config_response` /
+`model#error`）。上表的旧 Chat 路径、状态码（撤销/到期 410）与授权字段不因它改变。设置档、
+`publish-native`/`revoke-native`/`view-native`、合同错误码表与 SQLite 迁移备份见
+[原生模型配置](native-model-config.md)。
+
 ## 能力与任务投影
 
 `projections.capabilities` 只登记本切片实际实现的来源解析、配置快照、任务投影读取三项，标出 HTTP/内部端口。没有 HA、Docker、模型执行或模拟设备成功。CLI `capabilities` 可查询。

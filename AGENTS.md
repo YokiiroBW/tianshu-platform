@@ -50,6 +50,13 @@ Python 3.12+，独立 `pyproject.toml` 与固定依赖 `requirements-dev.txt`。
 - 联验：`.runtime/venv/Scripts/python.exe tests/backend/run_assetlink_integration.py --asset-repo <只读AssetLibrary-Git仓库> --dotnet <10.0.111工具> --postgres-bin <PG16.15-bin>`。只导出固定ff8e8a1到自己的.runtime并构建，自建临时PG；不得改对端快照源码、在projects写bin/obj或SQL灌权限。
 - 请求64KiB、流式响应1MiB、单次5秒；401/404/错误清正文不循环重试，取消传播并关闭会话。成功只是索引元数据，原件可用性未验证；网页、50万、生产NAS仍未验。
 
+## TS-015 平台原生模型配置
+
+- 设置、错误语义、迁移与边界见 [原生模型配置](docs/platform/native-model-config.md)。合同为根 `contracts/model-protocol/v1`，manifest LF SHA256 `52711a71de56dbceebd1d5d96b2baf59a2d9551168029972d59111480f815141`；平台只做生产者，网关消费与真实模型另行验收。
+- 唯一新端口 `POST /internal/v1/model-config/native/snapshot`，默认关闭，设置 `native_config_http: true` 才注册；CLI 为 `publish-native`、`revoke-native`、`view-native`，复用既有 `config.publish/revoke/view` operator 权限，不新增网页入口。原生使用独立 `native_configs` 表、`native_config_version` 序列、撤销键空间与显式 `caller.native_config_versions`；缺省为空，绝不继承 `config_versions`，旧 Chat 的 latest 与状态码不变。
+- 最窄：设置 `TS012_CONTRACT_DIR` 后 `.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_native*.py' -v`。旧 Chat/Web/Asset 回归仍用完整 discover。本地 SQLite schema 为 2；版本 1 旧库迁移前生成 `.pre-native-<hex>.sqlite` 备份。
+- 没有真实模型账号、供应商调用、浏览器入口或生产部署；根 `runtime_routes_enabled=false` 与 `runtime_disabled_until_joint_acceptance` 仍有效，本地开端口只是隔离演练。
+
 ## 共享边界
 
 - 根清单/锁、`src/app/modules.ts`、应用壳、`src/design/tokens.css` 为集成人单写。模块作者仅改分配的 `src/features/<module>/`。

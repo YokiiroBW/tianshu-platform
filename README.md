@@ -6,6 +6,8 @@ React/TypeScript 网页：统一应用壳、八个目的型工作区入口、浅
 
 TS-013 后端新增精确来源输入、逐角色 `input/current` 授权、持久撤销水位和 Core 批量回执事务回填，支持显式 HTTPS 服务模式。完整配置、TLS测试、响应丢失重取及迁移恢复见 [来源授权运行](docs/platform/source-sync.md)。TS-014网页通过平台适配器消费这些端口，实际验证范围见任务交接；不据此宣称完整L0通过。
 
+TS-015 后端在唯一 Models owner 内新增原生 `model-protocol/v1` 配置生产者：独立表/版本序列/撤销键空间、显式 `native_config_versions` 授权、默认关闭的快照端口和合同自有错误信封。设置、CLI 与错误语义见 [原生模型配置](docs/platform/native-model-config.md)；网关消费与真实模型仍未验收。
+
 ## 本地运行
 
 TS-064 后端新增 AssetLink HTTPS 五只读应用/CLI入口、独立主体与连接授权、有界响应与取消。配置和真实双产品隔离联验命令见 [资产只读接入](docs/platform/assetlink.md)；资产网页仍未接入。

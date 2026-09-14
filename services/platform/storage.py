@@ -12,7 +12,7 @@ class Store:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path, timeout=5)) as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError("unsupported platform store version")
             if (
                 version == 0
@@ -21,6 +21,12 @@ class Store:
                 # SQLite backup includes WAL; retain a unique pre-migration copy.
                 with closing(
                     sqlite3.connect(self.path + ".pre-source-" + uuid.uuid4().hex + ".sqlite")
+                ) as backup:
+                    db.backup(backup)
+            if version == 1:
+                # TS-015 native configs join the schema; keep a unique pre-migration copy.
+                with closing(
+                    sqlite3.connect(self.path + ".pre-native-" + uuid.uuid4().hex + ".sqlite")
                 ) as backup:
                     db.backup(backup)
             db.execute("PRAGMA journal_mode=WAL")
@@ -47,6 +53,10 @@ class Store:
                     deadline REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS configs (
+                    version INTEGER PRIMARY KEY, document TEXT NOT NULL,
+                    digest TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS native_configs (
                     version INTEGER PRIMARY KEY, document TEXT NOT NULL,
                     digest TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
                 );
@@ -100,7 +110,7 @@ class Store:
                     selector_key TEXT NOT NULL, revision INTEGER NOT NULL,
                     UNIQUE(selector_key, revision)
                 );
-                PRAGMA user_version=1;
+                PRAGMA user_version=2;
                 COMMIT;
             """)
             db.execute(

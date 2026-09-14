@@ -387,10 +387,15 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(context["allowed_scope"]["actor_id"], "actor:a")
         self.assertIsNone(context["allowed_scope"]["person_id"])
         with migrated.store.connect() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 1)
+            # TS-015 raised the local schema to 2 while adding the native configuration table.
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
             self.assertEqual(db.execute("SELECT count(*) FROM admission_history").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM native_configs").fetchone()[0], 0)
         self.assertEqual(
             len(list(Path(self.temp.name).glob("legacy.sqlite.pre-source-*.sqlite"))), 1
+        )
+        self.assertEqual(
+            len(list(Path(self.temp.name).glob("legacy.sqlite.pre-native-*.sqlite"))), 0
         )
 
     def test_principal_revocation_and_commit_race_do_not_publish_mapping(self):

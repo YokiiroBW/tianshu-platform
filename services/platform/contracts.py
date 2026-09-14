@@ -12,6 +12,7 @@ from referencing import Registry, Resource
 
 MANIFEST_SHA256 = "81e6cc4ddef7c6f82e055d4cb04b090db036dd5c52763473ce697aa02db478a1"
 SOURCE_SHA256 = "178d0ce66210bdfad4cfb85d8b5f0905b0b67f834e2a530efe5636ff0373633d"
+NATIVE_SHA256 = "52711a71de56dbceebd1d5d96b2baf59a2d9551168029972d59111480f815141"
 WEB_SHA256 = "e493a1b5d0f4cec8d55995553faf84042f4c33a59365d15423e57f4dc70a6c09"
 
 
@@ -112,6 +113,21 @@ class Contracts:
                     if path.startswith("schemas/"):
                         schema = loads(raw)
                         resources.append((schema["$id"], Resource.from_contents(schema)))
+        native = root.parents[1] / "model-protocol/v1"
+        native_manifest = read(native / "manifest.json", NATIVE_SHA256)
+        for path, expected in native_manifest["sha256"].items():
+            raw = (native / path).read_bytes().replace(b"\r\n", b"\n")
+            if hashlib.sha256(raw).hexdigest() != expected:
+                raise ValueError("published model contract hash mismatch")
+            if path.startswith("schemas/"):
+                schema = loads(raw)
+                resources.append((schema["$id"], Resource.from_contents(schema)))
+        for dependency in native_manifest["dependencies"]:
+            if (
+                manifest["sha256"].get(dependency["package"] + "/" + dependency["path"])
+                != (dependency["sha256"])
+            ):
+                raise ValueError("published model contract dependency mismatch")
         self.rules = types.ModuleType("published_source_sync_rules")
         exec(
             compile(rules_raw, str(source / "rules.py"), "exec"),
@@ -135,16 +151,16 @@ class Contracts:
 
     def check(self, name, document):
         family, kind = name.split("#")
-        package = "text-dialogue/v1"
+        package, file = "text-dialogue/v1", family
         if family in {"sources", "shared", "workflow"}:
             package = "source-sync/v1"
         if family == "web-conversation":
             package = "web-conversation/v1"
+        if family == "model-protocol":
+            package, file = "model-protocol/v1", "model"
         try:
             Draft202012Validator(
-                {
-                    "$ref": f"https://contracts.tianshu.invalid/{package}/{family}.json#/$defs/{kind}"
-                },
+                {"$ref": f"https://contracts.tianshu.invalid/{package}/{file}.json#/$defs/{kind}"},
                 registry=self.registry,
                 format_checker=FormatChecker(),
             ).validate(document)

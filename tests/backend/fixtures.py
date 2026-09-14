@@ -14,6 +14,15 @@ DOCUMENTS = {
     item["id"]: item["document"]
     for item in json.loads((CONTRACT / "examples/documents.json").read_text(encoding="utf-8"))
 }
+NATIVE_CONTRACT = CONTRACT.parents[1] / "model-protocol/v1"
+NATIVE_DOCUMENTS = {
+    item["id"]: item["document"]
+    for item in json.loads(
+        (NATIVE_CONTRACT / "examples/documents.json").read_text(encoding="utf-8")
+    )
+}
+# Native registrations are protocol-pinned, so the native provider keeps its own entry.
+NATIVE_PROVIDER = "provider-native"
 TOKENS = {
     name: "synthetic-ts012-" + name.lower() + "-credential-for-local-test"
     for name in (
@@ -25,6 +34,7 @@ TOKENS = {
         "COMPANION_RESOLVER",
         "WRONG_RESOLVER",
         "GATEWAY",
+        "NATIVE",
         "READER",
         "UPSTREAM",
     )
@@ -92,6 +102,7 @@ def settings(directory, upstream="https://upstream.example.invalid/v1"):
         resolver={"caller": "nonebot", "purpose": "dialogue"},
     )
     principal("GATEWAY", "gateway", ["config.snapshot"], config_versions=[6, 7, 8, 9])
+    principal("NATIVE", "gateway", ["config.snapshot"], native_config_versions=[7, 8])
     principal("READER", "reader", ["capability.read", "task.read"])
     channel = copy.deepcopy(DOCUMENTS["ingest"]["message_key"]["channel"])
     account = copy.deepcopy(DOCUMENTS["ingest"]["author"])
@@ -141,6 +152,23 @@ def settings(directory, upstream="https://upstream.example.invalid/v1"):
         reviewed_addresses=["127.0.0.1"] if upstream.startswith("http://") else ["192.0.2.10"],
         allow_private_http=upstream.startswith("http://"),
     )
+    native = native_document()
+    native_registration = {
+        k: native["providers"][0][k]
+        for k in (
+            "protocol",
+            "credential_ref",
+            "credential_namespace",
+            "capability_verification",
+            "verified_capabilities",
+        )
+    }
+    native_registration.update(
+        base_url=upstream,
+        model_ids=[native["providers"][0]["model_id"]],
+        reviewed_addresses=["127.0.0.1"] if upstream.startswith("http://") else ["192.0.2.10"],
+        allow_private_http=upstream.startswith("http://"),
+    )
     return {
         "mode": "local_rehearsal",
         "storage": "sqlite_local",
@@ -148,14 +176,39 @@ def settings(directory, upstream="https://upstream.example.invalid/v1"):
         "contract_directory": str(CONTRACT),
         "principals": principals,
         "entries": entries,
-        "providers": {provider["provider_id"]: registration},
+        "providers": {
+            provider["provider_id"]: registration,
+            NATIVE_PROVIDER: native_registration,
+        },
     }
+
+
+def native_document():
+    """The published model-protocol/v1 config_response example, with a test provider id."""
+    result = copy.deepcopy(NATIVE_DOCUMENTS["config_response"])
+    result["providers"][0]["provider_id"] = NATIVE_PROVIDER
+    result["bindings"][0]["provider_id"] = NATIVE_PROVIDER
+    return result
 
 
 def config(now=None, upstream=None, version=7):
     now = time.time() if now is None else now
     result = copy.deepcopy(DOCUMENTS["config"])
     result.update(config_version=version, published_at=utc(now - 1), usable_until=utc(now + 300))
+    if upstream:
+        result["providers"][0]["base_url"] = upstream
+    return result
+
+
+def native_config(now=None, upstream=None, version=7, request_id="native-publish-test"):
+    now = time.time() if now is None else now
+    result = native_document()
+    result.update(
+        request_id=request_id,
+        native_config_version=version,
+        published_at=utc(now - 1),
+        usable_until=utc(now + 300),
+    )
     if upstream:
         result["providers"][0]["base_url"] = upstream
     return result
@@ -169,6 +222,18 @@ def query(ref, version=7):
             "origin": {"assertion_ref": ref},
         },
         "config_version": version,
+    }
+
+
+def native_query(ref, version=7):
+    return {
+        "query": {
+            "schema_version": 1,
+            "request_id": "native-snapshot-test",
+            "origin": {"assertion_ref": ref},
+        },
+        "native_config_version": version,
+        "contract": "model-protocol/v1",
     }
 
 

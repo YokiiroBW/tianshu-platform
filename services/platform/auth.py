@@ -64,6 +64,7 @@ class Auth:
                     "account",
                     "resolver",
                     "config_versions",
+                    "native_config_versions",
                     "task_owners",
                     "asset_connections",
                 },
@@ -84,6 +85,7 @@ class Auth:
             for owner in item.get("task_owners", []):
                 contracts.check("common#id", owner)
             require(isinstance(item.get("config_versions", []), list), "invalid_input", 400)
+            require(isinstance(item.get("native_config_versions", []), list), "invalid_input", 400)
             if item["kind"] == "operator":
                 contracts.check("common#account", item["account"])
                 require(item["account"]["namespace"] == "web", "invalid_input", 400)
@@ -91,11 +93,12 @@ class Auth:
                 require(set(item["resolver"]) == {"caller", "purpose"}, "invalid_input", 400)
                 contracts.check("common#id", item["resolver"]["caller"])
                 require(item["resolver"]["purpose"] in PURPOSES, "invalid_input", 400)
-            require(
-                all(type(v) is int and v > 0 for v in item.get("config_versions", [])),
-                "invalid_input",
-                400,
-            )
+            for key in ("config_versions", "native_config_versions"):
+                require(
+                    all(type(v) is int and v > 0 for v in item.get(key, [])),
+                    "invalid_input",
+                    400,
+                )
         require(len(set(envs)) == len(envs), "invalid_input", 400)
         for key, entry in self.entries.items():
             contracts.check("common#id", key)

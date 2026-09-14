@@ -31,11 +31,15 @@ class Platform:
                 "tls",
                 "asset_connections",
                 "web",
+                "native_config_http",
             },
             "invalid_input",
             400,
         )
         require(settings["storage"] == "sqlite_local", "dependency_unavailable", 503)
+        # The native snapshot HTTP port stays closed unless the deployment explicitly opens it.
+        self.native_config_http = settings.get("native_config_http", False)
+        require(type(self.native_config_http) is bool, "invalid_input", 400)
         self.contracts = Contracts(
             settings["contract_directory"], settings.get("source_contract_directory")
         )

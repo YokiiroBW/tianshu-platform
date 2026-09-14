@@ -31,11 +31,14 @@ def main():
         choices=[
             "issue",
             "publish",
+            "publish-native",
             "revoke-origin",
             "revoke-entry",
             "revoke-principal",
             "revoke-config",
+            "revoke-native",
             "view-config",
+            "view-native",
             "capabilities",
             "tasks",
             "prepare-mapping",
@@ -82,6 +85,14 @@ def main():
             result = platform.origins.issue(header, data["entry_id"])
         elif action == "publish":
             result = platform.models.publish(header, data)
+        elif action == "publish-native":
+            result = platform.models.native_publish(header, data)
+        elif action == "revoke-native":
+            require(isinstance(data, dict) and set(data) == {"id"}, "invalid_input", 400)
+            platform.models.native_revoke(header, data["id"])
+            result = {"revoked": True}
+        elif action == "view-native":
+            result = platform.models.view_native(header)
         elif action.startswith("revoke-"):
             require(isinstance(data, dict) and set(data) == {"id"}, "invalid_input", 400)
             kind = action.removeprefix("revoke-")
