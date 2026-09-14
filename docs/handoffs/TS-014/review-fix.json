@@ -1,0 +1,62 @@
+{
+  "implementation_commit": "ea41bbabf3d4111be350b6ff7dd887077ef2ab45",
+  "inputs": {
+    "products": {
+      "memory": "575941ee12e2a7d6dbd3d3374e34866eb82006fb",
+      "model-gateway": "b3b101faf3902f05d80818b39fe7c91367865d4e",
+      "companion": "195511ed055eaa6fce150dc245ce2a0e68a4d6c5"
+    },
+    "platform_base_head": "ea41bbabf3d4111be350b6ff7dd887077ef2ab45",
+    "support_commit": "a472825dd983dca43862f9cb8be2e3a7834d3415",
+    "requirements_sha256": "124ceca32bc10c8eb841409522b9d90636d6b9a9ecc4e99fa9fb5b2ce498ad41",
+    "platform_source_sha256": "003bfe314ffa5964ba356c73e672b3dcb6df54259c92c59390c5368b38bb8e0a"
+  },
+  "sender_targeted": {
+    "passed": 8,
+    "skipped": 0,
+    "regression": "A sent, B old reply with new key rejected409, C first use of unconsumed key accepted; changed payload409; restart/original-key retry with refreshed request_id/deadline/origin preserved"
+  },
+  "browser_targeted": {
+    "passed": 2,
+    "desktop_mobile": true,
+    "keyboard_details_default_closed": true,
+    "axe": true
+  },
+  "static": [
+    "ruff format/check",
+    "prettier changed files",
+    "TypeScript",
+    "Vite build",
+    "diff review"
+  ],
+  "real_joint": {
+    "passed": 1,
+    "seconds": 30.987,
+    "chat": {
+      "phase": "chat",
+      "login": "real",
+      "snapshots": "real Core",
+      "sender": "real Platform persistent",
+      "external_model": "recorded synthetic",
+      "bearer_or_origin_leaks": 0,
+      "lost_sender_receipt": "Core closed_unknown; body hidden; no retry"
+    },
+    "reconnect": {
+      "phase": "reconnect",
+      "login": "real",
+      "snapshots": "real Core",
+      "sender": "real Platform persistent",
+      "external_model": "recorded synthetic",
+      "bearer_or_origin_leaks": 0,
+      "lost_sender_receipt": "Core closed_unknown; body hidden; no retry"
+    },
+    "cleanup": {
+      "listeners_checked": 7,
+      "failures": [],
+      "gateway_process_stopped": true
+    },
+    "raw_trace_sha256": "b8523240927614067d2463d3b1db712ee61b0cd24e9b09698659f51f63d673b3"
+  },
+  "unchanged_suites": "not rerun; earlier evidence preserved",
+  "boundaries": "real products/TLS/browser, recorded external model only; no schema/migration/lock changes"
+}
