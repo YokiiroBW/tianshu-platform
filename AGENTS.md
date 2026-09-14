@@ -43,6 +43,13 @@ Python 3.12+，独立 `pyproject.toml` 与固定依赖 `requirements-dev.txt`。
 - `mode=service_https` 为显式认证 TLS 模式，serve 使用设置中的绝对证书/私钥路径；默认 local_rehearsal 和旧回归保留。SQLite迁移先备份旧库；所有真实数据、生产恢复与新generation批准未执行。当前后端45项，完整L0仍待产品集成。
 - legacy 单actor回执和 partial source观察不得伪造新 input/admission 历史；未知历史 current 503。产品范围限定 services/tests/backend/docs/入口说明，不改网页及锁。
 
+## TS-064 资产后台只读
+
+- [配置、协议与真实联合验证](docs/platform/assetlink.md)。仅 `platform.assets.read` 与 CLI `asset-read`，无公共 HTTP/UI 路由；五读按现行 AssetLink，不能复制对端 ACL 或借 dialogue/admin 会话赋库权。
+- 最窄：`.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p test_assets.py -v`，沿用 `TS012_CONTRACT_DIR/TS013_TLS_PYTHON`。旧后端回归仍用完整 discover；已通过最窄且输入未变时可仅运行其余四个实际 test 文件，避免重复。
+- 联验：`.runtime/venv/Scripts/python.exe tests/backend/run_assetlink_integration.py --asset-repo <只读AssetLibrary-Git仓库> --dotnet <10.0.111工具> --postgres-bin <PG16.15-bin>`。只导出固定ff8e8a1到自己的.runtime并构建，自建临时PG；不得改对端快照源码、在projects写bin/obj或SQL灌权限。
+- 请求64KiB、流式响应1MiB、单次5秒；401/404/错误清正文不循环重试，取消传播并关闭会话。成功只是索引元数据，原件可用性未验证；网页、50万、生产NAS仍未验。
+
 ## 共享边界
 
 - 根清单/锁、`src/app/modules.ts`、应用壳、`src/design/tokens.css` 为集成人单写。模块作者仅改分配的 `src/features/<module>/`。

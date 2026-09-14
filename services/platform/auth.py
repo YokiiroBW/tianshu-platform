@@ -8,6 +8,7 @@ import re
 from .contracts import canonical, digest, epoch, loads, require
 
 ACTIONS = {
+    "asset.read",
     "origin.issue",
     "origin.resolve",
     "origin.revoke",
@@ -45,9 +46,10 @@ class Auth:
         self.entries = copy.deepcopy(settings.get("entries", {}))
         self.mode = settings["mode"]
         require(self.mode in {"local_rehearsal", "service_https"}, "dependency_unavailable", 503)
-        self.policy_digest = digest(
-            {k: settings.get(k) for k in ("mode", "principals", "entries", "input_entries")}
-        )
+        policy = {k: settings.get(k) for k in ("mode", "principals", "entries", "input_entries")}
+        if "asset_connections" in settings:
+            policy["asset_connections"] = settings["asset_connections"]
+        self.policy_digest = digest(policy)
         envs = []
         for key, item in self.principals.items():
             contracts.check("common#id", key)
@@ -62,6 +64,7 @@ class Auth:
                     "resolver",
                     "config_versions",
                     "task_owners",
+                    "asset_connections",
                 },
                 "invalid_input",
                 400,
@@ -71,6 +74,10 @@ class Auth:
             require(re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", item["token_env"]), "invalid_input", 400)
             envs.append(item["token_env"])
             require(isinstance(item["actions"], list), "invalid_input", 400)
+            require(isinstance(item.get("asset_connections", []), list), "invalid_input", 400)
+            for connection in item.get("asset_connections", []):
+                contracts.check("common#id", connection)
+                require(connection in settings.get("asset_connections", {}), "invalid_input", 400)
             require(set(item["actions"]) <= ACTIONS, "invalid_input", 400)
             require(isinstance(item.get("task_owners", []), list), "invalid_input", 400)
             for owner in item.get("task_owners", []):

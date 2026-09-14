@@ -3,6 +3,7 @@
 import time
 
 from .auth import Auth
+from .assets import Assets
 from .contracts import Contracts, require
 from .models import Models
 from .origins import Origins
@@ -28,6 +29,7 @@ class Platform:
                 "input_entries",
                 "core",
                 "tls",
+                "asset_connections",
             },
             "invalid_input",
             400,
@@ -44,4 +46,5 @@ class Platform:
         self.settings = settings
         self.models = Models(self.store, self.auth, self.contracts, self.origins, settings, clock)
         self.projections = Projections(self.store, self.auth, self.contracts, clock)
+        self.assets = Assets(self.store, self.auth, settings)
         self.auth.activate(self.store, clock)

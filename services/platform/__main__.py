@@ -9,6 +9,7 @@ from pathlib import Path
 from aiohttp import web
 
 from .contracts import Fault, canonical, loads, require
+from .assets import REQUEST_LIMIT
 from .server import create_app
 from .service import Platform
 from .transport import server_tls
@@ -47,6 +48,7 @@ def main():
             "confirm-fanout",
             "dispatch-fanout",
             "source-access",
+            "asset-read",
         ],
     )
     local.add_argument("--input", help="local JSON input file; never service credentials")
@@ -69,7 +71,11 @@ def main():
             )
             return 0
         header = "Bearer " + os.environ.get(args.credential_env, "")
-        data = loads(Path(args.input).read_bytes()) if args.input else None
+        if args.action == "asset-read" and args.input:
+            with Path(args.input).open("rb") as source:
+                data = source.read(REQUEST_LIMIT + 1)
+        else:
+            data = loads(Path(args.input).read_bytes()) if args.input else None
         action = args.action
         if action == "issue":
             require(isinstance(data, dict) and set(data) == {"entry_id"}, "invalid_input", 400)
@@ -132,11 +138,13 @@ def main():
             result = asyncio.run(platform.sources.dispatch(header, data))
         elif action == "source-access":
             result = platform.sources.read(header, data)
+        elif action == "asset-read":
+            result = asyncio.run(platform.assets.read(header, data))
         else:
             platform.projections.project(header, data)
             result = {"projected": True, "execution_owned_by": data["owner"]}
         print(canonical(result))
-        return 0
+        return 1 if action == "asset-read" and not result["ok"] else 0
     except Fault as exc:
         print(canonical({"code": exc.code, "status": exc.status}))
     except (ValueError, TypeError, KeyError, OSError, sqlite3.Error):

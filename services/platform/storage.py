@@ -127,8 +127,8 @@ class Store:
             db.commit()
 
     @contextmanager
-    def connect(self, *, write=False):
-        db = sqlite3.connect(self.path, timeout=5)
+    def connect(self, *, write=False, timeout=5):
+        db = sqlite3.connect(self.path, timeout=timeout)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         try:

@@ -8,6 +8,8 @@ TS-013 后端新增精确来源输入、逐角色 `input/current` 授权、持�
 
 ## 本地运行
 
+TS-064 后端新增 AssetLink HTTPS 五只读应用/CLI入口、独立主体与连接授权、有界响应与取消。配置和真实双产品隔离联验命令见 [资产只读接入](docs/platform/assetlink.md)；资产网页仍未接入。
+
 需要 Node.js 22.12+（本次使用 24.19.0）与 npm 11.6.2。根 `package-lock.json` 固定依赖，只有一个包清单和锁文件。
 
 ```sh
