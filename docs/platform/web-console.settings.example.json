@@ -117,5 +117,28 @@
     "input_entries": ["web-input"],
     "static_directory": "C:/tianshu-platform/apps/web/dist",
     "dialogue_enabled": false
+  },
+  "web_models": {
+    "enabled": false,
+    "unlock_ttl_seconds": 900,
+    "templates": [
+      {
+        "template_id": "chat-local-text",
+        "label": "本地演练 · Chat 文本",
+        "target": "chat",
+        "provider_id": "replace-with-reviewed-chat-provider",
+        "verified_capabilities": ["text"],
+        "lifetime_seconds": 300,
+        "timeout_ms": 30000
+      },
+      {
+        "template_id": "native-local-text",
+        "label": "本地演练 · 原生 Responses",
+        "target": "native",
+        "provider_id": "replace-with-reviewed-native-provider",
+        "verified_capabilities": ["text", "stream"],
+        "lifetime_seconds": 300
+      }
+    ]
   }
 }

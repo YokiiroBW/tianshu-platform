@@ -30,6 +30,13 @@
 - 网页只交选择ID、原文与client_id；平台生成稳定来源身份、消息ID和命令，调用真实`Sources.register_input/dispatch`，Core响应由现有inline确认写入。入站回执不包含回复，网页只显示接收状态。
 - 快照由平台签发当前actor origin，转发公开Core web-snapshot；历史分页与当前活跃轮次分开读取。每2秒有界重取，隐藏页暂停，断线清除可能过期正文。只有sent且content_state=available显示回复正文；unknown/撤回/失效正文保持null。取消复用公开cancel及expected_version，保留Core实际结果/版本。
 
+## 模型配置管理
+
+设置页第二段“模型与用量”由 TS-016 接入：显示 Chat 与原生配置各自的版本、绑定与失效/撤销状态，
+并在显式授权后预览、发布、撤销。开关是可选顶层设置 `web_models`（默认关闭），写操作还要当前会话
+再次校验管理员密码；端口为同源 `/api/web/models/*`，浏览器只提交服务器登记模板的标识和版本号。
+完整设置、授权、错误语义与验证入口见[网页模型配置管理](web-models.md)。
+
 ## 持久性和失败语义
 
 `<database_path>.web-inputs.sqlite`记录网页提交去重与结果；重启后未确认请求仍为unknown，不自动重新dispatch。重复client_id不同语义409。该库不作为聊天正文历史；聊天历史由Core按当前来源范围投影。

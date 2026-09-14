@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Search } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
+import { ModelsPanel } from "./ModelsPanel";
 
 const prerequisites = [
   {
@@ -33,22 +34,19 @@ const prerequisites = [
 
 export default function SettingsPage({ section }: { section: number }) {
   const [query, setQuery] = useState("");
+  if (section === 2) return <ModelsPanel />;
   if (section !== 1)
     return (
       <StatePanel
         kind="unconfigured"
-        title={section === 0 ? "任务来源尚未接入" : "模型服务尚未接入"}
+        title="任务来源尚未接入"
         action={
           <a className="button" href="#/settings/1">
             查看接入准备
           </a>
         }
       >
-        <p>
-          {section === 0
-            ? "连接后将按任务责任方显示实际进展、阶段与失败原因。"
-            : "当前没有可读取的模型配置或用量；尚不能保存或验证线路。"}
-        </p>
+        <p>连接后将按任务责任方显示实际进展、阶段与失败原因。</p>
       </StatePanel>
     );
   const filtered = prerequisites.filter((item) =>

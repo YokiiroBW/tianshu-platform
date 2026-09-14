@@ -19,11 +19,13 @@ from .auth import secret
 from .contracts import Fault, digest, loads, require
 from .transport import CoreFault
 from .web_dialogue import WebDialogue
+from .web_models import WebModels
 from .web_sender import WebSender
 
 COOKIE = "tianshu_session"
 SESSION_TTL = 8 * 3600
 LOGIN_TTL = 600
+MODELS_PREFIX = "/api/web/models/"
 
 
 def password_hash(password, salt=None):
@@ -42,7 +44,9 @@ class WebConsole:
         self.failures = []
         self.login_lock = asyncio.Lock()
         self.clock = time.monotonic
+        self.models = None
         if self.config is None:
+            # Model management lives behind the console; without one it has no entry at all.
             return
         c = self.config
         require(
@@ -123,6 +127,13 @@ class WebConsole:
         )
         self.dialogue = WebDialogue(platform)
         self.sender = WebSender(platform)
+        self.models = WebModels(platform, self)
+
+    def verify_password(self, password):
+        """One fixed-cost verifier for the login form and the management unlock step."""
+        require(isinstance(password, str) and 12 <= len(password) <= 256, "unauthorized", 401)
+        candidate = password_hash(password, self.salt)
+        return hmac.compare_digest(candidate, self.config["password_hash"])
 
     def authority(self):
         p = self.platform
@@ -293,8 +304,7 @@ class WebConsole:
             async with self.login_lock:
                 self.failures = [t for t in self.failures if t > self.clock() - 60]
                 require(len(self.failures) < 5, "too_many_requests", 429)
-                candidate = await asyncio.to_thread(password_hash, body["password"], self.salt)
-                valid = hmac.compare_digest(candidate, self.config["password_hash"])
+                valid = await asyncio.to_thread(self.verify_password, body["password"])
                 valid &= hmac.compare_digest(
                     body["username"].encode(), self.config["username"].encode()
                 )
@@ -328,6 +338,14 @@ class WebConsole:
         require(session["authenticated"], "unauthorized", 401)
         fingerprint, _ = self.authority()
         require(session["fingerprint"] == fingerprint, "session_expired", 401)
+        if request.path.startswith(MODELS_PREFIX):
+            # Management authority is server-side session state, never a browser claim.
+            result = await self.models.route(request.path, body, session)
+            _, current = self.session(request)
+            require(current is session, "session_expired", 401)
+            fingerprint, _ = self.authority()
+            require(session["fingerprint"] == fingerprint, "session_expired", 401)
+            return web.json_response(result)
         operation = {
             "/api/web/messages": self.dialogue.send,
             "/api/web/snapshot": self.dialogue.snapshot,

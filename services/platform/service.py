@@ -31,6 +31,7 @@ class Platform:
                 "tls",
                 "asset_connections",
                 "web",
+                "web_models",
                 "native_config_http",
             },
             "invalid_input",

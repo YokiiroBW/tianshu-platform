@@ -57,6 +57,14 @@ Python 3.12+，独立 `pyproject.toml` 与固定依赖 `requirements-dev.txt`。
 - 最窄：设置 `TS012_CONTRACT_DIR` 后 `.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_native*.py' -v`。旧 Chat/Web/Asset 回归仍用完整 discover。本地 SQLite schema 为 2；版本 1 旧库迁移前生成 `.pre-native-<hex>.sqlite` 备份。
 - 没有真实模型账号、供应商调用、浏览器入口或生产部署；根 `runtime_routes_enabled=false` 与 `runtime_disabled_until_joint_acceptance` 仍有效，本地开端口只是隔离演练。
 
+## TS-016 网页模型配置管理
+
+- 设置、授权、端口与错误语义见 [网页模型配置管理](docs/platform/web-models.md)。网页“设置 → 模型与用量”显示 Chat 与原生各自版本、绑定与失效/撤销状态，并可预览、发布、撤销；写入仍只经 `Platform.Models`，不新增配置表与 `/internal/v1/*` 端口。
+- 可选顶层设置 `web_models`（默认关闭）登记已审查模板；浏览器只提交 `template_id`、`expected_version` 与幂等 `client_id`，URL/凭据/namespace 全由服务器从 `providers` 登记填写，投影不含端点与 secret-ref。
+- 写权限要三步齐全：`web_models.enabled`、operator 的 `config.publish/revoke/view`、以及当前会话的显式 `models/unlock` 密码解锁（与登录共用限流）。普通聊天登录不获得管理权限；重启、退出、撤销与凭据轮换都会失效。
+- 端口为同源 `/api/web/models/{view,unlock,lock,preview,publish,revoke}`，复用真实 Cookie/CSRF/Origin；旧版本 409 `version_conflict`，重放同 `client_id` 返回首次结果，撤销后 Chat 快照 410、原生 403。新增忽略运行产物 `<db>.web-models.sqlite` 只存重放账，不存配置。
+- 最窄：设置 `TS012_CONTRACT_DIR` 后 `.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_web_models.py' -v`；浏览器路径先 `npm run build`，再 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.config.ts`。完整后端仍用原 discover。
+
 ## 共享边界
 
 - 根清单/锁、`src/app/modules.ts`、应用壳、`src/design/tokens.css` 为集成人单写。模块作者仅改分配的 `src/features/<module>/`。
