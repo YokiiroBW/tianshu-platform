@@ -65,6 +65,16 @@ Python 3.12+，独立 `pyproject.toml` 与固定依赖 `requirements-dev.txt`。
 - 端口为同源 `/api/web/models/{view,unlock,lock,preview,publish,revoke}`，复用真实 Cookie/CSRF/Origin；旧版本 409 `version_conflict`，重放同 `client_id` 返回首次结果，撤销后 Chat 快照 410、原生 403。发布不假设回执必然写成：先落 `prepared` 意图（含该版本稳定摘要），再经 `Models` 写权威库，回答前一律与权威表对账，因此「已提交但回执丢失/进程中断」重试恢复为同一版本，回执缺失但权威行不存在时报 503 `publication_unverified`。运行产物 `<db>.web-models.sqlite` 只存意图与回执，不存端点、凭据引用或任何配置内容。
 - 最窄：设置 `TS012_CONTRACT_DIR` 后 `.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_web_models.py' -v`；浏览器路径先 `npm run build`，再 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.config.ts`。完整后端仍用原 discover。
 
+## TS-017 家庭设备状态与受限控制
+
+- 设置、读数/控制语义、错误码与验证入口见 [家庭设备状态与受限控制](docs/platform/home-devices.md)。网页“家庭与服务 → 家庭设备”（`/#/home`）显示已登记 HA 实体的读数、可用性与采样时间；只读传感器不显示控制，light/switch 在显式解锁后按服务器登记模板执行 `turn_on`/`turn_off`。仅使用官方 REST 状态读取与服务调用，不用 `POST /api/states` 冒充控制；没有门锁、门、报警、场景或脚本动作。
+- 可选顶层设置 `home`（缺省即没有入口）登记 HA 地址、凭据环境变量、实体与动作模板；浏览器只提交 `template_id`、`expected_revision` 与幂等 `client_id`，实体/域/服务/地址/凭据全由服务器解析。明文 http 沿用 `providers` 的已审查地址策略（`reviewed_addresses` + `allow_private_http`，本平台只批 loopback）。
+- 控制权要三步齐全：`home.enabled`、operator 的 `device.control`、当前会话的 `home/unlock` 密码解锁（与登录共用限流，与 `models/unlock` 互相独立）。读数为同源 `POST /api/web/home/{view,refresh}`，控制为 `POST /api/web/home/control`；无 `/internal/v1/*` 新端口。
+- 受理与观测分开：服务调用回执只表示 `accepted`（`target_reported` 只是回执中出现目标状态），只有受理之后的 `GET /api/states` 观测才是 `confirmed`/`contradicted`。未知结果（超时、连接中断、回执不可读、HA 5xx）保留且绝不自动重发；`prepared` 意图重试先按观测对账再决定是否发出一次目标状态动作；回执写失败不报假失败（`durable: false`）。`expected_revision` 过期 409 `state_conflict`，同键不同语义 409 `idempotency_conflict`。
+- 运行产物 `<db>.home-controls.sqlite` 存读数（含采样时间与修订号）与意图表，不含地址或凭据；与权威库一起备份。取消只停止页面等待，不声称未发出或已回滚。
+- 最窄：设置 `TS012_CONTRACT_DIR` 后 `.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_home.py' -v`（同进程起真实 loopback 合成 HA）；浏览器路径先 `npm run build`，再 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.config.ts`（合成 HA 在 4817）。完整后端仍用原 discover。
+- 协调授权：本任务独占本产品 HA 相关路由，并已获准改 `apps/web/src/app/modules.ts` 的 `home` lazy 注册与 `App.tsx` 的一行页面挂载（`#/home` 段 0）；未改壳的其余部分、`tokens.css`、其他模块与依赖锁。没有真实 HA 实例、设备或生产部署。
+
 ## 共享边界
 
 - 根清单/锁、`src/app/modules.ts`、应用壳、`src/design/tokens.css` 为集成人单写。模块作者仅改分配的 `src/features/<module>/`。

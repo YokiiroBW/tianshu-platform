@@ -87,6 +87,7 @@ export const pages = {
   workbench: lazy(() => import("../features/workbench/WorkbenchPage")),
   room: lazy(() => import("../features/room/RoomPage")),
   settings: lazy(() => import("../features/settings/SettingsPage")),
+  home: lazy(() => import("../features/home/HomePage")),
 };
 
 export function resolveRoute(hash: string) {

@@ -137,6 +137,7 @@ export function App() {
   else if (current.id === "room") page = <pages.room />;
   else if (current.id === "companion" && section === 0)
     page = <pages.companion />;
+  else if (current.id === "home" && section === 0) page = <pages.home />;
   else if (current.id === "settings")
     page = <pages.settings section={section} />;
   else page = <UnavailablePage module={current} section={section} />;

@@ -1,4 +1,9 @@
-import { test, expect, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type Page,
+} from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
 const ADMIN = "synthetic-admin";
@@ -487,4 +492,317 @@ test("synthetic UI state fixture: an expired session blocks management without f
   await page.getByRole("button", { name: "重新读取" }).click();
   await expect(currentVersion(page, "Chat 兼容配置")).toBeVisible();
   await expect(page.locator(".models-error")).toHaveCount(0);
+});
+
+/* ------------------------------------------------------------------ household devices
+ *
+ * The synthetic Home Assistant REST surface lives in the same fixture process
+ * (tests/backend/home_fixtures.py, port 4817). These cases are real browser sessions against
+ * the real connector: a receipt is never displayed as an execution, and a cancelled or
+ * unknown command is never resent on its own.
+ */
+
+const HOME = "http://127.0.0.1:4817";
+const HOME_ENTITIES: [string, string][] = [
+  ["light.study", "off"],
+  ["switch.kettle", "off"],
+  ["sensor.living_temperature", "23.5"],
+];
+
+type HomeLog = {
+  mode: string;
+  requests: { method: string; path: string }[];
+  states: Record<string, { state: string }>;
+};
+
+/** The synthetic HA is one long-lived process: every case starts from a known state. */
+async function resetHome(request: APIRequestContext) {
+  await request.post(`${HOME}/fixture/mode`, {
+    data: { mode: "normal", service_mode: null },
+  });
+  for (const [entity_id, state] of HOME_ENTITIES) {
+    await request.post(`${HOME}/fixture/state`, { data: { entity_id, state } });
+  }
+  await request.post(`${HOME}/fixture/log/clear`, { data: {} });
+}
+
+async function homeMode(request: APIRequestContext, data: object) {
+  await request.post(`${HOME}/fixture/mode`, { data });
+}
+
+/** Every HA API call the connector made, and the fixture's own entity states. */
+async function homeLog(request: APIRequestContext): Promise<HomeLog> {
+  return (await (await request.get(`${HOME}/fixture/log`)).json()) as HomeLog;
+}
+
+async function homeServices(request: APIRequestContext) {
+  const log = await homeLog(request);
+  return log.requests.filter(
+    (row) => row.method === "POST" && row.path.startsWith("/api/services/"),
+  );
+}
+
+function entityCard(page: Page, label: string) {
+  return page.locator("article.home-entity").filter({ hasText: label });
+}
+
+async function loginHome(page: Page) {
+  await page.goto("/#/home");
+  await page.getByLabel("管理员账号").fill(ADMIN);
+  await page.getByLabel("密码", { exact: true }).fill(ADMIN_PASSWORD);
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(page.locator("article.home-entity").first()).toBeVisible();
+}
+
+async function unlockHome(page: Page) {
+  await page.getByLabel("管理员密码").fill(ADMIN_PASSWORD);
+  await page.getByRole("button", { name: "解锁设备控制" }).click();
+  await expect(page.getByRole("button", { name: "锁定控制" })).toBeVisible();
+}
+
+test("real household devices: readings, read-only sensors and gated control", async ({
+  page,
+  request,
+}, testInfo) => {
+  await resetHome(request);
+  await loginHome(page);
+  const light = entityCard(page, "书房灯");
+  await expect(light.locator(".rail-label")).toHaveText("当前");
+  await expect(light.locator('[data-field="reading"]')).toHaveText("已关闭");
+  await expect(light.locator('[data-field="observed"]')).not.toHaveText(
+    "没有采样时间",
+  );
+  const sensor = entityCard(page, "客厅温度");
+  await expect(sensor.locator('[data-field="reading"]')).toHaveText("23.5°C");
+  await expect(sensor).toContainText("只读传感器：不提供开关动作");
+  await expect(sensor.getByRole("button")).toHaveCount(0);
+  // An ordinary login reads states but never carries the control port.
+  await expect(page.getByRole("button", { name: "打开书房灯" })).toHaveCount(0);
+  await expect(
+    page.locator(".rail-label", { hasText: "控制待验证" }),
+  ).toBeVisible();
+  await unlockHome(page);
+  await page.getByRole("button", { name: "打开书房灯" }).click();
+  // The receipt is an acceptance; the device state is only claimed after a later read.
+  await expect(page.locator(".home-notice")).toContainText("已受理");
+  await expect(light.locator('[data-field="reading"]')).toHaveText("已关闭");
+  await expect(page.locator(".home-controls li").first()).toContainText(
+    "已受理，等待设备反馈",
+  );
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("home-devices.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "外观设置" }).click();
+  await page.getByLabel("深色", { exact: true }).check();
+  await page.keyboard.press("Escape");
+  await page.screenshot({
+    path: testInfo.outputPath("home-devices-dark.png"),
+    fullPage: true,
+  });
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.getByRole("button", { name: "外观设置" }).click();
+  await page.getByLabel("跟随系统", { exact: true }).check();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "重新读取设备状态" }).click();
+  await expect(light.locator('[data-field="reading"]')).toHaveText("已开启");
+  await expect(page.locator(".home-controls li").first()).toContainText(
+    "后续观测已确认目标状态",
+  );
+  await page.getByRole("button", { name: "锁定控制" }).click();
+  await expect(
+    page.locator(".rail-label", { hasText: "控制待验证" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开书房灯" })).toHaveCount(0);
+});
+
+test("real household devices: a second browser with a stale reading conflicts", async ({
+  page,
+  browser,
+  request,
+}) => {
+  await resetHome(request);
+  const second = await browser.newContext();
+  const other = await second.newPage();
+  try {
+    await loginHome(page);
+    await loginHome(other);
+    await unlockHome(page);
+    await unlockHome(other);
+    await page.getByRole("button", { name: "打开书房灯" }).click();
+    await expect(page.locator(".home-notice")).toContainText("已受理");
+    await page.getByRole("button", { name: "重新读取设备状态" }).click();
+    await expect(
+      entityCard(page, "书房灯").locator('[data-field="reading"]'),
+    ).toHaveText("已开启");
+    // The second browser still holds the reading it saw before the light changed.
+    await other.getByRole("button", { name: "关闭书房灯" }).click();
+    await expect(other.locator(".home-error")).toContainText(
+      "设备状态已被改变",
+    );
+    // The conflict re-reads the device instead of overwriting it.
+    await expect(
+      entityCard(other, "书房灯").locator('[data-field="reading"]'),
+    ).toHaveText("已开启");
+    await other.getByRole("button", { name: "关闭书房灯" }).click();
+    await expect(other.locator(".home-notice")).toContainText("已受理");
+    await other.getByRole("button", { name: "重新读取设备状态" }).click();
+    await expect(
+      entityCard(other, "书房灯").locator('[data-field="reading"]'),
+    ).toHaveText("已关闭");
+  } finally {
+    await second.close();
+  }
+});
+
+test("real household devices: a cancelled wait claims nothing and resends nothing", async ({
+  page,
+  request,
+}) => {
+  await resetHome(request);
+  await homeMode(request, { mode: "normal", service_mode: "hold" });
+  await loginHome(page);
+  await unlockHome(page);
+  await page.getByRole("button", { name: "打开书房灯" }).click();
+  await page.getByRole("button", { name: "取消等待" }).click();
+  await expect(page.locator(".home-notice")).toContainText("已取消等待");
+  // Nothing is displayed as success, and the device has not moved while HA holds the call.
+  await expect(page.locator(".home-notice")).not.toContainText("已受理");
+  await expect(
+    entityCard(page, "书房灯").locator('[data-field="reading"]'),
+  ).toHaveText("已关闭");
+  await expect(page.locator(".home-controls li").first()).toContainText(
+    "已提交，等待回执",
+  );
+  expect(await homeServices(request)).toHaveLength(1);
+  // HA finishes the command it already received; only a later read can show that.
+  await request.post(`${HOME}/fixture/release`, { data: {} });
+  await expect
+    .poll(async () => (await homeLog(request)).states["light.study"].state, {
+      timeout: 15000,
+    })
+    .toBe("on");
+  await homeMode(request, { mode: "normal", service_mode: null });
+  await page.getByRole("button", { name: "重新读取设备状态" }).click();
+  await expect(
+    entityCard(page, "书房灯").locator('[data-field="reading"]'),
+  ).toHaveText("已开启");
+  await page.getByRole("button", { name: "重新读取设备状态" }).click();
+  await expect(page.locator(".home-controls li").first()).toContainText(
+    "已受理，等待设备反馈",
+  );
+  // The cancelled client id is never re-sent by the page: the log still holds one call.
+  expect(await homeServices(request)).toHaveLength(1);
+});
+
+test("real household devices: an unknown outcome is shown as unknown and not resent", async ({
+  page,
+  request,
+}) => {
+  await resetHome(request);
+  await loginHome(page);
+  await unlockHome(page);
+  await homeMode(request, { mode: "normal", service_mode: "server_error" });
+  await page.getByRole("button", { name: "打开书房灯" }).click();
+  await expect(page.locator(".home-error")).toContainText("结果未知");
+  await expect(page.locator(".home-controls li").first()).toContainText(
+    "结果未知，不会自动重发",
+  );
+  expect(await homeServices(request)).toHaveLength(1);
+  // Waiting does not produce an automatic resend, even though the outcome is unknown.
+  await page.waitForTimeout(1500);
+  expect(await homeServices(request)).toHaveLength(1);
+  // Only the operator asking again sends a second command, and then it is a new request.
+  await homeMode(request, { mode: "normal", service_mode: null });
+  await page.getByRole("button", { name: "打开书房灯" }).click();
+  await expect(page.locator(".home-notice")).toContainText("已受理");
+  expect(await homeServices(request)).toHaveLength(2);
+});
+
+test("real household devices: an unreachable connector shows offline and recovers", async ({
+  page,
+  request,
+}) => {
+  await resetHome(request);
+  await loginHome(page);
+  await homeMode(request, { mode: "server_error" });
+  await page.getByRole("button", { name: "重新读取设备状态" }).click();
+  const light = entityCard(page, "书房灯");
+  await expect(light.locator(".rail-label")).toHaveText("无法读取");
+  // A reading kept from before the connector lost contact stays labelled as the last one.
+  await expect(light.locator('[data-field="reading"]')).toHaveText(
+    "上次读数：已关闭",
+  );
+  await expect(
+    entityCard(page, "客厅温度").locator('[data-field="reading"]'),
+  ).toHaveText("上次读数：23.5°C");
+  await homeMode(request, { mode: "normal" });
+  await page.getByRole("button", { name: "重新读取设备状态" }).click();
+  await expect(light.locator(".rail-label")).toHaveText("当前");
+  await expect(light.locator('[data-field="reading"]')).toHaveText("已关闭");
+});
+
+test("synthetic UI state fixture: read-only deployment and an expired login", async ({
+  page,
+}) => {
+  await page.route("**/api/web/home/refresh", async (route) => {
+    await route.fulfill({
+      json: {
+        connector: {
+          available: true,
+          code: "control_disabled",
+          enabled: false,
+          control_available: false,
+          unlocked: false,
+          unlock_ttl_seconds: 900,
+          stale_after_seconds: 120,
+          timeout_seconds: 4,
+          entities: 1,
+          templates: 0,
+          readable: true,
+        },
+        entities: [
+          {
+            entity_id: "light.study",
+            label: "书房灯",
+            kind: "light",
+            unit: null,
+            availability: "current",
+            code: "ok",
+            state: "off",
+            value: null,
+            observed_at: "2026-09-15T06:00:00Z",
+            attempt_at: "2026-09-15T06:00:00Z",
+            revision: 1,
+            control: true,
+            templates: [],
+          },
+        ],
+        controls: [],
+      },
+    });
+  });
+  await loginHome(page);
+  await expect(
+    page.locator(".rail-label", { hasText: "仅读取，未开启控制" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("管理员密码")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "打开书房灯" })).toHaveCount(0);
+  await expect(page.locator("article.home-entity")).toContainText(
+    "不显示开关动作",
+  );
+  await page.unroute("**/api/web/home/refresh");
+  // A login that is gone while the page is open shows the real state, never a stale panel.
+  await page.route("**/api/web/home/refresh", async (route) => {
+    await route.fulfill({ status: 401, json: { code: "session_expired" } });
+  });
+  await page.route("**/api/web/session", async (route) => {
+    await route.fulfill({ json: { authenticated: false, csrf: "stub-csrf" } });
+  });
+  await page.getByRole("button", { name: "重新读取设备状态" }).click();
+  await expect(page.locator(".home-error")).toContainText("登录已过期");
+  await expect(page.getByLabel("管理员账号")).toBeVisible();
+  await expect(page.locator("article.home-entity")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "锁定控制" })).toHaveCount(0);
 });

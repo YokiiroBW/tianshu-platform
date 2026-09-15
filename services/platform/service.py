@@ -33,6 +33,7 @@ class Platform:
                 "web",
                 "web_models",
                 "native_config_http",
+                "home",
             },
             "invalid_input",
             400,

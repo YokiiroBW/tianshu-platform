@@ -17,6 +17,7 @@ from aiohttp import web
 
 from .auth import secret
 from .contracts import Fault, digest, loads, require
+from .home import Home
 from .transport import CoreFault
 from .web_dialogue import WebDialogue
 from .web_models import WebModels
@@ -26,6 +27,7 @@ COOKIE = "tianshu_session"
 SESSION_TTL = 8 * 3600
 LOGIN_TTL = 600
 MODELS_PREFIX = "/api/web/models/"
+HOME_PREFIX = "/api/web/home/"
 
 
 def password_hash(password, salt=None):
@@ -128,6 +130,8 @@ class WebConsole:
         self.dialogue = WebDialogue(platform)
         self.sender = WebSender(platform)
         self.models = WebModels(platform, self)
+        # Device control carries its own unlock; it is never derived from model management.
+        self.home = Home(platform, self)
 
     def verify_password(self, password):
         """One fixed-cost verifier for the login form and the management unlock step."""
@@ -355,6 +359,14 @@ class WebConsole:
             require(self.dialogue.available(), "core_web_not_connected", 503)
             result = await operation(body)
             # A revoked/expired login cannot receive results from an in-flight read.
+            _, current = self.session(request)
+            require(current is session, "session_expired", 401)
+            fingerprint, _ = self.authority()
+            require(session["fingerprint"] == fingerprint, "session_expired", 401)
+            return web.json_response(result)
+        if request.path.startswith(HOME_PREFIX):
+            result = await self.home.route(request.path, body, session)
+            # The same re-check: a session revoked while HA was being asked gets no reading.
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
             fingerprint, _ = self.authority()

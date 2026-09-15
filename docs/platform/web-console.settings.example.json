@@ -22,7 +22,8 @@
         "principal.revoke",
         "config.publish",
         "config.view",
-        "config.revoke"
+        "config.revoke",
+        "device.control"
       ]
     },
     "core-reader": {
@@ -138,6 +139,46 @@
         "provider_id": "replace-with-reviewed-native-provider",
         "verified_capabilities": ["text", "stream"],
         "lifetime_seconds": 300
+      }
+    ]
+  },
+  "home": {
+    "enabled": false,
+    "base_url": "http://127.0.0.1:8123",
+    "reviewed_addresses": ["127.0.0.1"],
+    "allow_private_http": true,
+    "token_env": "TS017_HA_TOKEN",
+    "unlock_ttl_seconds": 900,
+    "timeout_seconds": 4,
+    "status_max_age_seconds": 120,
+    "entities": [
+      { "entity_id": "light.study", "label": "书房灯", "kind": "light" },
+      { "entity_id": "switch.kettle", "label": "热水壶", "kind": "switch" },
+      {
+        "entity_id": "sensor.living_temperature",
+        "label": "客厅温度",
+        "kind": "sensor",
+        "unit": "°C"
+      }
+    ],
+    "templates": [
+      {
+        "template_id": "study-light-on",
+        "label": "打开书房灯",
+        "entity_id": "light.study",
+        "service": "turn_on"
+      },
+      {
+        "template_id": "study-light-off",
+        "label": "关闭书房灯",
+        "entity_id": "light.study",
+        "service": "turn_off"
+      },
+      {
+        "template_id": "kettle-on",
+        "label": "打开热水壶",
+        "entity_id": "switch.kettle",
+        "service": "turn_on"
       }
     ]
   }

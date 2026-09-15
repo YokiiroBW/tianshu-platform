@@ -30,6 +30,7 @@ ACTIONS = {
     "source.input",
     "source.current",
     "source.dispatch",
+    "device.control",
 }
 PURPOSES = {"dialogue", "config.snapshot"}
 
