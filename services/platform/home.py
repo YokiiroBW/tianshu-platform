@@ -9,9 +9,15 @@ the vocabulary on purpose: only explicit target-state `light`/`switch` services 
 Reading and controlling are separate operations on purpose (A10). A service-call receipt is an
 *acceptance*, never proof that the device executed anything; only a later `GET /api/states`
 observation is reported as observed. An outcome that cannot be established stays `unknown` and
-is never re-sent automatically: the durable intent is replayed instead, and the operator must
-re-read the device before deciding again. A claimed intent whose receipt was lost reconciles by
-observation first, so recovery never doubles a command the device already carries.
+is never re-sent automatically.
+
+Exactly one command is ever transmitted per reviewed intent. Execution ownership is durable, not
+in-memory: the ledger row itself moves from `observing` (claimed, nothing transmitted) to
+`sending` (transmitted or about to be) under a compare-and-set that SQLite serializes across
+processes, so a second request for the same client id finds an owner instead of sending again.
+Because the device not being at the target does not prove that an earlier command was not sent,
+a `sending` intent is only ever concluded by observation: at the target it becomes `observed`,
+otherwise it becomes `unknown` (`control_unverified`) and waits for the operator to decide again.
 """
 
 import asyncio
@@ -45,6 +51,8 @@ CONTROL_STATUS = {
     "device_failed": 502,
     "device_invalid_response": 502,
     "device_missing": 502,
+    "control_unverified": 503,
+    "control_in_progress": 409,
 }
 SETTING_KEYS = {
     "enabled",
@@ -65,14 +73,34 @@ MAX_ENTITIES = 32
 MAX_TEMPLATES = 32
 RESPONSE_BUDGET = 1_048_576
 HISTORY = 8
-# Durable intent states; `observed` means "no receipt, but the requested state was seen".
-PREPARED, ACCEPTED, OBSERVED, UNKNOWN, REJECTED = (
+# Durable intent lifecycle. `observing` and `sending` are owned executions: `observing` means no
+# command has been transmitted yet, `sending` means one has left (or may have left) this process.
+PREPARED, OBSERVING, SENDING, ACCEPTED, OBSERVED, UNKNOWN, REJECTED = (
     "prepared",
+    "observing",
+    "sending",
     "accepted",
     "observed",
     "unknown",
     "rejected",
 )
+ACTIVE_STATES = {PREPARED, OBSERVING, SENDING}
+# A recorded outcome is only ever improved: a late writer with weaker evidence cannot downgrade
+# an observation that already confirmed the requested state.
+OUTCOME_RANKS = {
+    PREPARED: 0,
+    OBSERVING: 0,
+    SENDING: 0,
+    REJECTED: 1,
+    UNKNOWN: 1,
+    ACCEPTED: 2,
+    OBSERVED: 3,
+}
+STAGE_CODES = {PREPARED: "claimed", OBSERVING: "observing", SENDING: "executing"}
+# A released or expired claim may be taken over a few times; beyond that the request reports that
+# the intent is still owned instead of looping.
+CLAIM_ATTEMPTS = 4
+RETRY = object()
 CONTROL_COLUMNS = (
     "client_id",
     "semantic",
@@ -86,17 +114,22 @@ CONTROL_COLUMNS = (
     "code",
     "target_reported",
     "settled_at",
+    "owner",
+    "lease_expires_at",
 )
-LEDGER_SCHEMA = (
+CONTROL_SCHEMA = (
     "CREATE TABLE IF NOT EXISTS control_intents ("
     "client_id TEXT PRIMARY KEY, semantic TEXT NOT NULL, template_id TEXT NOT NULL, "
     "entity_id TEXT NOT NULL, service TEXT NOT NULL, label TEXT NOT NULL, "
     "expected_revision INTEGER NOT NULL, prepared_at REAL NOT NULL, state TEXT NOT NULL, "
-    "code TEXT, target_reported INTEGER, settled_at REAL)",
+    "code TEXT, target_reported INTEGER, settled_at REAL, owner TEXT, lease_expires_at REAL)"
+)
+READING_SCHEMA = (
     "CREATE TABLE IF NOT EXISTS readings ("
     "entity_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, observed_at TEXT, code TEXT NOT NULL, "
-    "state TEXT, value TEXT, unit TEXT, attempt_at TEXT NOT NULL, attempt_code TEXT NOT NULL)",
+    "state TEXT, value TEXT, unit TEXT, attempt_at TEXT NOT NULL, attempt_code TEXT NOT NULL)"
 )
+LEDGER_SCHEMA = (CONTROL_SCHEMA, READING_SCHEMA)
 
 
 class Home:
@@ -165,9 +198,31 @@ class Home:
         self.enabled = c.get("enabled", False)
         with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
             db.execute("PRAGMA journal_mode=WAL")
-            for statement in LEDGER_SCHEMA:
-                db.execute(statement)
+            db.execute(READING_SCHEMA)
+            self._migrate(db)
             db.commit()
+
+    def _migrate(self, db):
+        """Create or extend the intent ledger without ever making a legacy claim re-send.
+
+        The previous schema could not record whether a command had been transmitted, so a legacy
+        `prepared` row is treated as possibly sent: it is reconciled by observation and never
+        transmitted again on its own.
+        """
+        columns = {row[1] for row in db.execute("PRAGMA table_info(control_intents)")}
+        if not columns:
+            db.execute(CONTROL_SCHEMA)
+            return
+        added = False
+        for name, kind in (("owner", "TEXT"), ("lease_expires_at", "REAL")):
+            if name not in columns:
+                db.execute(f"ALTER TABLE control_intents ADD COLUMN {name} {kind}")
+                added = True
+        if added:
+            db.execute(
+                "UPDATE control_intents SET state=?, owner=NULL, lease_expires_at=0 WHERE state=?",
+                (SENDING, PREPARED),
+            )
 
     def _address(self, base, reviewed, allow_private_http):
         """The same reviewed-address policy the model registrations already use."""
@@ -482,10 +537,10 @@ class Home:
             intent = self._prepare(client_id, semantic, template, expected)
         # One client id is one reviewed intent: different content never reuses the outcome.
         require(intent["semantic"] == semantic, "idempotency_conflict", 409)
-        return await self._settle(template, intent)
+        return await self._settle(template, intent, session)
 
     def _prepare(self, client_id, semantic, template, expected):
-        """Durably claim one intent before HA is contacted at all."""
+        """Durably record one intent before HA is contacted at all."""
         require(self._revision(template["entity_id"]) == expected, "state_conflict", 409)
         record = (
             client_id,
@@ -497,6 +552,8 @@ class Home:
             expected,
             self.clock(),
             PREPARED,
+            None,
+            None,
             None,
             None,
             None,
@@ -514,24 +571,166 @@ class Home:
                 )
                 db.commit()
             except sqlite3.IntegrityError:
-                # Another attempt claimed this client id first; its intent wins.
+                # Another attempt recorded this client id first; its intent wins.
                 db.rollback()
         prepared = self._intent(client_id)
         require(prepared is not None, "dependency_unavailable", 503)
         return prepared
 
-    async def _settle(self, template, intent):
-        if intent["state"] != PREPARED:
-            return self._replay(intent)
+    def _lease(self):
+        """Long enough for one observation plus one service call, and nothing longer."""
+        return 2 * self.timeout + 2
+
+    def _claim(self, intent):
+        """Become the single durable executor of this intent, or find that someone else is.
+
+        This is a compare-and-set inside `BEGIN IMMEDIATE`, so SQLite serializes it across
+        processes too: with several instances sharing the ledger exactly one of them wins, and
+        no in-memory lock is involved. A claim whose owner died is taken over after its lease
+        expires; takeover never transmits anything by itself.
+        """
+        owner = "owner:" + uuid.uuid4().hex
+        now = self.clock()
+        with self._connect() as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT state,lease_expires_at FROM control_intents WHERE client_id=?",
+                (intent["client_id"],),
+            ).fetchone()
+            if row is None or row["state"] not in ACTIVE_STATES:
+                db.rollback()
+                return None
+            if row["state"] != PREPARED and (row["lease_expires_at"] or 0) > now:
+                # A live owner is executing this very intent.
+                db.rollback()
+                return None
+            sending = row["state"] == SENDING
+            cursor = db.execute(
+                "UPDATE control_intents SET state=?,owner=?,lease_expires_at=? WHERE client_id=?"
+                " AND (state=? OR (state IN (?,?) AND lease_expires_at <= ?))",
+                (
+                    SENDING if sending else OBSERVING,
+                    owner,
+                    now + self._lease(),
+                    intent["client_id"],
+                    PREPARED,
+                    OBSERVING,
+                    SENDING,
+                    now,
+                ),
+            )
+            won = cursor.rowcount == 1
+            if won:
+                db.commit()
+            else:
+                db.rollback()
+        return (owner, sending) if won else None
+
+    def _release(self, intent, owner):
+        """Give back a claim that never transmitted anything, so a later request may run it."""
+        try:
+            with self._connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute(
+                    "UPDATE control_intents SET state=?,owner=NULL,lease_expires_at=NULL"
+                    " WHERE client_id=? AND owner=? AND state=?",
+                    (PREPARED, intent["client_id"], owner, OBSERVING),
+                )
+                db.commit()
+        except (sqlite3.Error, OSError):
+            # The lease still expires, and an `observing` takeover transmits at most once.
+            pass
+
+    def _transmit(self, intent, owner):
+        """The durable boundary: after this row the command may be on its way to the device.
+
+        Only the owner that still holds an `observing` claim crosses it, and only once.
+        """
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute(
+                "UPDATE control_intents SET state=?,lease_expires_at=? WHERE client_id=?"
+                " AND owner=? AND state=?",
+                (SENDING, self.clock() + self._lease(), intent["client_id"], owner, OBSERVING),
+            )
+            claimed = cursor.rowcount == 1
+            db.commit()
+        return claimed
+
+    def _authorize(self, intent, session):
+        """Authority and the reading the operator acted on, checked before anything is sent.
+
+        Revision 0 means the operator acted without any reading of this entity: there is no
+        earlier view that could have gone stale, so the connector's own pre-send observation
+        becomes the first one. Any real revision must still be the one the connector holds.
+        """
+        code = self.code(session)
+        require(code == "ready", code, 403)
+        require(
+            intent["expected_revision"] == 0
+            or self._revision(intent["entity_id"]) == intent["expected_revision"],
+            "state_conflict",
+            409,
+        )
+
+    async def _settle(self, template, intent, session):
+        """At most one transmitted command per reviewed intent, however many requests arrive."""
+        for _ in range(CLAIM_ATTEMPTS):
+            if intent["state"] not in ACTIVE_STATES:
+                return self._replay(intent)
+            claim = self._claim(intent)
+            if claim is None:
+                outcome = await self._await_owner(intent)
+                if outcome is not RETRY:
+                    return outcome
+                intent = self._intent(intent["client_id"])
+                require(intent is not None, "dependency_unavailable", 503)
+                continue
+            owner, sending = claim
+            return await self._execute(template, intent, session, owner, sending)
+        raise self._fault("control_in_progress")
+
+    async def _await_owner(self, intent):
+        """Another owner holds this intent: wait for its outcome instead of sending again."""
+        deadline = self.clock() + self._lease() + 1
+        while self.clock() < deadline:
+            row = self._intent(intent["client_id"])
+            require(row is not None, "dependency_unavailable", 503)
+            if row["state"] not in ACTIVE_STATES:
+                return self._replay(row)
+            if row["state"] == PREPARED or (row["lease_expires_at"] or 0) <= self.clock():
+                # The owner gave the claim back, or died: taking over is safe from here.
+                return RETRY
+            await asyncio.sleep(0.05)
+        raise self._fault("control_in_progress")
+
+    async def _execute(self, template, intent, session, owner, sending):
+        """The owned critical section: observe, re-check, transmit once, record the receipt."""
         async with self._client() as client:
-            # Reconcile first: a claimed intent whose receipt was lost must not re-issue a
-            # command the device already carries. Only an observation can show that.
-            try:
+            if sending:
+                # An earlier attempt may already be on its way, and the device still showing the
+                # old state proves nothing. Only an observation may conclude this intent, and
+                # nothing is ever transmitted again for it.
                 reading = await self._observe(client, template["entity_id"])
-            except Fault as exc:
-                raise self._fault(exc.code) from None
-            if reading["state"] == SERVICES[template["service"]]:
-                return self._answer(intent, OBSERVED, "recovered_at_target", True)
+                if reading["state"] == SERVICES[template["service"]]:
+                    return self._answer(intent, OBSERVED, "recovered_at_target", True)
+                self._record(intent, UNKNOWN, "control_unverified", False)
+                raise self._fault("control_unverified")
+            try:
+                self._authorize(intent, session)
+                reading = await self._observe(client, template["entity_id"])
+                # The observation is asynchronous: the operator's authority and the reading they
+                # acted on are checked again before anything leaves this process.
+                self._authorize(intent, session)
+                if reading["state"] == SERVICES[template["service"]]:
+                    return self._answer(intent, OBSERVED, "recovered_at_target", True)
+                claimed = self._transmit(intent, owner)
+            except Fault:
+                self._release(intent, owner)
+                raise
+            if not claimed:
+                raise self._fault("control_in_progress")
             try:
                 state, code, reported = await self._invoke(client, template)
             except Fault as exc:
@@ -614,6 +813,8 @@ class Home:
             "requested_state": requested,
             "acceptance": {
                 PREPARED: "pending",
+                OBSERVING: "executing",
+                SENDING: "executing",
                 ACCEPTED: "accepted",
                 OBSERVED: "observed",
                 UNKNOWN: "unknown",
@@ -735,17 +936,28 @@ class Home:
         return [dict(row) for row in rows]
 
     def _record(self, intent, state, code, reported):
-        """Best-effort receipt: a lost write never turns an accepted command into a failure.
+        """Best-effort durable outcome: a lost write never turns an accepted command into a failure.
 
-        The intent simply stays `prepared`, so the next attempt of the same client id
-        reconciles by observation instead of re-issuing a command the device already carries.
+        The intent then keeps its durable state (`observing` or `sending`), so the next request
+        for the same client id reconciles by observation instead of issuing the command again. A
+        recorded outcome is only ever improved: a late writer holding weaker evidence cannot
+        downgrade an observation that already confirmed the requested state.
         """
         try:
             with self._connect() as db:
+                db.row_factory = sqlite3.Row
                 db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT state FROM control_intents WHERE client_id=?", (intent["client_id"],)
+                ).fetchone()
+                if row is not None and OUTCOME_RANKS.get(row["state"], 0) > OUTCOME_RANKS.get(
+                    state, 0
+                ):
+                    db.commit()
+                    return True
                 db.execute(
-                    "UPDATE control_intents SET state=?,code=?,target_reported=?,settled_at=?"
-                    " WHERE client_id=?",
+                    "UPDATE control_intents SET state=?,code=?,target_reported=?,settled_at=?,"
+                    "owner=NULL,lease_expires_at=NULL WHERE client_id=?",
                     (state, code, 1 if reported else 0, self.clock(), intent["client_id"]),
                 )
                 db.commit()
@@ -810,7 +1022,7 @@ class Home:
         document = self._document(
             intent,
             intent["state"],
-            intent["code"] or "attempting",
+            intent["code"] or STAGE_CODES.get(intent["state"], "attempting"),
             bool(intent["target_reported"]),
             intent["settled_at"],
         )

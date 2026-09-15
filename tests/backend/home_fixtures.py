@@ -24,6 +24,7 @@ STATES = {
 }
 TARGETS = {"turn_on": "on", "turn_off": "off"}
 OVERSIZED = b'[{"padding":"' + b"x" * 1_100_000 + b'"}]'
+HOME_KEY = web.AppKey("home", object)
 
 
 def reserve():
@@ -40,10 +41,12 @@ class SyntheticHome:
         self.token = token
         self.states = {key: dict(value) for key, value in (states or STATES).items()}
         self.mode = "normal"
-        # A service-only mode keeps reads healthy while the write path misbehaves.
+        # Endpoint-only modes keep the other side healthy while one path misbehaves.
         self.service_mode = None
+        self.read_mode = None
         self.delay = 3.0
         self.hold = asyncio.Event()
+        self.read_hold = asyncio.Event()
         self.redirect_target = "/login"
         self.log = []
 
@@ -77,23 +80,34 @@ class SyntheticHome:
         if mode == "unauthorized" or not self.authorized(request):
             raise web.HTTPUnauthorized()
 
+    async def _hold(self, event):
+        """Held open until the test releases it, so asynchronous windows are deterministic."""
+        async with asyncio.timeout(30):
+            await event.wait()
+
     async def probe(self, request):
         await self._gate(request, self.mode)
         return web.json_response({"message": "API running."})
 
     async def state(self, request):
-        await self._gate(request, self.mode)
+        mode = self.read_mode or self.mode
+        await self._gate(request, mode)
+        # `slow` and `hold` stay endpoint-specific: only an explicit read mode delays reads.
+        if self.read_mode == "slow":
+            await asyncio.sleep(self.delay)
+        if self.read_mode == "hold":
+            await self._hold(self.read_hold)
         entity_id = request.match_info["entity_id"]
         if entity_id not in self.states:
             raise web.HTTPNotFound()
-        if self.mode == "oversized":
+        if mode == "oversized":
             return web.Response(body=OVERSIZED, content_type="application/json")
-        if self.mode == "unreadable":
+        if mode == "unreadable":
             return web.Response(body=b"<html>not json</html>", content_type="application/json")
-        if self.mode == "wrong_entity":
+        if mode == "wrong_entity":
             other = next(key for key in self.states if key != entity_id)
             return web.json_response(self.document(other))
-        if self.mode == "malformed":
+        if mode == "malformed":
             document = self.document(entity_id)
             document["state"] = "not a real state"
             return web.json_response(document)
@@ -105,9 +119,7 @@ class SyntheticHome:
         if mode == "slow":
             await asyncio.sleep(self.delay)
         if mode == "hold":
-            # Held open until the test releases it, so cancel windows are deterministic.
-            async with asyncio.timeout(30):
-                await self.hold.wait()
+            await self._hold(self.hold)
         domain = request.match_info["domain"]
         action = request.match_info["service"]
         body = await request.json()
@@ -135,18 +147,23 @@ class SyntheticHome:
         body = await request.json()
         self.mode = body.get("mode", "normal")
         self.service_mode = body.get("service_mode")
+        self.read_mode = body.get("read_mode")
         if "delay" in body:
             self.delay = float(body["delay"])
         if "redirect_target" in body:
             self.redirect_target = body["redirect_target"]
-        if self.mode != "hold" and self.service_mode != "hold":
-            self.hold.set()
-        else:
-            self.hold.clear()
-        return web.json_response({"mode": self.mode, "service_mode": self.service_mode})
+        for event, mode in (
+            (self.hold, self.service_mode or self.mode),
+            (self.read_hold, self.read_mode or self.mode),
+        ):
+            event.set() if mode != "hold" else event.clear()
+        return web.json_response(
+            {"mode": self.mode, "service_mode": self.service_mode, "read_mode": self.read_mode}
+        )
 
     async def release(self, request):
         self.hold.set()
+        self.read_hold.set()
         return web.json_response({"released": True})
 
     async def set_state(self, request):
@@ -168,7 +185,7 @@ class SyntheticHome:
 def home_app(states=None, token=TOKEN):
     home = SyntheticHome(states, token)
     app = web.Application()
-    app["home"] = home
+    app[HOME_KEY] = home
     app.router.add_get("/api/", home.probe)
     app.router.add_get("/api/states/{entity_id}", home.state)
     app.router.add_post("/api/services/{domain}/{service}", home.service)

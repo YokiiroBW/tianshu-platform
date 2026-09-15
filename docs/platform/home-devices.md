@@ -94,31 +94,46 @@ HA 返回 `unavailable`/`unknown` 或无法解释的状态时 `state`/`value` �
 
 `POST /api/web/home/control` 只接受 `{template_id, expected_revision, client_id}`。
 实体、域与服务全部由服务器从登记表解析；`expected_revision` 是本浏览器实际读到的修订号，
-不匹配即 409 `state_conflict`（两个浏览器不会静默覆盖）。
+不匹配即 409 `state_conflict`（两个浏览器不会静默覆盖）。修订号为 `0` 表示这个实体还没有任何
+读数：操作者没有可过期的旧视图，此时以连接器自己在发送前的观测作为第一次读数（有读数时
+一律要求仍然一致）。
 
 受理与观测是两件不同的事实：
 
 - **受理**（`acceptance`）：`POST /api/services/<domain>/<service>` 的回执。
-  `accepted` 只表示 HA 受理，`target_reported` 只表示回执里出现了目标状态。
+  `accepted` 只表示 HA 受理，`target_reported` 只表示回执里出现了目标状态；`executing`
+  表示这个意图正在被某个执行者处理、还没有回执。
 - **观测**（`observation`）：受理之后一次新的 `GET /api/states`。`confirmed` 才表示读到了
   目标状态；`contradicted` 表示后续观测到别的状态（HA 说改了、设备没动）；`pending` 表示
   还没有后续观测；`unknown`/`unreadable`/`unavailable`/`not_sent` 各自如实表达。
 
-持久幂等与恢复（`control_intents` 表，按 `client_id` 唯一）：
+持久执行所有权（`control_intents` 表，按 `client_id` 唯一）：**一个已审阅意图最多只会发出
+一次指令**，而且所有权是持久的，不依赖进程内锁：
 
-1. 先落 `prepared` 意图（含语义摘要、目标、服务、`expected_revision`），**然后**才联系 HA。
-2. 已有结果的同一 `client_id` 直接重放该结果，不再发第二次服务调用；同键不同语义 409
-   `idempotency_conflict`。
-3. `unknown`（超时、连接中断、回执不可读、HA 5xx）会**保留**且**绝不自动重发**；重放同样返回
-   该未知结果，操作者必须先重新读取设备状态，再用一次新的显式点击（新的 `client_id`）决定是否再发。
-4. `prepared`（进程在回执前中断、回执写失败）重试时先按观测对账：目标状态已经读到就记为
-   `observed`（`recovered_at_target`，无回执但目标已成立），否则才发出一次目标状态动作
-   （`turn_on`/`turn_off` 是幂等的目标状态动作，重复请求收敛而不是取反）。
-5. 回执写失败不会把已受理的指令报成失败：回答里 `durable` 为 `false`，意图仍是 `prepared`，
-   下一次同键请求按第 4 条恢复，不会重复下发。
+1. 先落 `prepared` 意图（语义摘要、目标、服务、`expected_revision`），再以
+   `BEGIN IMMEDIATE` 里的比较并交换取得执行所有权：`observing`（已认领，**尚未发出**任何
+   指令）或 `sending`（**已发出或可能已发出**）。多个实例共享同一台账时只有一个能赢。
+2. 同一 `client_id` 的并发请求拿不到所有权时会等待：等所有者落定后**重放**它的结果，等不到
+   就返回 409 `control_in_progress`，绝不自己再发一次。
+3. 没有回执的 `observing` 认领（进程死在发送前、租约过期）可以安全接管：因为没有任何东西发出，
+   接管者按同一条路径观测、复核、再发送一次。
+4. `sending` 认领只能由**观测**结案：读到目标状态记 `observed`（`recovered_at_target`，
+   无回执但目标已成立），否则记 `unknown`（`control_unverified`）并等待操作者决定。
+   **设备当前未达目标不能证明上一次调用没有执行、也不会稍后执行**，因此这里绝不自动重发。
+5. `unknown`（超时、连接中断、回执不可读、HA 5xx、无法结案的 `sending`）会**保留**且重放同一
+   结果；操作者必须先重新读取设备状态，再用一次新的显式点击（新的 `client_id`）决定是否再发。
+6. 回执只改善记录、不降级记录：`observed` > `accepted` > `unknown`/`rejected`，迟到很久的回执
+   可以把 `unknown` 升级为 `accepted`，但不会把已确认的观测改回未知。
+7. 回执写失败不会把已受理的指令报成失败：回答里 `durable` 为 `false`，意图保持
+   `observing`/`sending`，下一次同键请求按第 3、4 条恢复。
 
-取消只停止当前页面等待（浏览器 abort），不会声称指令未发出或已回滚；服务端仍会完成该请求并
-把结果写进意图表，操作者重新读取后即可看到真实结果。
+发送前的两道复核：取得所有权后先检查控制权限与读数修订号，**观测返回之后、真正发出之前再检查
+一次**。任何一次不通过都不会发出指令，并把未发出的认领交还为 `prepared`（下一次请求可以重新执行）。
+租约为 `2 × timeout_seconds + 2` 秒，只覆盖一次观测加一次服务调用；过期的认领可被接管，接管本身
+从不发送。
+
+取消只停止当前页面等待（浏览器 abort），不会声称指令未发出或已回滚；服务端仍会完成该请求并把
+结果写进意图表，操作者重新读取后即可看到真实结果。
 
 ## 错误语义
 
@@ -130,7 +145,9 @@ HA 返回 `unavailable`/`unknown` 或无法解释的状态时 `state`/`value` �
 | `control_required`          | 403  | 会话未解锁设备控制                        |
 | `state_conflict`            | 409  | 浏览器持有的读数修订号已过期              |
 | `idempotency_conflict`      | 409  | 同一 `client_id` 被用于不同意图           |
+| `control_in_progress`       | 409  | 同一意图仍被其他执行者持有，结果未定      |
 | `device_credential_missing` | 503  | 环境变量里没有可用令牌                    |
+| `control_unverified`        | 503  | 已发出的指令无法结案（结果未知，不重发）  |
 | `device_timeout`            | 504  | HA 未在时限内响应（结果未知）             |
 | `device_unavailable`        | 503  | 无法连接 HA（结果未知，方向保守）         |
 | `device_unauthorized`       | 502  | HA 拒绝凭据（未送达）                     |
@@ -162,7 +179,9 @@ node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.
 ```
 
 后端套件在同进程启动真实 loopback 合成 HA（读、服务调用、重定向、401、500、不可读/超限正文、
-不生效的 200 回执、挂起与释放），并使用一个真实无人监听的 loopback 端口验证离线与恢复。
+不生效的 200 回执、服务调用与读数分别挂起与释放），并使用一个真实无人监听的 loopback 端口验证
+离线与恢复。除常规用例外，还有同键并发、第二个 Platform 实例共享同一台账、取消/重启/晚结果、
+以及发送前两次授权与读数复核的专项回归。
 浏览器套件启动 4814 端口的隔离合成 Platform 与 4817 端口的合成 HA；`synthetic UI state fixture`
 用例明确使用状态替身，只验证页面状态，不代表产品联合通过。
 
@@ -170,7 +189,13 @@ node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.
 
 - 没有真实 HA 实例、真实设备、局域网地址、生产凭据或部署；HA 的实体能力差异（亮度、色温、
   窗帘位置等参数动作）、WebSocket 状态订阅、场景调用都未在本轮实现。
-- 控制权限是单机单管理员模型：没有逐设备审批、没有操作审计查看页、没有并发压测。
-- 意图表 `<database_path>.home-controls.sqlite` 存储的是意图、结果码与读数，不含地址与凭据；
-  它与权威库必须一起备份，否则会丢失幂等与恢复能力并出现重复下发风险。
+- 控制权限是单机单管理员模型：没有逐设备审批、没有操作审计查看页；并发只做了同键去重与两实例
+  共享台账的回归，没有做高并发压力测试。
+- 意图表 `<database_path>.home-controls.sqlite` 存储的是意图、所有权/租约、结果码与读数，不含
+  地址与凭据；它与权威库必须一起备份，否则会丢失幂等与恢复能力并出现重复下发风险。
+- 旧版本（不含 `owner`/`lease_expires_at` 列）的台账在启动时会就地补列，并把遗留的 `prepared`
+  行保守地改为 `sending`：旧代码无法证明这些行是否已经发出过指令，因此它们只会被观测结案、
+  不会自动重发。跨版本滚动升级因此最多让这些遗留意图变成“无法确认”，不会重复下发。
+- 租约按 `2 × timeout_seconds + 2` 秒计算；如果所有者的工作因极端调度延迟超过租约，另一个请求
+  可能先按观测结案（`control_unverified`），随后到达的回执再把记录升级为 `accepted`。
 - 本轮不处理 HA 侧的乐观状态与自动化竞争；同一设备被 HA 自动化同时改变时，只按观测如实显示。

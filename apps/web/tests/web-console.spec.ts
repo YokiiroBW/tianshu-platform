@@ -673,7 +673,7 @@ test("real household devices: a cancelled wait claims nothing and resends nothin
     entityCard(page, "书房灯").locator('[data-field="reading"]'),
   ).toHaveText("已关闭");
   await expect(page.locator(".home-controls li").first()).toContainText(
-    "已提交，等待回执",
+    "正在执行，尚无回执",
   );
   expect(await homeServices(request)).toHaveLength(1);
   // HA finishes the command it already received; only a later read can show that.

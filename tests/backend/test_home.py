@@ -11,6 +11,7 @@ recovery can never double a command the device already carries.
 """
 
 import asyncio
+import copy
 import json
 import os
 import sqlite3
@@ -24,7 +25,7 @@ import aiohttp
 
 from fixtures import ENV, start_http
 from home_fixtures import ENV as HOME_ENV
-from home_fixtures import home_app, reserve, start_home
+from home_fixtures import HOME_KEY, home_app, reserve, start_home
 from services.platform.contracts import Fault, utc
 from services.platform.home import Home
 from services.platform.server import create_app
@@ -45,7 +46,7 @@ class HomeTests(unittest.IsolatedAsyncioTestCase):
         env.start()
         self.addCleanup(env.stop)
         self.ha_app = home_app()
-        self.ha = self.ha_app["home"]
+        self.ha = self.ha_app[HOME_KEY]
         self.ha_runner, self.ha_url = await start_home(self.ha_app)
         self.addAsyncCleanup(self.ha_runner.cleanup)
         await self.start(home_settings(self.temp.name, self.ha_url))
@@ -186,6 +187,36 @@ class HomeTests(unittest.IsolatedAsyncioTestCase):
     async def release_home(self):
         async with self.client.post(self.ha_url + "/fixture/release", json={}) as response:
             self.assertEqual(response.status, 200)
+
+    def expire_lease(self, client_id=CLIENT):
+        """The owner is gone: its durable claim is past its lease and may be taken over."""
+        with closing(sqlite3.connect(self.platform.store.path + ".home-controls.sqlite")) as db:
+            db.execute(
+                "UPDATE control_intents SET lease_expires_at=0 WHERE client_id=?", (client_id,)
+            )
+            db.commit()
+
+    async def transmit_then_die(self, logged, template, revision, client_id=CLIENT, session=None):
+        """Leave behind exactly what an owner that died mid-command leaves behind.
+
+        The command has been transmitted and the durable record says so, while the fixture keeps
+        holding that very request: whatever it does later is a late result nobody is waiting for.
+        """
+        self.ha.service_mode = "hold"
+        task = asyncio.create_task(
+            self.control(logged, template, revision, client_id=client_id, session=session)
+        )
+        try:
+            await self.until(lambda: bool(self.services()))
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        finally:
+            self.ha.service_mode = None
+        self.assertEqual(self.intent(client_id)["state"], "sending")
+        self.assertTrue(self.intent(client_id)["owner"])
+        self.expire_lease(client_id)
+        return task
 
     # ------------------------------------------------------------- reading
 
@@ -509,8 +540,9 @@ class HomeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["acceptance"], "accepted")
         self.assertFalse(first["durable"])
         self.assertEqual(len(self.services()), 1)
-        self.assertEqual(self.intent()["state"], "prepared")
-        # A retry of the same client id reconciles by observation: no second command is sent.
+        # The durable state still says a command was transmitted, so it is never sent again.
+        self.assertEqual(self.intent()["state"], "sending")
+        self.expire_lease()
         retry = await self.control(logged, "study-light-on", revision)
         self.assertEqual(retry["acceptance"], "observed")
         self.assertEqual(retry["code"], "recovered_at_target")
@@ -521,11 +553,12 @@ class HomeTests(unittest.IsolatedAsyncioTestCase):
         logged = await self.unlocked_login()
         await self.refresh(logged)
         revision = self.entity(await self.view(logged), "书房灯")["revision"]
-        # The claim is durable, then the process dies before HA is contacted.
+        # The claim is durable, then the process dies before anything is transmitted.
         with patch.object(Home, "_observe", side_effect=Fault("device_timeout", 504)):
             interrupted = await self.control(logged, "study-light-on", revision, expected=504)
         self.assertEqual(interrupted["code"], "device_timeout")
         self.assertEqual(self.services(), [])
+        # Nothing was transmitted, so the claim is given back instead of blocking the intent.
         self.assertEqual(self.intent()["state"], "prepared")
         retried = await self.control(logged, "study-light-on", revision)
         self.assertEqual(retried["acceptance"], "accepted")
@@ -554,6 +587,220 @@ class HomeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(self.services()), 1)
 
+    async def test_the_same_client_id_never_becomes_two_commands(self):
+        """The coordinator's reproduction: two in-flight requests, one reviewed intent."""
+        self.ha.service_mode = "hold"
+        logged = await self.unlocked_login()
+        await self.refresh(logged)
+        revision = self.entity(await self.view(logged), "书房灯")["revision"]
+        first = asyncio.create_task(self.control(logged, "study-light-on", revision))
+        await self.until(lambda: bool(self.services()))
+        self.assertEqual(self.intent()["state"], "sending")
+        second = asyncio.create_task(self.control(logged, "study-light-on", revision))
+        # The duplicate waits for the owner instead of observing and transmitting on its own.
+        await asyncio.sleep(0.5)
+        self.assertEqual(len(self.services()), 1)
+        await self.release_home()
+        results = await asyncio.gather(first, second)
+        host, copy = results[0], results[1]
+        self.assertEqual((host["acceptance"], host["deduplicated"]), ("accepted", False))
+        self.assertEqual(copy["control_id"], host["control_id"])
+        self.assertEqual((copy["acceptance"], copy["deduplicated"]), ("accepted", True))
+        self.assertEqual(len(self.services()), 1)
+        self.assertEqual(len(self.intents()), 1)
+
+    async def test_two_instances_sharing_the_ledger_still_send_one_command(self):
+        """Execution ownership is durable: a second process over the same ledger never sends."""
+        self.ha.service_mode = "hold"
+        logged = await self.unlocked_login()
+        await self.refresh(logged)
+        revision = self.entity(await self.view(logged), "书房灯")["revision"]
+        first = asyncio.create_task(self.control(logged, "study-light-on", revision))
+        await self.until(lambda: bool(self.services()))
+        # A second platform instance over the same store, ledger and HA connection, with its own
+        # settings copy so the first instance's origin and sessions stay untouched.
+        await self.start(copy.deepcopy(self.config))
+        other = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
+        self.addAsyncCleanup(other.close)
+        second = await self.unlocked_login(other)
+        duplicate = asyncio.create_task(
+            self.control(second, "study-light-on", revision, session=other)
+        )
+        await asyncio.sleep(0.5)
+        self.assertEqual(len(self.services()), 1)
+        await self.release_home()
+        host, replayed = await asyncio.gather(first, duplicate)
+        self.assertEqual((host["acceptance"], replayed["acceptance"]), ("accepted", "accepted"))
+        self.assertTrue(replayed["deduplicated"])
+        self.assertEqual(len(self.services()), 1)
+
+    async def test_a_transmitted_command_without_its_receipt_stays_unconfirmed(self):
+        """The device not being at the target proves nothing: reconcile, never re-send."""
+        logged = await self.unlocked_login()
+        await self.refresh(logged)
+        revision = self.entity(await self.view(logged), "书房灯")["revision"]
+        await self.transmit_then_die(logged, "study-light-on", revision)
+        # A later process finds `sending`, sees the device still off, and refuses to conclude it.
+        await self.start(self.config)
+        logged = await self.unlocked_login()
+        retry = await self.control(logged, "study-light-on", revision, expected=503)
+        self.assertEqual(retry["code"], "control_unverified")
+        self.assertEqual(self.intent()["state"], "unknown")
+        self.assertEqual(len(self.services()), 1)
+        # Replaying that unknown outcome never becomes a second command either.
+        self.assertEqual(
+            (await self.control(logged, "study-light-on", revision, expected=503))["code"],
+            "control_unverified",
+        )
+        self.assertEqual(len(self.services()), 1)
+        # The late result lands afterwards; a receipt that arrives late still upgrades the record.
+        await self.release_home()
+        await self.until(lambda: self.intent()["state"] == "accepted")
+        self.assertTrue(self.intent()["target_reported"])
+        self.assertEqual(len(self.services()), 1)
+
+    async def test_a_transmitted_command_whose_target_is_reached_is_concluded_by_observation(self):
+        logged = await self.unlocked_login()
+        await self.refresh(logged)
+        revision = self.entity(await self.view(logged), "书房灯")["revision"]
+        await self.transmit_then_die(logged, "study-light-on", revision)
+        # The command that is still in flight took effect before anyone looked again.
+        self.ha.states["light.study"]["state"] = "on"
+        await self.start(self.config)
+        logged = await self.unlocked_login()
+        recovered = await self.control(logged, "study-light-on", revision)
+        self.assertEqual(
+            (recovered["acceptance"], recovered["code"]), ("observed", "recovered_at_target")
+        )
+        self.assertEqual(self.intent()["state"], "observed")
+        self.assertEqual(len(self.services()), 1)
+        self.assertEqual(
+            (await self.control(logged, "study-light-on", revision))["deduplicated"], True
+        )
+        self.assertEqual(len(self.services()), 1)
+
+    async def test_a_cancelled_server_task_never_leads_to_a_second_command(self):
+        """Cancelling the work in flight leaves an owned claim and no second command."""
+        logged = await self.unlocked_login()
+        await self.refresh(logged)
+        revision = self.entity(await self.view(logged), "书房灯")["revision"]
+        await self.transmit_then_die(logged, "study-light-on", revision)
+        # Nothing was answered as success, and the device has not moved.
+        before = await self.view(logged)
+        self.assertEqual(self.control_of(before)["acceptance"], "executing")
+        self.assertEqual(self.entity(before, "书房灯")["state"], "off")
+        # A new platform instance takes the expired claim over and concludes by observation.
+        await self.start(self.config)
+        logged = await self.unlocked_login()
+        retry = await self.control(logged, "study-light-on", revision, expected=503)
+        self.assertEqual(retry["code"], "control_unverified")
+        self.assertEqual(len(self.services()), 1)
+        await self.release_home()
+        await self.until(lambda: self.ha.states["light.study"]["state"] == "on")
+        view = await self.refresh(logged)
+        self.assertEqual(self.entity(view, "书房灯")["state"], "on")
+        self.assertEqual(len(self.services()), 1)
+
+    async def test_an_expired_claim_can_be_taken_over_but_never_transmits_on_its_own(self):
+        """An `observing` claim that died before transmitting may safely be run once."""
+        logged = await self.unlocked_login()
+        await self.refresh(logged)
+        revision = self.entity(await self.view(logged), "书房灯")["revision"]
+        # The owner dies inside the observation: the claim is held, nothing was transmitted.
+        self.ha.read_mode = "hold"
+        task = asyncio.create_task(self.control(logged, "study-light-on", revision))
+        await self.until(lambda: self.intent() is not None)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual(self.intent()["state"], "observing")
+        self.assertEqual(self.services(), [])
+        # The owner never comes back; after the lease expires a new request may take over.
+        self.ha.read_mode = None
+        self.expire_lease()
+        accepted = await self.control(logged, "study-light-on", revision)
+        self.assertEqual(accepted["acceptance"], "accepted")
+        self.assertEqual(len(self.services()), 1)
+        self.assertEqual(len(self.intents()), 1)
+
+    async def test_losing_the_control_unlock_during_the_observation_stops_the_command(self):
+        logged = await self.unlocked_login()
+        await self.refresh(logged)
+        revision = self.entity(await self.view(logged), "书房灯")["revision"]
+        # The pre-send observation is asynchronous: the unlock is dropped while it is in flight.
+        self.ha.read_mode = "hold"
+        reads = len(self.calls("GET"))
+        task = asyncio.create_task(self.control(logged, "study-light-on", revision, expected=403))
+        await self.until(lambda: len(self.calls("GET")) > reads)
+        await self.call("home/lock", {}, logged["csrf"])
+        self.ha.read_mode = None
+        await self.release_home()
+        refused = await task
+        self.assertEqual(refused["code"], "control_required")
+        self.assertEqual(self.services(), [])
+        # Nothing left this process, so the claim is given back instead of blocking the intent.
+        self.assertEqual(self.intent()["state"], "prepared")
+        self.assertEqual(self.intent()["owner"], None)
+
+    async def test_a_reading_that_changed_during_the_observation_refuses_to_act(self):
+        logged = await self.unlocked_login()
+        await self.refresh(logged)
+        revision = self.entity(await self.view(logged), "书房灯")["revision"]
+        # The reading the operator acted on is checked again after the observation, before the
+        # command leaves: a device that dropped out meanwhile is never commanded blindly.
+        self.ha.read_mode = "hold"
+        reads = len(self.calls("GET"))
+        task = asyncio.create_task(self.control(logged, "study-light-on", revision, expected=409))
+        await self.until(lambda: len(self.calls("GET")) > reads)
+        self.ha.states["light.study"]["state"] = "unavailable"
+        self.ha.read_mode = None
+        await self.release_home()
+        conflict = await task
+        self.assertEqual(conflict["code"], "state_conflict")
+        self.assertEqual(self.services(), [])
+        self.assertEqual(self.intent()["state"], "prepared")
+        current = self.entity(await self.view(logged), "书房灯")
+        self.assertEqual((current["availability"], current["code"]), ("unavailable", "unavailable"))
+        self.assertGreater(current["revision"], revision)
+
+    async def test_a_new_read_after_the_unlock_lapsed_is_required_before_acting(self):
+        """The refusal above is not a dead end: re-reading and unlocking works again."""
+        logged = await self.unlocked_login()
+        await self.refresh(logged)
+        revision = self.entity(await self.view(logged), "书房灯")["revision"]
+        self.ha.read_mode = "hold"
+        reads = len(self.calls("GET"))
+        task = asyncio.create_task(self.control(logged, "study-light-on", revision, expected=403))
+        await self.until(lambda: len(self.calls("GET")) > reads)
+        await self.call("home/lock", {}, logged["csrf"])
+        self.ha.read_mode = None
+        await self.release_home()
+        self.assertEqual((await task)["code"], "control_required")
+        self.assertEqual(self.services(), [])
+        await self.call("home/unlock", {"password": PASSWORD}, logged["csrf"])
+        current = self.entity(await self.view(logged), "书房灯")["revision"]
+        accepted = await self.control(logged, "study-light-on", current)
+        self.assertEqual(accepted["acceptance"], "accepted")
+        self.assertEqual(len(self.services()), 1)
+
+    async def test_a_leased_transmitted_intent_reports_the_outcome_to_duplicates(self):
+        """A duplicate request learns the recorded unknown outcome, and still never sends."""
+        self.ha.service_mode = "slow"
+        self.ha.delay = 3.0
+        logged = await self.unlocked_login()
+        await self.refresh(logged)
+        revision = self.entity(await self.view(logged), "书房灯")["revision"]
+        first = await self.control(logged, "study-light-on", revision, expected=504)
+        self.assertEqual(first["code"], "device_timeout")
+        self.assertEqual(self.intent()["state"], "unknown")
+        self.assertEqual(len(self.services()), 1)
+        self.assertEqual(
+            (await self.control(logged, "study-light-on", revision, expected=504))["code"],
+            "device_timeout",
+        )
+        self.assertEqual(len(self.services()), 1)
+        self.ha.service_mode = None
+
     async def test_cancelling_before_the_receipt_leaves_no_false_success(self):
         self.ha.service_mode = "hold"
         logged = await self.unlocked_login()
@@ -565,15 +812,15 @@ class HomeTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
-        # Cancelled before the receipt: only the bare claim is durable, and nothing was
-        # answered as success. The device has not moved either.
-        self.assertEqual(self.intent()["state"], "prepared")
+        # Cancelled before the receipt: the durable record says the command was transmitted,
+        # nothing was answered as success, and the device has not moved.
+        self.assertEqual(self.intent()["state"], "sending")
         before = await self.view(logged)
-        self.assertEqual(self.control_of(before)["acceptance"], "pending")
+        self.assertEqual(self.control_of(before)["acceptance"], "executing")
         self.assertEqual(self.entity(before, "书房灯")["state"], "off")
         # HA completes the command it already received; only a later read can show that.
         await self.release_home()
-        await self.until(lambda: self.intent()["state"] != "prepared")
+        await self.until(lambda: self.intent()["state"] == "accepted")
         self.assertEqual(self.intent()["state"], "accepted")
         view = await self.refresh(logged)
         recorded = self.control_of(view)

@@ -105,6 +105,10 @@ const messages: Record<string, string> = {
   device_failed: "Home Assistant 未能完成这次服务调用，结果未知。",
   device_invalid_response: "Home Assistant 的响应无法读取，本次结果未知。",
   receipt_unreadable: "指令回执无法读取，本次结果未知，不会自动重发。",
+  control_unverified:
+    "这次指令的结果无法确认（可能已发出、也可能仍在途中），不会自动重发；请重新读取设备状态后再决定。",
+  control_in_progress:
+    "同一个请求仍在执行中，结果尚未确定；请稍后重新读取设备状态。",
   device_missing: "登记的实体在 Home Assistant 中不存在。",
   dependency_unavailable: "平台存储暂时不可用，请稍后重试。",
   invalid_input: "请求内容不符合当前接口要求。",
@@ -189,7 +193,8 @@ export const availabilityLabels: Record<
 };
 
 export const acceptanceLabels: Record<string, string> = {
-  pending: "已提交，等待回执",
+  pending: "已提交，尚无回执",
+  executing: "正在执行，尚无回执",
   accepted: "已受理，等待设备反馈",
   observed: "已观察到目标状态（未收到指令回执）",
   unknown: "结果未知，不会自动重发",
