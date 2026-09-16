@@ -3,6 +3,7 @@ import { Search } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
 import { ModelsPanel } from "./ModelsPanel";
+import { TasksPanel } from "./TasksPanel";
 
 const prerequisites = [
   {
@@ -34,6 +35,7 @@ const prerequisites = [
 
 export default function SettingsPage({ section }: { section: number }) {
   const [query, setQuery] = useState("");
+  if (section === 0) return <TasksPanel />;
   if (section === 2) return <ModelsPanel />;
   if (section !== 1)
     return (

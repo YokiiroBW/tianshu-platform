@@ -94,3 +94,12 @@ Python 3.12+，独立 `pyproject.toml` 与固定依赖 `requirements-dev.txt`。
 - 真实网页登录浏览器：先构建，再 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.config.ts`；该配置用自己的临时合成后台4814。synthetic UI用例仅状态替身，不能替代真实四产品联合。
 - 受影响壳回归：`npm run test:e2e -- shell.spec.ts`；不重复小屋渲染输入未变的WebGL套件。
 - 当前SQLite权威库之外新增同路径`.web-inputs.sqlite`与`.web-replies.sqlite`，分别保存去重结果和持久sender；不通过sender数据库向网页绕过Core来源展示检查。
+
+## TS-018 任务中心与平台操作记录
+
+- 设置、状态词汇、分页与取消语义见 [任务中心](docs/platform/task-center.md)。网页“设置 → 任务”（`/#/settings/0`）只读聚合各责任模块**已经持久化**的操作台账：`platform.home` 取家庭控制意图，`platform.models` 取权威库 `audit` 与尚未变成权威版本的领取记录。不新建第二套执行库，不跨产品读数据库。
+- 状态固定五档 `accepted / in_progress / observed / unknown / failed`，各带 `stage`、责任模块原因码、`source_state` 与证据；没有正式任务合同的产品（`companion.core`、`assets.remote`、`resources.download`、`platform.dialogue`）明确显示“未接入”，读不到台账显示“无法读取”，都不当作空。
+- 端口为同源 `POST /api/web/tasks/{view,detail}`，只用真实 Cookie/CSRF/Origin 与读后会话复核，不需要 `models/unlock` 或 `home/unlock`；无 `/internal/v1/*` 新端口。排序固定 `(整数秒, task_id)` 倒序，游标绑定排序与筛选（不匹配 409 `cursor_conflict`）并带水位线，遍历不重复不丢事实；`detail` 是按需重读。
+- 本轮不提供取消：设备控制是 `executor_does_not_cancel`（已发出的指令不撤回、不自动重发），模型发布是 `recorded_fact`（发布新版本而不是抹掉记录）。轮询用 15 秒可见性暂停定时器，不新增事件总线。
+- 最窄：设置 `TS012_CONTRACT_DIR` 后 `.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_tasks.py' -v`；浏览器先 `npm run build`，再 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.tasks.config.ts`（单项目，复用合成后台 4814/4817，桌面与移动在同一会话切换视口）。完整后端仍用原 discover。
+- 协调授权：本任务独占 `apps/web/src/features/settings/` 的任务段（`TasksPanel.tsx`、`tasks.css`、`SettingsPage.tsx` 第 0 段）、`services/platform/tasks.py` 与新增 `apps/web/playwright.tasks.config.ts`；未改 `tokens.css`、模块注册、壳的其余部分、依赖锁与已发布合同。

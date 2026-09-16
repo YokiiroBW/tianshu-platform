@@ -69,6 +69,68 @@ export type Publication = {
   usable_until: string;
 };
 
+/** One responsible module behind the task centre, including the ones with nothing connected. */
+export type TaskSource = {
+  id: string;
+  kind: string | null;
+  connected: boolean;
+  state: string;
+  code: string;
+  records: number | null;
+  cancel_code: string | null;
+};
+
+export type TaskEvidence = Record<string, string | number | boolean | null>;
+
+/** A platform operation record: the status always carries the evidence it was read from. */
+export type TaskItem = {
+  task_id: string;
+  source: string;
+  kind: string;
+  title: string;
+  target: string;
+  status: string;
+  stage: string;
+  code: string;
+  created_at: string;
+  updated_at: string;
+  settled: boolean;
+  pending: boolean;
+  attention: boolean;
+  source_state: string;
+  cancel: { supported: boolean; code: string };
+  evidence: TaskEvidence;
+  module: { page: string | null };
+};
+
+export type TaskDetail = TaskItem & {
+  request: TaskEvidence;
+  timeline: TaskEvidence;
+};
+
+export type TasksPage = {
+  size: number;
+  returned: number;
+  has_more: boolean;
+  sort: string;
+  next_cursor: string | null;
+};
+
+export type TasksView = {
+  generated_at: string;
+  filters: { status: string | null; source: string | null; page_size: number };
+  statuses: string[];
+  sources: TaskSource[];
+  items: TaskItem[];
+  page: TasksPage;
+};
+
+export type TaskDetailView = {
+  generated_at: string;
+  task: TaskDetail;
+  sources: TaskSource[];
+};
+
 const messages: Record<string, string> = {
   web_not_configured: "网页配置尚未启用，模型配置不可管理。",
   unauthorized: "账号或密码不正确，或管理授权已失效。",

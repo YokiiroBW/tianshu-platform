@@ -33,6 +33,7 @@ import aiohttp
 
 from .auth import secret
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
+from .storage import is_ledger_key
 
 KINDS = {"light", "switch", "sensor"}
 CONTROLLABLE = {"light", "switch"}
@@ -73,6 +74,11 @@ MAX_ENTITIES = 32
 MAX_TEMPLATES = 32
 RESPONSE_BUDGET = 1_048_576
 HISTORY = 8
+# The task centre reads the same ledger through the port below; these name this module's own
+# records in that merged view and never introduce a second execution store.
+TASK_PREFIX = "home-control:"
+TASK_KIND = "device.control"
+HISTORY_LIMIT = 50
 # Durable intent lifecycle. `observing` and `sending` are owned executions: `observing` means no
 # command has been transmitted yet, `sending` means one has left (or may have left) this process.
 PREPARED, OBSERVING, SENDING, ACCEPTED, OBSERVED, UNKNOWN, REJECTED = (
@@ -85,6 +91,8 @@ PREPARED, OBSERVING, SENDING, ACCEPTED, OBSERVED, UNKNOWN, REJECTED = (
     "rejected",
 )
 ACTIVE_STATES = {PREPARED, OBSERVING, SENDING}
+# Every word this module can leave in the ledger, for the task centre's own filter check.
+LEDGER_STATES = ACTIVE_STATES | {ACCEPTED, OBSERVED, UNKNOWN, REJECTED}
 # A recorded outcome is only ever improved: a late writer with weaker evidence cannot downgrade
 # an observation that already confirmed the requested state.
 OUTCOME_RANKS = {
@@ -1027,3 +1035,112 @@ class Home:
             intent["settled_at"],
         )
         return {key: document[key] for key in sorted(document) if key != "durable"}
+
+    # ------------------------------------------------------------ task centre
+    #
+    # A read-only window over this module's own durable ledger (A10/A12). Nothing is copied
+    # into a second execution table: the task centre reads these rows and normalizes the words
+    # this module already publishes. The ordering key is the immutable second the intent was
+    # recorded in plus its identifier, so a record can never move across a cursor while its
+    # own state changes underneath. `None` from any read below means "this ledger cannot be
+    # read at all", which the caller must report as a missing source and never as an empty list.
+
+    def source_state(self):
+        """This connector's own state word for the task centre; unknown is never healthy."""
+        if self.config is None:
+            return {"state": "unconfigured", "code": "home_disabled"}
+        if not self.enabled:
+            return {"state": "disabled", "code": "control_disabled"}
+        if self.token is None:
+            return {"state": "credential_missing", "code": "device_credential_missing"}
+        try:
+            readings = self._readings()
+        except (sqlite3.Error, OSError):
+            return {"state": "unreadable", "code": "dependency_unavailable"}
+        if not readings:
+            return {"state": "never_read", "code": "never_read"}
+        failed = next((row for row in readings.values() if row["attempt_code"] != "ok"), None)
+        if failed is not None:
+            # One unreachable entity is one real failure of the source, with its own reason.
+            return {"state": "offline", "code": failed["attempt_code"]}
+        return {"state": "online", "code": "ok"}
+
+    def history(self, *, after=None, limit=20, states=None, prefix=TASK_PREFIX):
+        """One page of the durable control ledger, newest first, keyset by immutable key.
+
+        `states` filters on this module's own words. `prefix` is the identifier space the
+        caller publishes these rows under, so the cursor of the caller's merged order compares
+        against exactly the same key it was built from. Returns `(records, has_more)` or `None`
+        when the ledger is unreadable.
+        """
+        require(
+            type(limit) is int
+            and 1 <= limit <= HISTORY_LIMIT
+            and isinstance(prefix, str)
+            and prefix,
+            "invalid_input",
+            400,
+        )
+        where, params = [], []
+        if after is not None:
+            require(is_ledger_key(after), "invalid_input", 400)
+            where.append("(CAST(prepared_at AS INTEGER), ? || client_id) < (?, ?)")
+            params += [prefix, after[0], after[1]]
+        if states is not None:
+            names = sorted(states)
+            require(names and set(names) <= LEDGER_STATES, "invalid_input", 400)
+            where.append("state IN (" + ",".join("?" * len(names)) + ")")
+            params += names
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        rows = self._rows(
+            "SELECT * FROM control_intents"
+            + clause
+            + " ORDER BY CAST(prepared_at AS INTEGER) DESC, ? || client_id DESC LIMIT ?",
+            (*params, prefix, limit + 1),
+        )
+        if rows is None:
+            return None
+        readings = self._reading_rows()
+        records = [self._history_record(dict(row), readings, prefix) for row in rows[:limit]]
+        return records, len(rows) > limit
+
+    def history_count(self):
+        """How many durable control intents this ledger holds, or `None` if unreadable."""
+        rows = self._rows("SELECT COUNT(*) AS total FROM control_intents")
+        return rows[0]["total"] if rows else None
+
+    def control_record(self, client_id, prefix=TASK_PREFIX):
+        """One intent re-read live for a detail view; `None` when this ledger has no such row."""
+        rows = self._rows("SELECT * FROM control_intents WHERE client_id=?", (client_id,))
+        if not rows:
+            return None
+        return self._history_record(dict(rows[0]), self._reading_rows(), prefix)
+
+    def _reading_rows(self):
+        """Readings for evidence; an unreadable reading table never hides a control record."""
+        try:
+            return self._readings()
+        except (sqlite3.Error, OSError):
+            return {}
+
+    def _rows(self, statement, params=()):
+        try:
+            with self._connect() as db:
+                db.row_factory = sqlite3.Row
+                return db.execute(statement, params).fetchall()
+        except (sqlite3.Error, OSError):
+            return None
+
+    def _history_record(self, intent, readings, prefix):
+        return {
+            "task_id": prefix + intent["client_id"],
+            "created_at": intent["prepared_at"],
+            "updated_at": intent["settled_at"] or intent["prepared_at"],
+            "state": intent["state"],
+            # The origin is the registered entity and action template the record was made for:
+            # a record whose origin left the registration stays visible and says so.
+            "origin": "registered"
+            if intent["template_id"] in self.templates and intent["entity_id"] in self.entities
+            else "unregistered",
+            "document": self._control_view(intent, readings),
+        }

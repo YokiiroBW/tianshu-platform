@@ -18,6 +18,7 @@ from aiohttp import web
 from .auth import secret
 from .contracts import Fault, digest, loads, require
 from .home import Home
+from .tasks import Tasks
 from .transport import CoreFault
 from .web_dialogue import WebDialogue
 from .web_models import WebModels
@@ -28,6 +29,7 @@ SESSION_TTL = 8 * 3600
 LOGIN_TTL = 600
 MODELS_PREFIX = "/api/web/models/"
 HOME_PREFIX = "/api/web/home/"
+TASKS_PREFIX = "/api/web/tasks/"
 
 
 def password_hash(password, salt=None):
@@ -132,6 +134,8 @@ class WebConsole:
         self.models = WebModels(platform, self)
         # Device control carries its own unlock; it is never derived from model management.
         self.home = Home(platform, self)
+        # The task centre only reads the ledgers the two modules above already own.
+        self.tasks = Tasks(platform, self)
 
     def verify_password(self, password):
         """One fixed-cost verifier for the login form and the management unlock step."""
@@ -367,6 +371,14 @@ class WebConsole:
         if request.path.startswith(HOME_PREFIX):
             result = await self.home.route(request.path, body, session)
             # The same re-check: a session revoked while HA was being asked gets no reading.
+            _, current = self.session(request)
+            require(current is session, "session_expired", 401)
+            fingerprint, _ = self.authority()
+            require(session["fingerprint"] == fingerprint, "session_expired", 401)
+            return web.json_response(result)
+        if request.path.startswith(TASKS_PREFIX):
+            result = self.tasks.route(request.path, body, session)
+            # A read-only projection still belongs to the session that asked for it.
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
             fingerprint, _ = self.authority()

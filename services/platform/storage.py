@@ -6,6 +6,23 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 
+def is_ledger_key(value):
+    """Whether a value is a position in a ledger: one whole clock second plus one identifier.
+
+    Every read-only task-centre window is keyset-paginated on the immutable moment its record
+    was written, so a record can never move across a cursor while its own state changes. The
+    same shape is compared in SQL and in the merged order, which is what makes a page exact,
+    and it is validated in one place because both ledgers hand their positions to the console.
+    """
+    return (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and type(value[0]) is int
+        and isinstance(value[1], str)
+        and 0 < len(value[1]) <= 128
+    )
+
+
 class Store:
     def __init__(self, path):
         self.path = str(Path(path).resolve())

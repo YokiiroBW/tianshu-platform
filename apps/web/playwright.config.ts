@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests",
-  testIgnore: "web-console.spec.ts",
+  testIgnore: ["web-console.spec.ts", "task-center.spec.ts"],
   outputDir: "./test-results",
   fullyParallel: true,
   forbidOnly: true,
