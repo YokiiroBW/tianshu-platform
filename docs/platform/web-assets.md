@@ -73,12 +73,12 @@
 
 ## 模块与依赖方向
 
-| 模块                                    | 职责                                                                        |
-| --------------------------------------- | --------------------------------------------------------------------------- |
+| 模块                                     | 职责                                                                            |
+| ---------------------------------------- | ------------------------------------------------------------------------------- |
 | `services/platform/asset_page_config.py` | `web_assets` 段的部署期校验（谁能读、可暴露哪些已绑定连接）；中立，无传输无会话 |
-| `services/platform/web_asset_queries.py` | 页面规则：白名单、边界、游标绑定、上游一致性、脱敏投影                       |
-| `services/platform/web_assets.py`        | 同源适配层：会话范围、读后复核、取消、台账                                   |
-| `services/platform/assets.py`            | 既有的五个只读操作（TS-064）；只导入 `asset_page_config`，**不导入网页模块** |
+| `services/platform/web_asset_queries.py` | 页面规则：白名单、边界、游标绑定、上游一致性、脱敏投影                          |
+| `services/platform/web_assets.py`        | 同源适配层：会话范围、读后复核、取消、台账                                      |
+| `services/platform/assets.py`            | 既有的五个只读操作（TS-064）；只导入 `asset_page_config`，**不导入网页模块**    |
 
 ## 错误与状态
 
