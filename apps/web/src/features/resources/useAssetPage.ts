@@ -9,6 +9,7 @@ import {
   type EntryDetail,
   type LibrariesPage,
   type Library,
+  type Page,
   type PageState,
   type SearchPage,
 } from "./api";
@@ -50,6 +51,7 @@ type Stamp = { operation: string; code: string; at: number };
 export function useAssetPage() {
   const [state, setState] = useState<PageState | null>(null);
   const [libraries, setLibraries] = useState<Library[] | null>(null);
+  const [librariesPage, setLibrariesPage] = useState<Page | null>(null);
   const [listing, setListing] = useState<BrowsePage | null>(null);
   const [results, setResults] = useState<SearchPage | null>(null);
   const [detail, setDetail] = useState<EntryDetail | null>(null);
@@ -66,6 +68,15 @@ export function useAssetPage() {
   const generation = useRef(0);
   const active = useRef<AbortController | null>(null);
   const csrf = useRef("");
+  /**
+   * Which connection the library list on screen belongs to.
+   *
+   * The library list has its own continuation, and a continuation belongs to one connection's one
+   * listing. This records the connection that produced the list so a later page can only ever be
+   * appended to *that* list: if the connection changed, or the session lost its scope, the page is
+   * replaced instead of being extended with another connection's libraries.
+   */
+  const librariesConnection = useRef<string | null>(null);
 
   /** Start a generation: the previous read is aborted, and only this one may write the page. */
   const begin = useCallback(() => {
@@ -79,9 +90,11 @@ export function useAssetPage() {
   /** The whole body goes away whenever what it described stops being true. */
   const clear = useCallback(() => {
     setLibraries(null);
+    setLibrariesPage(null);
     setListing(null);
     setResults(null);
     setDetail(null);
+    librariesConnection.current = null;
   }, []);
 
   const load = useCallback(
@@ -159,6 +172,8 @@ export function useAssetPage() {
           signal,
         );
         setLibraries(listed.libraries);
+        setLibrariesPage(listed.page);
+        librariesConnection.current = listed.connection;
         setListing(null);
         setResults(null);
         setStamp({ operation: "libraries.list", code: "ok", at: Date.now() });
@@ -250,6 +265,8 @@ export function useAssetPage() {
         );
         if (generation.current !== mine || controller.signal.aborted) return;
         setLibraries(listed.libraries);
+        setLibrariesPage(listed.page);
+        librariesConnection.current = listed.connection;
         setStamp({ operation: "libraries.list", code: "ok", at: Date.now() });
       } catch (cause) {
         if (controller.signal.aborted || generation.current !== mine) return;
@@ -300,7 +317,15 @@ export function useAssetPage() {
     void run(scope);
   }, [run, scope]);
 
-  /** Paging on is a new generation too: an older page must not arrive after this one. */
+  /**
+   * Reading on is a new generation too: an older page must not arrive after this one.
+   *
+   * There are three listings a continuation can belong to — a search, a directory, and the
+   * authorized library list itself. The library list is not a special case that may be skipped:
+   * a connection with more libraries than fit in one page would otherwise be unreachable from the
+   * only entry point that lists libraries. The connection that produced the list is part of the
+   * binding, so a page read for one connection is never appended to another's list.
+   */
   const more = useCallback(
     async (cursor: string) => {
       const { controller, mine } = begin();
@@ -328,23 +353,40 @@ export function useAssetPage() {
           );
           return;
         }
-        if (!scope.library) return;
-        const found = await call<BrowsePage>(
-          "assets/browse",
-          {
-            library_id: scope.library.library_id,
-            parent_relative_path: scope.parent,
-            cursor,
-          },
+        if (scope.library) {
+          const found = await call<BrowsePage>(
+            "assets/browse",
+            {
+              library_id: scope.library.library_id,
+              parent_relative_path: scope.parent,
+              cursor,
+            },
+            csrf.current,
+            controller.signal,
+          );
+          if (generation.current !== mine || controller.signal.aborted) return;
+          setListing((old) =>
+            old
+              ? { ...found, entries: [...old.entries, ...found.entries] }
+              : found,
+          );
+          return;
+        }
+        const found = await call<LibrariesPage>(
+          "assets/libraries",
+          { cursor },
           csrf.current,
           controller.signal,
         );
         if (generation.current !== mine || controller.signal.aborted) return;
-        setListing((old) =>
-          old
-            ? { ...found, entries: [...old.entries, ...found.entries] }
-            : found,
+        setLibraries((old) =>
+          old && librariesConnection.current === found.connection
+            ? [...old, ...found.libraries]
+            : found.libraries,
         );
+        setLibrariesPage(found.page);
+        librariesConnection.current = found.connection;
+        setStamp({ operation: "libraries.list", code: "ok", at: Date.now() });
       } catch (cause) {
         if (controller.signal.aborted || generation.current !== mine) return;
         setFailure({
@@ -397,6 +439,7 @@ export function useAssetPage() {
   return {
     state,
     libraries,
+    librariesPage,
     listing,
     results,
     detail,

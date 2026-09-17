@@ -9,7 +9,13 @@
  * 不会在屏幕上停留。请求本身也计数，确认没有多余的、会清掉范围的“选择连接”请求。
  */
 import { expect, test } from "@playwright/test";
-import { connect, login, PAGE, ready } from "./asset-library.fixtures";
+import {
+  connect,
+  login,
+  PAGE,
+  ready,
+  scenario,
+} from "./asset-library.fixtures";
 
 const API = "/api/web/assets/";
 
@@ -82,4 +88,38 @@ test("开发模式 StrictMode：离开再回到资产页，范围与正文都重
   await page.locator(".asset-library-row").first().click();
   await expect(page.locator(".asset-row").first()).toContainText("归档");
   await expect(page.locator(".asset-row")).toHaveCount(4);
+});
+
+test("开发模式 StrictMode：库列表续读只读一次，不会把同一页接两遍", async ({
+  page,
+  request,
+}) => {
+  await ready(request);
+  await login(page);
+  await scenario(request, "paged_libraries");
+  const calls = record(page);
+
+  await page.goto(PAGE);
+  await page.getByLabel("资产连接").selectOption("library-a");
+  await expect(page.locator(".asset-library-row")).toHaveCount(50);
+
+  // 续读是一次显式动作，并且只发一次带续读标记的请求：StrictMode 的复演不会让它读两遍，
+  // 也不会把第二页接在列表里两次。
+  await page.getByRole("button", { name: "继续读取下一页" }).click();
+  await expect(page.locator(".asset-library-row")).toHaveCount(100);
+  await page.waitForTimeout(400);
+  await expect(page.locator(".asset-library-row")).toHaveCount(100);
+  await expect(page.locator(".asset-library-row").nth(50)).toContainText(
+    "合成多页库051",
+  );
+
+  const continuations = calls.filter(
+    (call) => call.path === "libraries" && call.body.includes("cursor"),
+  );
+  expect(continuations).toHaveLength(1);
+  // 第一页只读一次：没有续读标记的那次读取不该被复演成两次。
+  const firstPages = calls.filter(
+    (call) => call.path === "libraries" && !call.body.includes("cursor"),
+  );
+  expect(firstPages).toHaveLength(1);
 });

@@ -118,6 +118,57 @@ test("资产库：连接、库列表、目录、详情、搜索与键盘都在�
   });
 });
 
+test("资产库：未滚动的顶部整屏截图（1440/390/320）与长视口对照", async ({
+  page,
+  request,
+}, testInfo) => {
+  await ready(request);
+  await login(page);
+  await page.goto(PAGE);
+  await page.getByLabel("资产连接").selectOption("library-a");
+  await page.locator(".asset-library-row").first().click();
+  await page.locator(".asset-row").filter({ hasText: "说明_中文.txt" }).click();
+  await expect(page.locator(".asset-detail")).toContainText("说明_中文.txt");
+
+  // 整屏截图而不是整页截图：壳里的侧栏是 sticky 的，整页截图会把视口之外的文档高度也画进来，
+  // 侧栏就只出现在它自然位置那一段，看起来像“从中段才出现”。这里每次都回到文档顶部再拍，
+  // 并断言侧栏在这一屏之内的位置 —— 如果这是真布局问题，这里会失败，而不是靠改壳掩盖。
+  for (const [name, width, height] of [
+    ["asset-top-1440x1000.png", 1440, 1000],
+    ["asset-top-390x844.png", 390, 844],
+    ["asset-top-320x844.png", 320, 844],
+  ] as const) {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    if (width > 800) {
+      // 桌面：侧栏在第一屏之内铺满，不是从文档中段才开始。
+      const sidebar = await page.locator(".app-shell > .sidebar").boundingBox();
+      expect(sidebar).not.toBeNull();
+      expect(sidebar!.y).toBeGreaterThanOrEqual(0);
+      expect(sidebar!.y).toBeLessThan(64);
+      expect(sidebar!.height).toBeGreaterThanOrEqual(height - 64);
+    } else {
+      // 窄屏：壳本来就收起侧栏，改用抽屉入口；这是壳自己的既有行为，本卡不改壳。
+      await expect(page.locator(".app-shell > .sidebar")).toBeHidden();
+      await expect(
+        page.getByRole("button", { name: "打开导航" }),
+      ).toBeVisible();
+    }
+    expect(await noOverflow(page)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(name), fullPage: false });
+  }
+
+  // 同一页、同一会话，只把视口放高：整屏之内就能看到完整正文，用来说明上面那一屏截断只是
+  // 视口高度，不是内容缺失。
+  await page.setViewportSize({ width: 1440, height: 1600 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({
+    path: testInfo.outputPath("asset-top-1440x1600.png"),
+    fullPage: false,
+  });
+});
+
 test("资产库：减少动效、深色、窄屏与 320px 无横向溢出", async ({
   page,
   request,
@@ -248,6 +299,87 @@ test("资产库：离线索引、拒权、断线与超限各自成状态，失�
     path: testInfo.outputPath("asset-offline.png"),
     fullPage: true,
   });
+});
+
+test("资产库：授权库超过一页时可以继续读取，下一页真的能打开", async ({
+  page,
+  request,
+}, testInfo) => {
+  await ready(request);
+  await login(page);
+  // 对端自己把授权库分页（每页按请求大小 50，共 137 个），而不是一次给完：客户端必须跟着
+  // 对端的续读标记走，不能假设一次回答就是全部。第一页之后的库只能经这个入口进入。
+  await scenario(request, "paged_libraries");
+  await page.goto(PAGE);
+  await page.getByLabel("资产连接").selectOption("library-a");
+
+  await expect(page.locator(".asset-library-row")).toHaveCount(50);
+  await expect(page.locator(".asset-library-row").first()).toContainText(
+    "合成多页库001",
+  );
+  await expect(page.getByText("上游还有更多")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("asset-libraries-page1.png"),
+    fullPage: true,
+  });
+
+  // 第二页：续读是显式动作，旧的 50 个库留在原位，新的接在后面。
+  await page.getByRole("button", { name: "继续读取下一页" }).click();
+  await expect(page.locator(".asset-library-row")).toHaveCount(100);
+  await expect(page.locator(".asset-library-row").first()).toContainText(
+    "合成多页库001",
+  );
+  await expect(page.locator(".asset-library-row").nth(50)).toContainText(
+    "合成多页库051",
+  );
+
+  // 最后一页：读完之后明确说明已经完整显示，不再留下一个按不动的按钮。
+  await page.getByRole("button", { name: "继续读取下一页" }).click();
+  await expect(page.locator(".asset-library-row")).toHaveCount(137);
+  await expect(page.locator(".asset-library-row").last()).toContainText(
+    "合成多页库137",
+  );
+  await expect(page.getByText("已完整显示 137 个授权库")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "继续读取下一页" }),
+  ).toHaveCount(0);
+
+  // 第二页之后的库和第一页一样能打开：否则分页只是把库列出来却进不去。
+  await page.locator(".asset-library-row").last().click();
+  await expect(page.locator(".asset-crumbs")).toContainText("合成多页库137");
+  await expect(page.locator(".asset-row").first()).toContainText(
+    "第137库说明.txt",
+  );
+
+  // 回到库列表再读一次：续读标记是本次范围的一部分，重新读取回到第一页而不是接在旧页后面。
+  await page.getByRole("button", { name: "库列表" }).click();
+  await expect(page.locator(".asset-library-row")).toHaveCount(50);
+});
+
+test("资产库：切连接会清掉上一份库分页，迟到的旧页不会接上来", async ({
+  page,
+  request,
+}) => {
+  await ready(request);
+  await login(page);
+  await scenario(request, "paged_libraries");
+  await page.goto(PAGE);
+  await page.getByLabel("资产连接").selectOption("library-a");
+  await expect(page.locator(".asset-library-row")).toHaveCount(50);
+  await page.getByRole("button", { name: "继续读取下一页" }).click();
+  await expect(page.locator(".asset-library-row")).toHaveCount(100);
+
+  // 换连接：上一份（含已经读到的第二页）立即清空，不会与新连接的库混在一张列表里。
+  await scenario(request, "switch");
+  await page.getByLabel("资产连接").selectOption("library-b");
+  await expect(page.locator(".asset-library-row")).toHaveCount(1);
+  await expect(page.locator(".asset-library-row").first()).toContainText(
+    "合成二号库",
+  );
+  await expect(page.getByText("合成多页库")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "继续读取下一页" }),
+  ).toHaveCount(0);
 });
 
 test("资产库：切换连接与撤销登录都会立刻清掉上一份正文", async ({

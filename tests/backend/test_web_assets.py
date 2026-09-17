@@ -472,6 +472,56 @@ class AssetPageTests(unittest.IsolatedAsyncioTestCase):
             [item["entry_id"] for item in first["entries"] + second["entries"]], expected
         )
 
+    async def test_authorized_library_list_pages_and_forwards_its_own_continuation(self):
+        logged = await self.login()
+        await self.connect(logged)
+        # More authorized libraries than one page holds. The library list is the only place a
+        # library can be opened from, so a continuation the page cannot follow is a set of libraries
+        # nothing can reach: the page must be able to read on from here exactly as it can inside a
+        # directory.
+        self.peer.scenario = "paged_libraries"
+        first = await self.page(logged, "libraries")
+        self.assertEqual(len(first["libraries"]), 50)
+        self.assertEqual(first["page"]["returned"], 50)
+        self.assertTrue(first["page"]["has_more"])
+        cursor = first["page"]["next_cursor"]
+        self.assertTrue(cursor)
+        # The continuation is this page's own opaque value, not the peer's token.
+        self.assertNotIn("synthetic", cursor)
+        self.assertNotIn("cursor", self.last()["body"])
+
+        second = await self.page(logged, "libraries", {"cursor": cursor})
+        self.assertEqual(self.last()["body"]["cursor"], "synthetic:50")
+        self.assertEqual(len(second["libraries"]), 50)
+        self.assertTrue(second["page"]["has_more"])
+        third = await self.page(logged, "libraries", {"cursor": second["page"]["next_cursor"]})
+        self.assertEqual(len(third["libraries"]), 37)
+        self.assertFalse(third["page"]["has_more"])
+        self.assertIsNone(third["page"]["next_cursor"])
+        seen = [item["library_id"] for page in (first, second, third) for item in page["libraries"]]
+        self.assertEqual(len(seen), 137)
+        self.assertEqual(len(set(seen)), 137)
+
+    async def test_library_continuation_is_bound_to_the_listing_that_made_it(self):
+        logged = await self.login()
+        await self.connect(logged)
+        self.peer.scenario = "paged_libraries"
+        first = await self.page(logged, "libraries")
+        cursor = first["page"]["next_cursor"]
+        # A continuation belongs to one listing of one connection: a directory listing's cursor is a
+        # different query, so it is refused rather than answered with a page of something else.
+        listing = await self.page(
+            logged,
+            "browse",
+            {"library_id": LIBRARY_A["library_id"], "parent_relative_path": "", "page_size": 1},
+        )
+        await self.page(
+            logged, "libraries", {"cursor": listing["page"]["next_cursor"]}, expected=409
+        )
+        # The library list's own continuation still continues the listing it came from.
+        second = await self.page(logged, "libraries", {"cursor": cursor})
+        self.assertEqual(len(second["libraries"]), 50)
+
     async def test_large_directory_pages_and_binds_its_cursor_to_the_query(self):
         logged = await self.login()
         await self.connect(logged)
@@ -824,7 +874,7 @@ class AssetPageShapeTests(unittest.TestCase):
     def test_module_boundary_directions_are_one_way(self):
         import re
 
-        from services.platform import web_asset_queries, web_assets
+        from services.platform import asset_page_config, web_asset_queries, web_assets
 
         rules = Path(web_asset_queries.__file__).read_text(encoding="utf-8")
         # The rule layer is pure: it imports no transport, holds no session, opens no socket.
@@ -850,3 +900,19 @@ class AssetPageShapeTests(unittest.TestCase):
         self.assertIn("self.assets.route(", console)
         for forbidden in ("libraries_request", "slice_page", "asset_connections"):
             self.assertNotIn(forbidden, console)
+        # The application client must not depend on the page that consumes it: the configuration
+        # rule both sides need lives in a neutral module, and `assets` imports only that one.
+        assets = Path(asset_page_config.__file__).parent.joinpath("assets.py").read_text("utf-8")
+        self.assertNotIn("web_asset_queries", assets)
+        self.assertNotRegex(assets, re.compile(r"^\s*(import|from)\s+\S*\bweb_assets\b", re.M))
+        self.assertIn("from .asset_page_config import page_configuration", assets)
+        neutral = Path(asset_page_config.__file__).read_text(encoding="utf-8")
+        self.assertNotRegex(
+            neutral, re.compile(r"^\s*(import|from)\s+(aiohttp|ssl|socket|time)\b", re.M)
+        )
+        for forbidden in ("web_asset_queries", "self.p.assets", "self.console"):
+            self.assertNotIn(forbidden, neutral)
+        # Naming the two sides in a docstring is not a dependency; importing either one would be.
+        self.assertNotRegex(
+            neutral, re.compile(r"^\s*(import|from)\s+\S*\b(web_assets|web_console)\b", re.M)
+        )

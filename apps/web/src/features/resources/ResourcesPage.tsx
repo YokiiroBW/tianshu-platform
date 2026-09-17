@@ -78,6 +78,14 @@ export default function ResourcesPage() {
   const busy = page.loading;
   const listing = page.scope.query !== null ? page.results : page.listing;
   const more = listing?.page.has_more ? listing.page.next_cursor : null;
+  /**
+   * The library list has its own continuation. Without it, a connection whose authorized libraries
+   * do not fit in one page would have libraries that no entry point can reach: the library list is
+   * the only place a library can be opened from.
+   */
+  const moreLibraries = page.librariesPage?.has_more
+    ? page.librariesPage.next_cursor
+    : null;
 
   /** Opening a directory stays inside the library the listing belongs to. */
   const openDirectory = (entry: Entry) => {
@@ -389,6 +397,27 @@ export default function ResourcesPage() {
                     );
                   })}
                 </ul>
+              )}
+              {moreLibraries && (
+                <div className="asset-more">
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={busy}
+                    onClick={() => void page.more(moreLibraries)}
+                  >
+                    继续读取下一页
+                  </button>
+                  <p className="asset-muted">
+                    已显示 {page.libraries?.length ?? 0}{" "}
+                    个授权库，上游还有更多。
+                  </p>
+                </div>
+              )}
+              {!moreLibraries && (page.libraries?.length ?? 0) > 0 && (
+                <p className="asset-muted asset-complete">
+                  这一级已完整显示 {page.libraries?.length ?? 0} 个授权库。
+                </p>
               )}
             </section>
           )}

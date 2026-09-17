@@ -16,6 +16,8 @@ export default defineConfig({
   ...base,
   testIgnore: [],
   testMatch: "asset-library-dev.spec.ts",
+  // 自己的产物目录：与构建产物套件分开，跑完这条不会把上一套已经收好的截图清掉。
+  outputDir: "./test-results-dev",
   fullyParallel: false,
   workers: 1,
   projects: [{ name: "dev", use: { viewport: { width: 1440, height: 1000 } } }],

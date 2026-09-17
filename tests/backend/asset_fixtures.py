@@ -45,6 +45,24 @@ LIBRARY_C = {
     "access_level": "read_only",
     "category": "photos",
 }
+
+
+def many_library(index):
+    """One of the peer's authorized libraries in the `paged_libraries` scenario."""
+    return {
+        "library_id": f"dddddddd-4444-4444-8444-{index:012d}",
+        "display_name": f"合成多页库{index:03d}",
+        "availability": "online",
+        "access_level": "read_only",
+        "category": "documents",
+    }
+
+
+# How many authorized libraries the `paged_libraries` scenario serves. The peer hands them back in
+# the page size the client asked for and continues while any are left, which is what the published
+# protocol requires of a peer that still has more: a page carrying a continuation is a full page,
+# and the platform refuses a short one rather than showing it as a complete listing.
+PAGED_LIBRARIES = 137
 # Long Chinese names exercise wrapping and truncation; one contains a hostile-looking string that
 # must stay text.
 LONG_NAME = "非常长的中文目录名称用于检查换行与省略是否仍然可以键盘读完整值" * 2
@@ -163,6 +181,22 @@ class Synthetic:
             all_items = [
                 document("f-offline", LIBRARY_B["library_id"], "旧盘/存档.txt", "存档.txt", 8)
             ]
+        elif any(
+            library_id == many_library(index)["library_id"]
+            for index in range(1, PAGED_LIBRARIES + 1)
+        ):
+            # Each of the paged libraries has one document, so a library reached from the second
+            # page can be opened and read like any other.
+            index = int(library_id.rsplit("-", 1)[1])
+            all_items = [
+                document(
+                    f"f-paged-{index}",
+                    library_id,
+                    f"第{index:02d}库说明.txt",
+                    f"第{index:02d}库说明.txt",
+                    100 + index,
+                )
+            ]
         else:
             all_items = []
         if parent is None:
@@ -175,6 +209,10 @@ class Synthetic:
 
     def library(self, library_id):
         for item in (LIBRARY_A, LIBRARY_B, LIBRARY_C):
+            if item["library_id"] == library_id:
+                return item
+        for index in range(1, PAGED_LIBRARIES + 1):
+            item = many_library(index)
             if item["library_id"] == library_id:
                 return item
         return None
@@ -254,6 +292,15 @@ class Synthetic:
                 # changes connection, so a browser case can check that the old library's rows are
                 # gone rather than still on screen under the new connection's name.
                 items = [LIBRARY_B]
+            if scenario == "paged_libraries":
+                # More authorized libraries than one page holds. The peer pages them at the size
+                # the client asked for and keeps a continuation while any are left, so a client that
+                # ignores the continuation cannot reach the libraries past the first page.
+                items = [many_library(index) for index in range(1, PAGED_LIBRARIES + 1)]
+                payload, error = page_of(items, body)
+                if error:
+                    return 400, self.error(request_id, "invalid_input", "synthetic cursor")
+                return 200, self.result(request_id, payload)
             return 200, self.result(request_id, {"items": items, "next_cursor": None})
         if operation == "libraries.get":
             item = self.library(body.get("library_id"))

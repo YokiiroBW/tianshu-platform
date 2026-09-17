@@ -24,6 +24,9 @@ rules directly testable without a server, and it is why the adapter can stay abo
 import base64
 import re
 
+from .asset_page_config import PAGE_CONNECTION_LIMIT as configured_limit
+from .asset_page_config import PAGE_SETTING_KEYS as configured_keys
+from .asset_page_config import page_configuration as configured
 from .contracts import Fault, canonical, digest, loads, require
 
 # The five published reads this page may reach; nothing else exists in this vocabulary.
@@ -111,8 +114,8 @@ def failure(code, status):
     return (code, status) if code in KNOWN_CODES else ("upstream_error", 502)
 
 
-PAGE_SETTING_KEYS = {"enabled", "principal", "allowed_connections"}
-PAGE_CONNECTION_LIMIT = 16
+PAGE_SETTING_KEYS = configured_keys
+PAGE_CONNECTION_LIMIT = configured_limit
 
 
 def page_configuration(section, principals, connections, check):
@@ -123,43 +126,13 @@ def page_configuration(section, principals, connections, check):
     connection the registered identity is already bound to and the deployment already declares.
     Deployment-time validation and every request both read this function, so an invalid narrowing
     is fatal where it is configured instead of becoming a surprise at read time.
+
+    The rule itself lives in `services.platform.asset_page_config` so that the application client
+    (`services.platform.assets`), which must validate this same section at deployment time, does not
+    have to import the page module. It is re-exported here because this module is where the page's
+    rules are read from.
     """
-    require(
-        isinstance(section, dict)
-        and set(section) <= PAGE_SETTING_KEYS
-        and {"principal", "allowed_connections"} <= set(section),
-        "invalid_input",
-        400,
-    )
-    require(type(section.get("enabled", False)) is bool, "invalid_input", 400)
-    principal_name = section["principal"]
-    require(isinstance(principal_name, str) and principal_name in principals, "invalid_input", 400)
-    principal = principals[principal_name]
-    # This page never reads assets as an operator's browser session and never as the console's own
-    # source identity: only a registered service identity with an explicit `asset.read`.
-    require(
-        principal.get("kind") == "service"
-        and principal.get("service") == "platform"
-        and "asset.read" in set(principal.get("actions", [])),
-        "invalid_input",
-        400,
-    )
-    allowed = section["allowed_connections"]
-    require(
-        isinstance(allowed, list)
-        and 1 <= len(allowed) <= PAGE_CONNECTION_LIMIT
-        and len(set(allowed)) == len(allowed),
-        "invalid_input",
-        400,
-    )
-    bound = set(principal.get("asset_connections", []))
-    for connection_id in allowed:
-        check("common#id", connection_id)
-        # An undeclared connection is not a connection at all, and a connection this identity is
-        # not bound to is never granted here.
-        require(connection_id in connections, "invalid_input", 400)
-        require(connection_id in bound, "invalid_input", 400)
-    return section.get("enabled", False), principal_name, tuple(allowed)
+    return configured(section, principals, connections, check)
 
 
 class Scope:

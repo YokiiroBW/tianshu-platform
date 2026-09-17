@@ -12,9 +12,9 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from .asset_page_config import page_configuration
 from .auth import secret
 from .contracts import Fault, canonical, loads, require
-from .web_asset_queries import page_configuration
 
 OPERATIONS = {"libraries.list", "libraries.get", "entries.browse", "entries.get", "assets.search"}
 REQUEST_LIMIT = 65_536
@@ -64,8 +64,10 @@ class Assets:
         """Validate the read-only asset page's narrowing at deployment time, not at read time.
 
         The page may only ever expose connections this identity is already bound to. The rule
-        itself lives with the page's other rules in `web_asset_queries`; this method only gives
-        that rule the two facts it needs, so an impossible page is refused where it is configured.
+        itself lives in the neutral `asset_page_config` module, which knows nothing about this
+        client or about the page: an application client must not depend on one of its consumers, and
+        the page adapter imports the same rule from the same place. This method only gives that rule
+        the two facts it needs, so an impossible page is refused where it is configured.
         """
         if page is None:
             return None
