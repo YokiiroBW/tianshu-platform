@@ -286,7 +286,9 @@ export function TasksPanel() {
   });
   const sessionGeneration = useRef(0);
   const question = useRef("");
-  const gone = useRef(false);
+  const alive = useRef(true);
+  const read = useRef<string | null>(null);
+  const auth = useRef<SessionState | null>(null);
   const cursor = useRef<string | null>(null);
   const known = useRef<TaskItem[]>([]);
   const list = useRef<HTMLDivElement>(null);
@@ -317,10 +319,10 @@ export function TasksPanel() {
     for (const slot of ["view", "detail", "poll"] as Slot[]) abortSlot(slot);
   }, [abortSlot]);
 
-  /** Still the request this panel is waiting for: not unmounted, not replaced, not superseded. */
+  /** Still the request this panel is waiting for: alive, not replaced, not superseded. */
   const live = useCallback((slot: Slot, ticket: Ticket) => {
     return (
-      !gone.current &&
+      alive.current &&
       !ticket.controller.signal.aborted &&
       tickets.current[slot] === ticket &&
       ticket.session === sessionGeneration.current
@@ -334,12 +336,28 @@ export function TasksPanel() {
     [live],
   );
 
+  /**
+   * Effect setups and cleanups come in pairs, and in development StrictMode React deliberately
+   * runs them twice on the same instance (setup, cleanup, setup). The cleanup marks the panel not
+   * alive and cancels whatever was reading; the next setup marks it alive again. Requests that
+   * belonged to a torn-down setup keep failing the identity check in `live`, so an answer to an
+   * older setup can never write — while the setup that is actually mounted reads normally.
+   */
   useEffect(() => {
+    alive.current = true;
     return () => {
-      gone.current = true;
+      alive.current = false;
       abortAll();
     };
   }, [abortAll]);
+
+  /**
+   * The session as the effects need it. It is a ref on purpose: a session that arrives must not
+   * re-run a setup, because re-running would cancel the very read that just delivered it.
+   */
+  useEffect(() => {
+    auth.current = session;
+  }, [session]);
 
   useEffect(() => {
     known.current = items;
@@ -410,19 +428,25 @@ export function TasksPanel() {
     [abortAll, begin, forget, live],
   );
 
-  /** The first page of one question: the session first, then the records it read them with. */
-  const start = useCallback(
-    async (filter: string) => {
+  /**
+   * The first page of one question, read with a ticket its caller already opened: the session
+   * first, then the records it read them with. When it decides an answer — records, a failed
+   * read, or a session that is gone — it records the question in `read`, so the panel does not
+   * ask the same question over and over. A read that was cancelled before deciding records
+   * nothing, which is what lets the next setup ask again.
+   */
+  const first = useCallback(
+    async (filter: string, ticket: Ticket) => {
       setBusy(true);
       setError("");
       // A whole-panel read is fresher than any poll already on its way: that answer is now older.
       abortSlot("poll");
-      const ticket = begin("view", filter);
       try {
         const state = await readSession(ticket.controller.signal);
         if (!live("view", ticket)) return;
         setSession(state);
         if (!state.authenticated) {
+          read.current = filter;
           forget();
           return;
         }
@@ -433,6 +457,7 @@ export function TasksPanel() {
           ticket.controller.signal,
         );
         if (!mine("view", ticket)) return;
+        read.current = filter;
         cursor.current = result.page.next_cursor;
         setItems(result.items);
         setPage(result.page);
@@ -441,6 +466,8 @@ export function TasksPanel() {
         setStale("");
       } catch (cause) {
         if (!live("view", ticket)) return;
+        // A failed read is still an answer to this question: say so instead of asking again.
+        read.current = filter;
         if (authLost(cause)) {
           await lose(cause, filter);
           return;
@@ -451,34 +478,50 @@ export function TasksPanel() {
         if (live("view", ticket)) setBusy(false);
       }
     },
-    [abortSlot, begin, body, forget, live, lose, mine],
+    [abortSlot, body, forget, live, lose, mine],
   );
 
-  // A filter change is a new question: it starts from the first page, never from a stale cursor.
-  // It is recorded synchronously, so an answer to the previous question can no longer write.
+  /**
+   * A filter is the question the panel is asking, and it is recorded synchronously — before any
+   * await — so an answer to a previous question can no longer write.
+   *
+   * The read belongs to this effect setup. If the setup is torn down before its read decides,
+   * nothing is recorded and the next setup asks again: that covers a filter change, a remount,
+   * and the development StrictMode replay (setup, cleanup, setup), which is why the panel loads
+   * there instead of waiting forever for an answer it cancelled itself.
+   */
   useEffect(() => {
-    if (question.current === filters) return;
+    const changed = question.current !== filters;
     question.current = filters;
-    abortSlot("detail");
-    setOpen("");
-    setDetail(null);
-    setNotice("");
-    // A session already known to be gone shows the login form. The first read happens anyway:
-    // reading the session is how the panel finds out that it is gone.
-    if (session && !session.authenticated) return;
-    void start(filters);
-  }, [abortSlot, filters, session, start]);
+    if (changed) {
+      abortSlot("detail");
+      setOpen("");
+      setDetail(null);
+      setNotice("");
+    }
+    // A session already known to be gone shows the login form and reads nothing. The first read
+    // happens anyway on a fresh mount: reading the session is how the panel finds out it is gone.
+    if (auth.current && !auth.current.authenticated) return;
+    if (read.current === filters) return;
+    const ticket = begin("view", filters);
+    void first(filters, ticket);
+    return () => {
+      // This setup is leaving; what it was reading can no longer speak for the panel.
+      abortSlot("view");
+    };
+  }, [abortSlot, begin, filters, first]);
 
   const refresh = useCallback(async () => {
-    await start(question.current);
-  }, [start]);
+    const ticket = begin("view", question.current);
+    await first(question.current, ticket);
+  }, [begin, first]);
 
   /** Polling first: a rejected poll never replaces what the panel already read. */
   useEffect(() => {
     if (!session?.authenticated) return;
     let disposed = false;
     const tick = async () => {
-      if (disposed || gone.current) return;
+      if (disposed || !alive.current) return;
       if (document.visibilityState !== "visible") return;
       const ticket = begin("poll", question.current);
       try {
@@ -600,7 +643,8 @@ export function TasksPanel() {
       setError(message);
       if (cause instanceof WebError && cause.code === "cursor_conflict") {
         // The list conditions changed under the cursor: read the first page again.
-        await start(question.current);
+        const retry = begin("view", question.current);
+        await first(question.current, retry);
         setError(message);
       } else {
         setStale(STALE);
@@ -634,7 +678,8 @@ export function TasksPanel() {
       if (password.current) password.current.value = "";
       if (live("view", ticket)) setBusy(false);
     }
-    await start(question.current);
+    const after = begin("view", question.current);
+    await first(question.current, after);
   }
 
   const connected = useMemo(

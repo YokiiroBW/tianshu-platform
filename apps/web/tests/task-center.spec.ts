@@ -4,108 +4,24 @@
  * 后台是 `tests/backend/run_web_fixture.py`（网页 4814，合成 HA 4817），它登记的正是本平台
  * 已持久化的两个操作来源：模型配置发布（`platform.models`）与家庭设备控制（`platform.home`）。
  * 这里断言的是网页真的把这些记录投影出来，而不是把未发生的操作显示成成功。
+ *
+ * 这条套件跑构建产物（生产构建不启用 StrictMode）。开发模式下 StrictMode 的 effect 复演是另一条
+ * 路径，由 `task-center-dev.spec.ts` 用 `playwright.tasks-dev.config.ts` 覆盖。
  */
-import {
-  test,
-  expect,
-  type APIRequestContext,
-  type Page,
-} from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
-
-const ADMIN = "synthetic-admin";
-const ADMIN_PASSWORD = "synthetic-local-password-014";
-const HOME = "http://127.0.0.1:4817";
-
-type HomeLog = {
-  mode: string;
-  service_mode: string | null;
-  requests: { method: string; path: string }[];
-  states: Record<string, { state: string }>;
-};
-
-/** The synthetic HA is one long-lived process: every case starts from a known state. */
-async function resetHome(request: APIRequestContext) {
-  await request.post(`${HOME}/fixture/mode`, {
-    data: { mode: "normal", service_mode: null },
-  });
-  for (const [entity_id, state] of [
-    ["light.study", "off"],
-    ["switch.kettle", "off"],
-    ["sensor.living_temperature", "23.5"],
-  ]) {
-    await request.post(`${HOME}/fixture/state`, { data: { entity_id, state } });
-  }
-  await request.post(`${HOME}/fixture/log/clear`, { data: {} });
-}
-
-async function homeLog(request: APIRequestContext): Promise<HomeLog> {
-  return (await (await request.get(`${HOME}/fixture/log`)).json()) as HomeLog;
-}
-
-async function homeServices(request: APIRequestContext) {
-  const log = await homeLog(request);
-  return log.requests.filter(
-    (row) => row.method === "POST" && row.path.startsWith("/api/services/"),
-  );
-}
-
-/** 只做真实登录：任务中心不需要解锁任何写权限，因此登录本身就是全部授权。 */
-async function login(page: Page) {
-  await page.goto("/#/settings/0");
-  await page.getByLabel("管理员账号").fill(ADMIN);
-  await page.getByLabel("密码", { exact: true }).fill(ADMIN_PASSWORD);
-  await page.getByRole("button", { name: "登录", exact: true }).click();
-  await expect(page.getByRole("button", { name: "重新读取" })).toBeVisible();
-}
-
-function panel(page: Page) {
-  return page.locator('section.panel.tasks[aria-label="任务中心"]');
-}
-
-function sourceCard(page: Page, label: string) {
-  return page.locator("article.tasks-source").filter({ hasText: label });
-}
-
-function item(page: Page, title: string) {
-  return page.locator("article.tasks-item").filter({ hasText: title });
-}
-
-/** 两个下拉在同一个筛选区里：0 是状态，1 是来源。 */
-function filter(page: Page, name: "状态" | "来源") {
-  return page.locator(".tasks-filters select").nth(name === "状态" ? 0 : 1);
-}
-
-/** 真的发布一个版本：任务中心只能投影已经落库的权威版本。 */
-async function publishVersion(page: Page) {
-  await page.goto("/#/settings/2");
-  await page.getByLabel("管理员密码").fill(ADMIN_PASSWORD);
-  await page.getByRole("button", { name: "解锁模型管理" }).click();
-  await expect(page.getByText("管理已解锁", { exact: true })).toBeVisible();
-  await page.getByLabel("配置模板").selectOption("chat-local-text");
-  await page.getByRole("button", { name: "预览" }).click();
-  await expect(page.locator(".models-preview")).toBeVisible();
-  await page.getByRole("button", { name: /^发布版本 \d+$/ }).click();
-  await expect(page.locator(".models-notice")).toContainText("已发布版本");
-}
-
-/** 真的执行一次设备控制：回执只是受理，任务中心要如实分开显示。 */
-async function control(page: Page, action: string) {
-  await page.goto("/#/home");
-  const unlock = page.getByRole("button", { name: "解锁设备控制" });
-  const target = page.getByRole("button", { name: action });
-  await expect(unlock.or(target).first()).toBeVisible();
-  // 解锁是会话级的：另一个标签页可能已经解锁过这个会话。
-  if (await unlock.isVisible()) {
-    await page.getByLabel("管理员密码").fill(ADMIN_PASSWORD);
-    await unlock.click();
-  }
-  await expect(target).toBeVisible();
-  await target.click();
-  await expect(page.locator(".home-notice")).toContainText("已受理");
-}
-
-const controlLight = (page: Page) => control(page, "打开书房灯");
+import {
+  control,
+  controlLight,
+  filter,
+  homeServices,
+  item,
+  login,
+  panel,
+  publishVersion,
+  resetHome,
+  sourceCard,
+} from "./task-center.fixtures";
 
 test("任务中心：真实空状态、未接入来源、键盘、移动端与减少动效", async ({
   page,

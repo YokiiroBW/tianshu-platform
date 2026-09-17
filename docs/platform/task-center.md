@@ -106,13 +106,32 @@
 重新登录后记录仍在）、合成会话过期替身、轮询带回的新记录落在最新位置且不重复、真实请求被中断
 后的断线提示与恢复、以及真实迟到回答与筛选切换的竞争。
 
+## 开发模式（StrictMode）下的挂载
+
+开发模式（`npm run dev`）里的 `main.tsx` 用 React `StrictMode`，开发模式的 effect 会按
+setup → cleanup → setup 复演一遍；生产构建不经过这一遍，所以“构建产物里能读出来”并不等于开发
+路径也能读出来。这里的约定是成对的，别把它反过来：
+
+- cleanup 只做两件事：把这个挂载标记为不活跃、取消它自己发起的读取。它**不**写任何“永久关闭”
+  的标记；
+- 每个 setup 重新标记为活跃。旧 setup 的请求靠身份判断被丢弃（已取消、已被替换、不属于当前
+  会话代号），因此复演不会把旧回答写回来；
+- “这个筛选的第一页读过了没有”也是一个 setup 的属性：被取消而没得出结论的读取不算读过，
+  下一个 setup 会重新问一次。筛选变化、切走再回来、以及开发模式复演，在这里是同一件事。
+
+没有这一条，开发模式会永远停在“正在读取操作记录…”：复演取消了自己的第一次读取，而“已问过”
+的标记又让第二次 setup 不再重试。回归在 `apps/web/tests/task-center-dev.spec.ts`
+（配置 `apps/web/playwright.tasks-dev.config.ts`：真实合成后台 + 真实 Vite 开发服务器），
+覆盖首次挂载（未登录 → 登录表单，已登录 → 记录）与切走再回来。
+
 ## 验证
 
 ```powershell
 $env:TS012_CONTRACT_DIR="C:\YOKI\Codex\tianshu-peiban-bot\contracts\text-dialogue\v1"
 .runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p "test_tasks.py" -v   # 最窄 18 项
 .runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend                        # 完整 186 项
-node node_modules/@playwright/test/cli.js test --config apps/web/playwright.tasks.config.ts     # 浏览器 8 项
+node node_modules/@playwright/test/cli.js test --config apps/web/playwright.tasks.config.ts     # 构建产物 8 项
+node node_modules/@playwright/test/cli.js test --config apps/web/playwright.tasks-dev.config.ts # 开发模式 1 项
 node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.config.ts       # 受影响套件
 ```
 
