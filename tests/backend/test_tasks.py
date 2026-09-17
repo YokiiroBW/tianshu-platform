@@ -728,6 +728,28 @@ class TaskCentreTests(unittest.IsolatedAsyncioTestCase):
         await self.call("logout", {}, again["csrf"])
         self.assertEqual((await self.tasks(again, expected=401))["code"], "session_expired")
 
+    async def test_a_refused_request_proof_is_never_a_view_of_anything(self):
+        """The refusal statuses are the contract the panel classifies on.
+
+        The task centre reads a rejected request as either "this session is gone" (401/403, so the
+        view must be forgotten and the operator asked to log in again) or "this read failed" (the
+        snapshot stays and is marked as stale). A wrong CSRF token or a foreign origin must
+        therefore stay a 403 refusal and never become a 200 carrying somebody's records.
+        """
+        logged = await self.unlocked_login()
+        await self.one_accepted(logged)
+        self.assertTrue((await self.tasks(logged))["items"])
+        for headers in (
+            {"Origin": "http://127.0.0.1:9"},
+            {"X-CSRF-Token": "synthetic-wrong-token"},
+        ):
+            with self.subTest(headers=headers):
+                refusal = await self.call("tasks/view", {}, logged["csrf"], 403, **headers)
+                self.assertEqual(refusal["code"], "forbidden")
+                self.assertNotIn("items", refusal)
+        # A refused proof is not a logout: the same session still reads its own records.
+        self.assertTrue((await self.tasks(logged))["items"])
+
     async def test_no_credential_or_private_control_detail_is_projected(self):
         logged = await self.unlocked_login()
         await self.one_accepted(logged)

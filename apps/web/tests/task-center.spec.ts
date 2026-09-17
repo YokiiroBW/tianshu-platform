@@ -90,13 +90,22 @@ async function publishVersion(page: Page) {
 }
 
 /** 真的执行一次设备控制：回执只是受理，任务中心要如实分开显示。 */
-async function controlLight(page: Page) {
+async function control(page: Page, action: string) {
   await page.goto("/#/home");
-  await page.getByLabel("管理员密码").fill(ADMIN_PASSWORD);
-  await page.getByRole("button", { name: "解锁设备控制" }).click();
-  await page.getByRole("button", { name: "打开书房灯" }).click();
+  const unlock = page.getByRole("button", { name: "解锁设备控制" });
+  const target = page.getByRole("button", { name: action });
+  await expect(unlock.or(target).first()).toBeVisible();
+  // 解锁是会话级的：另一个标签页可能已经解锁过这个会话。
+  if (await unlock.isVisible()) {
+    await page.getByLabel("管理员密码").fill(ADMIN_PASSWORD);
+    await unlock.click();
+  }
+  await expect(target).toBeVisible();
+  await target.click();
   await expect(page.locator(".home-notice")).toContainText("已受理");
 }
+
+const controlLight = (page: Page) => control(page, "打开书房灯");
 
 test("任务中心：真实空状态、未接入来源、键盘、移动端与减少动效", async ({
   page,
@@ -244,4 +253,286 @@ test("任务中心：退出登录后不再显示任何操作记录", async ({ pa
     path: testInfo.outputPath("task-center-logged-out.png"),
     fullPage: true,
   });
+});
+
+/**
+ * 另一标签页退出登录：打开的这一个标签页仍然停在旧记录上，它的下一次轮询拿到的是会话拒绝。
+ * 被拒绝的轮询既不能留下记录、详情与分页，也不能在迟到回来时把过期的视图写回页面。
+ */
+test("任务中心：另一标签页退出登录后，被拒的轮询不再留下过期视图", async ({
+  page,
+  context,
+  request,
+}, testInfo) => {
+  await resetHome(request);
+  await login(page);
+  await controlLight(page);
+  await page.goto("/#/settings/0");
+  const controls = item(page, "打开书房灯");
+  await expect(controls.first()).toBeVisible();
+  const before = await controls.count();
+  expect(before).toBeGreaterThan(0);
+  // 已打开的详情也属于这个会话：会话没了，它不能留下来。
+  await page.locator("[data-task-toggle]").first().press("Enter");
+  await expect(page.locator(".tasks-detail")).toContainText("时间线");
+
+  // 扣住第一次轮询的回答：它会在会话失效之后才回来，视图不能被它带回旧样子。
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started: () => void = () => {};
+  const holding = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let first = true;
+  await page.route("**/api/web/tasks/view", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    if (first) {
+      first = false;
+      started();
+      await held;
+      // 面板已经取消或清理了这次读取：发不出去才是预期，不是测试失败。
+      await route.fulfill({ response, json: payload }).catch(() => {});
+      return;
+    }
+    await route.fulfill({ response, json: payload });
+  });
+
+  const second = await context.newPage();
+  await second.goto("/#/companion");
+  await second.getByRole("button", { name: "退出登录" }).click();
+  await expect(second.getByLabel("管理员账号")).toBeVisible();
+  await page.bringToFront();
+
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await holding;
+  // 第二次轮询真的打到后台：会话已经撤销，后台如实拒绝。
+  const refused = page.waitForResponse((row) =>
+    row.url().endsWith("/api/web/tasks/view"),
+  );
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  expect([401, 403]).toContain((await refused).status());
+
+  // 记录、详情、来源与分页都不属于已经失效的会话。
+  await expect(page.locator("article.tasks-item")).toHaveCount(0);
+  await expect(page.locator(".tasks-detail")).toHaveCount(0);
+  await expect(page.getByLabel("操作来源")).toHaveCount(0);
+  await expect(page.getByLabel("管理员账号")).toBeVisible();
+  await expect(page.locator(".tasks-error")).toContainText("登录已失效");
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("task-center-session-revoked.png"),
+    fullPage: true,
+  });
+
+  // 迟到的旧回答现在才回来：它属于已经失效的会话，不能把记录写回页面。
+  release();
+  await page.waitForTimeout(500);
+  await expect(page.locator("article.tasks-item")).toHaveCount(0);
+  await expect(page.getByLabel("管理员账号")).toBeVisible();
+
+  // 会话失效后不再轮询：可见性再触发一次也不会发出新的视图请求。
+  let polls = 0;
+  page.on("request", (row) => {
+    if (row.url().endsWith("/api/web/tasks/view")) polls += 1;
+  });
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await page.waitForTimeout(600);
+  expect(polls).toBe(0);
+
+  // 重新登录后真实记录仍在：清空的是会话的视图，不是记录本身。
+  await login(page);
+  await expect(item(page, "打开书房灯").first()).toBeVisible();
+});
+
+/**
+ * 会话过期/权限撤销的合成状态替身：真实后台无法在不改设置的前提下让已登录会话失效，
+ * 所以这里只替换这两个响应体；页面、请求路径、Cookie/CSRF 与清理逻辑仍然是真的。
+ */
+test("任务中心：会话过期后清空记录、详情与分页并给回登录入口", async ({
+  page,
+  request,
+}, testInfo) => {
+  await resetHome(request);
+  await login(page);
+  await controlLight(page);
+  await page.goto("/#/settings/0");
+  await expect(item(page, "打开书房灯").first()).toBeVisible();
+  await page.locator("[data-task-toggle]").first().press("Enter");
+  await expect(page.locator(".tasks-detail")).toContainText("时间线");
+
+  await page.route("**/api/web/session", (route) =>
+    route.fulfill({
+      json: { authenticated: false, csrf: "synthetic-expired-session" },
+    }),
+  );
+  await page.route("**/api/web/tasks/view", (route) =>
+    route.fulfill({ status: 401, json: { code: "session_expired" } }),
+  );
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+
+  await expect(page.getByLabel("管理员账号")).toBeVisible();
+  await expect(page.locator("article.tasks-item")).toHaveCount(0);
+  await expect(page.locator(".tasks-detail")).toHaveCount(0);
+  await expect(page.getByLabel("操作来源")).toHaveCount(0);
+  await expect(page.locator(".tasks-error")).toContainText("登录已失效");
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("task-center-session-expired.png"),
+    fullPage: true,
+  });
+
+  await page.unroute("**/api/web/session");
+  await page.unroute("**/api/web/tasks/view");
+  // 替身只替换了后台的回答，真实会话并没有被销毁：面板重新读取后如实恢复。
+  await page.reload();
+  await expect(page.getByRole("button", { name: "重新读取" })).toBeVisible();
+  await expect(item(page, "打开书房灯").first()).toBeVisible();
+});
+
+/** 轮询带回的新记录属于最新位置，并且如实提示“有新的操作记录”。 */
+test("任务中心：轮询带回的新记录出现在最新位置并如实提示", async ({
+  page,
+  context,
+  request,
+}) => {
+  await resetHome(request);
+  await login(page);
+  // 先在这个页面上真实操作一次，列表里于是有一条已经显示出来的旧记录。
+  await control(page, "打开书房灯");
+  await page.goto("/#/settings/0");
+  await expect(page.locator("article.tasks-item").first()).toBeVisible();
+  // 记下这一刻列表里已有的记录 id 与顺序：轮询带回的新记录必须排在它们前面。
+  const before = await page
+    .locator("[data-task-toggle]")
+    .evaluateAll((rows) =>
+      rows.map((row) => row.getAttribute("data-task-toggle")),
+    );
+  expect(before.length).toBeGreaterThan(0);
+
+  // 另一个标签页真的操作了另一个设备：这个标签页留在旧快照上，等待下一次轮询。
+  const second = await context.newPage();
+  await control(second, "打开热水壶");
+  await second.close();
+  await page.bringToFront();
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+
+  await expect(page.locator(".tasks-notice")).toContainText(
+    /有 \d+ 条新的操作记录/,
+  );
+  const after = await page
+    .locator("[data-task-toggle]")
+    .evaluateAll((rows) =>
+      rows.map((row) => row.getAttribute("data-task-toggle")),
+    );
+  // 新记录是位置最新的一条：它出现在最前面，原有记录的顺序不变，也不会被列两次。
+  const fresh = after.length - before.length;
+  expect(fresh).toBeGreaterThan(0);
+  expect(new Set(after).size).toBe(after.length);
+  expect(after.slice(0, fresh).every((task) => !before.includes(task))).toBe(
+    true,
+  );
+  expect(after.slice(fresh)).toEqual(before);
+  await expect(page.locator("article.tasks-item").first()).toContainText(
+    "已受理",
+  );
+});
+
+/** 断线不是退出登录：旧快照留下，并且明说它是旧快照，不装作刷新成功。 */
+test("任务中心：断线时保留旧快照并说明，恢复后自己变新", async ({
+  page,
+  request,
+}, testInfo) => {
+  await resetHome(request);
+  await login(page);
+  await controlLight(page);
+  await page.goto("/#/settings/0");
+  await expect(item(page, "打开书房灯").first()).toBeVisible();
+  await expect(page.locator(".tasks-stale")).toHaveCount(0);
+
+  await page.route("**/api/web/tasks/view", (route) => route.abort("failed"));
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await expect(page.locator(".tasks-stale")).toContainText(
+    "上次成功读取的快照",
+  );
+  await expect(item(page, "打开书房灯").first()).toBeVisible();
+  await expect(page.getByLabel("管理员账号")).toHaveCount(0);
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("task-center-offline.png"),
+    fullPage: true,
+  });
+
+  await page.unroute("**/api/web/tasks/view");
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await expect(page.locator(".tasks-stale")).toHaveCount(0);
+  await expect(item(page, "打开书房灯").first()).toBeVisible();
+});
+
+/** 换了筛选就是换了问题：上一个问题的回答迟到回来，不能写进现在的列表。 */
+test("任务中心：迟到的旧筛选回答不会覆盖当前筛选", async ({
+  page,
+  request,
+}) => {
+  await resetHome(request);
+  await login(page);
+  await publishVersion(page);
+  await controlLight(page);
+  await page.goto("/#/settings/0");
+  await expect(item(page, "打开书房灯").first()).toBeVisible();
+
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started: () => void = () => {};
+  const holding = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let first = true;
+  await page.route("**/api/web/tasks/view", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    if (first) {
+      first = false;
+      started();
+      await held;
+      await route.fulfill({ response, json: payload }).catch(() => {});
+      return;
+    }
+    await route.fulfill({ response, json: payload });
+  });
+
+  // 一次轮询被挂住：它问的是“全部来源”。
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await holding;
+  // 期间操作者换了筛选：面板现在问的是“只看模型发布”，答案里不该有设备记录。
+  await filter(page, "来源").selectOption("platform.models");
+  await expect(item(page, "Chat 兼容配置").first()).toBeVisible();
+  await expect(item(page, "打开书房灯")).toHaveCount(0);
+
+  // 旧回答现在才回来：它属于上一个问题。
+  release();
+  await page.waitForTimeout(500);
+  await expect(item(page, "打开书房灯")).toHaveCount(0);
+  await expect(item(page, "Chat 兼容配置").first()).toBeVisible();
+  await expect(filter(page, "来源")).toHaveValue("platform.models");
 });

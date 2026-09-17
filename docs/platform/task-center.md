@@ -80,13 +80,39 @@
 
 轮询用前端 15 秒的可见性暂停定时器，不引入新的事件总线。
 
+## 会话失效、断线与迟到回答
+
+网页把每一次读取失败分成两类，绝不混为一谈：
+
+| 失败                         | 判据                                                                | 网页行为                                                                                     |
+| ---------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| 会话已失效（过期/撤权/CSRF） | HTTP 401 或 403（`unauthorized` / `session_expired` / `forbidden`） | 清空记录、详情、来源与分页游标，重读一次会话，显示“登录已失效，请重新登录”与登录表单         |
+| 读取失败（断线、后台不可用） | 传输错误或 5xx                                                      | 保留已读到的快照，明确标注“下面仍是上次成功读取的快照；恢复后这里会自动更新”，不显示登录表单 |
+
+“退出登录后不再显示任何操作记录”不能只在导航离开再回来时才成立：另一个标签页退出登录（或会话
+过期、权限被撤销）时，仍然停在旧记录上的这个标签页会在下一次轮询拿到 401/403，此时记录、已展开
+的详情与分页游标都属于已经失效的会话，必须一起清掉；会话失效后不再轮询。
+
+迟到的回答不能写回页面。每个请求带三个身份：它问的筛选、它所属的会话代号、它所在的槽位（列表 /
+详情 / 轮询）。回答回来时若不是这三个身份中的任何一个当前值，就直接丢弃：
+
+- 换筛选后，上一个筛选的迟到回答不会把旧记录写回（筛选在触发的同一刻记录，早于任何 await）；
+- 会话失效后，还在路上的轮询或详情回答不会把过期视图带回来，离开页面也会取消它们；
+- 同一个槽位的新请求会取消上一个，因此“加载更多”和“重新读取”不会与更早的读取互相覆盖；
+- 轮询读的是最新一页，因此它带回的“面板从未显示过”的记录属于列表最前面（按后台返回的顺序），
+  已经显示的记录保持原位并换成更新的说法；一条记录永远不会被列两次。
+
+浏览器回归覆盖这些情况：真实另一标签页退出（记录归零、详情消失、不再轮询、迟到的旧回答无效、
+重新登录后记录仍在）、合成会话过期替身、轮询带回的新记录落在最新位置且不重复、真实请求被中断
+后的断线提示与恢复、以及真实迟到回答与筛选切换的竞争。
+
 ## 验证
 
 ```powershell
 $env:TS012_CONTRACT_DIR="C:\YOKI\Codex\tianshu-peiban-bot\contracts\text-dialogue\v1"
-.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p "test_tasks.py" -v   # 最窄 17 项
-.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend                        # 完整 185 项
-node node_modules/@playwright/test/cli.js test --config apps/web/playwright.tasks.config.ts     # 浏览器 3 项
+.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p "test_tasks.py" -v   # 最窄 18 项
+.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend                        # 完整 186 项
+node node_modules/@playwright/test/cli.js test --config apps/web/playwright.tasks.config.ts     # 浏览器 8 项
 node node_modules/@playwright/test/cli.js test --config apps/web/playwright.web.config.ts       # 受影响套件
 ```
 

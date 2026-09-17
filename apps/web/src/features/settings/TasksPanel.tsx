@@ -201,7 +201,11 @@ function stamp(value: string | null) {
 }
 
 function reason(cause: unknown) {
-  return cause instanceof Error ? cause.message : "连接中断，请重新连接。";
+  if (cause instanceof WebError) return cause.message;
+  if (cause instanceof Error && cause.name === "AbortError")
+    return "请求已取消，记录没有改变。";
+  // A transport failure has no server word for it: say what is actually known.
+  return "连接中断，请重新连接。";
 }
 
 /** One evidence value: booleans and known words are read out, timestamps are stamped. */
@@ -227,6 +231,40 @@ function merge(current: TaskItem[], incoming: TaskItem[]) {
   return next;
 }
 
+/**
+ * A poll answers with the newest page, so a record the panel has never shown is newer than
+ * everything already on screen: it belongs at the head, in the order the server returned it.
+ * Records the panel already shows keep their place and take the fresher answer — a record is
+ * never listed twice.
+ */
+function absorb(current: TaskItem[], incoming: TaskItem[]) {
+  const seen = new Set(current.map((item) => item.task_id));
+  const fresh = incoming.filter((item) => !seen.has(item.task_id));
+  const latest = new Map(incoming.map((item) => [item.task_id, item]));
+  const shown = current.map((item) => latest.get(item.task_id) ?? item);
+  return [...fresh, ...shown];
+}
+
+/**
+ * A rejected read is one of exactly two things, and they are never the same:
+ *
+ * * the session behind this panel is gone (expired, revoked in another tab, or refused because
+ *   the request no longer passes the origin/CSRF check) — the view is not stale, it is invalid,
+ *   so it must be forgotten and the operator asked to log in again;
+ * * the read itself failed (offline, connector unavailable) — the records already read stay on
+ *   screen and are plainly marked as a stale snapshot instead of being shown as a fresh success.
+ */
+function authLost(cause: unknown) {
+  return (
+    cause instanceof WebError && (cause.status === 401 || cause.status === 403)
+  );
+}
+const STALE = "连接中断，下面仍是上次成功读取的快照；恢复后这里会自动更新。";
+
+type Slot = "view" | "detail" | "poll";
+/** One request plus the question it was asked: an answer to an older question is dropped. */
+type Ticket = { controller: AbortController; filter: string; session: number };
+
 export function TasksPanel() {
   const [session, setSession] = useState<SessionState | null>(null);
   const [items, setItems] = useState<TaskItem[]>([]);
@@ -240,19 +278,68 @@ export function TasksPanel() {
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const active = useRef<AbortController | null>(null);
+  const [stale, setStale] = useState("");
+  const tickets = useRef<Record<Slot, Ticket | null>>({
+    view: null,
+    detail: null,
+    poll: null,
+  });
+  const sessionGeneration = useRef(0);
+  const question = useRef("");
+  const gone = useRef(false);
   const cursor = useRef<string | null>(null);
   const known = useRef<TaskItem[]>([]);
   const list = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
+  const host = useRef<HTMLElement>(null);
   const password = useRef<HTMLInputElement>(null);
 
-  const start = useCallback(() => {
-    active.current?.abort();
-    const controller = new AbortController();
-    active.current = controller;
-    return controller;
+  const filters = `${status}|${source}`;
+
+  /** Start one request in its slot, cancelling whatever was asking the same slot before. */
+  const begin = useCallback((slot: Slot, filter: string) => {
+    tickets.current[slot]?.controller.abort();
+    const ticket: Ticket = {
+      controller: new AbortController(),
+      filter,
+      session: sessionGeneration.current,
+    };
+    tickets.current[slot] = ticket;
+    return ticket;
   }, []);
+
+  const abortSlot = useCallback((slot: Slot) => {
+    tickets.current[slot]?.controller.abort();
+    tickets.current[slot] = null;
+  }, []);
+
+  const abortAll = useCallback(() => {
+    for (const slot of ["view", "detail", "poll"] as Slot[]) abortSlot(slot);
+  }, [abortSlot]);
+
+  /** Still the request this panel is waiting for: not unmounted, not replaced, not superseded. */
+  const live = useCallback((slot: Slot, ticket: Ticket) => {
+    return (
+      !gone.current &&
+      !ticket.controller.signal.aborted &&
+      tickets.current[slot] === ticket &&
+      ticket.session === sessionGeneration.current
+    );
+  }, []);
+
+  /** Live *and* still asked about the filter the panel is showing. Only then may it write. */
+  const mine = useCallback(
+    (slot: Slot, ticket: Ticket) =>
+      live(slot, ticket) && ticket.filter === question.current,
+    [live],
+  );
+
+  useEffect(() => {
+    return () => {
+      gone.current = true;
+      abortAll();
+    };
+  }, [abortAll]);
 
   useEffect(() => {
     known.current = items;
@@ -268,148 +355,181 @@ export function TasksPanel() {
     [source, status],
   );
 
-  /** The first page of the current filter; the cursor is always re-derived from it. */
-  const read = useCallback(
-    async (state: SessionState, signal: AbortSignal, quiet = false) => {
-      if (!quiet) setBusy(true);
-      const result = await call<TasksView>(
-        "tasks/view",
-        body(),
-        state.csrf,
-        signal,
-      );
-      cursor.current = result.page.next_cursor;
-      setItems(result.items);
-      setPage(result.page);
-      setSources(result.sources);
-      setGeneratedAt(result.generated_at);
-    },
-    [body],
-  );
+  /** Forget everything that belonged to the session that just went away. */
+  const forget = useCallback(() => {
+    // A keyboard user focused inside a detail that is being removed must not be dropped to <body>.
+    const focused = document.activeElement;
+    if (
+      focused &&
+      focused !== document.body &&
+      panel.current?.contains(focused)
+    ) {
+      window.setTimeout(() => host.current?.focus(), 0);
+    }
+    cursor.current = null;
+    known.current = [];
+    setItems([]);
+    setPage(null);
+    setSources([]);
+    setGeneratedAt("");
+    setDetail(null);
+    setOpen("");
+    setNotice("");
+    setStale("");
+  }, []);
 
-  const load = useCallback(
-    async (signal: AbortSignal, retry = true) => {
+  /**
+   * The session this panel was reading with is gone. Nothing read under it may stay: the records,
+   * the open detail and the paging cursor all belonged to it. Re-read the session once so the
+   * panel says what it actually is — a login form when the session really ended, an explicit
+   * refusal otherwise — instead of leaving a view that can never be refreshed again.
+   */
+  const lose = useCallback(
+    async (cause: unknown, filter: string) => {
+      sessionGeneration.current += 1;
+      abortAll();
+      forget();
       setBusy(true);
+      const ticket = begin("view", filter);
       try {
-        const state = await readSession(signal);
+        const state = await readSession(ticket.controller.signal);
+        if (!live("view", ticket)) return;
         setSession(state);
-        if (!state.authenticated) {
-          setItems([]);
-          setPage(null);
-          setDetail(null);
-          setOpen("");
-          return;
-        }
-        try {
-          await read(state, signal);
-        } catch (cause) {
-          setItems([]);
-          setPage(null);
-          // A revoked or expired login is a state, not a stale panel: re-read once, then show it.
-          if (
-            retry &&
-            cause instanceof WebError &&
-            ["session_expired", "unauthorized"].includes(cause.code)
-          ) {
-            await load(signal, false);
-            setError(cause.message);
-            return;
-          }
-          throw cause;
-        }
-      } catch (cause) {
-        if (!signal.aborted) setError(reason(cause));
+        setError(
+          state.authenticated
+            ? reason(cause)
+            : "登录已失效，请重新登录后再查看任务记录。",
+        );
+      } catch (failure) {
+        if (!live("view", ticket)) return;
+        setError(reason(failure));
       } finally {
-        if (!signal.aborted) setBusy(false);
+        if (live("view", ticket)) setBusy(false);
       }
     },
-    [read],
+    [abortAll, begin, forget, live],
   );
 
-  useEffect(() => {
-    const controller = start();
-    void load(controller.signal);
-    return () => {
-      controller.abort();
-    };
-  }, [load, start]);
-
-  const refresh = useCallback(
-    async (signal?: AbortSignal) => {
+  /** The first page of one question: the session first, then the records it read them with. */
+  const start = useCallback(
+    async (filter: string) => {
+      setBusy(true);
       setError("");
-      await load(signal ?? start().signal, false);
+      // A whole-panel read is fresher than any poll already on its way: that answer is now older.
+      abortSlot("poll");
+      const ticket = begin("view", filter);
+      try {
+        const state = await readSession(ticket.controller.signal);
+        if (!live("view", ticket)) return;
+        setSession(state);
+        if (!state.authenticated) {
+          forget();
+          return;
+        }
+        const result = await call<TasksView>(
+          "tasks/view",
+          body(),
+          state.csrf,
+          ticket.controller.signal,
+        );
+        if (!mine("view", ticket)) return;
+        cursor.current = result.page.next_cursor;
+        setItems(result.items);
+        setPage(result.page);
+        setSources(result.sources);
+        setGeneratedAt(result.generated_at);
+        setStale("");
+      } catch (cause) {
+        if (!live("view", ticket)) return;
+        if (authLost(cause)) {
+          await lose(cause, filter);
+          return;
+        }
+        setError(reason(cause));
+        setStale(STALE);
+      } finally {
+        if (live("view", ticket)) setBusy(false);
+      }
     },
-    [load, start],
+    [abortSlot, begin, body, forget, live, lose, mine],
   );
 
   // A filter change is a new question: it starts from the first page, never from a stale cursor.
-  const filtered = useRef("");
+  // It is recorded synchronously, so an answer to the previous question can no longer write.
   useEffect(() => {
-    const key = `${status}|${source}`;
-    if (!session?.authenticated) {
-      filtered.current = key;
-      return;
-    }
-    if (filtered.current === key) return;
-    filtered.current = key;
-    const controller = start();
-    setBusy(true);
-    setError("");
+    if (question.current === filters) return;
+    question.current = filters;
+    abortSlot("detail");
     setOpen("");
     setDetail(null);
-    void read(session, controller.signal, true)
-      .catch((cause: unknown) => {
-        if (!controller.signal.aborted) setError(reason(cause));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setBusy(false);
-      });
-  }, [read, session, source, start, status]);
+    setNotice("");
+    // A session already known to be gone shows the login form. The first read happens anyway:
+    // reading the session is how the panel finds out that it is gone.
+    if (session && !session.authenticated) return;
+    void start(filters);
+  }, [abortSlot, filters, session, start]);
+
+  const refresh = useCallback(async () => {
+    await start(question.current);
+  }, [start]);
 
   /** Polling first: a rejected poll never replaces what the panel already read. */
   useEffect(() => {
     if (!session?.authenticated) return;
-    let timer = 0;
+    let disposed = false;
     const tick = async () => {
+      if (disposed || gone.current) return;
       if (document.visibilityState !== "visible") return;
-      const controller = new AbortController();
+      const ticket = begin("poll", question.current);
       try {
         const result = await call<TasksView>(
           "tasks/view",
           body(),
           session.csrf,
-          controller.signal,
+          ticket.controller.signal,
         );
+        if (!mine("poll", ticket)) return;
         const seen = new Set(known.current.map((item) => item.task_id));
         const added = result.items.filter((item) => !seen.has(item.task_id));
-        setItems((current) => merge(current, result.items));
+        setItems((shown) => absorb(shown, result.items));
         setSources(result.sources);
         setGeneratedAt(result.generated_at);
+        setStale("");
         if (added.length) setNotice(`有 ${added.length} 条新的操作记录。`);
-      } catch {
-        // Offline or logged out: the next tick or the next action reports it honestly.
+      } catch (cause) {
+        if (!mine("poll", ticket)) return;
+        if (authLost(cause)) {
+          await lose(cause, question.current);
+          return;
+        }
+        // Offline or a failing connector: the snapshot stays, and it says that it is one.
+        setStale(STALE);
       }
     };
-    timer = window.setInterval(() => void tick(), POLL_MS);
+    const timer = window.setInterval(() => void tick(), POLL_MS);
     const onVisible = () => {
       if (document.visibilityState === "visible") void tick();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
+      disposed = true;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
+      // The session is gone or the panel is leaving: an in-flight poll must not come back.
+      abortSlot("poll");
     };
-  }, [body, session]);
+  }, [abortSlot, begin, body, lose, mine, session]);
 
   const close = useCallback(() => {
     const task = open;
+    abortSlot("detail");
     setOpen("");
     setDetail(null);
     if (task)
       list.current
         ?.querySelector<HTMLButtonElement>(`[data-task-toggle="${task}"]`)
         ?.focus();
-  }, [open]);
+  }, [abortSlot, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -431,27 +551,24 @@ export function TasksPanel() {
     setOpen(taskId);
     setDetail(null);
     setNotice("");
-    const controller = start();
+    const ticket = begin("detail", question.current);
     try {
       const result = await call<TaskDetailView>(
         "tasks/detail",
         { task_id: taskId },
         session?.csrf ?? "",
-        controller.signal,
+        ticket.controller.signal,
       );
+      if (!mine("detail", ticket)) return;
       setDetail(result.task);
       window.setTimeout(() => panel.current?.focus(), 0);
     } catch (cause) {
-      if (controller.signal.aborted) return;
-      const message = reason(cause);
-      setError(message);
-      if (
-        cause instanceof WebError &&
-        ["session_expired", "unauthorized"].includes(cause.code)
-      ) {
-        await refresh();
-        setError(message);
+      if (!mine("detail", ticket)) return;
+      if (authLost(cause)) {
+        await lose(cause, question.current);
+        return;
       }
+      setError(reason(cause));
     }
   }
 
@@ -459,29 +576,37 @@ export function TasksPanel() {
     if (!session || !cursor.current) return;
     setBusy(true);
     setError("");
-    const controller = start();
+    const ticket = begin("view", question.current);
     try {
       const result = await call<TasksView>(
         "tasks/view",
         body({ cursor: cursor.current }),
         session.csrf,
-        controller.signal,
+        ticket.controller.signal,
       );
+      if (!mine("view", ticket)) return;
       cursor.current = result.page.next_cursor;
-      setItems((current) => merge(current, result.items));
+      setItems((shown) => merge(shown, result.items));
       setPage(result.page);
       setSources(result.sources);
+      setStale("");
     } catch (cause) {
-      if (controller.signal.aborted) return;
+      if (!mine("view", ticket)) return;
       const message = reason(cause);
+      if (authLost(cause)) {
+        await lose(cause, question.current);
+        return;
+      }
       setError(message);
       if (cause instanceof WebError && cause.code === "cursor_conflict") {
         // The list conditions changed under the cursor: read the first page again.
-        await refresh(controller.signal);
+        await start(question.current);
         setError(message);
+      } else {
+        setStale(STALE);
       }
     } finally {
-      if (!controller.signal.aborted) setBusy(false);
+      if (mine("view", ticket)) setBusy(false);
     }
   }
 
@@ -490,7 +615,7 @@ export function TasksPanel() {
     const data = new FormData(form);
     setBusy(true);
     setError("");
-    const controller = start();
+    const ticket = begin("view", question.current);
     try {
       // The login POST needs the CSRF token of the session cookie it already carries.
       await call(
@@ -500,16 +625,16 @@ export function TasksPanel() {
           password: String(data.get("password")),
         },
         session.csrf,
-        controller.signal,
+        ticket.controller.signal,
       );
     } catch (cause) {
-      if (!controller.signal.aborted) setError(reason(cause));
+      if (live("view", ticket)) setError(reason(cause));
       return;
     } finally {
       if (password.current) password.current.value = "";
-      if (!controller.signal.aborted) setBusy(false);
+      if (live("view", ticket)) setBusy(false);
     }
-    await refresh();
+    await start(question.current);
   }
 
   const connected = useMemo(
@@ -525,7 +650,13 @@ export function TasksPanel() {
   const filtering = Boolean(status || source);
 
   return (
-    <section className="panel tasks" aria-label="任务中心" aria-busy={busy}>
+    <section
+      className="panel tasks"
+      aria-label="任务中心"
+      aria-busy={busy}
+      ref={host}
+      tabIndex={-1}
+    >
       <div className="section-heading">
         <h2>任务</h2>
         {page && (
@@ -552,6 +683,11 @@ export function TasksPanel() {
           {error}
         </p>
       )}
+      {stale && session?.authenticated ? (
+        <p className="tasks-stale" role="status">
+          {stale}
+        </p>
+      ) : null}
       {notice && (
         <p className="tasks-notice" role="status">
           {notice}

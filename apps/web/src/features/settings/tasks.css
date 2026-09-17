@@ -20,6 +20,12 @@
   border-radius: var(--radius-control);
   padding: var(--space-3);
 }
+.tasks-stale {
+  color: var(--color-yellow);
+  background: var(--color-yellow-soft);
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
+}
 .tasks-actions,
 .tasks-filters,
 .tasks-item-actions,
