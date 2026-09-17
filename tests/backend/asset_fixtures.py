@@ -249,6 +249,11 @@ class Synthetic:
                 items = [LIBRARY_B]
             if scenario == "many_libraries":
                 items = [LIBRARY_A, LIBRARY_C]
+            if scenario == "switch":
+                # The same peer serving a second authorized index: what a page sees after it
+                # changes connection, so a browser case can check that the old library's rows are
+                # gone rather than still on screen under the new connection's name.
+                items = [LIBRARY_B]
             return 200, self.result(request_id, {"items": items, "next_cursor": None})
         if operation == "libraries.get":
             item = self.library(body.get("library_id"))
@@ -263,6 +268,11 @@ class Synthetic:
             items = self.entries_for(library["library_id"], parent)
             if scenario == "offline":
                 # An authorized snapshot of an offline library: real indexed rows, offline index.
+                parent = "旧盘"
+                items = self.entries_for(LIBRARY_B["library_id"], parent)
+            if scenario == "switch":
+                # The second index the peer serves, so the page has real rows to show after the
+                # connection changed instead of an empty list that could hide a stale body.
                 parent = "旧盘"
                 items = self.entries_for(LIBRARY_B["library_id"], parent)
             if scenario == "crossed":

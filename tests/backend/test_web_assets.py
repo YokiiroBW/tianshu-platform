@@ -174,13 +174,13 @@ class AssetPageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unauthenticated_page_is_refused_without_touching_peer(self):
         _, anonymous = await self.current()
-        for path in ("connection", "libraries", "browse", "search", "entry"):
+        for path in ("state", "connection", "libraries", "browse", "search", "entry"):
             await self.call(f"assets/{path}", {}, anonymous["csrf"], 401)
         self.assertEqual(self.peer.calls, [])
 
     async def test_page_offers_only_declared_connections(self):
         logged = await self.login()
-        state = await self.page(logged, "connection", {})
+        state = await self.page(logged, "state", {})
         self.assertTrue(state["available"])
         self.assertEqual(state["code"], "ready")
         self.assertIsNone(state["connection"])
@@ -190,6 +190,35 @@ class AssetPageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["preview"]["code"], "asset_media_port_absent")
         await self.connect(logged, SECOND, expected=403)
         self.assertEqual(self.peer.calls, [])
+
+    async def test_state_reads_never_change_the_chosen_connection(self):
+        """A page asking where it stands must not be able to lose the scope it already has.
+
+        Choosing is `connection`; reading is `state`. The two are separate operations precisely so
+        that a page which reads its state before every read cannot clear its own session scope —
+        the failure mode that would leave a page permanently reporting "no connection chosen"
+        while the peer was in fact authorized and answering.
+        """
+        logged = await self.login()
+        self.assertIsNone((await self.page(logged, "state", {}))["connection"])
+        chosen = await self.connect(logged)
+        self.assertEqual(chosen["connection"], CONNECTION)
+        for _ in range(3):
+            again = await self.page(logged, "state", {})
+            self.assertEqual(again["connection"], CONNECTION)
+        # The listing still reads, because the scope the state reads reported is still in force.
+        listing = await self.page(logged, "libraries", {"page_size": 10})
+        self.assertTrue(listing["libraries"])
+        reads = len(self.peer.calls)
+        # `state` accepts no body at all: it is not a second way to choose.
+        await self.page(logged, "state", {"connection_id": SECOND}, expected=400)
+        self.assertEqual((await self.page(logged, "state", {}))["connection"], CONNECTION)
+        self.assertEqual(len(self.peer.calls), reads)
+        # Dropping the choice is still possible, and is still explicit.
+        dropped = await self.page(logged, "connection", {})
+        self.assertIsNone(dropped["connection"])
+        await self.page(logged, "libraries", {}, expected=403)
+        self.assertEqual(len(self.peer.calls), reads)
 
     async def test_reads_require_a_chosen_connection(self):
         logged = await self.login()

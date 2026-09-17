@@ -88,6 +88,7 @@ export const pages = {
   room: lazy(() => import("../features/room/RoomPage")),
   settings: lazy(() => import("../features/settings/SettingsPage")),
   home: lazy(() => import("../features/home/HomePage")),
+  resources: lazy(() => import("../features/resources/ResourcesPage")),
 };
 
 export function resolveRoute(hash: string) {

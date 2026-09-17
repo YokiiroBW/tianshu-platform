@@ -138,6 +138,8 @@ export function App() {
   else if (current.id === "companion" && section === 0)
     page = <pages.companion />;
   else if (current.id === "home" && section === 0) page = <pages.home />;
+  else if (current.id === "resources" && section === 1)
+    page = <pages.resources />;
   else if (current.id === "settings")
     page = <pages.settings section={section} />;
   else page = <UnavailablePage module={current} section={section} />;

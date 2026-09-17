@@ -178,6 +178,8 @@ class WebAssets:
     async def route(self, path, body, session):
         require(self.available(), self.code(), 403)
         require(isinstance(body, dict), "invalid_input", 400)
+        if path == PREFIX + "state":
+            return self.read_state(body, session)
         if path == PREFIX + "connection":
             return self.connection(body, session)
         if path == PREFIX + "libraries":
@@ -189,6 +191,17 @@ class WebAssets:
         if path == PREFIX + "entry":
             return await self.entry(body, session)
         raise Fault("not_found", 404)
+
+    def read_state(self, body, session):
+        """The page state without changing it: which connections, and which one is chosen.
+
+        This is what a page asks before it reads anything, including before a connection has ever
+        been chosen. It is deliberately *not* the same operation as choosing: dropping or changing
+        the session's scope happens in `connection`, and a page that only wants to know where it
+        stands must not be able to lose the scope it already had.
+        """
+        require(body == {}, "invalid_input", 400)
+        return self.state(session)
 
     def connection(self, body, session):
         """Choose one allowed connection, or drop the choice; the page's scope lives here."""
