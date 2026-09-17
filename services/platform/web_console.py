@@ -20,6 +20,7 @@ from .contracts import Fault, digest, loads, require
 from .home import Home
 from .tasks import Tasks
 from .transport import CoreFault
+from .web_assets import WebAssets
 from .web_dialogue import WebDialogue
 from .web_models import WebModels
 from .web_sender import WebSender
@@ -30,6 +31,9 @@ LOGIN_TTL = 600
 MODELS_PREFIX = "/api/web/models/"
 HOME_PREFIX = "/api/web/home/"
 TASKS_PREFIX = "/api/web/tasks/"
+# The asset page is assembled here as one route; its scope, rules and read record belong to
+# `services.platform.web_assets`.
+ASSETS_PREFIX = "/api/web/assets/"
 
 
 def password_hash(password, salt=None):
@@ -136,6 +140,9 @@ class WebConsole:
         self.home = Home(platform, self)
         # The task centre only reads the ledgers the two modules above already own.
         self.tasks = Tasks(platform, self)
+        # The asset page is a read-only window: it owns its own scope, rules and read record, and
+        # this console only assembles its route below.
+        self.assets = WebAssets(platform, self)
 
     def verify_password(self, password):
         """One fixed-cost verifier for the login form and the management unlock step."""
@@ -379,6 +386,15 @@ class WebConsole:
         if request.path.startswith(TASKS_PREFIX):
             result = self.tasks.route(request.path, body, session)
             # A read-only projection still belongs to the session that asked for it.
+            _, current = self.session(request)
+            require(current is session, "session_expired", 401)
+            fingerprint, _ = self.authority()
+            require(session["fingerprint"] == fingerprint, "session_expired", 401)
+            return web.json_response(result)
+        if request.path.startswith(ASSETS_PREFIX):
+            # The asset page reads through the registered asset identity; the browser session is
+            # only the local operator asking, and it is re-checked once the peer has answered.
+            result = await self.assets.route(request.path, body, session)
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
             fingerprint, _ = self.authority()

@@ -32,6 +32,7 @@ class Platform:
                 "asset_connections",
                 "web",
                 "web_models",
+                "web_assets",
                 "native_config_http",
                 "home",
             },
@@ -54,4 +55,6 @@ class Platform:
         self.models = Models(self.store, self.auth, self.contracts, self.origins, settings, clock)
         self.projections = Projections(self.store, self.auth, self.contracts, clock)
         self.assets = Assets(self.store, self.auth, settings)
+        # A read-only page that could widen this identity's own bindings is refused at startup.
+        self.assets.configure_page(settings.get("web_assets"), self.contracts)
         self.auth.activate(self.store, clock)

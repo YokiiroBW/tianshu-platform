@@ -119,3 +119,32 @@ def home_settings(directory, base_url, origin="http://127.0.0.1:4814", static=No
     c["principals"]["admin"]["actions"] += ["device.control"]
     c["home"] = home_section(base_url, **override)
     return c
+
+
+def asset_settings(
+    directory, endpoint, ca, origin="http://127.0.0.1:4814", static=None, **override
+):
+    """Console settings plus a synthetic read-only asset page; the browser never sees a token."""
+    c = web_settings(directory, origin, static)
+    # A separate, non-operator reading identity: the console's own source identity is not a
+    # reader, and the browser login is never one either.
+    c["principals"]["assetreader"] = {
+        "kind": "service",
+        "service": "platform",
+        "token_env": "TS019_ASSET_READ",
+        "actions": ["asset.read"],
+        "asset_connections": ["library-a", "library-b"],
+    }
+    c["asset_connections"] = {
+        "library-a": {"endpoint": endpoint, "ca_file": ca, "token_env": "TS019_ASSET_A"},
+        "library-b": {"endpoint": endpoint, "ca_file": ca, "token_env": "TS019_ASSET_B"},
+    }
+    page = {
+        "enabled": True,
+        "principal": "assetreader",
+        # Narrowing only: `library-b` stays outside this page even though the identity may read it.
+        "allowed_connections": ["library-a"],
+    }
+    page.update(override)
+    c["web_assets"] = page
+    return c

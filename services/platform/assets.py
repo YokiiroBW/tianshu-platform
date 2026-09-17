@@ -14,6 +14,7 @@ import aiohttp
 
 from .auth import secret
 from .contracts import Fault, canonical, loads, require
+from .web_asset_queries import page_configuration
 
 OPERATIONS = {"libraries.list", "libraries.get", "entries.browse", "entries.get", "assets.search"}
 REQUEST_LIMIT = 65_536
@@ -58,6 +59,17 @@ class Assets:
             )
             envs.append(connection["token_env"])
         require(len(envs) == len(set(envs)), "invalid_input", 400)
+
+    def configure_page(self, page, contracts):
+        """Validate the read-only asset page's narrowing at deployment time, not at read time.
+
+        The page may only ever expose connections this identity is already bound to. The rule
+        itself lives with the page's other rules in `web_asset_queries`; this method only gives
+        that rule the two facts it needs, so an impossible page is refused where it is configured.
+        """
+        if page is None:
+            return None
+        return page_configuration(page, self.auth.principals, self.connections, contracts.check)
 
     def authorize(self, header, connection_id):
         # A busy local authority must not consume another five seconds after HTTPS.
