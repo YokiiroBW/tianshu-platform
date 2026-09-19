@@ -11,17 +11,30 @@ import dataclasses
 import unittest
 from xml.etree import ElementTree
 
-import _fixtures as fx
-from _fixtures import (
-    CID_ONE,
-    CID_THREE,
-    CID_TWO,
-    multipart_request,
-    multipart_snapshot,
-    poster,
-    snapshot,
-    thumb,
-)
+try:
+    from . import _fixtures as fx
+    from ._fixtures import (
+        CID_ONE,
+        CID_THREE,
+        CID_TWO,
+        multipart_request,
+        multipart_snapshot,
+        poster,
+        snapshot,
+        thumb,
+    )
+except ImportError:  # narrow discovery: this directory is the top-level start directory
+    import _fixtures as fx
+    from _fixtures import (
+        CID_ONE,
+        CID_THREE,
+        CID_TWO,
+        multipart_request,
+        multipart_snapshot,
+        poster,
+        snapshot,
+        thumb,
+    )
 
 from services.platform.media import (
     ImageBinding,

@@ -247,20 +247,8 @@ class RenderRequest(_Frozen):
 
         if not isinstance(layout, str):
             raise RenderRequestError("invalid_layout", "layout")
-        if isinstance(selected_cids, str):
+        if isinstance(selected_cids, (str, bytes)):
             raise RenderRequestError("invalid_selected_cids", "selected_cids")
-        if isinstance(episode_numbers, Mapping):
-            numbers: Iterable[tuple[str, int]] = tuple(episode_numbers.items())
-        else:
-            if isinstance(episode_numbers, (str, bytes)):
-                raise RenderRequestError("invalid_episode_numbers", "episode_numbers")
-            numbers = tuple(episode_numbers)
-        if isinstance(images, (str, bytes)):
-            raise RenderRequestError("invalid_images", "images")
-        image_items = tuple(images)
-        for image in image_items:
-            if not isinstance(image, ImageBinding):
-                raise RenderRequestError("invalid_images", "images")
         try:
             selected = tuple(selected_cids)
         except TypeError as error:
@@ -268,6 +256,24 @@ class RenderRequest(_Frozen):
         for cid in selected:
             if not isinstance(cid, str):
                 raise RenderRequestError("invalid_selected_cids", "selected_cids")
+        if isinstance(episode_numbers, Mapping):
+            numbers: Iterable[tuple[str, int]] = tuple(episode_numbers.items())
+        elif isinstance(episode_numbers, (str, bytes)):
+            raise RenderRequestError("invalid_episode_numbers", "episode_numbers")
+        else:
+            try:
+                numbers = tuple(episode_numbers)
+            except TypeError as error:
+                raise RenderRequestError("invalid_episode_numbers", "episode_numbers") from error
+        if isinstance(images, (str, bytes)):
+            raise RenderRequestError("invalid_images", "images")
+        try:
+            image_items = tuple(images)
+        except TypeError as error:
+            raise RenderRequestError("invalid_images", "images") from error
+        for image in image_items:
+            if not isinstance(image, ImageBinding):
+                raise RenderRequestError("invalid_images", "images")
         if not isinstance(media_extension, str):
             raise RenderRequestError("invalid_media_extension", "media_extension")
         try:

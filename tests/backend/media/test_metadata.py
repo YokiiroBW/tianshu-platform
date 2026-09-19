@@ -10,8 +10,28 @@ from __future__ import annotations
 import dataclasses
 import unittest
 
-import _fixtures as fx
-from _fixtures import CID_ONE, MID_JOINT, MID_OTHER, MID_UP, multipart_snapshot, snapshot
+try:
+    from . import _fixtures as fx
+    from ._fixtures import (
+        CID_ONE,
+        MID_JOINT,
+        MID_OTHER,
+        MID_UP,
+        multipart_snapshot,
+        part,
+        snapshot,
+    )
+except ImportError:  # narrow discovery: this directory is the top-level start directory
+    import _fixtures as fx
+    from _fixtures import (
+        CID_ONE,
+        MID_JOINT,
+        MID_OTHER,
+        MID_UP,
+        multipart_snapshot,
+        part,
+        snapshot,
+    )
 
 from services.platform.media import (
     ISSUE_AUTHOR_NAME_MISSING,
@@ -49,8 +69,8 @@ class MetadataShapeTest(unittest.TestCase):
             metadata.canonical_urls,
             ((CID_ONE, f"https://www.bilibili.com/video/{fx.BV}/?p=1"),),
         )
-        self.assertEqual(metadata.original_title, fx.TITLE.strip())
-        self.assertEqual(metadata.display_title, fx.TITLE.strip())
+        self.assertEqual(metadata.original_title, fx.TITLE)
+        self.assertEqual(metadata.display_title, fx.TITLE)
         self.assertEqual(metadata.original_description, fx.DESCRIPTION)
         self.assertEqual(metadata.display_description, fx.DESCRIPTION)
         self.assertEqual(dict(metadata.field_sources), {"title": "source", "description": "source"})
@@ -62,24 +82,25 @@ class MetadataShapeTest(unittest.TestCase):
         self.assertEqual(metadata.part_count, 1)
         self.assertEqual(metadata.named_creator_count, 1)
 
-    def test_identifiers_stay_strings(self):
+    def test_identifiers_stay_strings_and_an_integer_identifier_is_refused(self):
         metadata = normalize_bilibili(snapshot())
         self.assertIsInstance(metadata.bvid, str)
         self.assertIsInstance(metadata.parts[0].cid, str)
         self.assertIsInstance(metadata.creators[0].mid, str)
-        numeric = normalize_bilibili(
-            snapshot(
-                parts=[
-                    {
-                        "cid": 12345678901234567890,
-                        "index": 1,
-                        "title": None,
-                        "duration_seconds": None,
-                    }
-                ]
+        wide = "12345678901234567890"
+        self.assertEqual(normalize_bilibili(snapshot(parts=[part(cid=wide)])).parts[0].cid, wide)
+        for value in (12345678901234567890, 2**53 + 1, 101, True):
+            with self.subTest(value=value):
+                error = refused(lambda v=value: normalize_bilibili(snapshot(parts=[part(cid=v)])))
+                self.assertEqual(error.code, "invalid_cid")
+                self.assertEqual(error.field, "parts[0].cid")
+        mid_error = refused(
+            lambda: normalize_bilibili(
+                snapshot(creators=[{"mid": 946974, "name": "合成UP", "role": "uploader"}])
             )
         )
-        self.assertEqual(numeric.parts[0].cid, "12345678901234567890")
+        self.assertEqual(mid_error.code, "invalid_mid")
+        self.assertEqual(mid_error.field, "creators[0].mid")
 
     def test_results_are_immutable_and_share_no_mutable_container(self):
         metadata = normalize_bilibili(snapshot())
@@ -114,16 +135,29 @@ class CreatorIdentityTest(unittest.TestCase):
         self.assertNotEqual(creator.name, creator.mid)
 
     def test_blank_or_absent_name_keeps_identity_and_reports_the_gap(self):
-        for value in (None, "", "   "):
+        for value, expected in ((None, ""), ("", ""), ("   ", "   ")):
             with self.subTest(value=value):
                 metadata = normalize_bilibili(
                     snapshot(creators=[{"mid": MID_UP, "name": value, "role": "uploader"}])
                 )
                 self.assertEqual(metadata.creators[0].mid, MID_UP)
-                self.assertEqual(metadata.creators[0].name, "")
+                self.assertEqual(metadata.creators[0].name, expected)
                 self.assertFalse(metadata.creators[0].name_present)
                 self.assertIn(ISSUE_AUTHOR_NAME_MISSING, metadata.issue_codes())
                 self.assertEqual(metadata.issues[0].field, "creators[0].name")
+
+    def test_a_named_creator_keeps_the_nickname_exactly_as_sent(self):
+        """A nickname is provenance too: surrounding spaces survive, and presence is decided by
+        whether anything other than whitespace is there."""
+
+        for value in ("  空格UP主  ", "换行UP主\n", "UP主\t"):
+            with self.subTest(value=repr(value)):
+                metadata = normalize_bilibili(
+                    snapshot(creators=[{"mid": MID_UP, "name": value, "role": "uploader"}])
+                )
+                self.assertEqual(metadata.creators[0].name, value)
+                self.assertTrue(metadata.creators[0].name_present)
+                self.assertNotIn(ISSUE_AUTHOR_NAME_MISSING, metadata.issue_codes())
 
     def test_same_nickname_on_different_mids_stays_two_people(self):
         metadata = normalize_bilibili(
@@ -178,7 +212,7 @@ class OverrideTest(unittest.TestCase):
         )
         self.assertEqual(metadata.display_title, "人工标题")
         self.assertEqual(metadata.display_description, "人工简介")
-        self.assertEqual(metadata.original_title, fx.TITLE.strip())
+        self.assertEqual(metadata.original_title, fx.TITLE)
         self.assertEqual(metadata.original_description, fx.DESCRIPTION)
         self.assertEqual(dict(metadata.field_sources), {"title": "user", "description": "user"})
 
@@ -190,7 +224,7 @@ class OverrideTest(unittest.TestCase):
 
     def test_absent_key_keeps_the_source_and_an_explicit_null_is_refused(self):
         metadata = normalize_bilibili(snapshot(), overrides={})
-        self.assertEqual(metadata.display_title, fx.TITLE.strip())
+        self.assertEqual(metadata.display_title, fx.TITLE)
         self.assertEqual(dict(metadata.field_sources), {"title": "source", "description": "source"})
         error = refused(lambda: normalize_bilibili(snapshot(), overrides={"title": None}))
         self.assertEqual(error.code, "invalid_title")
@@ -199,7 +233,7 @@ class OverrideTest(unittest.TestCase):
     def test_blank_override_is_recorded_as_a_display_gap_not_a_filled_field(self):
         metadata = normalize_bilibili(snapshot(), overrides={"title": "   "})
         self.assertEqual(metadata.display_title, "")
-        self.assertEqual(metadata.original_title, fx.TITLE.strip())
+        self.assertEqual(metadata.original_title, fx.TITLE)
         self.assertEqual(dict(metadata.field_sources), {"title": "user", "description": "source"})
         self.assertIn(ISSUE_TITLE_MISSING, metadata.issue_codes())
         self.assertNotEqual(metadata.display_title, metadata.original_title)
@@ -226,6 +260,71 @@ class OverrideTest(unittest.TestCase):
         self.assertEqual(error.code, "invalid_overrides")
 
 
+class VerbatimTextTest(unittest.TestCase):
+    """The original text is provenance: only the display value may collapse to empty."""
+
+    HOSTILE = " \n原始标题\n "
+
+    def test_original_title_and_description_keep_leading_and_trailing_whitespace(self):
+        document = snapshot(title=self.HOSTILE, description="\n第一行\n第二行\n")
+        metadata = normalize_bilibili(document)
+        self.assertEqual(metadata.original_title, document["title"])
+        self.assertEqual(metadata.original_description, document["description"])
+        self.assertEqual(metadata.display_title, self.HOSTILE)
+        self.assertEqual(metadata.display_description, "\n第一行\n第二行\n")
+        self.assertEqual(dict(metadata.field_sources), {"title": "source", "description": "source"})
+
+    def test_an_override_keeps_the_verbatim_original_beside_the_display_value(self):
+        document = snapshot(title=self.HOSTILE, description="\n第一行\n第二行\n")
+        metadata = normalize_bilibili(document, overrides={"title": "人工标题"})
+        self.assertEqual(metadata.original_title, self.HOSTILE)
+        self.assertEqual(metadata.display_title, "人工标题")
+        self.assertEqual(metadata.original_description, document["description"])
+        self.assertEqual(dict(metadata.field_sources), {"title": "user", "description": "source"})
+
+    def test_all_blank_source_collapses_only_the_display_value(self):
+        for blank in ("   ", "\n", "\t \n"):
+            with self.subTest(value=repr(blank)):
+                metadata = normalize_bilibili(snapshot(title=blank, description=blank))
+                self.assertEqual(metadata.original_title, blank)
+                self.assertEqual(metadata.original_description, blank)
+                self.assertEqual(metadata.display_title, "")
+                self.assertEqual(metadata.display_description, "")
+                self.assertEqual(
+                    dict(metadata.field_sources), {"title": "missing", "description": "missing"}
+                )
+                self.assertIn(ISSUE_TITLE_MISSING, metadata.issue_codes())
+                self.assertIn(ISSUE_DESCRIPTION_MISSING, metadata.issue_codes())
+
+    def test_null_source_is_an_empty_original_and_a_recorded_gap(self):
+        metadata = normalize_bilibili(snapshot(title=None, description=None))
+        self.assertEqual(metadata.original_title, "")
+        self.assertEqual(metadata.original_description, "")
+        self.assertEqual(metadata.display_title, "")
+        self.assertEqual(
+            dict(metadata.field_sources), {"title": "missing", "description": "missing"}
+        )
+
+    def test_part_titles_are_preserved_verbatim_too(self):
+        for value in ("  分P标题  ", "分P标题\n", "\t分P标题"):
+            with self.subTest(value=repr(value)):
+                metadata = normalize_bilibili(snapshot(parts=[part(title=value)]))
+                self.assertEqual(metadata.parts[0].title, value)
+                self.assertTrue(metadata.parts[0].title_present)
+                self.assertNotIn(ISSUE_PART_TITLE_MISSING, metadata.issue_codes())
+        blank = normalize_bilibili(snapshot(parts=[part(title="  ")]))
+        self.assertEqual(blank.parts[0].title, "  ")
+        self.assertFalse(blank.parts[0].title_present)
+        self.assertIn(ISSUE_PART_TITLE_MISSING, blank.issue_codes())
+
+    def test_ordinary_xml_punctuation_survives_verbatim(self):
+        document = snapshot(title='  标题 & <测试> "引号"  ', description="简介 & <标签>")
+        metadata = normalize_bilibili(document)
+        self.assertEqual(metadata.original_title, document["title"])
+        self.assertEqual(metadata.display_title, document["title"])
+        self.assertEqual(metadata.display_description, document["description"])
+
+
 class IssueTest(unittest.TestCase):
     def test_every_issue_word_comes_from_the_fixed_vocabulary(self):
         metadata = normalize_bilibili(
@@ -249,9 +348,10 @@ class IssueTest(unittest.TestCase):
     def test_a_missing_publication_date_is_reported_with_its_own_field(self):
         metadata = normalize_bilibili(snapshot(published_at=None))
         self.assertIsNone(metadata.published_at)
-        self.assertIn((ISSUE_PUBLISHED_AT_MISSING, "published_at"), set(
-            (issue.code, issue.field) for issue in metadata.issues
-        ))
+        self.assertIn(
+            (ISSUE_PUBLISHED_AT_MISSING, "published_at"),
+            set((issue.code, issue.field) for issue in metadata.issues),
+        )
 
     def test_a_complete_projection_reports_nothing(self):
         self.assertEqual(normalize_bilibili(snapshot()).issues, ())

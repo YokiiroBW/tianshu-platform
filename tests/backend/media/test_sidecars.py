@@ -10,23 +10,41 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import PurePosixPath
 from xml.etree import ElementTree
 
-import _fixtures as fx
-from _fixtures import (
-    BV,
-    CID_ONE,
-    CID_THREE,
-    CID_TWO,
-    MID_JOINT,
-    MID_UP,
-    multipart_request,
-    multipart_snapshot,
-    poster,
-    single_request,
-    snapshot,
-    thumb,
-)
+try:
+    from . import _fixtures as fx
+    from ._fixtures import (
+        BV,
+        CID_ONE,
+        CID_THREE,
+        CID_TWO,
+        MID_JOINT,
+        MID_UP,
+        multipart_request,
+        multipart_snapshot,
+        poster,
+        single_request,
+        snapshot,
+        thumb,
+    )
+except ImportError:  # narrow discovery: this directory is the top-level start directory
+    import _fixtures as fx
+    from _fixtures import (
+        BV,
+        CID_ONE,
+        CID_THREE,
+        CID_TWO,
+        MID_JOINT,
+        MID_UP,
+        multipart_request,
+        multipart_snapshot,
+        poster,
+        single_request,
+        snapshot,
+        thumb,
+    )
 
 from services.platform.media import (
     ISSUE_COVER_LOCAL_MISSING,
@@ -77,14 +95,36 @@ class SingleLayoutTest(unittest.TestCase):
     def test_movie_nfo_reads_back_with_display_and_original_values(self):
         root = xml_of("movie.nfo", self.bundle)
         self.assertEqual(root.tag, "movie")
-        self.assertEqual(root.findtext("title"), fx.TITLE.strip())
-        self.assertEqual(root.findtext("originaltitle"), fx.TITLE.strip())
+        self.assertEqual(root.findtext("title"), fx.TITLE)
+        self.assertEqual(root.findtext("originaltitle"), fx.TITLE)
         self.assertEqual(root.findtext("plot"), fx.DESCRIPTION)
-        self.assertEqual(root.findtext("premiered"), "2019-08-02T00:30:00Z")
+        self.assertEqual(root.findtext("premiered"), "2019-08-02")
         self.assertEqual(root.findtext("year"), "2019")
-        self.assertEqual(root.findtext("poster"), "poster.jpg")
         self.assertEqual([node.text for node in root.findall("tag")], ["测试", "动画"])
         self.assertEqual(root.findtext("runtime"), "12")
+
+    def test_premiere_date_is_the_date_profile_while_source_json_keeps_utc_seconds(self):
+        """``premiered``/``aired`` carry ``YYYY-MM-DD``; the full timestamp stays in source.json."""
+
+        root = xml_of("movie.nfo", self.bundle)
+        self.assertRegex(root.findtext("premiered") or "", r"\A\d{4}-\d{2}-\d{2}\Z")
+        self.assertEqual(root.findtext("premiered"), "2019-08-02")
+        self.assertEqual(json_of(self.bundle)["published_at"], "2019-08-02T00:30:00Z")
+
+    def test_poster_uses_the_thumb_aspect_profile_and_no_invented_poster_element(self):
+        root = xml_of("movie.nfo", self.bundle)
+        thumbs = root.findall("thumb")
+        self.assertEqual(len(thumbs), 1)
+        self.assertEqual(thumbs[0].get("aspect"), "poster")
+        self.assertEqual(thumbs[0].text, "poster.jpg")
+        self.assertIsNone(root.find("poster"))
+        self.assertEqual(root.findtext("thumb[@aspect='poster']"), "poster.jpg")
+
+    def test_no_image_element_is_written_when_no_poster_is_bound(self):
+        plain = render_sidecars(self.metadata, single_request())
+        root = xml_of("movie.nfo", plain)
+        self.assertIsNone(root.find("thumb"))
+        self.assertIsNone(root.find("poster"))
 
     def test_actor_carries_nickname_and_role_but_never_a_numeric_name(self):
         root = xml_of("movie.nfo", self.bundle)
@@ -109,14 +149,14 @@ class SingleLayoutTest(unittest.TestCase):
         bundle = render_sidecars(metadata, self.request)
         root = xml_of("movie.nfo", bundle)
         self.assertEqual(root.findtext("title"), "人工标题")
-        self.assertEqual(root.findtext("originaltitle"), fx.TITLE.strip())
+        self.assertEqual(root.findtext("originaltitle"), fx.TITLE)
 
     def test_xml_is_not_hand_assembled_so_punctuation_survives(self):
         raw = self.bundle.text("movie.nfo")
         self.assertIn("&amp;", raw)
         self.assertIn("&lt;测试&gt;", raw)
         self.assertIn("😀", raw)
-        self.assertEqual(xml_of("movie.nfo", self.bundle).findtext("title"), fx.TITLE.strip())
+        self.assertEqual(xml_of("movie.nfo", self.bundle).findtext("title"), fx.TITLE)
 
 
 class MultipartLayoutTest(unittest.TestCase):
@@ -158,6 +198,60 @@ class MultipartLayoutTest(unittest.TestCase):
         self.assertEqual([node.text for node in root.findall("actor/role")], ["UP主", "联合创作者"])
         self.assertIsNone(root.find("season"))
 
+    def test_a_person_without_a_nickname_gets_no_actor_node_but_stays_in_the_source_record(self):
+        """An empty ``actor`` would be a fabricated person candidate. The MID and the gap stay in
+        source.json instead, and every named author is still written."""
+
+        metadata = normalize_bilibili(
+            multipart_snapshot(
+                creators=[
+                    {"mid": MID_UP, "name": None, "role": "uploader"},
+                    {"mid": MID_JOINT, "name": fx.JOINT_NAME, "role": "collaborator"},
+                ]
+            )
+        )
+        bundle = render_sidecars(metadata, multipart_request())
+        root = xml_of("tvshow.nfo", bundle)
+        self.assertEqual([node.text for node in root.findall("actor/name")], [fx.JOINT_NAME])
+        self.assertEqual(
+            [node.get("name") for node in root.findall("actor/role")], ["collaborator"]
+        )
+        self.assertEqual([node.text for node in root.findall("actor/order")], ["0"])
+        self.assertNotIn("<name />", self.bundle.text("tvshow.nfo"))
+        self.assertNotIn("<name/>", self.bundle.text("tvshow.nfo"))
+        document = json_of(bundle)
+        self.assertEqual(
+            document["creators"],
+            [
+                {
+                    "key": f"bilibili:creator:{MID_UP}",
+                    "mid": MID_UP,
+                    "name": "",
+                    "name_missing": True,
+                    "role": "uploader",
+                },
+                {
+                    "key": f"bilibili:creator:{MID_JOINT}",
+                    "mid": MID_JOINT,
+                    "name": fx.JOINT_NAME,
+                    "name_missing": False,
+                    "role": "collaborator",
+                },
+            ],
+        )
+        self.assertIn(
+            {"code": "author_name_missing", "field": "creators[0].name"}, document["issues"]
+        )
+
+    def test_a_package_with_no_named_author_writes_no_actor_at_all(self):
+        metadata = normalize_bilibili(
+            snapshot(creators=[{"mid": MID_UP, "name": "   ", "role": "uploader"}])
+        )
+        bundle = render_sidecars(metadata, single_request())
+        root = xml_of("movie.nfo", bundle)
+        self.assertEqual(root.findall("actor"), [])
+        self.assertEqual(json_of(bundle)["creators"][0]["name"], "   ")
+
     def test_episode_roots_use_the_explicit_episode_mapping(self):
         first = xml_of("Season 01/S01E01-cid-111111111.nfo", self.bundle)
         second = xml_of("Season 01/S01E02-cid-222222222.nfo", self.bundle)
@@ -168,7 +262,7 @@ class MultipartLayoutTest(unittest.TestCase):
         self.assertEqual(first.findtext("showtitle"), "多 P 投稿")
         self.assertEqual(first.findtext("title"), "第一集")
         self.assertEqual(first.findtext("uniqueid"), f"bilibili:video:{BV}:cid:{CID_ONE}")
-        self.assertEqual(first.findtext("aired"), "2019-08-02T00:30:00Z")
+        self.assertEqual(first.findtext("aired"), "2019-08-02")
         self.assertEqual(first.findtext("runtime"), "60")
         self.assertIsNone(first.find("premiered"))
 
@@ -210,9 +304,7 @@ class MultipartLayoutTest(unittest.TestCase):
         self.assertEqual(first.package_key, second.package_key)
 
     def test_partial_selection_renders_only_the_selected_parts(self):
-        request = multipart_request(
-            selected_cids=(CID_THREE,), episode_numbers={CID_THREE: 3}
-        )
+        request = multipart_request(selected_cids=(CID_THREE,), episode_numbers={CID_THREE: 3})
         bundle = render_sidecars(self.metadata, request)
         self.assertEqual(len(bundle.expected_media), 1)
         self.assertEqual(bundle.expected_media[0].path, "Season 01/S01E03-cid-333333333.mp4")
@@ -236,18 +328,59 @@ class MultipartLayoutTest(unittest.TestCase):
         self.assertNotIn("Season 01/S01E02-cid-222222222-thumb.jpg", bundle.paths)
         with_thumb = xml_of("Season 01/S01E02-cid-222222222.nfo", bundle)
         without_thumb = xml_of("Season 01/S01E01-cid-111111111.nfo", bundle)
-        self.assertEqual(with_thumb.findtext("thumb"), "Season 01/S01E02-cid-222222222-thumb.jpg")
+        self.assertEqual(with_thumb.findtext("thumb"), "S01E02-cid-222222222-thumb.jpg")
         self.assertIsNone(without_thumb.find("thumb"))
-        self.assertEqual(xml_of("tvshow.nfo", bundle).findtext("poster"), "poster.png")
+        self.assertEqual(
+            xml_of("tvshow.nfo", bundle).findtext("thumb[@aspect='poster']"), "poster.png"
+        )
+
+    def test_episode_thumb_in_the_nfo_resolves_to_the_declared_package_file(self):
+        """The NFO names the file inside its own directory; the manifest keeps the package-root
+        relative path. Resolving the NFO reference against the NFO directory must land on the
+        declared image, otherwise the candidate package contradicts itself."""
+
+        bundle = render_sidecars(
+            self.metadata,
+            multipart_request(
+                selected_cids=(CID_ONE, CID_TWO),
+                images=(poster("png"), thumb(CID_TWO, "jpg")),
+            ),
+        )
+        nfo_path = "Season 01/S01E02-cid-222222222.nfo"
+        declared = next(
+            entry.path for entry in bundle.referenced_images if entry.role == "episode_thumb"
+        )
+        reference = xml_of(nfo_path, bundle).findtext("thumb")
+        self.assertIsNotNone(reference)
+        self.assertNotIn("/", reference or "")
+        resolved = str(PurePosixPath(nfo_path).parent / (reference or ""))
+        self.assertEqual(resolved, declared)
+        self.assertEqual(
+            [entry.path for entry in bundle.referenced_images if entry.cid == CID_TWO],
+            [declared],
+        )
+
+    def test_episode_thumb_extension_matches_its_binding_and_no_thumb_is_faked(self):
+        bundle = render_sidecars(
+            self.metadata,
+            multipart_request(selected_cids=(CID_ONE, CID_TWO), images=(thumb(CID_TWO, "png"),)),
+        )
+        self.assertEqual(
+            [entry.path for entry in bundle.referenced_images],
+            ["Season 01/S01E02-cid-222222222-thumb.png"],
+        )
+        self.assertEqual(
+            xml_of("Season 01/S01E02-cid-222222222.nfo", bundle).findtext("thumb"),
+            "S01E02-cid-222222222-thumb.png",
+        )
+        self.assertIsNone(xml_of("Season 01/S01E01-cid-111111111.nfo", bundle).find("thumb"))
 
     def test_episode_title_falls_back_to_display_title_plus_part_ordinal(self):
         bundle = render_sidecars(self.metadata, multipart_request())
         fallback = xml_of("Season 01/S01E02-cid-222222222.nfo", bundle)
         self.assertEqual(fallback.findtext("title"), "多 P 投稿 - P2")
         unnamed = normalize_bilibili(multipart_snapshot(title=None))
-        blank_request = multipart_request(
-            selected_cids=(CID_TWO,), episode_numbers={CID_TWO: 2}
-        )
+        blank_request = multipart_request(selected_cids=(CID_TWO,), episode_numbers={CID_TWO: 2})
         blank = render_sidecars(unnamed, blank_request)
         self.assertIsNone(xml_of("Season 01/S01E02-cid-222222222.nfo", blank).find("title"))
         self.assertIn(ISSUE_TITLE_MISSING, [issue.code for issue in blank.issues])
@@ -288,42 +421,61 @@ class SourceJsonTest(unittest.TestCase):
         self.assertIn("多 P 投稿".encode("utf-8"), raw)
         self.assertNotIn(b"\\u591a", raw)
 
-    def test_document_is_rebuildable_metadata_in_a_fixed_key_order(self):
+    def test_document_keys_are_recursively_sorted_while_arrays_keep_business_order(self):
+        """The serializer imposes lexicographic key order at every level, so the same projection
+        always produces the same bytes. Arrays are data, not a mapping: they keep their defined
+        order (``parts`` follows the source snapshot)."""
+
+        raw = self.bundle.text("source.json")
+        canonical = (
+            json.dumps(json.loads(raw), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        self.assertEqual(raw.encode("utf-8"), canonical)
+        self.assertEqual(list(self.document), sorted(self.document))
+        for mapping in (self.document["field_sources"], self.document["parts"][0]):
+            with self.subTest(mapping=sorted(mapping)):
+                self.assertEqual(list(mapping), sorted(mapping))
         self.assertEqual(
-            list(self.document),
-            [
-                "schema_version",
-                "generator",
-                "provider",
-                "bvid",
-                "item_key",
-                "media_key",
-                "canonical_url",
-                "layout",
-                "media_extension",
-                "original_title",
-                "original_description",
-                "display_title",
-                "display_description",
-                "field_sources",
-                "published_at",
-                "captured_at",
-                "cover_available",
-                "creators",
-                "tags",
-                "parts",
-                "selected_cids",
-                "episode_numbers",
-                "expected_media",
-                "referenced_images",
-                "issues",
-            ],
+            [part["cid"] for part in self.document["parts"]], [CID_THREE, CID_ONE, CID_TWO]
         )
+        self.assertEqual(self.document["tags"], ["合集"])
+        self.assertEqual(self.document["selected_cids"], [CID_ONE, CID_TWO])
+
+    def test_document_is_rebuildable_metadata_with_the_documented_fields(self):
+        expected = {
+            "schema_version",
+            "generator",
+            "provider",
+            "bvid",
+            "item_key",
+            "media_key",
+            "canonical_url",
+            "layout",
+            "media_extension",
+            "original_title",
+            "original_description",
+            "display_title",
+            "display_description",
+            "field_sources",
+            "published_at",
+            "captured_at",
+            "cover_available",
+            "creators",
+            "tags",
+            "parts",
+            "selected_cids",
+            "episode_numbers",
+            "expected_media",
+            "referenced_images",
+            "issues",
+        }
+        self.assertEqual(set(self.document), expected)
         self.assertEqual(self.document["generator"], "tianshu-media-metadata/1")
         self.assertEqual(self.document["provider"], "bilibili")
         self.assertEqual(self.document["item_key"], f"bilibili:video:{BV}")
         self.assertEqual(self.document["layout"], "multipart")
         self.assertEqual(self.document["canonical_url"], f"https://www.bilibili.com/video/{BV}/")
+        self.assertEqual(self.document["published_at"], "2019-08-02T00:30:00Z")
 
     def test_original_and_display_are_both_present_with_their_sources(self):
         document = json_of(
@@ -437,9 +589,7 @@ class SourceJsonTest(unittest.TestCase):
         for entry in self.bundle.files:
             self.assertTrue(entry.path.endswith((".nfo", ".json")))
             self.assertTrue(entry.content)
-        self.assertEqual(
-            [entry.path for entry in self.bundle.files], list(self.bundle.paths)
-        )
+        self.assertEqual([entry.path for entry in self.bundle.files], list(self.bundle.paths))
 
 
 if __name__ == "__main__":

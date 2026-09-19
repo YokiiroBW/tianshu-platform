@@ -12,23 +12,37 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 from typing import Iterable
 
-import _fixtures as fx
-from _fixtures import (
-    CID_ONE,
-    CID_THREE,
-    CID_TWO,
-    multipart_request,
-    multipart_snapshot,
-    poster,
-    snapshot,
-    thumb,
-)
+try:
+    from . import _fixtures as fx
+    from ._fixtures import (
+        CID_ONE,
+        CID_THREE,
+        CID_TWO,
+        multipart_request,
+        multipart_snapshot,
+        poster,
+        snapshot,
+        thumb,
+    )
+except ImportError:  # narrow discovery: this directory is the top-level start directory
+    import _fixtures as fx
+    from _fixtures import (
+        CID_ONE,
+        CID_THREE,
+        CID_TWO,
+        multipart_request,
+        multipart_snapshot,
+        poster,
+        snapshot,
+        thumb,
+    )
 
 from services.platform.media import normalize_bilibili, render_sidecars
 
@@ -39,7 +53,6 @@ FORBIDDEN_MODULES = frozenset(
         "http",
         "io",
         "os",
-        "pathlib",
         "pickle",
         "requests",
         "shutil",
@@ -59,12 +72,18 @@ ALLOWED_MODULES = frozenset(
         "dataclasses",
         "datetime",
         "json",
+        "pathlib",
         "re",
         "types",
         "typing",
         "xml",
     }
 )
+# ``pathlib`` is allowed for its pure lexical types only: the renderer splits an already validated
+# relative path with ``PurePosixPath`` and never touches a filesystem.
+ALLOWED_PATHLIB_NAMES = frozenset({"PurePosixPath", "PurePath"})
+IMPURE_PATH_CALL = re.compile(r"(?<![A-Za-z0-9_])Path\(")
+IO_CALLS = ("open(", "os.", "subprocess", "sqlite3", "urlopen", "read_text", "write_text")
 
 
 def imported_modules(path: Path) -> set[str]:
@@ -80,6 +99,19 @@ def imported_modules(path: Path) -> set[str]:
 
 def production_files() -> list[Path]:
     return sorted(PRODUCTION_DIR.glob("*.py"))
+
+
+def pathlib_imports(path: Path) -> list[str]:
+    """Every name a production module pulls out of ``pathlib``."""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "pathlib":
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names if alias.name.startswith("pathlib"))
+    return names
 
 
 class StaticPurityTest(unittest.TestCase):
@@ -105,9 +137,22 @@ class StaticPurityTest(unittest.TestCase):
 
     def test_no_file_extension_of_a_media_or_image_is_opened(self):
         source = "\n".join(path.read_text(encoding="utf-8") for path in production_files())
-        for call in ("open(", "Path(", "os.", "subprocess", "sqlite3", "urlopen"):
+        for call in IO_CALLS:
             with self.subTest(call=call):
                 self.assertNotIn(call, source)
+        self.assertIsNone(IMPURE_PATH_CALL.search(source))
+
+    def test_pathlib_is_used_only_for_its_pure_lexical_types(self):
+        """The renderer may split a path lexically; it may not own a filesystem path object."""
+
+        for path in production_files():
+            source = path.read_text(encoding="utf-8")
+            with self.subTest(module=path.name):
+                self.assertIsNone(IMPURE_PATH_CALL.search(source))
+                for imported in pathlib_imports(path):
+                    self.assertIn(imported, ALLOWED_PATHLIB_NAMES)
+        sidecars = (PRODUCTION_DIR / "sidecars.py").read_text(encoding="utf-8")
+        self.assertIn("from pathlib import PurePosixPath", sidecars)
 
 
 class ImportSideEffectTest(unittest.TestCase):
@@ -211,9 +256,7 @@ class DeterminismTest(unittest.TestCase):
         self.assertEqual(shuffled_parts[CID_ONE]["episode_number"], 1)
         self.assertEqual(original_parts[CID_TWO]["video"], shuffled_parts[CID_TWO]["video"])
         self.assertEqual(original_parts[CID_ONE]["video"], shuffled_parts[CID_ONE]["video"])
-        self.assertEqual(
-            original_parts[CID_ONE]["video"], f"Season 01/S01E01-cid-{CID_ONE}.mp4"
-        )
+        self.assertEqual(original_parts[CID_ONE]["video"], f"Season 01/S01E01-cid-{CID_ONE}.mp4")
 
     def test_a_normalized_record_can_be_rendered_many_times_without_mutation(self):
         metadata = normalize_bilibili(snapshot())
@@ -232,11 +275,11 @@ class IndependentExpectationTest(unittest.TestCase):
         expected = (
             '<?xml version="1.0" encoding="utf-8" standalone="yes"?>\n'
             "<movie>\n"
-            f"  <title>{_escape(fx.TITLE.strip())}</title>\n"
-            f"  <originaltitle>{_escape(fx.TITLE.strip())}</originaltitle>\n"
+            f"  <title>{_escape(fx.TITLE)}</title>\n"
+            f"  <originaltitle>{_escape(fx.TITLE)}</originaltitle>\n"
             f"  <plot>{_escape(fx.DESCRIPTION)}</plot>\n"
             "  <year>2019</year>\n"
-            "  <premiered>2019-08-02T00:30:00Z</premiered>\n"
+            "  <premiered>2019-08-02</premiered>\n"
             "  <tag>测试</tag>\n"
             "  <tag>动画</tag>\n"
             "  <actor>\n"
@@ -245,7 +288,7 @@ class IndependentExpectationTest(unittest.TestCase):
             "    <order>0</order>\n"
             "  </actor>\n"
             "  <runtime>12</runtime>\n"
-            "  <poster>poster.jpg</poster>\n"
+            '  <thumb aspect="poster">poster.jpg</thumb>\n'
             '  <uniqueid type="bilibili" default="true">'
             f"bilibili:video:{fx.BV}:cid:{CID_ONE}</uniqueid>\n"
             "</movie>\n"

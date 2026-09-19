@@ -14,6 +14,7 @@ file, an upstream URL or a fabricated thumbnail reference.
 from __future__ import annotations
 
 import json
+from pathlib import PurePosixPath
 from xml.etree import ElementTree
 
 from .identity import (
@@ -155,9 +156,14 @@ def _validate_request(metadata: MediaMetadata, request: object) -> RenderRequest
         field = f"images[{position}]"
         if not isinstance(image, ImageBinding):
             raise _reject("invalid_images", field)
-        if image.role not in IMAGE_ROLES:
+        if not isinstance(image.role, str) or image.role not in IMAGE_ROLES:
             raise _reject("invalid_image_role", f"{field}.role")
         _checked_image_extension(image.extension, f"{field}.extension")
+        if image.cid is not None and not isinstance(image.cid, str):
+            # Checked before any set membership or hashing: a list, dict or integer cid must be a
+            # named refusal, not a TypeError escaping from ``in``.
+            code = "invalid_poster_cid" if image.role == "poster" else "invalid_thumb_cid"
+            raise _reject(code, f"{field}.cid")
         if image.role == "poster":
             if image.cid is not None:
                 raise _reject("invalid_poster_cid", f"{field}.cid")
@@ -193,18 +199,26 @@ def _element(root: ElementTree.Element, tag: str, text: object, forced: bool = F
 
 
 def _add_creators(root: ElementTree.Element, metadata: MediaMetadata) -> None:
-    """One ``actor`` per retained person. A missing nickname is a gap, never the MID as a name."""
+    """One ``actor`` per *named* person, in metadata order.
 
-    for position, creator in enumerate(metadata.creators):
+    A person without a nickname stays in the normalized record and in ``source.json`` with an
+    ``author_name_missing`` issue, but produces no ``actor`` node here: an empty actor would be a
+    fabricated person candidate that a media server could merge into someone else. Named authors
+    are always all written."""
+
+    order = 0
+    for creator in metadata.creators:
+        if not creator.name_present:
+            continue
         actor = ElementTree.SubElement(root, "actor")
-        if creator.name_present:
-            ElementTree.SubElement(actor, "name").text = creator.name
+        ElementTree.SubElement(actor, "name").text = creator.name
         role = ElementTree.SubElement(actor, "role")
         role.set("infoset", "true")
         role.set("name", creator.role)
         role.set("language", ROLE_LANGUAGE)
         role.text = ROLE_LABELS[creator.role]
-        ElementTree.SubElement(actor, "order").text = str(position)
+        ElementTree.SubElement(actor, "order").text = str(order)
+        order += 1
 
 
 def _add_unique_id(root: ElementTree.Element, key: str) -> None:
@@ -214,8 +228,19 @@ def _add_unique_id(root: ElementTree.Element, key: str) -> None:
     node.text = key
 
 
-def _year(premiered: str | None) -> str | None:
-    return premiered[:4] if premiered else None
+def _premiere_date(published_at: str | None) -> str | None:
+    """The date profile of ``premiered``/``aired``: ``YYYY-MM-DD`` in UTC, or nothing.
+
+    The stored value is already normalized UTC second precision, so the date is its first ten
+    characters. ``source.json`` keeps the full timestamp; the XbmcMetadata reader this candidate
+    targets parses a date by default, so writing a full datetime here would be a profile this layer
+    cannot claim."""
+
+    return published_at[:10] if published_at else None
+
+
+def _year(premiere_date: str | None) -> str | None:
+    return premiere_date[:4] if premiere_date else None
 
 
 def _runtime_minutes(duration_seconds: int | None) -> int | None:
@@ -230,14 +255,28 @@ def _serialize(root: ElementTree.Element) -> bytes:
     return f"{NFO_XML_DECLARATION}\n{body}\n".encode("utf-8")
 
 
+def _add_poster(root: ElementTree.Element, poster: str | None) -> None:
+    """The poster profile the XbmcMetadata reader looks for: ``<thumb aspect="poster">``.
+
+    A leaf file name is written, so the reference resolves inside the directory that holds the NFO.
+    No top-level ``poster`` element is invented, and no binding means no image element at all."""
+
+    if poster is None:
+        return
+    node = ElementTree.SubElement(root, "thumb")
+    node.set("aspect", "poster")
+    node.text = poster
+
+
 def _add_common_header(root: ElementTree.Element, metadata: MediaMetadata) -> None:
     """Title, plot, premiere date, tags and authors. The title element always exists."""
 
+    premiere = _premiere_date(metadata.published_at)
     _element(root, "title", metadata.display_title, forced=True)
     _element(root, "originaltitle", metadata.original_title)
     _element(root, "plot", metadata.display_description)
-    _element(root, "year", _year(metadata.published_at))
-    _element(root, "premiered", metadata.published_at)
+    _element(root, "year", _year(premiere))
+    _element(root, "premiered", premiere)
     for tag in metadata.tags:
         _element(root, "tag", tag)
     _add_creators(root, metadata)
@@ -247,7 +286,7 @@ def _render_movie(metadata: MediaMetadata, poster: str | None) -> bytes:
     root = ElementTree.Element(NFO_MOVIE)
     _add_common_header(root, metadata)
     _element(root, "runtime", _runtime_minutes(metadata.parts[0].duration_seconds))
-    _element(root, "poster", poster)
+    _add_poster(root, poster)
     _add_unique_id(root, metadata.media_key)
     return _serialize(root)
 
@@ -255,7 +294,7 @@ def _render_movie(metadata: MediaMetadata, poster: str | None) -> bytes:
 def _render_tvshow(metadata: MediaMetadata, poster: str | None) -> bytes:
     root = ElementTree.Element(NFO_TVSHOW)
     _add_common_header(root, metadata)
-    _element(root, "poster", poster)
+    _add_poster(root, poster)
     _add_unique_id(root, metadata.item_key)
     return _serialize(root)
 
@@ -275,9 +314,13 @@ def _episode_title(metadata: MediaMetadata, part_title: str, part_present: bool,
 def _render_episode(
     metadata: MediaMetadata, request: RenderRequest, cid: str, thumb: str | None
 ) -> bytes:
+    """One ``episodedetails``. ``thumb`` is the *leaf* file name of the thumbnail that sits next to
+    this NFO; ``source.json`` keeps the package-root relative path for the same file."""
+
     part = metadata.part(cid)
     if part is None:  # pragma: no cover - validated against these very parts
         raise _reject("unknown_cid", "selected_cids")
+    premiere = _premiere_date(metadata.published_at)
     root = ElementTree.Element(NFO_EPISODEDETAILS)
     _element(root, "title", _episode_title(metadata, part.title, part.title_present, part.index))
     _element(root, "originaltitle", metadata.original_title)
@@ -285,8 +328,8 @@ def _render_episode(
     _element(root, "plot", metadata.display_description)
     _element(root, "season", SEASON_NUMBER)
     _element(root, "episode", request.episode_for(cid))
-    _element(root, "year", _year(metadata.published_at))
-    _element(root, "aired", metadata.published_at)
+    _element(root, "year", _year(premiere))
+    _element(root, "aired", premiere)
     _element(root, "runtime", _runtime_minutes(part.duration_seconds))
     for tag in metadata.tags:
         _element(root, "tag", tag)
@@ -304,12 +347,12 @@ def _source_document(
     video_paths: dict[str, str],
     issues: tuple[Issue, ...],
 ) -> dict[str, object]:
-    """The whitelisted, rebuildable ``source.json`` document in its fixed key order. Nothing here
-    comes from the caller's raw snapshot: there is no ``raw`` passthrough, no cookie or header,
-    no signed or temporary media URL and no environment path. A package can be rebuilt from the
-    normalized projection plus the application's own layout and episode assignments. The issue
-    list is the bundle's list, so a gap the renderer itself found (a declared cover with no
-    local image) travels with the package instead of staying in memory."""
+    """The whitelisted, rebuildable ``source.json`` document. Nothing here comes from the caller's
+    raw snapshot: there is no ``raw`` passthrough, no cookie or header, no signed or temporary media
+    URL and no environment path. A package can be rebuilt from the normalized projection plus the
+    application's own layout and episode assignments. The issue list is the bundle's list, so a gap
+    the renderer itself found (a declared cover with no local image) travels with the package
+    instead of staying in memory. Key order is imposed by the serializer, not by this literal."""
 
     parts: list[dict[str, object]] = []
     for part in metadata.parts:
@@ -357,9 +400,7 @@ def _source_document(
         "parts": parts,
         "selected_cids": list(request.selected_cids),
         "episode_numbers": [[cid, number] for cid, number in request.episode_numbers],
-        "expected_media": [
-            {"path": entry.path, "extension": entry.extension} for entry in media
-        ],
+        "expected_media": [{"path": entry.path, "extension": entry.extension} for entry in media],
         "referenced_images": [
             {"path": entry.path, "role": entry.role, "cid": entry.cid} for entry in images
         ],
@@ -368,9 +409,14 @@ def _source_document(
 
 
 def _serialize_source_json(document: dict[str, object]) -> bytes:
-    """UTF-8, ``ensure_ascii=False``, two-space indent, insertion order, one trailing newline."""
+    """UTF-8, ``ensure_ascii=False``, two-space indent, one trailing newline.
 
-    text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=False)
+    Every mapping is written in recursive lexicographic key order (``sort_keys=True``), so the same
+    projection always produces the same bytes no matter how the document was assembled. Arrays keep
+    their business order: ``parts`` follows the source snapshot, ``tags``/``creators`` keep their
+    first-seen order and ``selected_cids``/``episode_numbers`` keep the caller's order."""
+
+    text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True)
     return f"{text}\n".encode("utf-8")
 
 
@@ -431,8 +477,11 @@ def render_sidecars(metadata: MediaMetadata, request: RenderRequest) -> SidecarB
                 thumb = None
             else:
                 extension = require_image_extension(binding.extension)
-                thumb = f"{stem}{EPISODE_THUMB_SUFFIX}.{extension}"
-                images.append(ReferencedImage(path=thumb, role="episode_thumb", cid=cid))
+                # The declaration is package-root relative; the NFO references the same file by the
+                # name it has inside its own directory.
+                thumb_path = f"{stem}{EPISODE_THUMB_SUFFIX}.{extension}"
+                images.append(ReferencedImage(path=thumb_path, role="episode_thumb", cid=cid))
+                thumb = PurePosixPath(thumb_path).name
             files.append(SidecarFile(f"{stem}.nfo", _render_episode(metadata, checked, cid, thumb)))
     issues = list(metadata.issues)
     if poster_name is not None:

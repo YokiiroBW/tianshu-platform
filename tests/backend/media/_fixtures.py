@@ -28,7 +28,7 @@ MID_UP = "946974"
 MID_JOINT = "208259"
 MID_OTHER = "409796278"
 
-TITLE = '  标题 & <测试> "引号" \'单引号\' 😀\n第二行  '
+TITLE = "  标题 & <测试> \"引号\" '单引号' 😀\n第二行  "
 DESCRIPTION = "简介第一行 & <标签>\n简介第二行 😀"
 UP_NAME = "测试UP主"
 JOINT_NAME = "联合投稿人"
@@ -75,6 +75,19 @@ def multipart_snapshot(**overrides: object) -> dict[str, object]:
     )
     document.update(overrides)
     return document
+
+
+def part(**overrides: object) -> dict[str, object]:
+    """One part record with the frozen four keys; override a key to build a malformed sample."""
+
+    record: dict[str, object] = {
+        "cid": CID_ONE,
+        "index": 1,
+        "title": "第一集 & 开场",
+        "duration_seconds": 725,
+    }
+    record.update(overrides)
+    return record
 
 
 def frozen_copy(document: Mapping[str, object]) -> dict[str, object]:

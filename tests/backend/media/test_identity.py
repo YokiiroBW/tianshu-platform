@@ -10,15 +10,26 @@ from __future__ import annotations
 import datetime
 import unittest
 
-import _fixtures as fx
-from _fixtures import (
-    BV,
-    CID_ONE,
-    CID_TWO,
-    MID_UP,
-    OTHER_BV,
-    snapshot,
-)
+try:
+    from . import _fixtures as fx
+    from ._fixtures import (
+        BV,
+        CID_ONE,
+        CID_TWO,
+        MID_UP,
+        OTHER_BV,
+        snapshot,
+    )
+except ImportError:  # narrow discovery: this directory is the top-level start directory
+    import _fixtures as fx
+    from _fixtures import (
+        BV,
+        CID_ONE,
+        CID_TWO,
+        MID_UP,
+        OTHER_BV,
+        snapshot,
+    )
 
 from services.platform.media import (
     ISSUE_CODES,
@@ -54,14 +65,22 @@ def refused(call) -> MetadataValidationError:
 
 
 class BvShapeTest(unittest.TestCase):
-    def test_accepts_bv_plus_ten_ascii_alphanumerics(self):
-        """Prefix letters may arrive in either case; the ten body characters are kept as sent."""
+    def test_accepts_uppercase_bv_plus_ten_ascii_alphanumerics(self):
+        """The prefix is exactly ``BV``; the ten body characters are kept as sent, case included."""
 
-        for candidate in (BV, OTHER_BV, "BV0000000000", "bv1xx411c7md", "Bv1xx411c7mD"):
+        for candidate in (BV, OTHER_BV, "BV0000000000", "BV1xx411c7mD"):
             with self.subTest(candidate=candidate):
                 self.assertTrue(is_bvid(candidate))
                 self.assertEqual(require_bvid(candidate), candidate)
-                self.assertEqual(require_bvid(candidate)[:2].upper(), "BV")
+                self.assertEqual(require_bvid(candidate)[:2], "BV")
+
+    def test_lower_or_mixed_case_prefix_is_refused_not_normalized(self):
+        """Case carries identity: this layer never rewrites a candidate into a different BV."""
+
+        for candidate in ("bv1xx411c7mD", "bv1xx411c7md", "Bv1xx411c7mD", "bV1xx411c7mD"):
+            with self.subTest(candidate=candidate):
+                self.assertFalse(is_bvid(candidate))
+                self.assertEqual(refused(lambda c=candidate: require_bvid(c)).code, "invalid_bvid")
 
     def test_rejects_wrong_length_prefix_and_non_ascii(self):
         for candidate in (
@@ -84,17 +103,31 @@ class BvShapeTest(unittest.TestCase):
 
 
 class CidMidShapeTest(unittest.TestCase):
-    def test_positive_decimal_accepts_int_and_string_but_not_leading_zero(self):
-        for value in ("1", "12345678901234567890", 7):
+    def test_positive_decimal_string_is_the_only_accepted_form(self):
+        for value in ("1", "12345678901234567890", MID_UP):
             with self.subTest(value=value):
-                self.assertEqual(require_cid(value), str(value))
+                self.assertEqual(require_cid(value), value)
         for value in ("0", "01", "007", "-1", "1.0", "1e3", "", None, True, 0, 10**20):
             with self.subTest(value=value):
                 self.assertEqual(refused(lambda v=value: require_cid(v)).code, "invalid_cid")
 
+    def test_integer_identifiers_are_refused_because_a_number_is_not_an_identity(self):
+        """A JSON integer cannot carry a 64-bit CID through a browser, and the lost precision is
+        unrecoverable, so the projection must send the decimal string and this layer refuses int."""
+
+        for value in (7, 946974, 101, 2**53 + 1, 12345678901234567890):
+            with self.subTest(value=value):
+                self.assertEqual(refused(lambda v=value: require_cid(v)).code, "invalid_cid")
+                self.assertEqual(refused(lambda v=value: require_mid(v)).code, "invalid_mid")
+
+    def test_float_and_bool_are_not_identifiers(self):
+        for value in (1.0, 7.0, float("inf"), True, False):
+            with self.subTest(value=value):
+                self.assertEqual(refused(lambda v=value: require_cid(v)).code, "invalid_cid")
+                self.assertEqual(refused(lambda v=value: require_mid(v)).code, "invalid_mid")
+
     def test_mid_uses_the_same_decimal_rule(self):
         self.assertEqual(require_mid(MID_UP), MID_UP)
-        self.assertEqual(require_mid(946974), MID_UP)
         self.assertEqual(refused(lambda: require_mid("0" + MID_UP)).code, "invalid_mid")
         self.assertTrue(creator_key(MID_UP).startswith("bilibili:creator:"))
 
@@ -222,6 +255,44 @@ class TimestampTest(unittest.TestCase):
                 self.assertEqual(error.code, "invalid_timestamp")
                 self.assertEqual(error.field, "captured_at")
 
+    def test_offset_that_leaves_the_representable_utc_range_is_a_named_error(self):
+        """A well-formed local time whose offset pushes it past year 1 or 9999 is a validation
+        failure with a fixed code, never an OverflowError escaping the public entry point."""
+
+        for value, field in (
+            ("0001-01-01T00:00:00+01:00", "captured_at"),
+            ("9999-12-31T23:59:59-01:00", "captured_at"),
+            ("0001-01-01T00:00:00+23:59", "captured_at"),
+        ):
+            with self.subTest(value=value):
+                error = refused(lambda v=value: normalize_bilibili(snapshot(captured_at=v)))
+                self.assertEqual(error.code, "invalid_timestamp")
+                self.assertEqual(error.field, field)
+        published = refused(
+            lambda: normalize_bilibili(snapshot(published_at="9999-12-31T23:59:59-01:00"))
+        )
+        self.assertEqual(published.code, "invalid_timestamp")
+        self.assertEqual(published.field, "published_at")
+
+    def test_representable_edges_keep_four_digit_years_and_second_precision(self):
+        for value, expected in (
+            ("0001-01-01T00:00:00Z", "0001-01-01T00:00:00Z"),
+            ("9999-12-31T23:59:59Z", "9999-12-31T23:59:59Z"),
+            ("0001-01-01T00:00:00+00:00", "0001-01-01T00:00:00Z"),
+            ("9999-12-31T23:59:59+00:00", "9999-12-31T23:59:59Z"),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    normalize_bilibili(snapshot(captured_at=value)).captured_at, expected
+                )
+
+    def test_the_error_never_carries_the_offending_value(self):
+        error = refused(
+            lambda: normalize_bilibili(snapshot(captured_at="9999-12-31T23:59:59-01:00"))
+        )
+        self.assertNotIn("9999", str(error))
+        self.assertEqual((error.code, error.field), ("invalid_timestamp", "captured_at"))
+
     def test_captured_at_is_required_and_never_taken_from_a_clock(self):
         error = refused(lambda: normalize_bilibili(snapshot(captured_at=None)))
         self.assertEqual(error.code, "invalid_timestamp")
@@ -246,7 +317,7 @@ class ForbiddenCharacterTest(unittest.TestCase):
 
     def test_ordinary_newlines_quotes_emoji_and_cjk_are_kept(self):
         metadata = normalize_bilibili(snapshot())
-        self.assertEqual(metadata.original_title, fx.TITLE.strip())
+        self.assertEqual(metadata.original_title, fx.TITLE)
         self.assertIn("😀", metadata.original_title)
         self.assertIn("\n", metadata.original_title)
 

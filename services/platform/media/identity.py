@@ -16,7 +16,7 @@ import re
 
 from .types import MEDIA_EXTENSIONS, PROVIDER, SEASON_DIRECTORY, MetadataValidationError
 
-BV_PATTERN = re.compile(r"[Bb][Vv][0-9A-Za-z]{10}\Z")
+BV_PATTERN = re.compile(r"BV[0-9A-Za-z]{10}\Z")
 POSITIVE_DECIMAL_PATTERN = re.compile(r"[1-9][0-9]*\Z")
 DECIMAL_MAX_DIGITS = 20
 WINDOWS_RESERVED_NAMES = frozenset(
@@ -31,22 +31,22 @@ def _reject(code: str, field: str) -> MetadataValidationError:
 
 
 def _shape(value: object, code: str, field: str) -> str:
-    """Accept an identifier as a string or an exact positive integer; return its decimal form.
-    Browsers lose integer precision above 2**53 and a JSON number is not an identity, so the
-    projection may legitimately send either form. Booleans are never integers here."""
+    """Accept an identifier only as a string; return it unchanged.
+
+    A CID or MID is an identity, not a number this layer may re-spell. A JSON integer cannot carry
+    a 64-bit identifier through a browser without losing precision, so an integer, boolean or float
+    is refused instead of being converted; lower-case ``bv``/``Bv``/``bV`` prefixes are refused too,
+    because normalizing the case would invent an identifier the source never published."""
 
     if isinstance(value, str):
         return value
-    if type(value) is int and value > 0:
-        return str(value)
     raise _reject(code, field)
 
 
 def is_bvid(value: object) -> bool:
-    """True only for a ``BV`` prefix plus ten ASCII letters or digits. The two prefix letters are
-    accepted in either case, as in a copied link; the ten body characters are matched exactly as
-    sent, because case carries information in a BV and collapsing it would invent an identifier
-    the source never published."""
+    """True only for an ASCII ``BV`` prefix plus ten ASCII letters or digits, matched exactly.
+
+    Case is content: the prefix must be upper case and the ten body characters are kept as sent."""
 
     return isinstance(value, str) and bool(BV_PATTERN.match(value))
 

@@ -4,12 +4,14 @@ The snapshot is the *future connector's* internal projection, not a Bilibili API
 module therefore validates exactly the frozen field table in the card and never guesses a site
 protocol: every key is required, unknown keys are refused, and nothing is fetched, timed or written.
 
-Two rules shape the whole module:
+Three rules shape the whole module:
 
 * the input mapping is read-only and is never modified in place, and the result shares no mutable
   container with it;
 * an absent or blank source value is recorded as a gap (``missing``) instead of being invented, and
-  a manual display override is recorded as ``user`` without erasing the original text.
+  a manual display override is recorded as ``user`` without erasing the original text;
+* the original text is provenance and is kept byte for byte, including leading and trailing
+  whitespace, while only the display value collapses an all-blank string to empty.
 """
 
 from __future__ import annotations
@@ -107,7 +109,11 @@ def _forbidden_characters(text: str) -> bool:
 
 
 def _optional_text(value: object, *, maximum: int, field: str, code: str) -> tuple[str, bool]:
-    """Return ``(text, present)`` for a nullable source string; blank means absent."""
+    """Return ``(text, present)`` for a nullable source string.
+
+    The text is kept exactly as sent, including leading and trailing newlines or spaces: the
+    original is provenance and this layer may not destroy it. ``present`` is False for null and for
+    an all-blank string, which is a recorded gap rather than a rewritten value."""
 
     if value is None:
         return "", False
@@ -117,10 +123,7 @@ def _optional_text(value: object, *, maximum: int, field: str, code: str) -> tup
         raise _reject(code, field)
     if _forbidden_characters(value):
         raise _reject("forbidden_control_character", field)
-    trimmed = value.strip()
-    if not trimmed:
-        return "", False
-    return trimmed, True
+    return value, bool(value.strip())
 
 
 def _required_text(value: object, *, maximum: int, field: str, code: str) -> str:
@@ -155,7 +158,11 @@ def _normalize_timestamp(value: object, field: str) -> str:
         offset_hours, offset_minutes = int(zone[1:3]), int(zone[4:6])
         if offset_hours > 23 or offset_minutes > 59:
             raise _reject("invalid_timestamp", field)
-        stamp -= sign * timedelta(hours=offset_hours, minutes=offset_minutes)
+        try:
+            stamp -= sign * timedelta(hours=offset_hours, minutes=offset_minutes)
+        except OverflowError as error:
+            # A well-formed local time whose offset falls outside the representable UTC range.
+            raise _reject("invalid_timestamp", field) from error
     return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -293,16 +300,19 @@ def _collect_overrides(overrides: object) -> dict[str, tuple[str, bool]]:
 def _resolve_field(
     source_value: tuple[str, bool], override: tuple[str, bool] | None
 ) -> tuple[str, str, str, bool]:
-    """Return ``(original, display, source word, present)`` for one text field. A blank override is
-    a real, recorded display gap: it is never silently replaced by the source text, and the
-    original value stays available for provenance."""
+    """Return ``(original, display, source word, present)`` for one text field.
+
+    The original is always the source string exactly as sent, so an override never erases
+    provenance. A non-blank display string is used verbatim; an all-blank source or override is a
+    real, recorded display gap — it collapses to the empty string and is marked missing rather than
+    being silently replaced by the other value."""
 
     original, original_present = source_value
     if override is None:
         word = SOURCE_SOURCE if original_present else SOURCE_MISSING
-        return original, original, word, original_present
+        return original, original if original_present else "", word, original_present
     display, display_present = override
-    return original, display, SOURCE_USER, display_present
+    return original, display if display_present else "", SOURCE_USER, display_present
 
 
 def _collect_issues(
