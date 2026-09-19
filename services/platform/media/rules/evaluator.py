@@ -263,30 +263,43 @@ class RuleEvaluator:
         create/cleanup boundary of a request that is being cancelled right now is retired by the
         worker that owns it, which is why the worker is retired *before* it leaves the owned set.
         Nothing outside ``self._workers`` is ever touched.
+
+        A worker leaves that set only once it is *settled* — child reaped, creation unable to produce
+        another. A worker whose creation never handed its child over cannot be settled by waiting for
+        it, so it stays owned and is swept again by the next close instead of being dropped while it
+        still has something to answer for. This close is still bounded: the unsettled worker's child is
+        killed synchronously, and the worker's own creation callback kills whatever arrives later.
         """
 
         self._closed = True
         await self._retire_owned_workers()
 
     async def _retire_owned_workers(self) -> None:
-        """Retire until the owned set stays empty.
+        """Retire the owned workers until every one of them is settled.
 
         The set can only shrink once ``_closed`` is set, so this loop terminates after at most the
         number of requests that were in flight; the bound is there to make a silent exit impossible
-        rather than to be reached.
+        rather than to be reached. Each round closes every worker it still owns: closing is idempotent
+        and shares one cleanup deadline per worker, so a repeated round costs nothing for a worker that
+        was already reaped.
         """
 
         for _ in range(MAX_CONCURRENT_REQUESTS + 1):
-            while self._workers:
-                worker = self._workers.pop()
-                await worker.close_quietly()
             if not self._workers:
                 return
-        # Unreachable with a bounded number of requests, but a silent exit would be worse than a
-        # loud one: whatever is left is killed synchronously rather than abandoned.
+            for worker in tuple(self._workers):
+                await worker.close_quietly()
+                if worker.settled:
+                    self._workers.discard(worker)
+            if not self._workers:
+                return
+        # Unreachable for a worker that can be settled at all, but a silent exit would be worse than a
+        # loud one: whatever is left has its kill issued synchronously rather than abandoned, and stays
+        # owned — dropping it here is exactly the loss this loop exists to prevent.
         for worker in tuple(self._workers):
-            self._workers.discard(worker)
             worker.force_kill()
+            if worker.settled:
+                self._workers.discard(worker)
 
     def _spawn_worker(self) -> RegexWorker:
         """Register a worker for one in-flight request, or refuse because this instance is closed.
@@ -574,9 +587,12 @@ class RuleEvaluator:
             yield handles
         finally:
             # Cleanup has its own budget, separate from the (possibly exhausted) request deadline:
-            # the child is always retired, and always before the worker leaves the owned set.
+            # the child is always retired, and always before the worker leaves the owned set. A worker
+            # that is not settled yet — a creation that never handed its child over — stays owned, so
+            # the object that still has a child to answer for is not dropped by this request.
             await handles.process.close_quietly(process_layer.CLEANUP_TIMEOUT_SECONDS)
-            self._workers.discard(handles.process)
+            if handles.process.settled:
+                self._workers.discard(handles.process)
 
 
 class _EvaluationFailed(Exception):

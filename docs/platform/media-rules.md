@@ -116,12 +116,13 @@ accessible AND NOT quality_satisfied AND NOT blacklist_match AND (whitelist_empt
 | --- | --- |
 | worker 启动 | `sys.executable -I -u <包内受信脚本绝对路径>`，无 shell、无用户参数 |
 | 协议 | 单行 JSON，**两侧显式 UTF-8**：`seq` 必须是正整数（bool、float、字符串一律拒绝）且与回包一致；`handle` 必须是 `int`；每类回包的字段集合精确匹配，未知/重复字段、非 UTF-8 行、超限行都算协议违规 |
+| 深度嵌套行 | **小于 16 KiB 也拒绝**：5000 层嵌套数组只有 10000 字节，却会让 `json.loads` 触发 `RecursionError`。父进程在**握手行与回包行两个入口**都把 `RecursionError` 当作“读不懂的行”处理（与非法 JSON 同类），退役 worker 并给出固定错误码，不让解析器异常外逃；子进程侧同样拒收深层请求并回 `invalid_request`。`limit=` 只挡行长，挡不住这个 |
 | 握手行 | 恰好 `{"ready": true, "protocol": 1, "pid": <本子进程 pid>}`：字段集合精确匹配，`ready` 必须是 `true`，`protocol` 必须是**整数** `1`（`true`、`1.0`、`"1"` 都拒绝），`pid` 必须是本 worker 所创建子进程的 pid（别的进程写来的 `ready` 不算握手） |
 | 重复键 | **两端都拒绝**：父进程用 `object_pairs_hook` 拒收子进程回包里重复的键，子进程同样拒收请求里重复的键（回 `invalid_request`）。重复键是协议违规，不是“最后一个值生效” |
 | 启动握手预算 | 3.0 s，**包含进程创建本身**（不只是读 `ready` 行） |
 | 单条 compile/search 硬预算 | **`min(50 ms, 本次请求剩余时间)`**：50 ms 是上限，不是固定值 |
 | 单次 validate/evaluate 全请求上限 | 5.0 s，自**准入/校验**起算，覆盖进程创建、握手、全部 compile 与全部多值/多规则 search（清理至多另 1.0 s，用 monotonic deadline） |
-| 回收上限 | 1.0 s（一次回收内的所有等待**共用**这一个 deadline，不是每段各 1 s） |
+| 回收上限 | 1.0 s。一个 worker 只有**一个清理任务**：第一个发起退役的调用方建它，之后所有并发调用方（第二次关闭、被取消的请求、evaluator 扫尾）都等**同一个任务**，因此 N 个并发退役只花一份预算，不会各自重启一秒；交接等待、宽限等待与 kill 后回收**共用同一个绝对 deadline**，不存在“先等创建预算、再新开回收预算” |
 | 单字段投影合计 | 64 KiB（65536）UTF-8 字节 |
 | IPC 请求行 / 响应行 | 1 MiB / 16 KiB（流 `limit=`，在无界缓存前落实） |
 | 同时进行中的请求 | **2**；第 3 个立即 `busy`，无隐式等待队列（两个请求由各自真实子进程占住，见 `test_bounds.ConcurrencyTest`） |
@@ -134,15 +135,16 @@ accessible AND NOT quality_satisfied AND NOT blacklist_match AND (whitelist_empt
 - 两条升级路径，区别是“孩子还有没有机会自己退”：
   - **硬失败**（预算用尽、取消、协议违规、超限）先 `terminate/kill` 再等待，**第一个 await 之前就发信号**——正在回溯匹配的子进程不会因为管道关闭而停下，清理预算要花在等它真的退出上；
   - **主动关闭**（`aclose` / `close_quietly`）先关 stdin，给子进程一段**有上限的宽限**（≤0.2 s，且算在同一个 1.0 s 清理预算内），仍不退再 kill。这样正常退出会被记成真实 `0`，而不是每次关闭都以 `-9` 收场。
-- 受管子进程保留到确认退出并记录真实 `returncode`；等不到退出的子进程保持 `returncode is None`，**不伪造**退出码，`alive` 也不是“清空引用”的假象。
-- 外部 `asyncio` 取消传播 `CancelledError`：在**握手期、请求期、创建期、清理期**任一处取消，都终止并回收本次子进程，不返回成功、不吞异常。清理期取消是最容易被写错的一处：清理会先把子进程 kill 并**回收完**，再把 `CancelledError` 重新抛出——只做其中一半都是缺陷（停止等待会漏掉一个还在跑的进程，吞掉取消会让调用方以为请求正常结束）。判断“这是调用方的取消”还是“传输层自己取消了一个内部等待”用 `Task.cancelling()`，不靠异常本身猜。创建期取消由创建任务自己的完成回调兜底：关闭与创建相撞时，**关闭返回之后不会再有活着的子进程**（`test_regex_process.CreationBarrierTest` 把创建卡在 `create_subprocess_exec` 上取证）。
-- 重复关闭、并发关闭、取消清理都幂等：第二次关闭不再等待、不再 kill，也不丢句柄。
-- `aclose()` 后拒绝新调用（`RuleEvaluationError(closed, "evaluator")`，是配置错误而不是“无法判定”的条目结果），只清理本实例的进程，不碰别人的进程；worker 在**第一个 await 之前**就登记到实例的托管集合，所以关闭是屏障而不是竞态。
+- **创建与关闭相撞时，窗口是“被建模”的，不是被声明消失的。** `create_subprocess_exec` 已经产生真实子进程、但还没把它交回 worker 的那一小段里，worker 看不到这个孩子。因此：关闭会为**交接**等待整个共享的 1.0 s 预算（不是只等 0.2 s 宽限），等待期间 `alive` 保持 `true`、`settled` 保持 `false`、`returncode` 保持 `None`（`closed` 只表示“不再接新活”，**不用来宣称“没有活着的子进程”**）；预算内交接到达时立刻 kill 并真实回收，预算用完仍未交接时 `aclose()` 如实返回“未 settled”，由创建任务自己的完成回调在交接到达的**同一轮事件循环回调里**发 kill，并补一轮只针对这个迟到孩子的回收。evaluator 只丢弃 `settled` 的 worker，未 settled 的对象留在托管集合里由下一次关闭再扫，不会因为“先 pop 再 close”而丢失。
+- 受管子进程保留到确认退出并记录真实 `returncode`；等不到退出的子进程保持 `returncode is None`，**不伪造**退出码。`alive` 也不是“清空引用”的假象：它只看“孩子是否可能还在跑”（持有的子进程未退出，或交接仍未完成），不看 `closed`。
+- 外部 `asyncio` 取消传播 `CancelledError`：在**握手期、请求期、创建期、交接期、清理期**任一处取消，都终止并回收本次子进程，不返回成功、不吞异常。清理期取消是最容易被写错的一处：清理会先把子进程 kill 并**回收完**，再把 `CancelledError` 重新抛出——只做其中一半都是缺陷（停止等待会漏掉一个还在跑的进程，吞掉取消会让调用方以为请求正常结束）。判断“这是调用方的取消”还是“传输层自己取消了一个内部等待”用 `Task.cancelling()`，不靠异常本身猜。创建期取消由创建任务自己的完成回调兜底（`test_regex_process.CreationBarrierTest` 把创建卡在 `create_subprocess_exec` 上取证；`test_a_close_inside_the_handover_window_is_not_reported_as_settled` 专门卡在“孩子已存在、尚未交回”的那一刻）。
+- 重复关闭、并发关闭、取消清理都幂等：第二次关闭不再等待、不再 kill，也不丢句柄；并发关闭共用同一个清理任务与同一个 deadline。
+- `aclose()` 后拒绝新调用（`RuleEvaluationError(closed, "evaluator")`，是配置错误而不是“无法判定”的条目结果），只清理本实例的进程，不碰别人的进程；worker 在**第一个 await 之前**就登记到实例的托管集合，所以关闭是屏障而不是竞态。集合里只有 `settled` 的 worker 会被丢弃：创建始终没交回子进程的 worker 留在集合里由下一次关闭再扫，`aclose()` 不会为了“集合清空”而丢掉一个还有孩子要交代的对象。
 
 ## 验证入口
 
 ```bash
-# 最窄（本包自己的套件）：138 个用例
+# 最窄（本包自己的套件）：139 个用例
 python -X utf8 -m unittest discover -s tests/backend/media_rules -v
 # 常规发现（确认新用例进入集合）
 python -X utf8 -m unittest discover -s tests/backend -v
@@ -157,13 +159,13 @@ python -m ruff format --check services/platform/media/rules tests/backend/media_
 
 ### 真实子进程与替身证据的边界
 
-真实子进程用例需要能创建管道子进程的环境（见 `docs/handoffs/TS-098.md` 的环境边界）：当前受限沙箱拒绝 `asyncio` 的 Windows 子进程传输（`PermissionError: [WinError 5]`）。这些用例**保留原断言、不删覆盖、不改期望**，由用例自己的环境探针识别该拒绝并具名 skip，计入交付日志的 `skipped` 数（本轮 `Ran 138 tests … OK (skipped=41)`，41 条 skip **全部**是这一个原因；协调环境复跑时它们是实跑用例，期望 138/138 实跑通过）。
+真实子进程用例需要能创建管道子进程的环境（见 `docs/handoffs/TS-098.md` 的环境边界）：当前受限沙箱拒绝 `asyncio` 的 Windows 子进程传输（`PermissionError: [WinError 5]`）。这些用例**保留原断言、不删覆盖、不改期望**，由用例自己的环境探针识别该拒绝并具名 skip，计入交付日志的 `skipped` 数（本轮 `Ran 139 tests … OK (skipped=44)`，44 条 skip **全部**是这一个原因；协调环境复跑时它们是实跑用例，期望 139/139 实跑通过）。
 
-**不需要**子进程的用例在任何环境都实跑，本轮共 97 条：
+**不需要**子进程的用例在任何环境都实跑，本轮共 95 条：
 
 - 形状、摘要、投影、匹配、判定与解释、导入边界；
 - **容量**：`busy` 与“取消后容量真的回来”在关闭之前取证（关闭会让一切返回 `closed`，在关闭之后取证等于什么都没证明）；
-- **协议解析**：握手行与回包行交给**真实解析入口**（`start` 与严格读取器）判定，用一个记录式传输替身，不需要真管道，因此不会因环境而 skip；
-- **生命周期逻辑**：`kill` 先于 `wait`、真实退出码、重复关闭、无法回收时不伪造退出码、取消在创建/握手/请求/清理四处的回收、创建与关闭相撞后不留活子进程——这些用记录式替身取证，替身会记录每一次 `write`/`kill`/`wait` 的顺序。
+- **协议解析**：握手行与回包行交给**真实解析入口**（`start` 与严格读取器）判定，用一个记录式传输替身，不需要真管道，因此不会因环境而 skip——包括**小于 16 KiB 的 5000 层嵌套行**在两个入口都被拒为具名错误并真实回收；
+- **生命周期逻辑**：`kill` 先于 `wait`、真实退出码、重复关闭、无法回收时不伪造退出码、取消在创建/交接/握手/请求/清理五处的回收、创建与关闭相撞后不留活子进程、**交接窗口不谎报为已 settled 且并发关闭只花一份预算**——这些用记录式替身取证，替身会记录每一次 `write`/`kill`/`wait` 的顺序。
 
 替身证明的是**顺序与状态机**，不能替代真实子进程：真实 `returncode`、真实管道拒绝、真实回溯匹配是否被杀掉，只能在协调环境实跑时确认。本轮协调环境已就这些行为单独复跑探针（见 `docs/handoffs/TS-098.md` 的验收记录）。

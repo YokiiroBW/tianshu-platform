@@ -115,28 +115,48 @@ SCRIPTS: dict[str, str] = {
         "    sys.stderr.flush()\n"
         "    time.sleep(30)\n"
     ),
+    # A legal handshake and then nothing else: it never reads its input again, so closing the pipe
+    # cannot end it and only a kill can. That is what a close that is still inside its grace period
+    # looks like from the outside, which is the stage the cleanup-cancellation case needs.
+    "lingering.py": (f"import json, os, sys, time\n{READY}\nsys.stdout.flush()\ntime.sleep(30)\n"),
     # The product starts the worker with ``stderr=DEVNULL``, so a fixture's stderr is a delivery
-    # channel for a *person* reading a manual run, never for an automated stage barrier. This fixture
-    # announces the same fact in a way a test can really synchronise on: a marker file next to itself.
+    # channel for a *person* reading a manual run, never for an automated stage barrier. These two
+    # fixtures announce the same fact in a way a test can really synchronise on: a marker file next to
+    # themselves. Both answer ``compile`` normally and only then block inside the ``search`` they are
+    # asked for, so a cancellation can be aimed at a real match instead of at process startup.
     "slow_on_call.py": (
         "import json, os, sys, time\n"
         f"{READY}\n"
         "sys.stdout.flush()\n"
         "for line in sys.stdin:\n"
-        "    open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"
+        "    command = json.loads(line)\n"
+        "    if command['op'] == 'compile':\n"
+        "        sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
+        " 'handle': command['seq']}) + '\\n')\n"
+        "    else:\n"
+        "        open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"
         " 'entered-' + str(os.getpid())), 'w').close()\n"
-        "    time.sleep(30)\n"
+        "        time.sleep(30)\n"
+        "        sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
+        " 'matched': False}) + '\\n')\n"
+        "    sys.stdout.flush()\n"
     ),
     # A valid handshake, then a response that breaks the 16 KiB response limit *while it is being
     # read*. The line echoes the request's own sequence number, so the only thing wrong with it is
-    # its size: a test that also got a shape violation would prove nothing about the limit.
+    # its size: a test that also got a shape violation would prove nothing about the limit. It is sent
+    # in answer to a ``search``, and the ``compile`` before it is answered legally, so the failure
+    # really belongs to the stage the test names instead of to the first command that arrives.
     "oversized_response.py": (
         "import json, os, sys\n"
         f"{READY}\n"
         "sys.stdout.flush()\n"
         "for line in sys.stdin:\n"
         "    command = json.loads(line)\n"
-        "    sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
+        "    if command['op'] == 'compile':\n"
+        "        sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
+        " 'handle': command['seq']}) + '\\n')\n"
+        "    else:\n"
+        "        sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
         " 'matched': False, 'pad': 'p' * 40000}) + '\\n')\n"
         "    sys.stdout.flush()\n"
     ),
@@ -148,8 +168,10 @@ SCRIPTS: dict[str, str] = {
         "    command = json.loads(line)\n"
         "    if command['op'] == 'compile':\n"
         "        sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
-        " 'handle': 1}) + '\\n')\n"
+        " 'handle': command['seq']}) + '\\n')\n"
         "    else:\n"
+        "        open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"
+        " 'entered-' + str(os.getpid())), 'w').close()\n"
         "        time.sleep(30)\n"
         "        sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
         " 'matched': True}) + '\\n')\n"
@@ -303,7 +325,9 @@ class ControlledScripts:
         while time.monotonic() < deadline:
             if os.path.exists(path):
                 return True
-            await asyncio.sleep(0.005)
+            # A tight poll: the call budget is 50 ms, and a caller that noticed the marker late would
+            # be cancelling a call that had already timed out rather than one that was still running.
+            await asyncio.sleep(0.002)
         return False
 
     def __enter__(self) -> "ControlledScripts":
@@ -435,9 +459,10 @@ class RealWorkerTest(unittest.IsolatedAsyncioTestCase):
     async def test_an_oversized_response_is_refused_before_it_is_accumulated(self):
         """The large line is refused *while it is being read*, and the worker is retired for it.
 
-        The fixture completes a legal handshake first, so what is under test is the response to a
-        request rather than the readiness line: the call below is the one that consumes the oversized
-        line, and a worker that answered an over-limit response must not be reused.
+        The fixture completes a legal handshake and answers ``compile`` legally, and only its answer to
+        the ``search`` below is oversized. That staging is the whole point: a fixture that sent the
+        large line in answer to the first command would make this case pass through the *compile*
+        failure path while claiming to test the search one.
         """
 
         with ControlledScripts() as scripts:
@@ -547,19 +572,22 @@ class CancellationTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_cancellation_during_the_cleanup_still_reaps_and_still_propagates(self):
         """A close that is itself cancelled finishes its job *and* reports the cancellation.
 
-        The child here ignores its closed input, so the close is inside its grace period when the
-        cancellation arrives. Two things must both hold, and holding only one is a defect either way:
-        the child must still be killed and reaped — a cleanup that stops half-way leaks a running
-        process — and the cancellation must still reach the caller, because a caller that is told its
-        request finished would go on to use a result that does not exist.
+        The child here completes a legal handshake and then never reads its input again, so closing the
+        pipe cannot end it and the close is genuinely inside its grace period when the cancellation
+        arrives — the previous fixture never handshook at all, so this case was measuring a start
+        failure rather than a cleanup. Two things must both hold, and holding only one is a defect
+        either way: the child must still be killed and reaped — a cleanup that stops half-way leaks a
+        running process — and the cancellation must still reach the caller, because a caller that is
+        told its request finished would go on to use a result that does not exist.
         """
 
         with ControlledScripts() as scripts:
-            script = scripts.fixture("silent.py")
+            script = scripts.fixture("lingering.py")
             worker = RegexWorker(script)
             await start_or_skip(self, worker)
             process = worker.managed_process
             assert process is not None
+            self.assertTrue(worker.alive, "the fixture really is a live child after its handshake")
             task = asyncio.ensure_future(worker.aclose(timeout=30.0))
             await asyncio.sleep(0.05)
             self.assertIsNone(process.returncode, "the close is still inside its grace period")
@@ -580,10 +608,13 @@ class CancellationTest(unittest.IsolatedAsyncioTestCase):
             assert process is not None
             pid = worker.pid
             assert pid is not None
+            # The compile is answered legally, so the cancellation below lands inside a real match
+            # rather than on a child that never got past its first command.
             handle = await worker.compile("^x$", 0, timeout=CALL_BUDGET)
             task = asyncio.ensure_future(worker.search(handle, "text", timeout=CALL_BUDGET))
             reached = await scripts.await_marker(pid)
             self.assertTrue(reached, "the request really reached the child before it was cancelled")
+            self.assertFalse(task.done(), "a cancelled match is one that was still running")
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
@@ -646,26 +677,81 @@ class CreationBarrierTest(unittest.IsolatedAsyncioTestCase):
         self._real_create = asyncio.create_subprocess_exec  # type: ignore[assignment]
         return entered, release, delayed  # type: ignore[return-value]
 
+    async def hold_handover(self, created: list[object]) -> tuple[object, object]:
+        """Return ``(created_child, release)`` for a creation held open *after* the child exists.
+
+        The difference from :meth:`hold_creation` is the whole point: there the child does not exist
+        yet when the close arrives, so nothing but the creation's own callback can be responsible for
+        it. Here the child is already running and only the *handover* is held open — the one window in
+        which this worker owns a child it cannot see.
+        """
+
+        born = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed(*args: object, **kwargs: object):
+            process = await self._real_create(*args, **kwargs)
+            created.append(process)
+            born.set()
+            await release.wait()
+            return process
+
+        self._real_create = asyncio.create_subprocess_exec  # type: ignore[assignment]
+        return born, release, delayed  # type: ignore[return-value]
+
+    def require_a_child_was_created(self, task: asyncio.Future, created: list[object]) -> None:
+        """Name the environment limitation when no child ever came into existence here.
+
+        An empty ``created`` list would make every loop below pass without evidence, so it is reported
+        instead: a transport refusal is this host's limitation and becomes a named skip, while any
+        other reason a creation failed stays a failure. A cancelled task has no exception to read, and
+        the refusal it hit is not observable through it — the skip message says so plainly.
+        """
+
+        if created:
+            return
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                require_real_child(self, error)
+        self.skipTest(
+            "this environment refused the child's pipe transport before any child existed; the "
+            "real-child assertions need the coordination environment"
+        )
+
     async def test_closing_during_creation_prevents_a_late_child(self):
         with ControlledScripts() as scripts:
             script = scripts.fixture("silent_on_start.py")
             created: list[object] = []
             entered, release, delayed = await self.hold_creation(created)
             worker = RegexWorker(script)
-            with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
-                task = asyncio.ensure_future(worker.start(timeout=CALL_BUDGET))
-                await entered.wait()
-                self.assertIsNone(worker.managed_process, "the race really is at the creation")
-                await worker.aclose()
+            try:
+                with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
+                    task = asyncio.ensure_future(worker.start(timeout=CALL_BUDGET))
+                    await entered.wait()
+                    self.assertIsNone(worker.managed_process, "the race really is at the creation")
+                    await worker.aclose()
+                    release.set()
+                    with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
+                        await task
+                if not created:
+                    # No child was ever produced here: name the environment refusal instead of letting
+                    # the loop below pass over an empty list and call it evidence.
+                    self.require_a_child_was_created(task, created)
+                # Nothing here kills the child first: the exit code below is the product's own cleanup
+                # finishing, which is the only thing that makes "the late child is gone" evidence
+                # rather than a signal this test sent.
+                for process in created:
+                    await self.await_exit(process)
+                    self.assertIsNotNone(process.returncode, "a late child is killed, not adopted")
+                self.assertFalse(worker.alive, "a close cannot be followed by a live worker")
+                self.assertIsNotNone(worker.returncode)
+            finally:
                 release.set()
-                with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
-                    await task
-            self.assertFalse(worker.alive, "a close cannot be followed by a live worker")
-            for process in created:
-                if process.returncode is None:
-                    process.kill()
-                await self.await_exit(process)
-                self.assertIsNotNone(process.returncode, "a late child is killed, not adopted")
+                for process in created:
+                    if process.returncode is None:
+                        process.kill()
+                    await self.await_exit(process)
 
     async def test_a_cancelled_creation_leaves_no_live_worker(self):
         with ControlledScripts() as scripts:
@@ -673,19 +759,84 @@ class CreationBarrierTest(unittest.IsolatedAsyncioTestCase):
             created: list[object] = []
             entered, release, delayed = await self.hold_creation(created)
             worker = RegexWorker(script)
-            with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
-                task = asyncio.ensure_future(worker.start(timeout=CALL_BUDGET))
-                await entered.wait()
-                task.cancel()
+            try:
+                with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
+                    task = asyncio.ensure_future(worker.start(timeout=CALL_BUDGET))
+                    await entered.wait()
+                    task.cancel()
+                    release.set()
+                    with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
+                        await task
+                if not created:
+                    self.require_a_child_was_created(task, created)
+                for process in created:
+                    await self.await_exit(process)
+                    self.assertIsNotNone(
+                        process.returncode, "the cancelled creation reaps its child"
+                    )
+                self.assertFalse(worker.alive)
+                self.assertIsNotNone(worker.returncode)
+            finally:
                 release.set()
-                with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
-                    await task
-            self.assertFalse(worker.alive)
-            for process in created:
-                if process.returncode is None:
-                    process.kill()
-                await self.await_exit(process)
-                self.assertIsNotNone(process.returncode)
+                for process in created:
+                    if process.returncode is None:
+                        process.kill()
+                    await self.await_exit(process)
+
+    async def test_a_close_inside_the_handover_window_is_not_reported_as_settled(self):
+        """A child that exists but was never handed over is not declared away by the close.
+
+        ``create_subprocess_exec`` is held open *after* it produced a real child, so the close below
+        races a child that is running and is not yet this worker's. Three things must hold, and the
+        first two are what an earlier round got wrong: the close spends the published cleanup budget
+        rather than the 0.2 s close grace, it does not report the worker as settled — "closed" is not
+        evidence about a child nobody has seen — and it does not invent an exit code for that child.
+        Once the handover is released, the child is killed and reaped like any other.
+        """
+
+        with ControlledScripts() as scripts:
+            script = scripts.fixture("lingering.py")
+            created: list[object] = []
+            born, release, delayed = await self.hold_handover(created)
+            worker = RegexWorker(script)
+            try:
+                with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
+                    task = asyncio.ensure_future(worker.start(timeout=CALL_BUDGET))
+                    try:
+                        await asyncio.wait_for(born.wait(), timeout=30.0)
+                    except TimeoutError:
+                        self.require_a_child_was_created(task, created)
+                        self.fail("the creation neither produced a child nor failed")
+                    self.assertEqual(len(created), 1, "the child really exists behind the barrier")
+                    self.assertIsNone(worker.managed_process, "and has not been handed over")
+                    started = time.monotonic()
+                    await worker.aclose()
+                    elapsed = time.monotonic() - started
+                    self.assertGreaterEqual(
+                        elapsed,
+                        CLEANUP_TIMEOUT_SECONDS * 0.9,
+                        "the close waits for the handover inside the cleanup budget, not the grace",
+                    )
+                    self.assertTrue(
+                        worker.alive,
+                        "a worker whose child was never handed over cannot report itself clean",
+                    )
+                    self.assertIsNone(worker.returncode, "no exit code is invented for it")
+                    self.assertFalse(worker.settled)
+                    release.set()
+                    with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
+                        await task
+                for process in created:
+                    await self.await_exit(process)
+                    self.assertIsNotNone(process.returncode, "the late handover is reaped")
+                self.assertFalse(worker.alive)
+                self.assertIsNotNone(worker.returncode)
+            finally:
+                release.set()
+                for process in created:
+                    if process.returncode is None:
+                        process.kill()
+                    await self.await_exit(process)
 
     async def await_exit(self, process: object, timeout: float = 5.0) -> None:
         deadline = time.monotonic() + timeout
@@ -780,14 +931,27 @@ class FaultyWorkerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(worker.pid)
 
     async def test_a_cancelled_request_kills_the_child_and_propagates(self):
+        """The cancel lands inside a real search, at the stage the fixture announces.
+
+        ``asyncio.sleep(0.2)`` used to stand in for "the search is running", which it never proved: with
+        a 30 s call budget the search really was still running, but nothing tied the cancellation to it.
+        The marker file is the child saying it is inside that search, and the task is asserted not done
+        before the cancel, so a cancel that arrived after the call had already been answered would fail
+        here instead of passing by timing.
+        """
+
         script = self.scripts.fixture("slow_search.py")
         worker = RegexWorker(script)
         await worker.start()
         try:
             handle = await worker.compile("x", 0, timeout=CALL_BUDGET)
             managed = worker.managed_process
+            pid = worker.pid
+            assert pid is not None
             task = asyncio.ensure_future(worker.search(handle, "abc", timeout=30.0))
-            await asyncio.sleep(0.2)
+            reached = await self.scripts.await_marker(pid)
+            self.assertTrue(reached, "the search really reached the child before it was cancelled")
+            self.assertFalse(task.done(), "the cancelled call is one that was still running")
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task

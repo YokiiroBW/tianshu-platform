@@ -129,7 +129,11 @@ def _duplicate_free(pairs: list[tuple[str, object]]) -> dict[str, object]:
 def handle_line(line: str, cache: dict[int, re.Pattern[str]]) -> None:
     try:
         command = json.loads(line, object_pairs_hook=_duplicate_free)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # ``RecursionError`` is not a ``ValueError``: deeply nested input that is far below any size
+        # limit — 5000 nested arrays fit in a few kilobytes — makes the parser blow its own stack. That
+        # is a line this worker cannot read, exactly like malformed JSON, so it is refused by name
+        # rather than crashing the child on an unhandled exception the parent can only observe as EOF.
         _refuse(None, "invalid_request")
         return
     if not isinstance(command, dict):

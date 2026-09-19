@@ -71,6 +71,35 @@ SLOW_WORKER = (
     "    time.sleep(30)\n"
 )
 
+#: A worker that answers every request legally and quickly — one search costs about 6 ms — while the
+#: *request* it belongs to stays in flight for many seconds, because the policy it is asked about has
+#: 200 rules. That combination is what makes it usable as an "in flight" barrier: no individual call
+#: ever comes near the 50 ms call budget, so the request is genuinely still running when a test acts on
+#: it, instead of having already died of a call timeout. A fixture that blocks inside a call cannot
+#: serve this purpose at all — the call budget would end it within 50 ms — which is why the two
+#: fixtures are separate rather than one. It marks its first request the same way ``SLOW_WORKER`` does,
+#: for the same reason.
+IN_FLIGHT_WORKER = (
+    "import json, os, sys, time\n"
+    "marker = os.path.join(os.path.dirname(os.path.abspath(__file__)),"
+    " 'entered-' + str(os.getpid()))\n"
+    "announced = False\n"
+    "sys.stdout.write(json.dumps({'ready': True, 'protocol': 1, 'pid': os.getpid()}) + '\\n')\n"
+    "sys.stdout.flush()\n"
+    "for line in sys.stdin:\n"
+    "    command = json.loads(line)\n"
+    "    if command['op'] == 'compile':\n"
+    "        answer = {'seq': command['seq'], 'ok': True, 'handle': command['seq']}\n"
+    "    else:\n"
+    "        if not announced:\n"
+    "            announced = True\n"
+    "            open(marker, 'w').close()\n"
+    "        time.sleep(0.006)\n"
+    "        answer = {'seq': command['seq'], 'ok': True, 'matched': False}\n"
+    "    sys.stdout.write(json.dumps(answer) + '\\n')\n"
+    "    sys.stdout.flush()\n"
+)
+
 #: A worker whose every answer is legal and quick, but not instant: one search costs about 6 ms,
 #: which is comfortably inside the 50 ms *call* budget, while a whole policy's worth of them costs far
 #: more than the 5 s *request* budget. That is the only way to show the request deadline doing its job
@@ -224,17 +253,27 @@ class FixtureWorker:
     The script has no top-level indentation, so it is runnable exactly as stored; a fixture that kept
     its indentation would fail to import and every budget assertion downstream would be measuring a
     startup crash instead of a slow child.
+
+    Entering this context yields the *fixture*, not the path. A case needs both — the path to hand to
+    ``RuleEvaluator`` and this object's own helpers (the marker, the in-flight barrier, the cleanup) —
+    and a bare string has neither, so ``script`` is the one thing the product is ever given.
     """
 
     #: The fixture source, and the filename stem it is written under.
     SOURCE = SLOW_WORKER
     STEM = "slow_worker"
 
-    def __enter__(self) -> str:
+    def __enter__(self) -> "FixtureWorker":
         self.directory = _fixture_directory()
         self.path = os.path.join(self.directory, f"{self.STEM}_{os.getpid()}.py")
         with open(self.path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(self.SOURCE)
+        return self
+
+    @property
+    def script(self) -> str:
+        """The absolute path of the fixture script: what the product is started with."""
+
         return self.path
 
     def __exit__(self, *exc_info: object) -> None:
@@ -280,7 +319,9 @@ class FixtureWorker:
                     os.path.exists(self.marker(worker.pid)) for worker in live
                 ):
                     return True
-            await asyncio.sleep(0.01)
+            # A tight poll: the barrier is used by cases whose request must still be running when they
+            # act, and a 10 ms poll would spend a fifth of a 50 ms call budget before the assertion.
+            await asyncio.sleep(0.002)
         return False
 
 
@@ -289,6 +330,13 @@ class SlowWorkerScript(FixtureWorker):
 
     SOURCE = SLOW_WORKER
     STEM = "slow_worker"
+
+
+class InFlightWorkerScript(FixtureWorker):
+    """A worker whose request stays in flight for seconds while every call stays fast."""
+
+    SOURCE = IN_FLIGHT_WORKER
+    STEM = "in_flight_worker"
 
 
 class CumulativeWorkerScript(FixtureWorker):
@@ -321,17 +369,20 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
 
         The two are not merely *scheduled*: the barrier below returns only once each has created its
         own child and that child has announced it received the request, which is the point at which
-        the request is genuinely in flight. A plain-text policy is a single synchronous step, so two
-        of those have already finished by the time a third arrives — and a third request that then
-        succeeds is the correct behaviour, which ``test_a_finished_request_releases_its_slot`` states
-        separately.
+        the request is genuinely in flight. The policy is the largest the frozen limits allow, so those
+        requests stay in flight for seconds while each individual search stays far inside the 50 ms call
+        budget — a policy of one rule would be over before the third request arrived, and a fixture
+        that blocked inside a call would be ended by the call budget instead. A plain-text policy is a
+        single synchronous step, so two of those have already finished by the time a third arrives —
+        and a third request that then succeeds is the correct behaviour, which
+        ``test_a_finished_request_releases_its_slot`` states separately.
         """
 
         self.assertEqual(MAX_CONCURRENT_REQUESTS, 2)
-        policy = document(whitelist=[group("wl", rule("r1", "title", "regex", "合集"))])
+        policy = document(whitelist=cumulative_policy())
         await require_usable_worker(self)
-        with SlowWorkerScript() as script, RecordingWorkers() as workers:
-            evaluator = RuleEvaluator(worker_script=script)
+        with InFlightWorkerScript() as script, RecordingWorkers() as workers:
+            evaluator = RuleEvaluator(worker_script=script.script)
             first = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
             second = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
             in_flight = await script.await_in_flight(workers, 2)
@@ -367,7 +418,7 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
 
     async def evaluate_with(self, evaluator: RuleEvaluator, policy: object):
         return await evaluator.evaluate(
-            metadata(),
+            metadata(tags=cumulative_tags()),
             policy,
             accessible=True,
             quality_satisfied=False,
@@ -390,10 +441,10 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
         slots the cancelled requests were holding.
         """
 
-        policy = document(whitelist=[group("wl", rule("r1", "title", "regex", "合集"))])
+        policy = document(whitelist=cumulative_policy())
         await require_usable_worker(self)
-        with SlowWorkerScript() as script, RecordingWorkers() as workers:
-            evaluator = RuleEvaluator(worker_script=script)
+        with InFlightWorkerScript() as script, RecordingWorkers() as workers:
+            evaluator = RuleEvaluator(worker_script=script.script)
             first = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
             second = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
             in_flight = await script.await_in_flight(workers, 2)
@@ -531,7 +582,7 @@ class RequestBudgetTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_single_call_over_its_budget_is_a_regex_timeout(self):
         with SlowWorkerScript() as script:
-            evaluator = RuleEvaluator(worker_script=script)
+            evaluator = RuleEvaluator(worker_script=script.script)
             async with evaluator:
                 await require_usable_worker(self)
                 decision = await evaluator.evaluate(
@@ -553,7 +604,7 @@ class RequestBudgetTest(unittest.IsolatedAsyncioTestCase):
         """
 
         with SlowWorkerScript() as script:
-            evaluator = RuleEvaluator(worker_script=script)
+            evaluator = RuleEvaluator(worker_script=script.script)
             async with evaluator:
                 await require_usable_worker(self)
                 with (
@@ -643,7 +694,7 @@ class RequestBudgetTest(unittest.IsolatedAsyncioTestCase):
             "each individual search must stay well inside the call budget",
         )
         with CumulativeWorkerScript() as script:
-            evaluator = RuleEvaluator(worker_script=script)
+            evaluator = RuleEvaluator(worker_script=script.script)
             async with evaluator:
                 await require_usable_worker(self)
                 started = time.monotonic()
@@ -719,12 +770,12 @@ class LifecycleTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_closing_retires_a_worker_left_by_a_cancelled_request(self):
         await require_usable_worker(self)
-        with SlowWorkerScript() as script, RecordingWorkers() as workers:
-            evaluator = RuleEvaluator(worker_script=script)
+        with InFlightWorkerScript() as script, RecordingWorkers() as workers:
+            evaluator = RuleEvaluator(worker_script=script.script)
             task = asyncio.ensure_future(
                 evaluator.evaluate(
-                    metadata(),
-                    document(whitelist=[group("wl", rule("r1", "title", "regex", "合集"))]),
+                    metadata(tags=cumulative_tags()),
+                    document(whitelist=cumulative_policy()),
                     accessible=True,
                     quality_satisfied=False,
                     snapshot_revision="rev-1",
@@ -738,6 +789,9 @@ class LifecycleTest(unittest.IsolatedAsyncioTestCase):
                     require_real_child(self, task.exception())
                 self.fail("the request must have reached its child before it can be cancelled")
             self.assertIsNotNone(workers[0].pid, "the recorded worker owns a real child")
+            self.assertFalse(
+                task.done(), "the request is cancelled while it is really still running"
+            )
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
@@ -750,20 +804,34 @@ class LifecycleTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(worker.alive)
 
     async def test_a_cancelled_evaluation_does_not_return_a_decision(self):
-        with SlowWorkerScript() as script:
-            evaluator = RuleEvaluator(worker_script=script)
+        """The cancellation arrives at a real stage of the request, not after a hopeful sleep.
+
+        ``asyncio.sleep(0.15)`` used to stand in for "the request is in flight", which it never proved:
+        with a 50 ms call budget the request had already finished, so the cancellation landed on a
+        completed task and the assertion below failed. The barrier here is the child's own marker — the
+        request is provably inside a search when it is cancelled — and the task is asserted *not* done
+        before the cancel, so the case cannot pass by racing.
+        """
+
+        with InFlightWorkerScript() as script, RecordingWorkers() as workers:
+            evaluator = RuleEvaluator(worker_script=script.script)
             async with evaluator:
                 await require_usable_worker(self)
                 task = asyncio.ensure_future(
                     evaluator.evaluate(
-                        metadata(),
-                        document(whitelist=[group("wl", rule("r1", "title", "regex", "合集"))]),
+                        metadata(tags=cumulative_tags()),
+                        document(whitelist=cumulative_policy()),
                         accessible=True,
                         quality_satisfied=False,
                         snapshot_revision="rev-1",
                     )
                 )
-                await asyncio.sleep(0.15)
+                reached = await script.await_in_flight(workers, 1)
+                if not reached:
+                    if task.done() and not task.cancelled():
+                        require_real_child(self, task.exception())
+                    self.fail("the request must reach its child before it can be cancelled")
+                self.assertFalse(task.done(), "a cancelled request is one that was still running")
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await task
@@ -776,6 +844,8 @@ class LifecycleTest(unittest.IsolatedAsyncioTestCase):
                     snapshot_revision="rev-1",
                 )
         self.assertEqual(recovered.decision, DECISION_SKIP)
+        self.assertIsNotNone(workers[0].returncode, "the cancelled request reaped its child")
+        self.assertFalse(workers[0].alive)
 
     async def test_a_catastrophic_expression_leaves_no_running_child(self):
         await require_usable_worker(self)
