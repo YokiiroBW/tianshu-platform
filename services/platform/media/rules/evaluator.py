@@ -86,6 +86,11 @@ from .types import (
 
 MAX_CONCURRENT_REQUESTS = 2
 
+#: Failure codes that are *not* an item outcome. A closed evaluator is a caller bug — it reused an
+#: instance it closed, or two callers disagreed about ownership — and reporting it as an item's
+#: ``rule_error`` would hide that behind a decision the caller is expected to store.
+_FATAL_CODES = frozenset({ERROR_CLOSED})
+
 _SNAPSHOT_REVISION = re.compile(SNAPSHOT_REVISION_PATTERN + r"\Z")
 
 
@@ -251,9 +256,13 @@ class RuleEvaluator:
     async def aclose(self) -> None:
         """Refuse new calls and retire every process this instance still owns.
 
-        A child that appears while the snapshot is being retired — the create/cleanup boundary of a
-        request that is being cancelled right now — is retired too, so closing an evaluator cannot
-        leave a process of this instance behind. Nothing outside ``self._workers`` is ever touched.
+        Closing is a barrier, and the order is what makes it one: the closed mark is set *before* any
+        process work, and a worker can only ever be registered while that mark is still false. So when
+        this coroutine returns, no request can be about to create a child behind its back, and every
+        worker that was registered has been killed and reaped. A child that appears at the
+        create/cleanup boundary of a request that is being cancelled right now is retired by the
+        worker that owns it, which is why the worker is retired *before* it leaves the owned set.
+        Nothing outside ``self._workers`` is ever touched.
         """
 
         self._closed = True
@@ -262,10 +271,9 @@ class RuleEvaluator:
     async def _retire_owned_workers(self) -> None:
         """Retire until the owned set stays empty.
 
-        Every worker is retired *before* it leaves the set, so a request that finishes its cleanup
-        during this loop can only ever publish a worker that is already reaped. Requests that started
-        before ``_closed`` was set can therefore still appear here, and are collected on the next
-        pass instead of being left behind.
+        The set can only shrink once ``_closed`` is set, so this loop terminates after at most the
+        number of requests that were in flight; the bound is there to make a silent exit impossible
+        rather than to be reached.
         """
 
         for _ in range(MAX_CONCURRENT_REQUESTS + 1):
@@ -279,6 +287,21 @@ class RuleEvaluator:
         for worker in tuple(self._workers):
             self._workers.discard(worker)
             worker.force_kill()
+
+    def _spawn_worker(self) -> RegexWorker:
+        """Register a worker for one in-flight request, or refuse because this instance is closed.
+
+        Registering happens here and only here, synchronously: a request therefore either registers
+        its worker before ``aclose`` can observe the set — in which case ``aclose`` retires it — or it
+        is refused outright. There is no third case in which a child is created after the set was
+        already swept.
+        """
+
+        if self._closed:
+            raise RuleEvaluationError(ERROR_CLOSED, "evaluator")
+        worker = RegexWorker(self._worker_script)
+        self._workers.add(worker)
+        return worker
 
     async def validate_policy(self, document: object) -> RulePolicy:
         """Shape-validate a document, then prove every expression really compiles.
@@ -363,6 +386,10 @@ class RuleEvaluator:
                     deadline,
                 )
         except _EvaluationFailed as failed:
+            if failed.failure.code in _FATAL_CODES:
+                # A closed evaluator is a configuration/ownership bug in the caller, not an item
+                # outcome: it is raised so the caller cannot record it as "we could not decide".
+                raise RuleEvaluationError(failed.failure.code, "evaluator") from None
             builder.set_failure(failed.failure)
             return _rule_error_decision(
                 metadata, snapshot_revision, policy, failed.failure, builder
@@ -513,8 +540,9 @@ class RuleEvaluator:
         if not rules:
             yield handles
             return
-        handles.process = RegexWorker(self._worker_script)
-        self._workers.add(handles.process)
+        # Registered before the first await, through the closed barrier: from here on this worker is
+        # visible to ``aclose``, which kills and reaps it whatever happens to this request.
+        handles.process = self._spawn_worker()
         try:
             budget = min(process_layer.STARTUP_TIMEOUT_SECONDS, remaining(deadline))
             try:

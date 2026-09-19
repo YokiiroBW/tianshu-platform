@@ -18,12 +18,14 @@ a request field.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -69,6 +71,8 @@ READY = "sys.stdout.write(json.dumps({'ready': True, 'protocol': 1, 'pid': os.ge
 #: they run, so a fixture that cannot even be imported fails as a fixture rather than as a timeout.
 SCRIPTS: dict[str, str] = {
     "dies.py": "import sys\nsys.exit(3)\n",
+    # Never says ready: it exists so a cancellation can arrive while the handshake is still pending.
+    "silent_on_start.py": "import time\ntime.sleep(30)\n",
     "silent.py": (
         "import sys, time\n"
         "sys.stderr.write('reached-sleep\\n')\n"
@@ -111,13 +115,30 @@ SCRIPTS: dict[str, str] = {
         "    sys.stderr.flush()\n"
         "    time.sleep(30)\n"
     ),
+    # The product starts the worker with ``stderr=DEVNULL``, so a fixture's stderr is a delivery
+    # channel for a *person* reading a manual run, never for an automated stage barrier. This fixture
+    # announces the same fact in a way a test can really synchronise on: a marker file next to itself.
+    "slow_on_call.py": (
+        "import json, os, sys, time\n"
+        f"{READY}\n"
+        "sys.stdout.flush()\n"
+        "for line in sys.stdin:\n"
+        "    open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"
+        " 'entered-' + str(os.getpid())), 'w').close()\n"
+        "    time.sleep(30)\n"
+    ),
+    # A valid handshake, then a response that breaks the 16 KiB response limit *while it is being
+    # read*. The line echoes the request's own sequence number, so the only thing wrong with it is
+    # its size: a test that also got a shape violation would prove nothing about the limit.
     "oversized_response.py": (
         "import json, os, sys\n"
         f"{READY}\n"
-        "sys.stdout.write(json.dumps({'seq': 1, 'ok': True, 'matched': False,"
-        " 'pad': 'p' * 40000}) + '\\n')\n"
         "sys.stdout.flush()\n"
-        "sys.stdin.readline()\n"
+        "for line in sys.stdin:\n"
+        "    command = json.loads(line)\n"
+        "    sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
+        " 'matched': False, 'pad': 'p' * 40000}) + '\\n')\n"
+        "    sys.stdout.flush()\n"
     ),
     "slow_search.py": (
         "import json, os, sys, time\n"
@@ -248,13 +269,42 @@ class ControlledScripts:
         return self.write(unique if unique is not None else name, SCRIPTS[name])
 
     def cleanup(self) -> None:
-        """Remove this case's fixture files, keeping the shared directory for the next case."""
+        """Remove this case's fixture files, keeping the shared directory for the next case.
 
-        for name in SCRIPTS:
+        A fixture child killed mid-request can leave its ``entered-<pid>`` marker behind, so the
+        markers are removed too: a test must never depend on residue from a case that already ran.
+        """
+
+        names = list(SCRIPTS)
+        try:
+            names.extend(entry for entry in os.listdir(self.path) if entry.startswith("entered-"))
+        except OSError:
+            pass
+        for name in names:
             try:
                 os.remove(os.path.join(self.path, name))
             except OSError:
                 pass
+
+    def marker(self, pid: int) -> str:
+        """The path a ``slow_on_call`` fixture creates once a request has really reached it."""
+
+        return os.path.join(self.path, f"entered-{pid}")
+
+    async def await_marker(self, pid: int, timeout: float = 10.0) -> bool:
+        """Wait until the fixture child has announced that a request reached it.
+
+        This is the stage barrier: a worker *object* that exists proves only that a class was
+        constructed, while this file is written by the child itself, from inside its request loop.
+        """
+
+        path = self.marker(pid)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if os.path.exists(path):
+                return True
+            await asyncio.sleep(0.005)
+        return False
 
     def __enter__(self) -> "ControlledScripts":
         return self
@@ -383,18 +433,45 @@ class RealWorkerTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(managed.returncode, 0, "a killed worker does not report a clean exit")
 
     async def test_an_oversized_response_is_refused_before_it_is_accumulated(self):
+        """The large line is refused *while it is being read*, and the worker is retired for it.
+
+        The fixture completes a legal handshake first, so what is under test is the response to a
+        request rather than the readiness line: the call below is the one that consumes the oversized
+        line, and a worker that answered an over-limit response must not be reused.
+        """
+
         with ControlledScripts() as scripts:
             script = scripts.fixture("oversized_response.py")
             worker = RegexWorker(script)
             try:
+                await start_or_skip(self, worker)
+                self.assertTrue(
+                    worker.alive, "the handshake succeeded, so the fault is the response"
+                )
+                handle = await worker.compile("x", 0, timeout=CALL_BUDGET)
                 with self.assertRaises(RuleEvaluationError) as caught:
-                    await start_or_skip(self, worker)
+                    await worker.search(handle, "anything", timeout=CALL_BUDGET)
                 self.assertEqual(caught.exception.code, REASON_INPUT_TOO_LARGE)
+                # Retired and really reaped: the read that hit the transport limit is the last thing
+                # this child is allowed to do.
+                managed = worker.managed_process
+                self.assertIsNotNone(managed)
+                self.assertIsNotNone(
+                    managed.returncode, "the over-limit worker is reaped, not left"
+                )
+                self.assertFalse(worker.alive)
             finally:
                 await worker.close_quietly()
-            managed = worker.managed_process
-            self.assertIsNotNone(managed)
-            self.assertIsNotNone(managed.returncode, "the retired worker is reaped, not abandoned")
+            self.assertIsNotNone(worker.returncode)
+            # Recovery is a fresh child, not the one that broke the limit.
+            fresh = RegexWorker()
+            await start_or_skip(self, fresh)
+            try:
+                handle = await fresh.compile("xyz", 0, timeout=CALL_BUDGET)
+                self.assertTrue(await fresh.search(handle, "xyz", timeout=CALL_BUDGET))
+            finally:
+                await fresh.aclose()
+            self.assertEqual(fresh.returncode, 0)
 
     async def test_an_oversized_request_retires_the_worker_and_a_new_one_recovers(self):
         with ControlledScripts():
@@ -424,6 +501,198 @@ class RealWorkerTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 await fresh.aclose()
             self.assertEqual(fresh.returncode, 0)
+
+
+class CancellationTest(unittest.IsolatedAsyncioTestCase):
+    """Cancellation must not leave a child of this worker behind, at any stage of the lifecycle.
+
+    The scenarios are separated by *when* the cancellation arrives, because they are genuinely
+    different faults: a cancellation during the handshake has no request in flight yet, while a
+    cancellation during a real match has a catastrophic expression spinning inside the child, and the
+    second is the one where "stop awaiting it" is not the same as "stop it".
+    """
+
+    def setUp(self) -> None:
+        self.scripts = ControlledScripts()
+
+    def tearDown(self) -> None:
+        self.scripts.cleanup()
+
+    async def test_a_cancellation_during_the_handshake_reaps_the_child(self):
+        with ControlledScripts() as scripts:
+            script = scripts.fixture("silent_on_start.py")
+            worker = RegexWorker(script)
+            task = asyncio.ensure_future(worker.start(timeout=CALL_BUDGET))
+            for _ in range(2000):
+                if worker.managed_process is not None or task.done():
+                    break
+                await asyncio.sleep(0.005)
+            if task.done():
+                # No child ever existed, so there is nothing to cancel *during*: either this host
+                # refused the transport (a named environment limit) or the start is broken.
+                require_real_child(self, task.exception())
+                self.fail("start finished before any child existed, without an environment refusal")
+            process = worker.managed_process
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            # The child existed before the cancel, so "no cancellation was propagated" is not an
+            # acceptable reading: it was there, and it must be gone.
+            self.assertIsNotNone(process)
+            await self.await_exit(process)
+            self.assertIsNotNone(process.returncode, "the handshake child is reaped")
+            self.assertFalse(worker.alive)
+            self.assertIsNotNone(worker.returncode)
+
+    async def test_a_cancellation_during_the_cleanup_still_reaps_and_still_propagates(self):
+        """A close that is itself cancelled finishes its job *and* reports the cancellation.
+
+        The child here ignores its closed input, so the close is inside its grace period when the
+        cancellation arrives. Two things must both hold, and holding only one is a defect either way:
+        the child must still be killed and reaped — a cleanup that stops half-way leaks a running
+        process — and the cancellation must still reach the caller, because a caller that is told its
+        request finished would go on to use a result that does not exist.
+        """
+
+        with ControlledScripts() as scripts:
+            script = scripts.fixture("silent.py")
+            worker = RegexWorker(script)
+            await start_or_skip(self, worker)
+            process = worker.managed_process
+            assert process is not None
+            task = asyncio.ensure_future(worker.aclose(timeout=30.0))
+            await asyncio.sleep(0.05)
+            self.assertIsNone(process.returncode, "the close is still inside its grace period")
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            await self.await_exit(process)
+            self.assertIsNotNone(process.returncode, "a cancelled cleanup still reaps the child")
+            self.assertFalse(worker.alive)
+            self.assertIsNotNone(worker.returncode)
+
+    async def test_a_cancellation_during_a_real_match_reaps_the_child(self):
+        with ControlledScripts() as scripts:
+            script = scripts.fixture("slow_on_call.py")
+            worker = RegexWorker(script)
+            await start_or_skip(self, worker)
+            process = worker.managed_process
+            assert process is not None
+            pid = worker.pid
+            assert pid is not None
+            handle = await worker.compile("^x$", 0, timeout=CALL_BUDGET)
+            task = asyncio.ensure_future(worker.search(handle, "text", timeout=CALL_BUDGET))
+            reached = await scripts.await_marker(pid)
+            self.assertTrue(reached, "the request really reached the child before it was cancelled")
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            await self.await_exit(process)
+            self.assertIsNotNone(process.returncode, "the cancelled request reaped its own child")
+            self.assertFalse(worker.alive)
+
+    async def test_a_cancellation_during_a_catastrophic_match_kills_the_running_expression(self):
+        worker = RegexWorker()
+        await start_or_skip(self, worker)
+        process = worker.managed_process
+        assert process is not None
+        handle = await worker.compile(CATASTROPHIC_PATTERN, 0, timeout=CALL_BUDGET)
+        task = asyncio.ensure_future(worker.search(handle, CATASTROPHIC_TEXT, timeout=CALL_BUDGET))
+        await asyncio.sleep(0.005)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        await self.await_exit(process)
+        self.assertIsNotNone(process.returncode, "no backtracking match may outlive its request")
+        self.assertFalse(worker.alive)
+
+    async def await_exit(self, process: object, timeout: float = 5.0) -> None:
+        """Wait for the child to have really exited, so the assertions read a real state."""
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if getattr(process, "returncode", None) is not None:
+                return
+            await asyncio.sleep(0.005)
+
+
+class CreationBarrierTest(unittest.IsolatedAsyncioTestCase):
+    """A close that races the creation of the first child must not leave that child running.
+
+    ``create_subprocess_exec`` is the boundary being raced here: it is held open until the close has
+    happened, so the close is guaranteed to arrive at the one moment when the worker does not yet hold
+    a child. Whatever the creation produces afterwards is the worker's responsibility anyway.
+    """
+
+    def setUp(self) -> None:
+        self.scripts = ControlledScripts()
+
+    def tearDown(self) -> None:
+        self.scripts.cleanup()
+
+    async def hold_creation(self, created: list[object]) -> tuple[object, object]:
+        """Return ``(entered, release)`` for a patched creation that waits for ``release``."""
+
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed(*args: object, **kwargs: object):
+            entered.set()
+            await release.wait()
+            process = await self._real_create(*args, **kwargs)
+            created.append(process)
+            return process
+
+        self._real_create = asyncio.create_subprocess_exec  # type: ignore[assignment]
+        return entered, release, delayed  # type: ignore[return-value]
+
+    async def test_closing_during_creation_prevents_a_late_child(self):
+        with ControlledScripts() as scripts:
+            script = scripts.fixture("silent_on_start.py")
+            created: list[object] = []
+            entered, release, delayed = await self.hold_creation(created)
+            worker = RegexWorker(script)
+            with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
+                task = asyncio.ensure_future(worker.start(timeout=CALL_BUDGET))
+                await entered.wait()
+                self.assertIsNone(worker.managed_process, "the race really is at the creation")
+                await worker.aclose()
+                release.set()
+                with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
+                    await task
+            self.assertFalse(worker.alive, "a close cannot be followed by a live worker")
+            for process in created:
+                if process.returncode is None:
+                    process.kill()
+                await self.await_exit(process)
+                self.assertIsNotNone(process.returncode, "a late child is killed, not adopted")
+
+    async def test_a_cancelled_creation_leaves_no_live_worker(self):
+        with ControlledScripts() as scripts:
+            script = scripts.fixture("silent_on_start.py")
+            created: list[object] = []
+            entered, release, delayed = await self.hold_creation(created)
+            worker = RegexWorker(script)
+            with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
+                task = asyncio.ensure_future(worker.start(timeout=CALL_BUDGET))
+                await entered.wait()
+                task.cancel()
+                release.set()
+                with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
+                    await task
+            self.assertFalse(worker.alive)
+            for process in created:
+                if process.returncode is None:
+                    process.kill()
+                await self.await_exit(process)
+                self.assertIsNotNone(process.returncode)
+
+    async def await_exit(self, process: object, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if getattr(process, "returncode", None) is not None:
+                return
+            await asyncio.sleep(0.005)
 
 
 class FaultyWorkerTest(unittest.IsolatedAsyncioTestCase):
@@ -781,28 +1050,19 @@ class EvaluatorRegexPathTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ProtocolShapeTest(unittest.IsolatedAsyncioTestCase):
-    """The frozen wire shapes, refused *before* a request can be believed.
+    """The frozen wire shapes, refused at the parse entry that really consumes them.
 
-    These drive the strict readers through a recorded transport: a response line is handed to the
-    worker exactly as a misbehaving child would write it, and the worker must refuse it rather than act
-    on it. The real fixtures above cover the other two violations — a line that is not UTF-8, and a
-    line the reader's high-water mark rejects before it is accumulated.
+    Two entry points are exercised, and both are the real ones:
+
+    * the handshake goes through ``start`` — the readiness line is the line the child writes first, so
+      driving it through ``compile`` would only prove that a missing ``seq`` is refused;
+    * a *response* is handed to the strict reader through a recorded transport, because the property
+      under test is the parse itself and nothing about it depends on a real pipe existing. Cases that
+      need a real child live in the classes above; these must never be skipped for lack of one.
     """
 
-    async def asyncSetUp(self) -> None:
-        # These cases need no child of their own, but the module's premise is that this environment can
-        # run one; without that, the surrounding real-child cases are the ones that report the limit.
-        probe = RegexWorker()
-        try:
-            await probe.start()
-        except RuleEvaluationError as error:
-            await probe.close_quietly()
-            require_real_child(self, error)
-            raise
-        await probe.aclose()
-
-    async def wire(self, lines: list[bytes]) -> RegexWorker:
-        """A worker whose responses are exactly ``lines``, with no child involved."""
+    def recorded_transport(self, lines: list[bytes], pid: int = 9911):
+        """A recorded stand-in for the child: its exit code, its input and exactly ``lines``."""
 
         payload = b"".join(lines)
 
@@ -830,42 +1090,136 @@ class ProtocolShapeTest(unittest.IsolatedAsyncioTestCase):
 
         class Process:
             def __init__(self) -> None:
-                self.pid = 9911
+                self.pid = pid
                 self.stdin = Stdin()
                 self.stdout = Reader()
                 self.returncode: int | None = None
+                self.events: list[str] = []
 
             def kill(self) -> None:
+                self.events.append("kill")
                 self.returncode = -9
 
             async def wait(self) -> int:
+                self.events.append("wait")
                 if self.returncode is None:
                     self.returncode = 0
                 return self.returncode
 
+        return Process()
+
+    def fake_worker(self, lines: list[bytes], pid: int = 9911) -> RegexWorker:
+        """A worker holding a recorded transport that answers exactly ``lines``.
+
+        Used for the *response* cases: the request under test is issued straight at a worker that
+        already has a transport, so nothing about creation or the handshake is involved.
+        """
+
         worker = RegexWorker()
-        worker._process = Process()  # type: ignore[assignment] - a recorded transport, not a child
+        worker._process = self.recorded_transport(lines, pid)  # type: ignore[assignment]
         return worker
 
-    async def test_a_ready_line_with_extra_state_is_refused(self):
+    async def start_with(self, lines: list[bytes], pid: int = 9911):
+        """Run ``start`` over a recorded transport whose readiness line is ``lines``.
+
+        The creation is patched rather than the worker's transport, so the *whole* start path — file
+        check, creation, readiness parse, and the cleanup that follows a refusal — is the production
+        one. The transport is deliberately not attached beforehand: ``start`` returns early for a
+        worker that already holds one, and a case that pre-seeded it would prove nothing at all.
+        """
+
+        worker = RegexWorker()
+        process = self.recorded_transport(lines, pid)
+
+        async def created(*args: object, **kwargs: object):
+            return process
+
+        real_isfile = os.path.isfile
+        os.path.isfile = lambda path: True  # type: ignore[assignment]
+        try:
+            with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=created):
+                await worker.start(timeout=CALL_BUDGET)
+        finally:
+            os.path.isfile = real_isfile  # type: ignore[assignment]
+        return worker, process
+
+    async def assert_handshake_refused(self, line: bytes, pid: int = 9911) -> None:
+        """The refusal must be the named one, and the child behind it must be gone."""
+
+        worker = RegexWorker()
+        process = self.recorded_transport([line], pid)
+
+        async def created(*args: object, **kwargs: object):
+            return process
+
+        real_isfile = os.path.isfile
+        os.path.isfile = lambda path: True  # type: ignore[assignment]
+        try:
+            with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=created):
+                with self.assertRaises(RuleEvaluationError) as caught:
+                    await worker.start(timeout=CALL_BUDGET)
+        finally:
+            os.path.isfile = real_isfile  # type: ignore[assignment]
+        self.assertEqual(caught.exception.code, REASON_REGEX_WORKER_FAILED)
+        self.assertFalse(worker.alive, "a refused handshake does not leave a live worker")
+        self.assertIsNotNone(process.returncode, "the child behind the refusal is really reaped")
+        self.assertIn("kill", process.events)
+
+    async def test_the_real_worker_handshake_is_accepted(self):
+        """The one shape that must be believed: the handshake the real child writes."""
+
+        worker = RegexWorker()
+        await start_or_skip(self, worker)
+        try:
+            self.assertTrue(worker.alive)
+            self.assertIsNotNone(worker.pid)
+        finally:
+            await worker.aclose()
+
+    async def test_a_readiness_line_over_a_recorded_transport_is_accepted(self):
+        """The accepted shape, proved without a real child, so this case never skips."""
+
+        worker, process = await self.start_with([b'{"ready": true, "protocol": 1, "pid": 9911}\n'])
+        self.assertTrue(worker.alive)
+        self.assertEqual(worker.pid, 9911)
+        self.assertIs(worker.managed_process, process)
+        await worker.aclose()
+        self.assertIsNotNone(worker.returncode)
+
+    async def test_a_readiness_line_with_extra_state_is_refused(self):
         for line in (
-            b'{"ready": true, "protocol": 1, "pid": 12, "extra": 1}\n',
+            b'{"ready": true, "protocol": 1, "pid": 9911, "extra": 1}\n',
             b'{"ready": true, "protocol": 1}\n',
-            b'{"ready": 1, "protocol": 1, "pid": 12}\n',
-            b'{"ready": true, "protocol": "1", "pid": 12}\n',
+            b'{"ready": 1, "protocol": 1, "pid": 9911}\n',
+            b'{"ready": true, "protocol": "1", "pid": 9911}\n',
             b'{"ready": true, "protocol": 1, "pid": 0}\n',
             b'{"ready": true, "protocol": 1, "pid": true}\n',
-            b'{"ready": true, "protocol": 1, "pid": 12.0}\n',
+            b'{"ready": true, "protocol": 1, "pid": 9911.0}\n',
+            b'{"ready": true, "protocol": 1, "pid": 9911, "pid": 9911}\n',
             b"not json\n",
         ):
             with self.subTest(line=line):
-                worker = await self.wire([line])
-                with self.assertRaises(RuleEvaluationError) as caught:
-                    await worker.compile("x", 0, timeout=0.5)
-                self.assertEqual(caught.exception.code, REASON_REGEX_WORKER_FAILED)
+                await self.assert_handshake_refused(line)
+
+    async def test_a_truthy_but_not_integer_protocol_is_refused(self):
+        """``true`` and ``1.0`` are both equal to 1 and neither is the integer 1."""
+
+        for line in (
+            b'{"ready": true, "protocol": true, "pid": 9911}\n',
+            b'{"ready": true, "protocol": 1.0, "pid": 9911}\n',
+        ):
+            with self.subTest(line=line):
+                await self.assert_handshake_refused(line)
+
+    async def test_a_readiness_line_from_another_process_is_refused(self):
+        """The pid must be *this* worker's child, so a reply injected by anything else is refused."""
+
+        await self.assert_handshake_refused(
+            b'{"ready": true, "protocol": 1, "pid": 4242}\n', pid=9911
+        )
 
     async def test_a_response_for_another_sequence_is_refused(self):
-        worker = await self.wire([b'{"seq": 999, "ok": true, "handle": 1}\n'])
+        worker = self.fake_worker([b'{"seq": 999, "ok": true, "handle": 1}\n'])
         with self.assertRaises(RuleEvaluationError) as caught:
             await worker.compile("x", 0, timeout=0.5)
         self.assertEqual(caught.exception.code, REASON_REGEX_WORKER_FAILED)
@@ -877,13 +1231,27 @@ class ProtocolShapeTest(unittest.IsolatedAsyncioTestCase):
             b'{"seq": 1, "ok": true, "handle": "1"}\n',
         ):
             with self.subTest(payload=payload):
-                worker = await self.wire([payload])
+                worker = self.fake_worker([payload])
+                with self.assertRaises(RuleEvaluationError) as caught:
+                    await worker.compile("x", 0, timeout=0.5)
+                self.assertEqual(caught.exception.code, REASON_REGEX_WORKER_FAILED)
+
+    async def test_a_duplicate_response_key_is_refused(self):
+        """A repeated key means the peer broke the protocol, not that the last value wins."""
+
+        for payload in (
+            b'{"seq": 1, "seq": 1, "ok": true, "handle": 1}\n',
+            b'{"seq": 1, "ok": true, "ok": true, "handle": 1}\n',
+            b'{"seq": 1, "ok": true, "handle": 1, "handle": 2}\n',
+        ):
+            with self.subTest(payload=payload):
+                worker = self.fake_worker([payload])
                 with self.assertRaises(RuleEvaluationError) as caught:
                     await worker.compile("x", 0, timeout=0.5)
                 self.assertEqual(caught.exception.code, REASON_REGEX_WORKER_FAILED)
 
     async def test_a_compile_response_with_search_fields_is_refused(self):
-        worker = await self.wire([b'{"seq": 1, "ok": true, "handle": 1, "matched": true}\n'])
+        worker = self.fake_worker([b'{"seq": 1, "ok": true, "handle": 1, "matched": true}\n'])
         with self.assertRaises(RuleEvaluationError) as caught:
             await worker.compile("x", 0, timeout=0.5)
         self.assertEqual(caught.exception.code, REASON_REGEX_WORKER_FAILED)
@@ -895,9 +1263,21 @@ class ProtocolShapeTest(unittest.IsolatedAsyncioTestCase):
             b'{"seq": 1, "ok": false, "code": "regex_timeout", "matched": true}\n',
         ):
             with self.subTest(payload=payload):
-                worker = await self.wire([payload])
+                worker = self.fake_worker([payload])
                 with self.assertRaises(RuleEvaluationError):
                     await worker.search(1, "x", timeout=0.5)
+
+    async def test_a_refused_response_retires_the_recorded_child(self):
+        """A protocol violation is fatal: the child is killed and its exit is recorded."""
+
+        worker = self.fake_worker([b'{"seq": 1, "ok": true, "handle": 1, "matched": true}\n'])
+        with self.assertRaises(RuleEvaluationError):
+            await worker.compile("x", 0, timeout=0.5)
+        process = worker.managed_process
+        self.assertIsNotNone(process)
+        self.assertIsNotNone(process.returncode, "the broken peer is reaped, not reused")
+        self.assertIn("kill", process.events)
+        self.assertFalse(worker.alive)
 
 
 class WorkerPathIsolationTest(unittest.IsolatedAsyncioTestCase):

@@ -4,10 +4,12 @@ Three properties are checked against real resources rather than by mocking:
 
 * at most two requests are in flight per evaluator instance, the third gets ``busy`` immediately and
   the capacity comes back afterwards — no hidden queue, no slow request blocking a fast one. The two
-  in-flight requests are *proved* to be in flight: each has already created the child process that is
-  sitting on its request;
+  in-flight requests are *proved* to be in flight: each has created the child process that is sitting
+  on its request, and the stage barrier waits for the child itself to announce that it got there;
 * a request that spends its whole budget reports ``evaluation_timeout`` while a single call that
-  exceeds the 50 ms call budget reports ``regex_timeout``, and neither is reported as a normal skip;
+  exceeds the 50 ms call budget reports ``regex_timeout``, and neither is reported as a normal skip.
+  The cumulative case is real and unshortened: 200 rules whose searches are each well inside the
+  50 ms call budget still exceed the published 5 s request budget, and the reason names the request;
 * the 64 KiB per-field projection budget is exercised with a **real normalized record** — no mock —
   because a 65536-character description of CJK text is 196608 bytes, which TS-090 happily accepts;
 * closing the evaluator refuses new calls and leaves no child process behind.
@@ -18,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -53,23 +56,93 @@ CJK_CHAR = "集"
 
 CATASTROPHIC_PATTERN = r"^(a+)+$"
 
-#: A worker that finishes the handshake and then answers nothing at all. It writes to its own stderr
-#: when it reaches a request, so "the request really reached the child" is evidence, not an
-#: assumption. Written with no top-level indentation so it is runnable exactly as stored.
+#: A worker that finishes the handshake and then answers nothing at all. It announces that a request
+#: reached it by creating a marker file named after its own pid, because the product starts the child
+#: with ``stderr=DEVNULL``: stderr is a channel for a person reading a manual run, never a stage
+#: barrier a test can synchronise on. Written with no top-level indentation so it is runnable as
+#: stored.
 SLOW_WORKER = (
     "import json, os, sys, time\n"
     "sys.stdout.write(json.dumps({'ready': True, 'protocol': 1, 'pid': os.getpid()}) + '\\n')\n"
     "sys.stdout.flush()\n"
     "for line in sys.stdin:\n"
-    "    sys.stderr.write('reached-request\\n')\n"
-    "    sys.stderr.flush()\n"
+    "    open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"
+    " 'entered-' + str(os.getpid())), 'w').close()\n"
     "    time.sleep(30)\n"
 )
+
+#: A worker whose every answer is legal and quick, but not instant: one search costs about 6 ms,
+#: which is comfortably inside the 50 ms *call* budget, while a whole policy's worth of them costs far
+#: more than the 5 s *request* budget. That is the only way to show the request deadline doing its job
+#: without shortening either published budget.
+CUMULATIVE_WORKER = (
+    "import json, os, sys, time\n"
+    "sys.stdout.write(json.dumps({'ready': True, 'protocol': 1, 'pid': os.getpid()}) + '\\n')\n"
+    "sys.stdout.flush()\n"
+    "for line in sys.stdin:\n"
+    "    command = json.loads(line)\n"
+    "    if command['op'] == 'compile':\n"
+    "        answer = {'seq': command['seq'], 'ok': True, 'handle': command['seq']}\n"
+    "    else:\n"
+    "        time.sleep(0.006)\n"
+    "        answer = {'seq': command['seq'], 'ok': True, 'matched': False}\n"
+    "    sys.stdout.write(json.dumps(answer) + '\\n')\n"
+    "    sys.stdout.flush()\n"
+)
+
+#: The cumulative case: the largest policy the frozen limits allow, and the heaviest tag projection.
+CUMULATIVE_GROUPS = 20
+CUMULATIVE_RULES_PER_GROUP = 10
+CUMULATIVE_TAG_VALUES = 100
+CUMULATIVE_SEARCH_SECONDS = 0.006
+#: A rule that matches every tag value, and one that matches none.
+CUMULATIVE_MATCHING = r"普通标签"
+CUMULATIVE_NEVER_MATCHING = r"^never-matches-anything$"
+
+
+def cumulative_policy() -> list[object]:
+    """The largest policy the frozen limits allow: 20 groups of 10 rules, so 200 rules.
+
+    A group short-circuits on its first non-match, and a group whose rules all match ends the
+    whitelist, so the shape is deliberate: nine rules that match and one that does not. Every one of
+    the 200 rules is therefore really evaluated, the whitelist still does not match, and the
+    non-matching rule of each group searches every tag value — which is what makes the run outlast the
+    request budget.
+    """
+
+    groups: list[object] = []
+    for index in range(CUMULATIVE_GROUPS):
+        entries = [
+            rule(f"g{index:02d}r{position}", "tags", "regex", CUMULATIVE_MATCHING)
+            for position in range(CUMULATIVE_RULES_PER_GROUP - 1)
+        ]
+        entries.append(rule(f"g{index:02d}rstop", "tags", "regex", CUMULATIVE_NEVER_MATCHING))
+        groups.append(group(f"wl{index:02d}", *entries))
+    return groups
+
+
+def cumulative_tags() -> list[str]:
+    """The heaviest tag projection TS-090 allows, so the non-matching rules search 100 values."""
+
+    return [f"普通标签{index:03d}" for index in range(CUMULATIVE_TAG_VALUES)]
 
 
 FIXTURE_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".runtime"
 )
+
+
+def transport_refusal(error: BaseException) -> PermissionError | None:
+    """The ``PermissionError`` in the cause chain, when this host refused the child's pipe transport."""
+
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, PermissionError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def transport_denied(error: BaseException) -> bool:
@@ -81,14 +154,7 @@ def transport_denied(error: BaseException) -> bool:
     one; the tests in this module say so with a named skip instead of reporting a code defect.
     """
 
-    seen: set[int] = set()
-    current: BaseException | None = error
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, PermissionError):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
+    return transport_refusal(error) is not None
 
 
 def require_real_child(test: unittest.TestCase, error: BaseException | None) -> None:
@@ -100,10 +166,11 @@ def require_real_child(test: unittest.TestCase, error: BaseException | None) -> 
 
     if error is None:
         raise AssertionError("the request finished when it was supposed to be in flight")
-    if transport_denied(error):
+    refusal = transport_refusal(error)
+    if refusal is not None:
         test.skipTest(
             "this environment refuses asyncio's child pipe transport "
-            f"({type(error).__name__}); the real-child assertions need the coordination environment"
+            f"({refusal!r}); the real-child assertions need the coordination environment"
         )
     raise AssertionError(f"the request failed before it could be in flight: {error!r}")
 
@@ -151,22 +218,84 @@ def _fixture_directory() -> str:
     )
 
 
-class SlowWorkerScript:
-    """Context manager writing a worker that finishes the handshake and then never answers.
+class FixtureWorker:
+    """Write a fixture worker to a usable directory and synchronise on the child itself.
 
     The script has no top-level indentation, so it is runnable exactly as stored; a fixture that kept
     its indentation would fail to import and every budget assertion downstream would be measuring a
     startup crash instead of a slow child.
     """
 
+    #: The fixture source, and the filename stem it is written under.
+    SOURCE = SLOW_WORKER
+    STEM = "slow_worker"
+
     def __enter__(self) -> str:
-        target = os.path.join(_fixture_directory(), f"slow_worker_{os.getpid()}.py")
-        with open(target, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(SLOW_WORKER)
-        return target
+        self.directory = _fixture_directory()
+        self.path = os.path.join(self.directory, f"{self.STEM}_{os.getpid()}.py")
+        with open(self.path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(self.SOURCE)
+        return self.path
 
     def __exit__(self, *exc_info: object) -> None:
+        self.cleanup()
         return None
+
+    def marker(self, pid: int) -> str:
+        """The path a fixture child creates once a request has really reached it."""
+
+        return os.path.join(self.directory, f"entered-{pid}")
+
+    def cleanup(self) -> None:
+        """Remove this case's fixture and any marker a killed child left behind."""
+
+        names = [os.path.basename(self.path)]
+        try:
+            names.extend(
+                entry for entry in os.listdir(self.directory) if entry.startswith("entered-")
+            )
+        except OSError:
+            pass
+        for name in names:
+            try:
+                os.remove(os.path.join(self.directory, name))
+            except OSError:
+                pass
+
+    async def await_in_flight(
+        self, workers: list[RegexWorker], count: int, timeout: float = 15.0
+    ) -> bool:
+        """True once ``count`` recorded workers each hold a live child that reached its request.
+
+        A worker *object* that exists proves only that a class was constructed: the pid appears later,
+        and the marker file is written by the child itself from inside its request loop. Waiting for
+        both is what makes "these requests are in flight" evidence rather than a hope.
+        """
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if len(workers) >= count:
+                live = workers[:count]
+                if all(worker.pid is not None for worker in live) and all(
+                    os.path.exists(self.marker(worker.pid)) for worker in live
+                ):
+                    return True
+            await asyncio.sleep(0.01)
+        return False
+
+
+class SlowWorkerScript(FixtureWorker):
+    """A worker that finishes the handshake and then never answers."""
+
+    SOURCE = SLOW_WORKER
+    STEM = "slow_worker"
+
+
+class CumulativeWorkerScript(FixtureWorker):
+    """A worker that answers every search legally, about 30 ms after it is asked."""
+
+    SOURCE = CUMULATIVE_WORKER
+    STEM = "cumulative_worker"
 
 
 class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
@@ -190,11 +319,12 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
     async def test_two_requests_run_and_the_third_is_busy_without_queueing(self):
         """Two requests are held in flight by real children; the third is refused immediately.
 
-        The two are not merely *scheduled*: the wait below returns only once each has created and
-        started its own child, which is the point at which the request is genuinely in flight. A
-        plain-text policy is a single synchronous step, so two of those have already finished by the
-        time a third arrives — and a third request that then succeeds is the correct behaviour, which
-        ``test_a_finished_request_releases_its_slot`` states separately.
+        The two are not merely *scheduled*: the barrier below returns only once each has created its
+        own child and that child has announced it received the request, which is the point at which
+        the request is genuinely in flight. A plain-text policy is a single synchronous step, so two
+        of those have already finished by the time a third arrives — and a third request that then
+        succeeds is the correct behaviour, which ``test_a_finished_request_releases_its_slot`` states
+        separately.
         """
 
         self.assertEqual(MAX_CONCURRENT_REQUESTS, 2)
@@ -204,19 +334,21 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
             evaluator = RuleEvaluator(worker_script=script)
             first = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
             second = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
-            for _ in range(2000):
-                if len(workers) >= 2 or first.done() or second.done():
-                    break
-                await asyncio.sleep(0.01)
-            for task in (first, second):
-                if task.done() and not task.cancelled():
-                    require_real_child(self, task.exception())
-            self.assertEqual(len(workers), 2, "both requests must be in flight before the third")
+            in_flight = await script.await_in_flight(workers, 2)
+            if not in_flight:
+                for task in (first, second):
+                    if task.done() and not task.cancelled():
+                        require_real_child(self, task.exception())
+                self.fail("both requests must be in flight before the third can be judged busy")
             for worker in workers:
                 self.assertIsNotNone(worker.pid, "an in-flight request owns a real child")
                 managed = worker.managed_process
                 self.assertIsNotNone(managed)
                 self.assertIsNone(managed.returncode, "the child is still running its request")
+                self.assertTrue(
+                    os.path.exists(script.marker(worker.pid)),
+                    "the child itself confirmed it received the request",
+                )
             third = await self.evaluate_with(evaluator, policy)
             self.assertEqual(third.decision, DECISION_RULE_ERROR)
             self.assertEqual(third.reason, REASON_BUSY)
@@ -251,20 +383,25 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered.reason, "blacklist_match")
 
     async def test_validate_policy_reports_busy_as_an_error_not_as_a_decision(self):
+        """A refused *validation* is an error, and the capacity it was refused for really comes back.
+
+        The recovery is checked while the evaluator is still open: a closed evaluator refuses every
+        call with ``closed``, so validating after the close would have proved nothing about the two
+        slots the cancelled requests were holding.
+        """
+
         policy = document(whitelist=[group("wl", rule("r1", "title", "regex", "合集"))])
         await require_usable_worker(self)
         with SlowWorkerScript() as script, RecordingWorkers() as workers:
             evaluator = RuleEvaluator(worker_script=script)
             first = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
             second = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
-            for _ in range(2000):
-                if len(workers) >= 2 or first.done() or second.done():
-                    break
-                await asyncio.sleep(0.01)
-            for task in (first, second):
-                if task.done() and not task.cancelled():
-                    require_real_child(self, task.exception())
-            self.assertEqual(len(workers), 2, "both requests must be in flight first")
+            in_flight = await script.await_in_flight(workers, 2)
+            if not in_flight:
+                for task in (first, second):
+                    if task.done() and not task.cancelled():
+                        require_real_child(self, task.exception())
+                self.fail("both requests must be in flight before validation can be refused")
             with self.assertRaises(RuleEvaluationError) as caught:
                 await evaluator.validate_policy(policy)
             self.assertEqual(caught.exception.code, REASON_BUSY)
@@ -272,9 +409,14 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await task
-            await evaluator.aclose()
+            # Capacity is back: the same evaluator validates a plain policy. This happens *before*
+            # the close, so a leaked slot cannot hide behind the closed barrier.
             validated = await evaluator.validate_policy(text_policy())
-        self.assertEqual(validated.revision, 7)
+            self.assertEqual(validated.revision, 7)
+            await evaluator.aclose()
+            with self.assertRaises(RuleEvaluationError) as closed:
+                await evaluator.validate_policy(text_policy())
+            self.assertEqual(closed.exception.code, "closed")
 
     async def test_capacity_returns_even_when_an_evaluation_fails(self):
         over_budget = document(whitelist=[group("wl", rule("r1", "description", "equals", "x"))])
@@ -468,6 +610,62 @@ class RequestBudgetTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.decision, DECISION_DOWNLOAD)
         self.assertEqual(decision.reason, "eligible")
 
+    async def test_a_long_run_of_legal_searches_still_spends_the_whole_request_budget(self):
+        """The other half of the same rule: enough legal searches *do* exhaust the request budget.
+
+        No published budget is shortened here. The policy is the largest the frozen limits allow — 20
+        groups of 10 rules, so 200 rules — and every rule costs the child real searches, each of them
+        well inside the 50 ms call budget. The run as a whole costs far more than the 5 s request
+        budget, so the reason must name the request deadline rather than a call deadline. A run of
+        fast successful searches does not stand in for this: what is under test is the request
+        deadline arriving *while the policy is still working*.
+
+        The cost is spread over many short searches rather than one long one on purpose: a platform
+        whose timer granularity is 15.6 ms can turn a single 30 ms sleep into nearly 50 ms, which would
+        make this case measure the call budget instead of the request budget.
+        """
+
+        policy = document(whitelist=cumulative_policy())
+        planned = CUMULATIVE_GROUPS * ((CUMULATIVE_RULES_PER_GROUP - 1) + CUMULATIVE_TAG_VALUES)
+        self.assertEqual(len(policy["whitelist"]), CUMULATIVE_GROUPS)
+        self.assertEqual(
+            sum(len(entry["rules"]) for entry in policy["whitelist"]),
+            CUMULATIVE_GROUPS * CUMULATIVE_RULES_PER_GROUP,
+        )
+        self.assertGreater(
+            planned * CUMULATIVE_SEARCH_SECONDS,
+            rules.REQUEST_TIMEOUT_SECONDS,
+            "the case is only meaningful if the legal searches outlast the request budget",
+        )
+        self.assertLess(
+            CUMULATIVE_SEARCH_SECONDS,
+            rules.CALL_TIMEOUT_SECONDS / 4,
+            "each individual search must stay well inside the call budget",
+        )
+        with CumulativeWorkerScript() as script:
+            evaluator = RuleEvaluator(worker_script=script)
+            async with evaluator:
+                await require_usable_worker(self)
+                started = time.monotonic()
+                decision = await evaluator.evaluate(
+                    metadata(tags=cumulative_tags()),
+                    policy,
+                    accessible=True,
+                    quality_satisfied=False,
+                    snapshot_revision="rev-1",
+                )
+                elapsed = time.monotonic() - started
+        self.assertEqual(decision.decision, DECISION_RULE_ERROR)
+        self.assertEqual(
+            decision.reason,
+            REASON_EVALUATION_TIMEOUT,
+            "the request deadline expired, not one 50 ms call budget",
+        )
+        self.assertTrue(decision.requires_rule_attention)
+        self.assertFalse(decision.automatic_enqueue_allowed)
+        # It really ran for the whole published budget rather than being refused up front.
+        self.assertGreaterEqual(elapsed, rules.REQUEST_TIMEOUT_SECONDS * 0.9)
+
 
 class RecordingWorkers:
     """Patch the process class *at the name the evaluator consumes*, so real children are recorded.
@@ -532,11 +730,13 @@ class LifecycleTest(unittest.IsolatedAsyncioTestCase):
                     snapshot_revision="rev-1",
                 )
             )
-            for _ in range(1000):
-                if workers:
-                    break
-                await asyncio.sleep(0.01)
-            self.assertTrue(workers, "the request must have started its own worker")
+            # The barrier is the child's own marker: a recorded worker object exists as soon as the
+            # class is constructed, which is long before a child — or a request — exists at all.
+            in_flight = await script.await_in_flight(workers, 1)
+            if not in_flight:
+                if task.done() and not task.cancelled():
+                    require_real_child(self, task.exception())
+                self.fail("the request must have reached its child before it can be cancelled")
             self.assertIsNotNone(workers[0].pid, "the recorded worker owns a real child")
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):

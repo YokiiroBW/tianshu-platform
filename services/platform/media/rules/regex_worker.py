@@ -110,9 +110,25 @@ def _forget(command: dict[str, object], seq: object, cache: dict[int, re.Pattern
     _send({"seq": seq, "ok": True})
 
 
+def _duplicate_free(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build a request object, refusing a key that appears twice.
+
+    ``json.loads`` keeps the last value of a repeated key, so ``{"seq": 1, "seq": 2, ...}`` would be
+    silently reinterpreted. Two different facts under one key mean the peer is not speaking the frozen
+    protocol, and the line is refused rather than half-accepted.
+    """
+
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
+
+
 def handle_line(line: str, cache: dict[int, re.Pattern[str]]) -> None:
     try:
-        command = json.loads(line)
+        command = json.loads(line, object_pairs_hook=_duplicate_free)
     except ValueError:
         _refuse(None, "invalid_request")
         return
