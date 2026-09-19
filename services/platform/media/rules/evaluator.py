@@ -27,7 +27,6 @@ with a synchronous kill before the ``CancelledError`` leaves this module.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import re
 import time
@@ -35,13 +34,11 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from ..types import MediaMetadata
+from . import regex_process as process_layer
 from .matching import any_value_matches, field_values, projection_within_budget
 from .policy import parse_policy, regex_rules
 from .regex_process import (
-    CALL_TIMEOUT_SECONDS,
     IPC_MAX_REQUEST_BYTES,
-    REQUEST_TIMEOUT_SECONDS,
-    STARTUP_TIMEOUT_SECONDS,
     RegexWorker,
     remaining,
 )
@@ -61,6 +58,7 @@ from .types import (
     REASON_BLACKLIST_MATCH,
     REASON_BUSY,
     REASON_ELIGIBLE,
+    REASON_EVALUATION_TIMEOUT,
     REASON_INACCESSIBLE,
     REASON_INPUT_TOO_LARGE,
     REASON_QUALITY_SATISFIED,
@@ -218,6 +216,12 @@ class _Handles:
     process: RegexWorker | None = None
     handles: dict[tuple[int, int], int] = field(default_factory=dict)
 
+    def record(self, position: tuple[int, int], handle: int) -> None:
+        self.handles[position] = handle
+
+    def lookup(self, position: tuple[int, int]) -> int | None:
+        return self.handles.get(position)
+
 
 class RuleEvaluator:
     """Async context manager that validates and evaluates subscription policies.
@@ -245,36 +249,58 @@ class RuleEvaluator:
         await self.aclose()
 
     async def aclose(self) -> None:
-        """Refuse new calls and retire every process this instance still owns."""
+        """Refuse new calls and retire every process this instance still owns.
+
+        A child that appears while the snapshot is being retired — the create/cleanup boundary of a
+        request that is being cancelled right now — is retired too, so closing an evaluator cannot
+        leave a process of this instance behind. Nothing outside ``self._workers`` is ever touched.
+        """
 
         self._closed = True
-        workers = tuple(self._workers)
-        self._workers.clear()
-        for worker in workers:
-            try:
+        await self._retire_owned_workers()
+
+    async def _retire_owned_workers(self) -> None:
+        """Retire until the owned set stays empty.
+
+        Every worker is retired *before* it leaves the set, so a request that finishes its cleanup
+        during this loop can only ever publish a worker that is already reaped. Requests that started
+        before ``_closed`` was set can therefore still appear here, and are collected on the next
+        pass instead of being left behind.
+        """
+
+        for _ in range(MAX_CONCURRENT_REQUESTS + 1):
+            while self._workers:
+                worker = self._workers.pop()
                 await worker.close_quietly()
-            except asyncio.CancelledError:
-                worker.force_kill()
-                raise
+            if not self._workers:
+                return
+        # Unreachable with a bounded number of requests, but a silent exit would be worse than a
+        # loud one: whatever is left is killed synchronously rather than abandoned.
+        for worker in tuple(self._workers):
+            self._workers.discard(worker)
+            worker.force_kill()
 
     async def validate_policy(self, document: object) -> RulePolicy:
         """Shape-validate a document, then prove every expression really compiles.
 
         A plain-text policy never starts a child process. A policy with regular expressions compiles
         every expression once, up front, so "valid" means valid for the whole policy rather than for
-        the rules an item happened to reach today.
+        the rules an item happened to reach today. The whole call is bounded by the request budget:
+        process creation, the handshake and every compile share one deadline.
         """
 
         if self._closed:
             raise RuleEvaluationError(ERROR_CLOSED, "evaluator")
+        deadline = time.monotonic() + process_layer.REQUEST_TIMEOUT_SECONDS
         policy = parse_policy(document)
         if self._active >= MAX_CONCURRENT_REQUESTS:
             raise RuleEvaluationError(REASON_BUSY, "evaluator")
         self._active += 1
         try:
+            if remaining(deadline) <= 0:
+                raise RuleEvaluationError(REASON_EVALUATION_TIMEOUT, "request")
             if policy.has_regex:
                 handles = _Handles()
-                deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
                 try:
                     async with self._pattern(policy, handles, deadline):
                         pass
@@ -304,19 +330,27 @@ class RuleEvaluator:
           future scan can pause this policy instead of enqueueing on a guess;
         * ``RuleValidationError`` for a malformed document or an expression that does not compile —
           a configuration bug is raised, not recorded as an item outcome.
+
+        The whole call is bounded by the request budget: process creation, the handshake, every
+        compile and every search share one deadline, and cleanup gets its own separate budget. A
+        request that runs out of time reports ``rule_error``; it never turns into a normal ``skip``.
         """
 
         if self._closed:
             raise RuleEvaluationError(ERROR_CLOSED, "evaluator")
+        deadline = time.monotonic() + process_layer.REQUEST_TIMEOUT_SECONDS
         policy = parse_policy(document)
         _validate_caller_facts(metadata, accessible, quality_satisfied, snapshot_revision)
         if self._active >= MAX_CONCURRENT_REQUESTS:
             return _busy_decision(metadata.item_key, snapshot_revision, policy)
         self._active += 1
         handles = _Handles()
-        deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
         builder = _TraceBuilder(policy)
         try:
+            if remaining(deadline) <= 0:
+                failure = _Failure(REASON_EVALUATION_TIMEOUT)
+                builder.set_failure(failure)
+                return _rule_error_decision(metadata, snapshot_revision, policy, failure, builder)
             async with self._pattern(policy, handles, deadline):
                 return await self._judge(
                     metadata,
@@ -326,6 +360,7 @@ class RuleEvaluator:
                     accessible,
                     quality_satisfied,
                     snapshot_revision,
+                    deadline,
                 )
         except _EvaluationFailed as failed:
             builder.set_failure(failed.failure)
@@ -344,6 +379,7 @@ class RuleEvaluator:
         accessible: bool,
         quality_satisfied: bool,
         snapshot_revision: str,
+        deadline: float,
     ) -> RuleDecision:
         if not accessible:
             builder.close(TRACE_PRIORITY_SHORT_CIRCUIT)
@@ -361,7 +397,7 @@ class RuleEvaluator:
                 builder,
             )
 
-        if await self._run_groups(metadata, policy.blacklist, 0, builder, handles):
+        if await self._run_groups(metadata, policy.blacklist, 0, builder, handles, deadline):
             builder.close(TRACE_BLACKLIST_MATCHED)
             return _render(
                 metadata,
@@ -377,7 +413,7 @@ class RuleEvaluator:
                 metadata, snapshot_revision, policy, DECISION_DOWNLOAD, REASON_ELIGIBLE, builder
             )
         if await self._run_groups(
-            metadata, policy.whitelist, len(policy.blacklist), builder, handles
+            metadata, policy.whitelist, len(policy.blacklist), builder, handles, deadline
         ):
             builder.close(TRACE_WHITELIST_MATCHED)
             return _render(
@@ -395,6 +431,7 @@ class RuleEvaluator:
         start: int,
         builder: _TraceBuilder,
         handles: _Handles,
+        deadline: float,
     ) -> bool:
         """Evaluate OR-ed groups. A group matches only when every rule of it matched.
 
@@ -408,7 +445,9 @@ class RuleEvaluator:
             matched = True
             for index, rule in enumerate(group.rules):
                 try:
-                    outcome = await self._match(metadata, rule, (position, index), handles)
+                    outcome = await self._match(
+                        metadata, rule, (position, index), handles, deadline
+                    )
                 except RuleEvaluationError as error:
                     raise _EvaluationFailed(_Failure(error.code, position, index)) from None
                 if outcome:
@@ -423,7 +462,12 @@ class RuleEvaluator:
         return False
 
     async def _match(
-        self, metadata: MediaMetadata, rule: Rule, position: tuple[int, int], handles: _Handles
+        self,
+        metadata: MediaMetadata,
+        rule: Rule,
+        position: tuple[int, int],
+        handles: _Handles,
+        deadline: float,
     ) -> bool:
         values = field_values(metadata, rule.field)
         if not values:
@@ -436,13 +480,16 @@ class RuleEvaluator:
             return any_value_matches(
                 values, rule.value, rule.op, case_sensitive=rule.case_sensitive
             )
-        handle = handles.handles.get(position)
-        if handle is None or handles.process is None:
+        handle = handles.lookup(position)
+        process = handles.process
+        if handle is None or process is None:
             raise RuleEvaluationError(REASON_REGEX_WORKER_FAILED, "regex_worker")
         for value in values:
             if len(value.encode("utf-8")) > IPC_MAX_REQUEST_BYTES:
                 raise RuleEvaluationError(REASON_INPUT_TOO_LARGE, f"field:{rule.field}")
-            if await handles.process.search(handle, value, timeout=CALL_TIMEOUT_SECONDS):
+            # Every search gets ``min(50 ms, what is left of the request)``, so a long list of
+            # individually-legal searches cannot outlive the request budget.
+            if await process.search(handle, value, timeout=remaining(deadline)):
                 return True
         return False
 
@@ -469,7 +516,7 @@ class RuleEvaluator:
         handles.process = RegexWorker(self._worker_script)
         self._workers.add(handles.process)
         try:
-            budget = min(STARTUP_TIMEOUT_SECONDS, remaining(deadline))
+            budget = min(process_layer.STARTUP_TIMEOUT_SECONDS, remaining(deadline))
             try:
                 await handles.process.start(timeout=budget)
             except RuleEvaluationError as error:
@@ -481,7 +528,9 @@ class RuleEvaluator:
                 if handle is None:
                     try:
                         handle = await handles.process.compile(
-                            rule.value, _regex_flags(rule), timeout=remaining(deadline)
+                            rule.value,
+                            _regex_flags(rule),
+                            timeout=remaining(deadline),
                         )
                     except RuleEvaluationError as error:
                         if error.code == ERROR_INVALID_REGEX:
@@ -493,10 +542,12 @@ class RuleEvaluator:
                             _Failure(error.code, group_position, rule_position)
                         ) from None
                     seen[key] = handle
-                handles.handles[(group_position, rule_position)] = handle
+                handles.record((group_position, rule_position), handle)
             yield handles
         finally:
-            await handles.process.close_quietly()
+            # Cleanup has its own budget, separate from the (possibly exhausted) request deadline:
+            # the child is always retired, and always before the worker leaves the owned set.
+            await handles.process.close_quietly(process_layer.CLEANUP_TIMEOUT_SECONDS)
             self._workers.discard(handles.process)
 
 

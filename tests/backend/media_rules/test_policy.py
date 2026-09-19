@@ -157,6 +157,86 @@ class PolicyShapeTest(unittest.TestCase):
         )
         self.assertEqual((twenty_one.code, twenty_one.field), (ERROR_TOO_MANY_GROUPS, "document"))
 
+    def test_the_group_budget_is_enforced_before_any_group_field_is_read(self):
+        """The 21st group is refused without reading a single group or rule field.
+
+        Both lists here contain only non-groups. If the parser validated shape first the failure would
+        be a shape error on ``whitelist[0]``; the frozen rule is that the combined length is checked
+        before traversal, so the failure is the budget and the entry values are never inspected.
+        """
+
+        oversized = refused(
+            lambda: parse_policy(document(whitelist=[object()] * GROUPS_MAX, blacklist=[object()]))
+        )
+        self.assertEqual((oversized.code, oversized.field), (ERROR_TOO_MANY_GROUPS, "document"))
+        # The same holds when only the *black* list pushes the combined total over the budget.
+        black_side = refused(
+            lambda: parse_policy(document(whitelist=[object()], blacklist=[object()] * GROUPS_MAX))
+        )
+        self.assertEqual((black_side.code, black_side.field), (ERROR_TOO_MANY_GROUPS, "document"))
+
+    def test_a_counting_mapping_is_refused_without_being_indexed(self):
+        """A caller-supplied ``Mapping`` is not a list, so it is refused by name and never traversed.
+
+        The mapping counts every ``__getitem__`` call: the parser must refuse the container type
+        before it could iterate one group out of a sequence whose length it does not know.
+        """
+
+        class CountingMapping(dict):
+            reads = 0
+
+            def __getitem__(self, key):
+                CountingMapping.reads += 1
+                return super().__getitem__(key)
+
+        document_with_mapping = {
+            "schema_version": 1,
+            "revision": 7,
+            "whitelist": CountingMapping({"id": "wl", "rules": []}),
+            "blacklist": [],
+        }
+        error = refused(lambda: parse_policy(document_with_mapping))
+        self.assertEqual((error.code, error.field), (ERROR_INVALID_GROUP_LIST, "whitelist"))
+        self.assertEqual(CountingMapping.reads, 0, "no group field may be read")
+
+    def test_a_finite_oversized_list_is_refused_without_being_traversed(self):
+        """A large but finite list is refused on its length, not parsed and then rejected."""
+
+        class CountingList(list):
+            reads = 0
+
+            def __getitem__(self, index):
+                CountingList.reads += 1
+                return super().__getitem__(index)
+
+        entries = CountingList([object() for _ in range(5000)])
+        error = refused(
+            lambda: parse_policy(
+                {
+                    "schema_version": 1,
+                    "revision": 7,
+                    "whitelist": entries,
+                    "blacklist": [],
+                }
+            )
+        )
+        self.assertEqual((error.code, error.field), (ERROR_TOO_MANY_GROUPS, "document"))
+        self.assertEqual(CountingList.reads, 0, "no entry may be read on the way to the refusal")
+
+    def test_the_budget_is_shared_between_both_lists(self):
+        # Ten groups on each side is exactly the budget and must still be accepted; eleven on one side
+        # alone is over it. The limit is the combined total, not each list separately.
+        ten = [group(f"w{i}", rule(f"rw{i}")) for i in range(GROUPS_MAX // 2)]
+        ten_more = [group(f"b{i}", rule(f"rb{i}")) for i in range(GROUPS_MAX // 2)]
+        accepted = parse_policy(document(whitelist=ten, blacklist=ten_more))
+        self.assertEqual(accepted.group_count, GROUPS_MAX)
+        over = refused(
+            lambda: parse_policy(
+                document(whitelist=ten + [group("w_extra", rule("rw_extra"))], blacklist=ten_more)
+            )
+        )
+        self.assertEqual(over.code, ERROR_TOO_MANY_GROUPS)
+
     def test_value_limits_are_per_operation(self):
         longest_text = "x" * VALUE_MAX
         longest_regex = "y" * REGEX_VALUE_MAX

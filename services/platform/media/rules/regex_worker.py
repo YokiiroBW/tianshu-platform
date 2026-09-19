@@ -4,9 +4,13 @@ This file is started by :mod:`services.platform.media.rules.regex_process` as
 ``sys.executable -I -u <absolute path to this file>``. It is deliberately the smallest possible
 program:
 
-* it imports the standard library only (``json``, ``re``, ``sys``) — no platform configuration, no
-  server package, no network client, no filesystem access, no clock;
-* it speaks one JSON object per line on stdin/stdout and never writes source text anywhere else;
+* it imports the standard library only (``json``, ``os``, ``re``, ``sys``) — no platform
+  configuration, no server package, no network client, no filesystem access, no clock;
+* it speaks one JSON object per line on stdin/stdout, in **UTF-8 on both directions**, never in the
+  host's locale encoding: the parent writes UTF-8 bytes and the child decodes them as UTF-8, so a CJK
+  or emoji pattern means the same thing on every host. ``PYTHONUTF8``/``PYTHONIOENCODING`` are not
+  relied on: the child is started with ``-I``, which ignores them;
+* it never writes source text anywhere else;
 * its only secrets are the ones handed to it on that pipe, and it holds no compiled pattern after a
   ``forget`` command.
 
@@ -35,6 +39,21 @@ import sys
 
 PATTERN_MAX = 512
 FLAGS_MAX = 0x7FFFFFFF
+
+
+def configure_stdio() -> None:
+    """Pin both directions to UTF-8, independently of the host locale.
+
+    The parent encodes a request as UTF-8 and the protocol says the child answers in UTF-8, so the
+    locale must not decide what a pattern means. ``errors="strict"`` is deliberate: a byte sequence
+    that is not UTF-8 is a broken peer, not text to be repaired, and ``surrogateescape`` would put
+    unencodable lone surrogates into a compiled pattern.
+    """
+
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="strict")
 
 
 def _send(payload: dict[str, object]) -> None:
@@ -101,6 +120,11 @@ def handle_line(line: str, cache: dict[int, re.Pattern[str]]) -> None:
         _refuse(None, "invalid_request")
         return
     seq = command.get("seq")
+    if type(seq) is not int or seq <= 0:
+        # A sequence number that is not a real positive integer cannot be echoed faithfully, and a
+        # response the parent cannot match would be a protocol violation.
+        _refuse(None, "invalid_request")
+        return
     operation = command.get("op")
     if operation == "compile":
         _compile(command, seq, cache)
@@ -113,10 +137,16 @@ def handle_line(line: str, cache: dict[int, re.Pattern[str]]) -> None:
 
 
 def main() -> int:
+    configure_stdio()
     cache: dict[int, re.Pattern[str]] = {}
     _send({"ready": True, "protocol": 1, "pid": os.getpid()})
     while True:
-        line = sys.stdin.readline()
+        try:
+            line = sys.stdin.readline()
+        except UnicodeDecodeError:
+            # The line was not valid UTF-8 and nothing of it can be trusted; refuse without echoing.
+            _send({"seq": None, "ok": False, "code": "invalid_request"})
+            continue
         if not line:
             return 0
         handle_line(line, cache)

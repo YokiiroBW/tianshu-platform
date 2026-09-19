@@ -159,14 +159,34 @@ def _validate_group(record: object, field: str) -> Group:
     return Group(id=group_id, rules=rules)
 
 
+def _check_group_budget(whitelist_raw: object, blacklist_raw: object) -> None:
+    """Enforce the combined group budget before a single group field is read.
+
+    Both lists must be real lists and their combined length must fit ``GROUPS_MAX`` *before* any
+    group is validated. Otherwise an oversized document would still cost one full traversal — and a
+    caller-supplied sequence could make that traversal arbitrarily large — while the answer is
+    already known. Only ``len`` is used here, so nothing is iterated.
+    """
+
+    if not isinstance(whitelist_raw, list):
+        raise _refuse(ERROR_INVALID_GROUP_LIST, "whitelist")
+    if not isinstance(blacklist_raw, list):
+        raise _refuse(ERROR_INVALID_GROUP_LIST, "blacklist")
+    if len(whitelist_raw) + len(blacklist_raw) > GROUPS_MAX:
+        raise _refuse(ERROR_TOO_MANY_GROUPS, "document")
+
+
 def _collect_groups(raw: object, name: str) -> tuple[Group, ...]:
     """Validate one list of groups in input order.
 
-    Each list is validated on its own; the combined 20-group budget is enforced by the caller, so a
-    document that is only too large is reported as one budget failure rather than as a shape error.
+    The list type and the combined 20-group budget are enforced by :func:`_check_group_budget`
+    before this runs, so a document that is only too large is reported as one budget failure rather
+    than as a shape error, and no group is read on the way to that failure.
     """
 
     if not isinstance(raw, list):
+        # Unreachable through ``parse_policy`` (the pre-flight check refuses first), but a direct
+        # caller of this helper still gets the same named refusal instead of an AttributeError.
         raise _refuse(ERROR_INVALID_GROUP_LIST, name)
     return tuple(
         _validate_group(entry, f"{name}[{position}]") for position, entry in enumerate(raw)
@@ -257,10 +277,9 @@ def parse_policy(document: object) -> RulePolicy:
     if type(revision) is not int or not REVISION_MIN <= revision <= REVISION_MAX:
         raise _refuse(ERROR_INVALID_REVISION, "revision")
 
+    _check_group_budget(document["whitelist"], document["blacklist"])
     whitelist = _collect_groups(document["whitelist"], "whitelist")
     blacklist = _collect_groups(document["blacklist"], "blacklist")
-    if len(whitelist) + len(blacklist) > GROUPS_MAX:
-        raise _refuse(ERROR_TOO_MANY_GROUPS, "document")
     _register_identifiers(whitelist, blacklist)
 
     return RulePolicy(

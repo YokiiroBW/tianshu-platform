@@ -3,10 +3,13 @@
 Three properties are checked against real resources rather than by mocking:
 
 * at most two requests are in flight per evaluator instance, the third gets ``busy`` immediately and
-  the capacity comes back afterwards — no hidden queue, no slow request blocking a fast one;
-* a request that spends its whole 5-second budget reports ``evaluation_timeout`` while a field that
-  is over the 64 KiB projection budget reports ``input_too_large``, and neither is reported as a
-  normal skip;
+  the capacity comes back afterwards — no hidden queue, no slow request blocking a fast one. The two
+  in-flight requests are *proved* to be in flight: each has already created the child process that is
+  sitting on its request;
+* a request that spends its whole budget reports ``evaluation_timeout`` while a single call that
+  exceeds the 50 ms call budget reports ``regex_timeout``, and neither is reported as a normal skip;
+* the 64 KiB per-field projection budget is exercised with a **real normalized record** — no mock —
+  because a 65536-character description of CJK text is 196608 bytes, which TS-090 happily accepts;
 * closing the evaluator refuses new calls and leaves no child process behind.
 """
 
@@ -40,39 +43,136 @@ from services.platform.media.rules import (
     RuleEvaluationError,
     RuleEvaluator,
 )
+from services.platform.media.rules.matching import projection_within_budget
 
-SLOW_WORKER = '''
-    """Ready, then answers nothing: only the parent's budgets can end a call to it."""
-
-    import sys
-    import time
-
-    sys.stdout.write('{"ready": true}\\n')
-    sys.stdout.flush()
-    while True:
-        line = sys.stdin.readline()
-        if not line:
-            break
-        time.sleep(30)
-'''
+#: The largest description TS-090 accepts, in characters.
+DESCRIPTION_MAX_CHARS = 65536
+#: How many CJK characters reach the 64 KiB projection budget: 21846 x 3 bytes = 65538 bytes.
+CJK_OVER_BUDGET_CHARS = 21846
+CJK_CHAR = "集"
 
 CATASTROPHIC_PATTERN = r"^(a+)+$"
 
+#: A worker that finishes the handshake and then answers nothing at all. It writes to its own stderr
+#: when it reaches a request, so "the request really reached the child" is evidence, not an
+#: assumption. Written with no top-level indentation so it is runnable exactly as stored.
+SLOW_WORKER = (
+    "import json, os, sys, time\n"
+    "sys.stdout.write(json.dumps({'ready': True, 'protocol': 1, 'pid': os.getpid()}) + '\\n')\n"
+    "sys.stdout.flush()\n"
+    "for line in sys.stdin:\n"
+    "    sys.stderr.write('reached-request\\n')\n"
+    "    sys.stderr.flush()\n"
+    "    time.sleep(30)\n"
+)
 
-def oversized_projection():
-    """Make one projected field exceed the 64 KiB budget without inventing an invalid record.
 
-    The evaluator looks the projection helper up in its own module, so that binding is the one to
-    replace; the report itself still comes from the real decision path.
+FIXTURE_ROOT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".runtime"
+)
+
+
+def transport_denied(error: BaseException) -> bool:
+    """True when the refusal is this environment refusing to create the child's pipe transport.
+
+    ``RegexWorker.start`` reports every start failure as the same named ``regex_worker_failed``, so the
+    distinction between "the worker is broken" and "this host will not let a child exist" lives in the
+    cause chain. An environment that cannot run a real child cannot be asked to prove anything about
+    one; the tests in this module say so with a named skip instead of reporting a code defect.
     """
 
-    return mock.patch.object(
-        evaluator_module, "field_values", return_value=("x" * (FIELD_PROJECTION_MAX_BYTES + 1),)
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, PermissionError):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def require_real_child(test: unittest.TestCase, error: BaseException | None) -> None:
+    """Skip exactly when the environment refused the transport, otherwise let the failure stand.
+
+    A task that finished with no exception is a different problem (the request completed when the
+    fixture says it must not), so that case is reported as a failure rather than swallowed.
+    """
+
+    if error is None:
+        raise AssertionError("the request finished when it was supposed to be in flight")
+    if transport_denied(error):
+        test.skipTest(
+            "this environment refuses asyncio's child pipe transport "
+            f"({type(error).__name__}); the real-child assertions need the coordination environment"
+        )
+    raise AssertionError(f"the request failed before it could be in flight: {error!r}")
+
+
+async def require_usable_worker(test: unittest.TestCase) -> None:
+    """Prove up front that a real child can exist here, or name the environment limitation.
+
+    One worker is started directly with the same interpreter, flags and transport the evaluator uses,
+    so a refusal here is the same refusal the request under test would have hit.
+    """
+
+    worker = RegexWorker()
+    try:
+        await worker.start()
+    except RuleEvaluationError as error:
+        require_real_child(test, error)
+    finally:
+        await worker.close_quietly()
+
+
+def _fixture_directory() -> str:
+    """A directory this environment really allows a fixture script to be written into.
+
+    ``mkdtemp`` creates a 0700 directory, which some confined environments refuse. The directory is
+    created once per process and reused, and the probe write is the real check: creating a directory
+    is not proof that a file can be written inside it.
+    """
+
+    for root, name in (
+        (tempfile.gettempdir(), f"ts098-slow-{os.getpid()}"),
+        (FIXTURE_ROOT, f"ts098-slow-{os.getpid()}"),
+    ):
+        target = os.path.join(root, name)
+        try:
+            os.makedirs(target, mode=0o777, exist_ok=True)
+            os.chmod(target, 0o777)
+            with open(os.path.join(target, "probe.py"), "w", encoding="utf-8") as handle:
+                handle.write("pass\n")
+        except OSError:
+            continue
+        return target
+    raise unittest.SkipTest(
+        "no writable fixture directory: this environment refuses the platform temp root and the "
+        "workspace .runtime directory"
     )
+
+
+class SlowWorkerScript:
+    """Context manager writing a worker that finishes the handshake and then never answers.
+
+    The script has no top-level indentation, so it is runnable exactly as stored; a fixture that kept
+    its indentation would fail to import and every budget assertion downstream would be measuring a
+    startup crash instead of a slow child.
+    """
+
+    def __enter__(self) -> str:
+        target = os.path.join(_fixture_directory(), f"slow_worker_{os.getpid()}.py")
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(SLOW_WORKER)
+        return target
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
 
 
 class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
+        # No environment probe at class level: the capacity cases here are pure and must run
+        # everywhere. Only the cases that genuinely need two live children ask for one themselves.
         self.evaluator = RuleEvaluator()
 
     async def asyncTearDown(self) -> None:
@@ -88,23 +188,62 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_two_requests_run_and_the_third_is_busy_without_queueing(self):
-        self.assertEqual(MAX_CONCURRENT_REQUESTS, 2)
-        policy = text_policy()
-        first = asyncio.ensure_future(self.evaluate(policy))
-        second = asyncio.ensure_future(self.evaluate(policy))
-        await asyncio.sleep(0)
-        third = await self.evaluate(policy)
-        self.assertEqual(third.decision, DECISION_RULE_ERROR)
-        self.assertEqual(third.reason, REASON_BUSY)
-        self.assertTrue(third.requires_rule_attention)
-        self.assertFalse(third.automatic_enqueue_allowed)
-        self.assertEqual(third.trace, ())
-        self.assertEqual(third.snapshot_revision, "rev-1")
-        self.assertEqual(third.item_key, metadata().item_key)
-        results = await asyncio.gather(first, second)
-        self.assertEqual([entry.decision for entry in results], [DECISION_SKIP, DECISION_SKIP])
+        """Two requests are held in flight by real children; the third is refused immediately.
 
-    async def test_capacity_returns_after_both_requests_finish(self):
+        The two are not merely *scheduled*: the wait below returns only once each has created and
+        started its own child, which is the point at which the request is genuinely in flight. A
+        plain-text policy is a single synchronous step, so two of those have already finished by the
+        time a third arrives — and a third request that then succeeds is the correct behaviour, which
+        ``test_a_finished_request_releases_its_slot`` states separately.
+        """
+
+        self.assertEqual(MAX_CONCURRENT_REQUESTS, 2)
+        policy = document(whitelist=[group("wl", rule("r1", "title", "regex", "合集"))])
+        await require_usable_worker(self)
+        with SlowWorkerScript() as script, RecordingWorkers() as workers:
+            evaluator = RuleEvaluator(worker_script=script)
+            first = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
+            second = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
+            for _ in range(2000):
+                if len(workers) >= 2 or first.done() or second.done():
+                    break
+                await asyncio.sleep(0.01)
+            for task in (first, second):
+                if task.done() and not task.cancelled():
+                    require_real_child(self, task.exception())
+            self.assertEqual(len(workers), 2, "both requests must be in flight before the third")
+            for worker in workers:
+                self.assertIsNotNone(worker.pid, "an in-flight request owns a real child")
+                managed = worker.managed_process
+                self.assertIsNotNone(managed)
+                self.assertIsNone(managed.returncode, "the child is still running its request")
+            third = await self.evaluate_with(evaluator, policy)
+            self.assertEqual(third.decision, DECISION_RULE_ERROR)
+            self.assertEqual(third.reason, REASON_BUSY)
+            self.assertTrue(third.requires_rule_attention)
+            self.assertFalse(third.automatic_enqueue_allowed)
+            self.assertEqual(third.trace, ())
+            self.assertEqual(third.snapshot_revision, "rev-1")
+            self.assertEqual(third.item_key, metadata().item_key)
+            for task in (first, second):
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            await evaluator.aclose()
+        for worker in workers:
+            self.assertIsNotNone(worker.returncode, "a cancelled request still reaps its child")
+
+    async def evaluate_with(self, evaluator: RuleEvaluator, policy: object):
+        return await evaluator.evaluate(
+            metadata(),
+            policy,
+            accessible=True,
+            quality_satisfied=False,
+            snapshot_revision="rev-1",
+        )
+
+    async def test_a_finished_request_releases_its_slot(self):
+        # Two plain-text requests run to completion in one step each, so the third sees free capacity.
         policy = text_policy()
         await asyncio.gather(self.evaluate(policy), self.evaluate(policy))
         recovered = await self.evaluate(policy)
@@ -112,34 +251,48 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered.reason, "blacklist_match")
 
     async def test_validate_policy_reports_busy_as_an_error_not_as_a_decision(self):
-        policy = text_policy()
-        first = asyncio.ensure_future(self.evaluate(policy))
-        second = asyncio.ensure_future(self.evaluate(policy))
-        await asyncio.sleep(0)
-        with self.assertRaises(RuleEvaluationError) as caught:
-            await self.evaluator.validate_policy(policy)
-        self.assertEqual(caught.exception.code, REASON_BUSY)
-        await asyncio.gather(first, second)
-        validated = await self.evaluator.validate_policy(policy)
+        policy = document(whitelist=[group("wl", rule("r1", "title", "regex", "合集"))])
+        await require_usable_worker(self)
+        with SlowWorkerScript() as script, RecordingWorkers() as workers:
+            evaluator = RuleEvaluator(worker_script=script)
+            first = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
+            second = asyncio.ensure_future(self.evaluate_with(evaluator, policy))
+            for _ in range(2000):
+                if len(workers) >= 2 or first.done() or second.done():
+                    break
+                await asyncio.sleep(0.01)
+            for task in (first, second):
+                if task.done() and not task.cancelled():
+                    require_real_child(self, task.exception())
+            self.assertEqual(len(workers), 2, "both requests must be in flight first")
+            with self.assertRaises(RuleEvaluationError) as caught:
+                await evaluator.validate_policy(policy)
+            self.assertEqual(caught.exception.code, REASON_BUSY)
+            for task in (first, second):
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            await evaluator.aclose()
+            validated = await evaluator.validate_policy(text_policy())
         self.assertEqual(validated.revision, 7)
 
     async def test_capacity_returns_even_when_an_evaluation_fails(self):
         over_budget = document(whitelist=[group("wl", rule("r1", "description", "equals", "x"))])
-        with oversized_projection():
-            failed = await self.evaluate(over_budget)
+        failed = await self.evaluate(
+            over_budget, metadata(description=CJK_CHAR * CJK_OVER_BUDGET_CHARS)
+        )
         self.assertEqual(failed.reason, REASON_INPUT_TOO_LARGE)
         recovered = await self.evaluate(text_policy())
         self.assertEqual(recovered.decision, DECISION_SKIP)
 
 
 class ProjectionBudgetTest(unittest.IsolatedAsyncioTestCase):
-    """The 64 KiB per-field projection budget.
+    """The 64 KiB per-field projection budget, exercised through the real normalizer.
 
-    The budget is a guard, not a limit a valid record can reach: TS-090 already caps a title at 512
-    characters, a description at 65536 and a tag at 128, so no normalized record this block accepts
-    can exceed 64 KiB in one projected field. The guard therefore protects a future caller that
-    projects something larger, and it is exercised here at the boundary it guards — the projection
-    is made oversized on purpose rather than by inventing an impossible record.
+    The budget is measured in UTF-8 bytes, and the character limits of the upstream record are
+    *characters*: a description of 65536 CJK characters is a valid normalized record of 196608 bytes.
+    So the budget is not a guard a valid record cannot reach — it is a limit a real record does reach,
+    and these cases use real records instead of a patched projection helper.
     """
 
     async def asyncSetUp(self) -> None:
@@ -149,13 +302,13 @@ class ProjectionBudgetTest(unittest.IsolatedAsyncioTestCase):
         await self.evaluator.aclose()
 
     async def test_the_largest_valid_description_is_inside_the_budget(self):
-        # 65536 characters is the largest description TS-090 accepts, so this is the widest real
-        # projection this block can be handed. A rule on text at the very end of it matching proves
+        # 65536 ASCII characters is both the largest description TS-090 accepts and exactly the
+        # 64 KiB budget, and the budget is inclusive. A rule on the very end of it matching proves
         # the description was compared whole: neither truncated nor refused.
-        described = "x" * (65536 - 4) + "END!"
-        record = metadata(description=described)
+        described = "x" * (DESCRIPTION_MAX_CHARS - 4) + "END!"
+        self.assertEqual(len(described.encode("utf-8")), FIELD_PROJECTION_MAX_BYTES)
         decision = await self.evaluator.evaluate(
-            record,
+            metadata(description=described),
             document(whitelist=[group("wl", rule("r1", "description", "suffix", "END!"))]),
             accessible=True,
             quality_satisfied=False,
@@ -164,50 +317,107 @@ class ProjectionBudgetTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.decision, DECISION_DOWNLOAD)
         self.assertEqual([entry.result for entry in decision.trace[0].rules], ["matched"])
 
-    async def test_an_over_budget_field_is_refused_instead_of_truncated(self):
-        policy = document(whitelist=[group("wl", rule("r1", "description", "equals", "x" * 4096))])
-        with oversized_projection():
-            decision = await self.evaluator.evaluate(
-                metadata(),
-                policy,
-                accessible=True,
-                quality_satisfied=False,
-                snapshot_revision="rev-1",
-            )
+    async def test_a_real_normalized_description_over_the_budget_is_refused(self):
+        # No mock: this is a real normalized record whose description TS-090 accepts (21846 <= 65536
+        # characters) and whose projection is 65538 UTF-8 bytes, two bytes over the budget.
+        described = CJK_CHAR * CJK_OVER_BUDGET_CHARS
+        record = metadata(description=described)
+        self.assertEqual(len(record.original_description), CJK_OVER_BUDGET_CHARS)
+        self.assertEqual(len(described.encode("utf-8")), 65538)
+        self.assertFalse(projection_within_budget((record.original_description,)))
+        decision = await self.evaluator.evaluate(
+            record,
+            document(whitelist=[group("wl", rule("r1", "description", "contains", CJK_CHAR))]),
+            accessible=True,
+            quality_satisfied=False,
+            snapshot_revision="rev-1",
+        )
         self.assertEqual(decision.decision, DECISION_RULE_ERROR)
         self.assertEqual(decision.reason, REASON_INPUT_TOO_LARGE)
         self.assertTrue(decision.requires_rule_attention)
         self.assertFalse(decision.automatic_enqueue_allowed)
         self.assertEqual([entry.result for entry in decision.trace[0].rules], ["error"])
 
-    async def test_a_field_exactly_at_the_budget_is_accepted(self):
-        # The budget is inclusive: a projection of exactly 64 KiB still evaluates normally.
-        at_budget = ("x" * (FIELD_PROJECTION_MAX_BYTES - 4) + "END!",)
-        policy = document(whitelist=[group("wl", rule("r1", "description", "suffix", "END!"))])
-        with mock.patch.object(evaluator_module, "field_values", return_value=at_budget):
-            decision = await self.evaluator.evaluate(
-                metadata(),
-                policy,
-                accessible=True,
-                quality_satisfied=False,
-                snapshot_revision="rev-1",
-            )
-        self.assertEqual(decision.decision, DECISION_DOWNLOAD)
-        self.assertEqual([entry.result for entry in decision.trace[0].rules], ["matched"])
+    async def test_a_one_byte_over_budget_projection_is_refused(self):
+        # The boundary is exact, not fuzzy: one byte past 64 KiB is refused. TS-090 caps a description
+        # at 65536 *characters*, so the byte total, not the character count, is what this guards.
+        self.assertTrue(projection_within_budget(("x" * FIELD_PROJECTION_MAX_BYTES,)))
+        self.assertFalse(projection_within_budget(("x" * (FIELD_PROJECTION_MAX_BYTES + 1),)))
+        self.assertTrue(projection_within_budget(("集" * (FIELD_PROJECTION_MAX_BYTES // 3),)))
+        self.assertFalse(projection_within_budget(("集" * (FIELD_PROJECTION_MAX_BYTES // 3 + 1),)))
+
+    async def test_the_budget_counts_every_value_of_a_multi_value_field(self):
+        # The budget is a running total over the whole projection, not a per-value check: tags are
+        # summed, so a projection that is over the budget only in aggregate is still refused.
+        values = tuple("x" * 2048 for _ in range(FIELD_PROJECTION_MAX_BYTES // 2048))
+        self.assertTrue(projection_within_budget(values))
+        self.assertFalse(projection_within_budget(values + ("x",)))
+
+    async def test_the_valid_maximum_tag_projection_is_inside_the_budget(self):
+        # TS-090's maxima — 100 tags of at most 128 characters — cannot reach 64 KiB of UTF-8 bytes
+        # even in CJK (100 x 128 x 3 = 38400), so no valid multi-value projection can be refused.
+        # The aggregate rule above is therefore checked on the projection helper, and this case shows
+        # a record at the maximum is evaluated rather than refused.
+        tags = [f"{index:03d}" + "集" * 125 for index in range(100)]
+        record = metadata(tags=tags)
+        self.assertEqual(len(record.tags), 100, "the record really carries the maximum tag count")
+        # Every tag is exactly the 128-character maximum, 128 characters of which 125 are CJK: the
+        # heaviest projection TS-090 can produce is therefore 100 x 378 = 37800 bytes, still inside
+        # the 64 KiB budget. The aggregate rule above is what covers a projection that is over it.
+        self.assertTrue(all(len(tag) == 128 for tag in record.tags))
+        self.assertEqual(sum(len(tag.encode("utf-8")) for tag in record.tags), 37800)
+        self.assertLess(37800, FIELD_PROJECTION_MAX_BYTES)
+        self.assertTrue(projection_within_budget(record.tags))
+        decision = await self.evaluator.evaluate(
+            record,
+            document(whitelist=[group("wl", rule("r1", "tags", "contains", "预告"))]),
+            accessible=True,
+            quality_satisfied=False,
+            snapshot_revision="rev-1",
+        )
+        self.assertEqual(
+            decision.decision, DECISION_SKIP, "a valid maximum is evaluated, not refused"
+        )
 
 
 class RequestBudgetTest(unittest.IsolatedAsyncioTestCase):
-    """The 5-second request budget, exercised with a shortened budget and a real slow child."""
+    """The 5-second request budget, exercised against the deadline the request really uses."""
 
-    async def test_the_published_request_budget_is_five_seconds(self):
+    def test_the_published_budgets_are_the_frozen_ones(self):
         self.assertEqual(rules.REQUEST_TIMEOUT_SECONDS, 5.0)
         self.assertEqual(rules.CALL_TIMEOUT_SECONDS, 0.05)
 
-    async def test_a_request_that_spends_its_budget_reports_evaluation_timeout(self):
+    async def test_a_single_call_over_its_budget_is_a_regex_timeout(self):
         with SlowWorkerScript() as script:
             evaluator = RuleEvaluator(worker_script=script)
             async with evaluator:
-                with mock.patch.object(regex_process, "REQUEST_TIMEOUT_SECONDS", 0.35):
+                await require_usable_worker(self)
+                decision = await evaluator.evaluate(
+                    metadata(),
+                    document(whitelist=[group("wl", rule("r1", "title", "regex", "合集"))]),
+                    accessible=True,
+                    quality_satisfied=False,
+                    snapshot_revision="rev-1",
+                )
+        self.assertEqual(decision.decision, DECISION_RULE_ERROR)
+        self.assertEqual(decision.reason, REASON_REGEX_TIMEOUT)
+        self.assertTrue(decision.requires_rule_attention)
+
+    async def test_a_request_that_spends_its_budget_reports_evaluation_timeout(self):
+        """The whole-request deadline, not a shortened call budget, produces this reason.
+
+        ``CALL_TIMEOUT_SECONDS`` is raised so no single call can be blamed; the only budget that can
+        expire is the request deadline the evaluator really passes down, and the reason must name it.
+        """
+
+        with SlowWorkerScript() as script:
+            evaluator = RuleEvaluator(worker_script=script)
+            async with evaluator:
+                await require_usable_worker(self)
+                with (
+                    mock.patch.object(regex_process, "REQUEST_TIMEOUT_SECONDS", 0.35),
+                    mock.patch.object(regex_process, "CALL_TIMEOUT_SECONDS", 30.0),
+                ):
                     decision = await evaluator.evaluate(
                         metadata(),
                         document(whitelist=[group("wl", rule("r1", "title", "regex", "合集"))]),
@@ -218,23 +428,7 @@ class RequestBudgetTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.decision, DECISION_RULE_ERROR)
         self.assertEqual(decision.reason, REASON_EVALUATION_TIMEOUT)
         self.assertTrue(decision.requires_rule_attention)
-
-    async def test_a_shorter_request_budget_converts_a_slow_call_into_a_timeout(self):
-        with SlowWorkerScript() as script:
-            evaluator = RuleEvaluator(worker_script=script)
-            async with evaluator:
-                with (
-                    mock.patch.object(regex_process, "REQUEST_TIMEOUT_SECONDS", 0.05),
-                    mock.patch.object(regex_process, "CALL_TIMEOUT_SECONDS", 0.2),
-                ):
-                    decision = await evaluator.evaluate(
-                        metadata(),
-                        document(whitelist=[group("wl", rule("r1", "title", "regex", "合集"))]),
-                        accessible=True,
-                        quality_satisfied=False,
-                        snapshot_revision="rev-1",
-                    )
-        self.assertEqual(decision.reason, REASON_REGEX_TIMEOUT)
+        self.assertFalse(decision.automatic_enqueue_allowed)
 
     async def test_the_shortened_budget_does_not_leak_into_the_next_request(self):
         evaluator = RuleEvaluator()
@@ -250,32 +444,42 @@ class RequestBudgetTest(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(decision.decision, DECISION_SKIP)
 
+    async def test_the_full_five_second_budget_finishes_many_quick_search_values(self):
+        """The unshortened budget: many legal searches inside one request must all complete.
 
-class SlowWorkerScript:
-    """Context manager writing a worker that never answers a request."""
+        This is the case the card calls out by name — a policy that legitimately performs a long run
+        of fast calls has to be judged, not timed out. With the published 5 s request budget and the
+        published 50 ms call budget, every one of these searches is fast and the decision is normal:
+        the matching value is placed last, so all of them really run.
+        """
 
-    def __init__(self) -> None:
-        self._directory = tempfile.TemporaryDirectory(
-            prefix="ts098-slow-", ignore_cleanup_errors=True
-        )
-        self.path = self._directory.name
-
-    def __enter__(self) -> str:
-        target = os.path.join(self.path, "slow_worker.py")
-        with open(target, "w", encoding="utf-8") as handle:
-            handle.write(SLOW_WORKER)
-        return target
-
-    def __exit__(self, *exc_info: object) -> None:
-        self._directory.cleanup()
+        tags = [f"普通标签{index:02d}" for index in range(24)] + ["合集"]
+        policy = document(whitelist=[group("wl", rule("r1", "tags", "regex", "^合集$"))])
+        evaluator = RuleEvaluator()
+        async with evaluator:
+            await require_usable_worker(self)
+            decision = await evaluator.evaluate(
+                metadata(tags=tags),
+                policy,
+                accessible=True,
+                quality_satisfied=False,
+                snapshot_revision="rev-1",
+            )
+        self.assertEqual(decision.decision, DECISION_DOWNLOAD)
+        self.assertEqual(decision.reason, "eligible")
 
 
 class RecordingWorkers:
-    """Patch the process class so a test can inspect the children a request really created."""
+    """Patch the process class *at the name the evaluator consumes*, so real children are recorded.
+
+    ``evaluator`` imports ``RegexWorker`` into its own namespace; patching the package export instead
+    would leave the evaluator using the real class and would record nothing, which made an earlier
+    version of this test assert exit evidence it had never collected.
+    """
 
     def __init__(self) -> None:
         self.workers: list[RegexWorker] = []
-        real = rules.RegexWorker
+        real = evaluator_module.RegexWorker
         recorded = self.workers
 
         class Recording(real):  # type: ignore[misc, valid-type]
@@ -283,7 +487,7 @@ class RecordingWorkers:
                 super().__init__(script_path)
                 recorded.append(self)
 
-        self._patch = mock.patch.object(rules, "RegexWorker", Recording)
+        self._patch = mock.patch.object(evaluator_module, "RegexWorker", Recording)
 
     def __enter__(self) -> list[RegexWorker]:
         self._patch.start()
@@ -316,6 +520,7 @@ class LifecycleTest(unittest.IsolatedAsyncioTestCase):
             await evaluator.validate_policy(document())
 
     async def test_closing_retires_a_worker_left_by_a_cancelled_request(self):
+        await require_usable_worker(self)
         with SlowWorkerScript() as script, RecordingWorkers() as workers:
             evaluator = RuleEvaluator(worker_script=script)
             task = asyncio.ensure_future(
@@ -327,23 +532,28 @@ class LifecycleTest(unittest.IsolatedAsyncioTestCase):
                     snapshot_revision="rev-1",
                 )
             )
-            for _ in range(400):
+            for _ in range(1000):
                 if workers:
                     break
                 await asyncio.sleep(0.01)
             self.assertTrue(workers, "the request must have started its own worker")
+            self.assertIsNotNone(workers[0].pid, "the recorded worker owns a real child")
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
             await evaluator.aclose()
         for worker in workers:
-            self.assertIsNotNone(worker.returncode, "no child may survive a cancelled request")
+            managed = worker.managed_process
+            self.assertIsNotNone(managed, "the child handle is kept until it exits")
+            self.assertIsNotNone(managed.returncode, "no child may survive a cancelled request")
+            self.assertEqual(worker.returncode, managed.returncode)
             self.assertFalse(worker.alive)
 
     async def test_a_cancelled_evaluation_does_not_return_a_decision(self):
         with SlowWorkerScript() as script:
             evaluator = RuleEvaluator(worker_script=script)
             async with evaluator:
+                await require_usable_worker(self)
                 task = asyncio.ensure_future(
                     evaluator.evaluate(
                         metadata(),
@@ -368,6 +578,7 @@ class LifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered.decision, DECISION_SKIP)
 
     async def test_a_catastrophic_expression_leaves_no_running_child(self):
+        await require_usable_worker(self)
         with RecordingWorkers() as workers:
             evaluator = RuleEvaluator()
             async with evaluator:
@@ -381,7 +592,10 @@ class LifecycleTest(unittest.IsolatedAsyncioTestCase):
                     snapshot_revision="rev-1",
                 )
         self.assertEqual(decision.reason, REASON_REGEX_TIMEOUT)
-        self.assertTrue(workers)
+        self.assertTrue(workers, "the catastrophic expression ran in a real child")
         for worker in workers:
-            self.assertIsNotNone(worker.returncode)
+            managed = worker.managed_process
+            self.assertIsNotNone(managed)
+            self.assertIsNotNone(managed.returncode)
+            self.assertNotEqual(managed.returncode, 0, "a killed child does not exit cleanly")
             self.assertFalse(worker.alive)

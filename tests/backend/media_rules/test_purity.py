@@ -81,24 +81,28 @@ FOREIGN_PACKAGE_MARKERS = (
 def probe_directory() -> Iterator[str]:
     """An empty, *readable* scratch directory for the fresh interpreter.
 
-    A confined environment can hand out a temporary directory that cannot be listed or removed, so
-    each candidate is proven usable (empty and listable) before it is handed over, and the fallback
-    is the task's own runtime directory. Cleanup is best effort: refusing to remove the directory
-    must not be reported as a failed import-safety check.
+    A confined environment can hand out a temporary directory that cannot be listed or removed, and a
+    ``mkdtemp`` directory is created 0700, which some environments refuse outright. Each candidate is
+    therefore proven usable — it must exist, be listable, and allow a file to be written and removed —
+    before it is handed over, and the fallback is the task's own runtime directory. Cleanup is best
+    effort: refusing to remove the directory must not be reported as a failed import-safety check.
     """
 
     candidates = [tempfile.gettempdir(), os.path.join(REPOSITORY_ROOT, ".runtime")]
     for base in candidates:
+        directory = os.path.join(base, f"ts098-import-{os.getpid()}")
         try:
-            directory = tempfile.mkdtemp(prefix="ts098-import-", dir=base)
-        except OSError:
-            continue
-        try:
+            os.makedirs(directory, mode=0o777, exist_ok=True)
+            os.chmod(directory, 0o777)
+            probe = os.path.join(directory, "probe.py")
+            with open(probe, "w", encoding="utf-8") as handle:
+                handle.write("pass\n")
+            os.remove(probe)
             if os.listdir(directory) == []:
                 yield directory
                 return
         except OSError:
-            pass
+            continue
         finally:
             shutil.rmtree(directory, ignore_errors=True)
     raise unittest.SkipTest("no readable temporary directory is available for the probe")
