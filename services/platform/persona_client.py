@@ -11,18 +11,23 @@ Three rules are deliberately kept out of the route adapter and out of the consol
   once it fits the operation's budget, so an oversized or non-JSON answer is one refusal instead of
   a memory surprise. History pages get the tighter budget the candidate documents.
 * **An answer must answer the question.** The operation, subject, history kind, revision ids,
-  `count == entries.length`, the `has_more`/`next_cursor` relationship and (for errors) the echoed
-  `request_id` are all proved before any field is read. A wrong answer is `invalid_upstream`, never
-  a success and never an empty page.
+  `count == entries.length`, the `has_more`/`next_cursor` relationship and - for every error - the
+  echoed `request_id` are all proved before any field is read. A wrong answer, or one that answers
+  somebody else's request, is `invalid_upstream`: never a success, never an empty page and never a
+  refusal this product would otherwise have to guess at.
 * **Failures are translated, never invented.** A peer code this consumer profile does not know
   becomes one honest `dependency_unavailable`; a permission or connection failure is never turned
-  into an empty result.
+  into an empty result, and a page is never partly shown as if the part that failed were absent.
 
 The client owns no rule about what a browser may ask for and no rule about who may ask. It is a
-transport boundary: `web_personas` decides scope, and `persona_page_config` owns the shapes.
+transport boundary: `web_personas` decides scope, and `persona_page_config` owns the shapes. What it
+does own is *when* that scope must be re-proved: the request's own guard travels with it
+(`SCOPE`), and every outbound step asks again.
 """
 
 import asyncio
+import contextvars
+import hmac
 import ssl
 import uuid
 
@@ -70,26 +75,64 @@ def request_id():
     return "web-persona-" + uuid.uuid4().hex
 
 
+class ScopeLost(Exception):
+    """One read whose authority stopped holding while it was in flight.
+
+    It is deliberately *not* a `Fault`: a refused subject is a per-character fact, but a scope that
+    ended is the whole request's, so nothing may record it as one row's error and carry on. The
+    adapter that built the guard turns it back into the one honest fault it stands for.
+    """
+
+    def __init__(self, fault):
+        super().__init__(fault.code)
+        self.fault = fault
+
+
+# The guard of the read that is in flight *in this task*. It is carried in a context variable
+# because the read outlives the call that started it: waiting for an outbound slot, sending and
+# reading the answer all happen inside the client, and each of them must be able to re-prove the
+# very authority the request was admitted under. A task created by `catalog` inherits the context of
+# the request that created it, so four workers share one request's guard and never another's.
+SCOPE = contextvars.ContextVar("persona_read_scope", default=None)
+
+
+def prove(document):
+    """Re-prove the current request's own scope, when this task carries one."""
+    guard = SCOPE.get()
+    if guard is not None:
+        guard(document)
+
+
 class PersonaClient:
     """One registered connection: address, credential variable, CA, timeout and the candidate."""
 
-    def __init__(self, connection_id, entry, candidate):
+    def __init__(self, connection_id, entry, candidate, reserved=()):
         self.connection_id = connection_id
         self.base_url = entry["base_url"].rstrip("/")
         self.token_env = entry["token_env"]
         self.ca_file = entry.get("ca_file")
         self.timeout = entry.get("timeout_seconds", DEADLINE_SECONDS)
         self.candidate = candidate
+        # Variables that belong to other registered identities: this client never sends their
+        # value, whichever name the deployment pointed it at.
+        self.reserved = tuple(reserved)
         self.slots = asyncio.Semaphore(UPSTREAM_LIMIT)
 
     def credential(self):
         """The registered reading identity's own credential, resolved at call time.
 
         A revoked, rotated or missing variable is a refusal here, never a cached value: no earlier
-        session may keep reading because it once held a working secret.
+        session may keep reading because it once held a working secret. A value that resolves to
+        another registered identity's secret is refused too - rotation must not be able to lend the
+        page somebody else's identity after the deployment was accepted.
         """
         value = secret(self.token_env)
         require(value is not None, "dependency_unavailable", 503)
+        for name in self.reserved:
+            if name == self.token_env:
+                continue
+            other = secret(name)
+            require(other is None or not hmac.compare_digest(value, other), "forbidden", 403)
         return value
 
     def _tls(self):
@@ -102,17 +145,25 @@ class PersonaClient:
         """Send one operation document and return the peer's verified answer.
 
         The document is built from `persona_page_config` and validated against the candidate's own
-        request schema before it leaves this process, so no adapter can widen the wire shape.
+        request schema before it leaves this process, so no adapter can widen the wire shape. The
+        request's own scope is proved three times on the way out and back: before anything is
+        attempted, once the outbound slot has been granted and before the socket is written, and
+        once the answer is in hand and before it is trusted. A scope that ended during any of those
+        waits stops this read instead of returning under an authority it no longer has.
         """
         operation = document.get("operation")
         require(operation in CANDIDATE_OPERATIONS, "invalid_input", 400)
         validate_request(self.candidate, document)
-        token = self.credential()
+        prove(document)
         try:
             async with asyncio.timeout(DEADLINE_SECONDS):
                 # Waiting for an outbound slot is part of the same bounded wait: a queued read
                 # never gets its own fresh ten seconds.
                 async with self.slots:
+                    # The wait is over and nothing has been sent yet: this is the last moment at
+                    # which a request that lost its authority can still be stopped for free.
+                    prove(document)
+                    token = self.credential()
                     async with aiohttp.ClientSession(
                         timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=False
                     ) as session:
@@ -123,19 +174,26 @@ class PersonaClient:
                             ssl=self._tls(),
                             allow_redirects=False,
                         ) as response:
-                            answer = await self._read(response, operation)
+                            answer = await self._read(
+                                response, operation, document.get("request_id")
+                            )
+            # The answer answered *something*; whether it may still be read here is this request's
+            # own question, and it is asked again after every await above.
+            prove(document)
         except TimeoutError:
             raise Fault("timeout", 503) from None
         except (aiohttp.ClientError, OSError, ssl.SSLError):
             raise Fault("dependency_unavailable", 503) from None
         return self._verify(answer, document)
 
-    async def _read(self, response, operation):
+    async def _read(self, response, operation, request_id=None):
         """Bounded stream read, then parse. The byte budget is applied to real bytes.
 
         A peer answer past the budget is stopped mid-stream and reported as what it is: an answer
         this product cannot use. The page-response budget is the adapter's own, and a refused
-        upstream read never becomes either a partial page or an empty one.
+        upstream read never becomes either a partial page or an empty one. The correlation id of
+        the request that was actually sent travels with the read, so an error packet is only ever
+        accepted as the answer to *this* call.
         """
         limit = HISTORY_MAX_BYTES if operation == "history_page" else DOCUMENT_MAX_BYTES
         require(response.content_type == "application/json", "invalid_upstream", 502)
@@ -147,7 +205,7 @@ class PersonaClient:
         answer = self._parse(b"".join(chunks))
         require(isinstance(answer, dict), "invalid_upstream", 502)
         if response.status != 200:
-            return self._fault(answer, response.status, operation)
+            return self._fault(answer, response.status, operation, request_id)
         return answer
 
     def _parse(self, raw):
@@ -164,12 +222,29 @@ class PersonaClient:
         except (ValueError, UnicodeError, RecursionError, TypeError):
             raise Fault("invalid_upstream", 502) from None
 
-    def _fault(self, answer, status, operation):
-        """One peer refusal, echoed only when this product owns the code and the answer agrees."""
+    def _fault(self, answer, status, operation, request_id=None):
+        """One peer refusal, echoed only when this product owns it *and* it answers this request.
+
+        An error that does not carry the correlation id of the request that was sent cannot be
+        proved to belong to it, so it is refused as an unusable answer instead of being read as
+        this call's refusal - a mixed-up error must never be able to look like "this character does
+        not exist". The same rule applies when no correlation id is available to compare with: a
+        refusal this product cannot attribute is not a refusal it may repeat.
+        """
+        require(
+            isinstance(operation, str) and operation in CANDIDATE_OPERATIONS, "invalid_input", 400
+        )
+        validate_response(self.candidate, answer)
+        require(
+            isinstance(request_id, str)
+            and request_id != ""
+            and answer.get("request_id") == request_id,
+            "invalid_upstream",
+            502,
+        )
         code = answer.get("code")
         require(isinstance(code, str) and code in KNOWN_CODES, "dependency_unavailable", 503)
         require(status == KNOWN_CODES[code], "invalid_upstream", 502)
-        validate_response(self.candidate, answer)
         raise Fault(code, status)
 
     # ------------------------------------------------------------------ verification
@@ -178,7 +253,7 @@ class PersonaClient:
         """Prove the answer answers this exact question before any field of it is read."""
         operation = document["operation"]
         validate_response(self.candidate, answer)
-        require(answer["operation"] == operation, "invalid_upstream", 502)
+        require(answer.get("operation") == operation, "invalid_upstream", 502)
         if operation == "get":
             persona = answer.get("persona")
             require(isinstance(persona, dict), "invalid_upstream", 502)
@@ -268,19 +343,30 @@ class PersonaClient:
         The peer's own global catalogue is deliberately never consulted; a deployment's closed
         subject list is enumerated through the single-character read, so nothing outside the
         allowlist can appear here even if the peer would happily list it.
+
+        Only one refusal is a per-character fact: the peer says, in an answer correlated to this
+        exact request, that it does not hold that character. Everything else - a network failure, a
+        refused credential, a timeout, an answer that belongs to another request - makes the page
+        unshowable, so it stops the whole directory at once, cancels the work still in flight and
+        lets the caller state the failure instead of presenting a partly-readable page as a success.
         """
         require(isinstance(subjects, (list, tuple)) and len(subjects) <= 20, "invalid_input", 400)
         results = [None] * len(subjects)
         failures = [None] * len(subjects)
 
         async def one(index, subject):
+            document = {"operation": "get", "subject": subject, "request_id": request_id()}
+            # This item's own turn to prove the scope: a read that lost its session, its action or
+            # its allowlist must not even start the next character's request.
+            prove(document)
             try:
-                results[index] = await self.call(
-                    {"operation": "get", "subject": subject, "request_id": request_id()}
-                )
+                results[index] = await self.call(document)
             except Fault as error:
-                # One subject's refusal or absence is kept as that exact fault; the caller decides
-                # whether the page can still be shown, and a refusal is never an empty row.
+                # One character the peer really does not hold stays that character's own row; the
+                # caller decides how to present it, and a refusal is never an empty row. Anything
+                # else is the whole page's failure and stops the remaining work here.
+                if error.code != "not_found":
+                    raise
                 failures[index] = error
 
         queue = asyncio.Queue()

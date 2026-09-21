@@ -50,6 +50,9 @@ const conflictLabel: Record<string, string> = {
 
 type Read = "catalog" | "history" | "revision" | "compare";
 
+/** What the detail pane is showing: one character and one history kind, nothing else. */
+type Scope = { subject: string; kind: HistoryKind };
+
 export default function PersonaPanel() {
   const [session, setSession] = useState<SessionState | null>(null);
   const [unreachable, setUnreachable] = useState("");
@@ -61,16 +64,34 @@ export default function PersonaPanel() {
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const [page, setPage] = useState(0);
   const [absent, setAbsent] = useState("");
-  const [subject, setSubject] = useState("");
-  const [kind, setKind] = useState<HistoryKind>("revisions");
+  const [scope, setScope] = useState<Scope>({ subject: "", kind: "revisions" });
+  /**
+   * How many times a scope has been asked for.
+   *
+   * The read effect is keyed on the scope *and* on this counter, so asking for the scope that is
+   * already open is a real re-read rather than a cleared panel with nothing to trigger the read.
+   */
+  const [attempt, setAttempt] = useState(0);
   const [pages, setPages] = useState<HistoryPage[]>([]);
   const [current, setCurrent] = useState(0);
+  const [historyFailure, setHistoryFailure] = useState("");
   const [baseline, setBaseline] = useState<string | null>(null);
   const [revision, setRevision] = useState<RevisionView | null>(null);
   const [comparison, setComparison] = useState<CompareView | null>(null);
   const [versionGone, setVersionGone] = useState("");
   const active = useRef<AbortController | null>(null);
+  /** The scope's own history read, cancelled when the scope changes and by nothing else. */
+  const scoped = useRef<AbortController | null>(null);
   const live = useRef<SessionState | null>(null);
+  /**
+   * The scope every read is stamped with, and its generation.
+   *
+   * A reply is applied only when both still match what the read started under: a character or a
+   * kind that was switched away, and a character that was switched to and then away again, are the
+   * same case here - the answer belongs to a page this operator is no longer looking at.
+   */
+  const scopeRef = useRef<Scope>({ subject: "", kind: "revisions" });
+  const generation = useRef(0);
   const password = useRef<HTMLInputElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
 
@@ -90,6 +111,14 @@ export default function PersonaPanel() {
     setSession(next);
   }, []);
 
+  /**
+   * Begin this page's current operator action: the previous one is abandoned, never awaited.
+   *
+   * Only the actions the operator asks for share this one slot. The history read that follows a
+   * scope change keeps a slot of its own: it is a consequence of the scope, and letting it abort
+   * this slot would cancel the very refresh that changed the scope (the directory read would then
+   * never be sent, and the panel would quietly keep showing the previous page).
+   */
   const start = useCallback(() => {
     active.current?.abort();
     const controller = new AbortController();
@@ -103,11 +132,53 @@ export default function PersonaPanel() {
     setPage(0);
     setPages([]);
     setCurrent(0);
+    setHistoryFailure("");
     setRevision(null);
     setComparison(null);
     setVersionGone("");
+    setBaseline(null);
     setStale(null);
   }, []);
+
+  /**
+   * Enter a scope: this character and this kind, from this moment.
+   *
+   * The previous scope's rows, body, comparison, baseline and error are cleared in the same turn as
+   * the switch, so nothing of the old scope can be read as the new one's result - not while the new
+   * read is running and not afterwards, because the generation it was stamped with is gone.
+   *
+   * Clicking the character that is already open is the same request as clicking another one - "show
+   * me this character's history" - so it opens that history again instead of emptying the panel: an
+   * attempt counter the read effect depends on is what makes an unchanged scope ask again. Without
+   * it, the cleared page would have nothing left to trigger a re-read and the operator would be
+   * looking at an empty panel that no click can refill.
+   */
+  const enter = useCallback((subject: string, kind: HistoryKind) => {
+    generation.current += 1;
+    scopeRef.current = { subject, kind };
+    setScope({ subject, kind });
+    setPages([]);
+    setCurrent(0);
+    setHistoryFailure("");
+    setRevision(null);
+    setComparison(null);
+    setVersionGone("");
+    setBaseline(null);
+    setNotice("");
+    setStale(null);
+    setError("");
+    setAttempt((count) => count + 1);
+  }, []);
+
+  /** The scope a read is running under, captured before its first byte leaves. */
+  const stamp = useCallback(
+    () => ({
+      token: generation.current,
+      subject: scopeRef.current.subject,
+      kind: scopeRef.current.kind,
+    }),
+    [],
+  );
 
   /**
    * One read that always ends in a stated state.
@@ -122,28 +193,29 @@ export default function PersonaPanel() {
       signal: AbortSignal,
       from: Read,
       work: (state: SessionState) => Promise<T>,
-    ): Promise<T | null> => {
+    ): Promise<{ answer: T | null; failure: string }> => {
       const state = live.current;
-      if (!state) return null;
+      if (!state) return { answer: null, failure: "" };
       setStale(null);
       try {
-        return await work(state);
+        return { answer: await work(state), failure: "" };
       } catch (cause) {
-        if (signal.aborted) return null;
+        if (signal.aborted) return { answer: null, failure: "" };
         if (!(cause instanceof PersonaError)) {
-          setError(reason(cause));
-          return null;
+          const text = reason(cause);
+          setError(text);
+          return { answer: null, failure: text };
         }
         if (cause.code in deploymentState) {
           setAbsent(cause.code);
           setError("");
           forget();
-          return null;
+          return { answer: null, failure: "" };
         }
         if (conflictCodes.includes(cause.code)) {
           setStale({ code: cause.code, from });
           setError("");
-          return null;
+          return { answer: null, failure: reason(cause) };
         }
         if (sessionCodes.includes(cause.code)) {
           // A revoked or expired login is a state of this page, not a stale panel.
@@ -151,10 +223,11 @@ export default function PersonaPanel() {
           applySession(fresh?.authenticated ? fresh : null);
           forget();
           setError(cause.message);
-          return null;
+          return { answer: null, failure: cause.message };
         }
-        setError(reason(cause));
-        return null;
+        const text = reason(cause);
+        setError(text);
+        return { answer: null, failure: text };
       }
     },
     [applySession, forget],
@@ -166,29 +239,30 @@ export default function PersonaPanel() {
    */
   const loadCatalog = useCallback(
     async (signal: AbortSignal, position: number, cursor: string | null) => {
+      const token = generation.current;
       setBusy(true);
       setError("");
-      const answer = await guard(signal, "catalog", (state) =>
+      const { answer } = await guard(signal, "catalog", (state) =>
         read<CatalogPage>("catalog", { cursor }, state.csrf, signal),
       );
-      if (signal.aborted) return;
+      if (signal.aborted || token !== generation.current) return;
       if (answer) {
         setCatalog(answer);
         setAbsent("");
         setPage(position);
         setCursors((known) => [...known.slice(0, position), cursor]);
-        setSubject((chosen) =>
-          answer.entries.some((entry) => entry.subject === chosen)
-            ? chosen
-            : (
-                answer.entries.find((entry) => !entry.error) ??
-                answer.entries[0]
-              )?.subject || "",
-        );
+        // A directory that no longer holds the chosen character starts on one it does hold, and
+        // that is a scope change like any other: the old character's rows and body are dropped.
+        const first =
+          answer.entries.find((entry) => !entry.error) ?? answer.entries[0];
+        const chosen = scopeRef.current.subject;
+        if (!answer.entries.some((entry) => entry.subject === chosen)) {
+          if (first) enter(first.subject, scopeRef.current.kind);
+        }
       }
       setBusy(false);
     },
-    [guard],
+    [enter, guard],
   );
 
   const connect = useCallback(async () => {
@@ -229,42 +303,45 @@ export default function PersonaPanel() {
   /** One history page at one position, in the same shape as the directory. */
   const loadHistory = useCallback(
     async (signal: AbortSignal, position: number, cursor: string | null) => {
+      const started = stamp();
       setBusy(true);
       setError("");
       setNotice("");
-      const answer = await guard(signal, "history", (state) =>
+      const { answer, failure } = await guard(signal, "history", (state) =>
         read<HistoryPage>(
           "history",
-          { subject, kind, cursor },
+          { subject: started.subject, kind: started.kind, cursor },
           state.csrf,
           signal,
         ),
       );
-      if (signal.aborted) return;
+      if (signal.aborted || started.token !== generation.current) return;
       if (answer) {
         setPages((loaded) => [...loaded.slice(0, position), answer]);
         setCurrent(position);
-        setRevision(null);
-        setComparison(null);
-        setVersionGone("");
+        setHistoryFailure("");
+      } else {
+        // This scope's own failure: the pane says this character and this kind have no result,
+        // and the rows of whatever was shown before are already gone.
+        setPages([]);
+        setCurrent(0);
+        setHistoryFailure(failure);
       }
       setBusy(false);
     },
-    [guard, kind, subject],
+    [guard, stamp],
   );
 
   useEffect(() => {
-    if (!session?.authenticated || !subject || absent) return;
-    const controller = start();
-    setBaseline(null);
-    // Switching character or history kind clears the chosen version at once: the pane must never
-    // show one character's revision under another character's name while the new page loads.
-    setRevision(null);
-    setComparison(null);
-    setVersionGone("");
+    if (!session?.authenticated || !scope.subject || absent) return;
+    // Its own controller, so entering a scope cancels the previous scope's history read without
+    // cancelling the directory read that entered it.
+    scoped.current?.abort();
+    const controller = new AbortController();
+    scoped.current = controller;
     void loadHistory(controller.signal, 0, null);
     return () => controller.abort();
-  }, [session, subject, kind, absent, loadHistory, start]);
+  }, [session, scope.subject, scope.kind, attempt, absent, loadHistory]);
 
   const refuse = useCallback((id: string, extra: string) => {
     setRevision(null);
@@ -273,19 +350,21 @@ export default function PersonaPanel() {
   }, []);
 
   async function openRevision(revisionId: string) {
+    const started = stamp();
     const controller = start();
     setBusy(true);
     setError("");
     setNotice("");
-    const answer = await guard(controller.signal, "revision", (state) =>
+    const { answer } = await guard(controller.signal, "revision", (state) =>
       read<RevisionView>(
         "revision",
-        { subject, revision_id: revisionId },
+        { subject: started.subject, revision_id: revisionId },
         state.csrf,
         controller.signal,
       ),
     );
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted || started.token !== generation.current)
+      return;
     if (answer) {
       setRevision(answer);
       setComparison(null);
@@ -299,19 +378,21 @@ export default function PersonaPanel() {
 
   async function compareWith(revisionId: string) {
     if (!baseline) return;
+    const started = stamp();
     const controller = start();
     setBusy(true);
     setError("");
     setNotice("");
-    const answer = await guard(controller.signal, "compare", (state) =>
+    const { answer } = await guard(controller.signal, "compare", (state) =>
       read<CompareView>(
         "compare",
-        { subject, left: baseline, right: revisionId },
+        { subject: started.subject, left: baseline, right: revisionId },
         state.csrf,
         controller.signal,
       ),
     );
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted || started.token !== generation.current)
+      return;
     if (answer) {
       setComparison(answer);
       setRevision(null);
@@ -348,23 +429,43 @@ export default function PersonaPanel() {
     }
   }
 
+  /**
+   * Log out: this page stops holding anything readable first, and tells the server afterwards.
+   *
+   * The session, the directory, the history, the body, the comparison and the baseline are cleared
+   * in the same turn as the click, and every read still waiting is abandoned - the page does not
+   * wait for a network reply to stop showing what it was showing. The server's answer is then
+   * reported as what it was: a confirmed logout, or a logout this page could not confirm - and a
+   * logout the server refused leaves a session that really is still live, which the page then shows
+   * again rather than pretending the operator is out.
+   */
   async function exit() {
     const state = live.current;
     if (!state) return;
     const controller = start();
+    generation.current += 1;
+    applySession(null);
+    forget();
     setBusy(true);
     setError("");
+    setNotice("已退出登录：本页已经清空，正在通知服务器注销这个会话。");
+    let unconfirmed = "";
     try {
       await submitLogout(state.csrf, controller.signal);
-      applySession(null);
-      forget();
-      await connect();
+      setNotice("已退出登录：服务器已注销这个会话。");
     } catch (cause) {
       if (!controller.signal.aborted) {
-        setError(`退出未确认：${reason(cause)}`);
-        setBusy(false);
+        // The session was already unusable: the logout reached the same end.
+        unconfirmed =
+          cause instanceof PersonaError && sessionCodes.includes(cause.code)
+            ? ""
+            : `退出未确认：${reason(cause)}`;
       }
     }
+    // The session the server actually holds, as the server states it: anonymous after a confirmed
+    // logout, and still this operator's session when the logout was refused.
+    await connect();
+    if (unconfirmed) setError(unconfirmed);
   }
 
   /** A stale position is reopened where it was raised: the directory or the history. */
@@ -374,7 +475,8 @@ export default function PersonaPanel() {
     else void loadHistory(controller.signal, 0, null);
   }
 
-  const chosen = catalog?.entries.find((entry) => entry.subject === subject);
+  const chosen =
+    catalog?.entries.find((entry) => entry.subject === scope.subject) ?? null;
   const empty = !!catalog && catalog.count === 0;
   const status = unreachable
     ? "读取失败"
@@ -395,15 +497,18 @@ export default function PersonaPanel() {
   return (
     <section
       className="persona-page glass"
-      aria-label="人格目录与版本"
+      aria-label="人格版本"
       aria-busy={busy}
     >
       <div className="persona-toolbar">
         <div>
           <p className="eyebrow">只读 · 角色服务</p>
           <h2 ref={heading} tabIndex={-1}>
-            人格目录与版本
+            人格版本
           </h2>
+          <p className="muted persona-intro">
+            查看已登记角色的人格历史与版本差异。这里只读取：不编辑、不批准、不发布、不回退；世界状态尚待后续接入，本页只是人格版本这一个切片，不是完整的世界编辑器。
+          </p>
         </div>
         <div className="persona-actions">
           <button
@@ -538,16 +643,20 @@ export default function PersonaPanel() {
       ) : (
         <div className="persona-layout">
           <div className="persona-catalog">
-            <h3>角色目录</h3>
-            <ul className="persona-subjects">
+            <h3 id="persona-subject-label">角色目录</h3>
+            <ul
+              className="persona-subjects"
+              aria-labelledby="persona-subject-label"
+            >
               {catalog.entries.map((entry) => (
                 <li key={entry.subject}>
                   <button
                     type="button"
                     className="persona-subject"
-                    aria-pressed={entry.subject === subject}
-                    disabled={busy}
-                    onClick={() => setSubject(entry.subject)}
+                    aria-pressed={entry.subject === scope.subject}
+                    // Choosing a character is always possible: it starts a new scope and abandons
+                    // the read it replaces instead of waiting for it.
+                    onClick={() => enter(entry.subject, scopeRef.current.kind)}
                   >
                     <span className="persona-subject-id">{entry.subject}</span>
                     <span className="persona-subject-meta">
@@ -564,6 +673,23 @@ export default function PersonaPanel() {
                 </li>
               ))}
             </ul>
+            <label className="persona-picker">
+              角色目录
+              <select
+                value={scope.subject}
+                onChange={(event) =>
+                  enter(event.target.value, scopeRef.current.kind)
+                }
+              >
+                {catalog.entries.map((entry) => (
+                  <option key={entry.subject} value={entry.subject}>
+                    {entry.error
+                      ? `${entry.subject} · ${rowErrorLabel(entry.error)}`
+                      : `${entry.subject} · ${stateLabel(entry.state)} · 版本 ${entry.version ?? "未知"}`}
+                  </option>
+                ))}
+              </select>
+            </label>
             <div className="persona-pager">
               <p className="muted" role="status">
                 {busy
@@ -605,6 +731,48 @@ export default function PersonaPanel() {
             </div>
           </div>
           <div className="persona-detail">
+            <section
+              className="persona-pointer"
+              aria-label="当前发布与草稿指针"
+            >
+              <h3>当前发布与草稿</h3>
+              {!chosen ? (
+                <p className="muted">还没有选中角色。</p>
+              ) : chosen.error ? (
+                <p className="muted">
+                  {`${rowErrorLabel(chosen.error)}：这个角色没有可显示的指针。`}
+                </p>
+              ) : (
+                <dl className="persona-facts">
+                  <div>
+                    <dt>状态</dt>
+                    <dd data-pointer="state">{stateLabel(chosen.state)}</dd>
+                  </div>
+                  <div>
+                    <dt>版本</dt>
+                    <dd data-pointer="version">{chosen.version ?? "未知"}</dd>
+                  </div>
+                  <div>
+                    <dt>当前发布</dt>
+                    <dd data-pointer="published">
+                      {shortDigest(chosen.published_revision)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>当前草稿</dt>
+                    <dd data-pointer="draft">
+                      {shortDigest(chosen.draft_revision)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>更新</dt>
+                    <dd data-pointer="updated">
+                      {shortTime(chosen.updated_at)}
+                    </dd>
+                  </div>
+                </dl>
+              )}
+            </section>
             {stale && (
               <StatusRail
                 tone="yellow"
@@ -626,50 +794,38 @@ export default function PersonaPanel() {
                 </button>
               </StatusRail>
             )}
-            {chosen?.error ? (
-              <StatusRail tone="red" label="这个角色读不到">
-                <p>
-                  {rowErrorLabel(chosen.error)}
-                  {`：角色服务对 ${chosen.subject} 的回答不可用，这里不会显示成空历史。`}
-                </p>
-              </StatusRail>
-            ) : (
-              <>
-                <PersonaHistory
-                  kind={kind}
-                  subject={subject}
-                  pages={pages}
-                  current={current}
-                  busy={busy}
-                  baseline={baseline}
-                  onKind={setKind}
-                  onPrevious={() =>
-                    setCurrent((index) => Math.max(0, index - 1))
-                  }
-                  onNext={() => {
-                    const known = pages[current + 1];
-                    const next = pages[current]?.next_cursor ?? null;
-                    if (known) setCurrent(current + 1);
-                    else if (next) {
-                      void loadHistory(start().signal, current + 1, next);
-                    }
-                  }}
-                  onRestart={() => void loadHistory(start().signal, 0, null)}
-                  onSelect={(id) => void openRevision(id)}
-                  onBaseline={(id) => {
-                    setBaseline(id);
-                    setNotice(`已把 ${shortDigest(id)} 设为对比基线。`);
-                  }}
-                  onCompare={(id) => void compareWith(id)}
-                />
-                <PersonaRevision
-                  revision={revision}
-                  comparison={comparison}
-                  busy={busy}
-                  unavailable={versionGone}
-                />
-              </>
-            )}
+            <PersonaHistory
+              kind={scope.kind}
+              subject={scope.subject}
+              pages={pages}
+              current={current}
+              busy={busy}
+              baseline={baseline}
+              failure={historyFailure}
+              onKind={(next) => enter(scopeRef.current.subject, next)}
+              onPrevious={() => setCurrent((index) => Math.max(0, index - 1))}
+              onNext={() => {
+                const known = pages[current + 1];
+                const next = pages[current]?.next_cursor ?? null;
+                if (known) setCurrent(current + 1);
+                else if (next) {
+                  void loadHistory(start().signal, current + 1, next);
+                }
+              }}
+              onRestart={() => void loadHistory(start().signal, 0, null)}
+              onSelect={(id) => void openRevision(id)}
+              onBaseline={(id) => {
+                setBaseline(id);
+                setNotice(`已把 ${shortDigest(id)} 设为对比基线。`);
+              }}
+              onCompare={(id) => void compareWith(id)}
+            />
+            <PersonaRevision
+              revision={revision}
+              comparison={comparison}
+              busy={busy}
+              unavailable={versionGone}
+            />
           </div>
         </div>
       )}

@@ -37,11 +37,12 @@ from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator, ValidationError
 
+from .auth import secret
 from .contracts import Fault, canonical, digest, loads, require
 
 # --------------------------------------------------------------------- candidate
 
-CANDIDATE_MANIFEST_SHA256 = "06a4e2c2be73952f9c369f4c1a540f7a6394a4f54b267e5487d23d64cd97e8fb"
+CANDIDATE_MANIFEST_SHA256 = "c738630f6641f47d86d352c929752af86d7287098b55aa90741dd4d5ca8cef5e"
 CANDIDATE_MANIFEST_KEYS = {
     "package",
     "version",
@@ -214,8 +215,11 @@ def validate_connection(connection_id, entry, check):
 def connections(raw, check, other_token_envs=()):
     """The registered connection table, at most one entry, never a second reading identity.
 
-    The persona credential is its own registered deployment credential: a variable already held
-    by another service, or by the browser's own operator, is never reused here.
+    The persona credential is its own registered deployment credential, and one rule is checked
+    twice because a name is not the value it resolves to: a variable another identity already reads
+    is refused by *name*, and the effective secret is refused when it resolves to the same value as
+    one of those identities - whichever name it was handed to. Rotation cannot borrow an identity
+    either, because the value is re-read here and again on every outbound call.
     """
     require(raw is None or isinstance(raw, dict), "invalid_input", 400)
     table = {} if raw is None else dict(raw)
@@ -226,8 +230,27 @@ def connections(raw, check, other_token_envs=()):
         validate_connection(connection_id, entry, check)
         require(entry["token_env"] not in others, "invalid_input", 400)
         require(entry["token_env"] not in used, "invalid_input", 400)
+        require_own_secret(entry["token_env"], others)
         used.add(entry["token_env"])
     return table
+
+
+def require_own_secret(token_env, other_token_envs):
+    """One credential may not be another registered identity's secret, in name or in value.
+
+    An unset variable is not a borrowed value - it is a credential this deployment has not
+    provided yet, and the read that needs it says so at read time instead of booting a page that
+    cannot work. Nothing here is ever logged, returned or hashed into the browser's answer.
+    """
+    token = secret(token_env)
+    if token is None:
+        return
+    for name in other_token_envs:
+        if name == token_env:
+            continue
+        other = secret(name)
+        if other is not None and hmac.compare_digest(token, other):
+            raise Fault("invalid_input", 400)
 
 
 def page_configuration(section, connection_table, mode, check):

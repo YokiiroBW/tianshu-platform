@@ -5,13 +5,18 @@ things:
 
 * the four same-origin routes the page may call, and the exact body shape of each - no operation
   name, page size, endpoint, reader, permission or scope ever arrives from the browser;
-* the session's own authority check, taken before the peer is called and repeated after every
-  `await` and before any body is returned, so a logout, a revoked action or a narrowed subject
-  allowlist can never be outrun by a read that was already in flight;
+* one scope proof per browser request, re-taken at the start of every outbound step and after every
+  `await` and before any body is returned, so a logout, a revoked action, a rotated credential or a
+  narrowed subject allowlist can never be outrun by a read that was already in flight;
 * the redacted projections - a persona body is reported as its revision metadata, its four
   interpreted fields and the *names* of any extension fields, never as a whole content document;
 * one bounded read gate: at most four browser requests are served at once per process, and the
   fifth is refused immediately with 429 instead of queueing without a bound.
+
+Its dependencies are narrow on purpose: a read-only rule, the one finished reader this deployment
+built for it, and three callables - may this operator read, is this still the same live session, and
+what is the current authority fingerprint. It never holds the console, the platform or a mutable
+application object, so there is nothing here it could reconfigure.
 
 It owns no persona rule, no comparison rule and no cursor arithmetic: those live in
 `persona_page_config` (shapes and cursor binding) and the peer's own answers are proved in
@@ -20,7 +25,7 @@ persona body and never re-derives the peer's whole-content verdict from the four
 """
 
 from .contracts import Fault, canonical, require
-from .persona_client import PersonaClient, request_id
+from .persona_client import SCOPE, ScopeLost, request_id
 from .persona_page_config import (
     CATALOG_PAGE,
     CATALOG_SUBJECTS_PER_PAGE,
@@ -94,22 +99,40 @@ HISTORY_ENTRY_FIELDS = {
 
 
 class WebPersonas:
-    """Console-side read-only window over one registered character service."""
+    """Console-side read-only window over one registered character service.
 
-    def __init__(self, platform, console):
-        self.p = platform
-        self.console = console
-        self.rule = platform.personas
-        self.enabled = bool(self.rule and self.rule["enabled"])
-        self.connection_id = self.rule["connection_id"] if self.rule else None
-        self.subjects = tuple(self.rule["allowed_subjects"]) if self.rule else ()
-        self.candidate = self.rule["candidate"] if self.rule else None
+    Five read-only dependencies, no application object:
+
+    * `configured` - whether this deployment has a persona section at all;
+    * `rule` - the frozen, already-validated page rule (or `None`);
+    * `reader` - the finished upstream client this deployment built for this page, or `None`;
+    * `authorised` - may *this* operator read personas, asked again at every step;
+    * `session_valid` - is this still the same live session on the same authority;
+    * `authority` - the current authority fingerprint the page cursor is bound to.
+    """
+
+    def __init__(
+        self,
+        *,
+        configured,
+        rule,
+        reader,
+        authorised,
+        session_valid,
+        authority,
+    ):
+        self.configured = bool(configured)
+        self.rule = rule
+        self.enabled = bool(rule and rule["enabled"])
+        self.connection_id = rule["connection_id"] if rule else None
+        self.subjects = tuple(rule["allowed_subjects"]) if rule else ()
+        self.candidate = rule["candidate"] if rule else None
+        self.client = reader
+        self.authorised = authorised
+        self.session_valid = session_valid
+        self.authority = authority
         self.cursor = PageCursor()
         self.active = 0
-        self.client = None
-        if self.enabled:
-            entry = self.p.settings["persona_connections"][self.connection_id]
-            self.client = PersonaClient(self.connection_id, entry, self.candidate)
 
     # ------------------------------------------------------------------- state
 
@@ -119,27 +142,13 @@ class WebPersonas:
 
     def code(self):
         """One honest word for the page; nothing here is inferred from a failed read."""
-        if self.p.settings.get("web_personas") is None:
+        if not self.configured:
             return "personas_not_configured"
         if not self.enabled:
             return "personas_disabled"
-        if not self._authorised():
+        if not self.authorised():
             return "persona_read_required"
         return "ready"
-
-    def _principal(self):
-        name = self.console.config["principal"] if self.console.config else None
-        return self.p.auth.principals.get(name, {})
-
-    def _authorised(self):
-        principal = self._principal()
-        # The deployment's local operator identity must be exactly that, and it must carry the
-        # explicit persona read action. Login, config.publish and device.control grant nothing.
-        return (
-            principal.get("kind") == "operator"
-            and principal.get("service") == "platform"
-            and "persona.read" in set(principal.get("actions", []))
-        )
 
     # ------------------------------------------------------------------ routing
 
@@ -150,18 +159,68 @@ class WebPersonas:
         require(name in ROUTES, "not_found", 404)
         # Authority first: a session that stopped being readable - logged out, expired, rotated or
         # re-pointed - is exactly that, never a deployment problem and never a page.
-        require(self.console.session_valid(session), "session_expired", 401)
-        self._ready()
+        self._prove(session)
         self._admit()
         try:
             result = await self._serve(name, body, session)
         finally:
             self.active -= 1
-        # The same two proofs again after every `await`: a session, a read action or an authority
+        # The same proofs again after every `await`: a session, a read action or an authority
         # that stopped holding while the peer was answering does not get a body.
-        require(self.console.session_valid(session), "session_expired", 401)
-        self._ready()
+        self._prove(session)
         return result
+
+    async def _serve(self, name, body, session):
+        """One read, run under the scope proof of *this* request.
+
+        The proof is installed for the duration of the read and travels into every outbound step -
+        including the directory's worker tasks, which inherit this request's context - so the peer
+        is never asked anything under an authority that has already ended.
+        """
+        token = SCOPE.set(self._guard(session))
+        try:
+            if name == "catalog":
+                self._shape(body, {"cursor"})
+                return await self.catalog(session, body["cursor"])
+            if name == "history":
+                self._shape(body, {"subject", "kind", "cursor"})
+                return await self.history(session, body["subject"], body["kind"], body["cursor"])
+            if name == "revision":
+                self._shape(body, {"subject", "revision_id"})
+                return await self.revision(session, body["subject"], body["revision_id"])
+            self._shape(body, {"subject", "left", "right"})
+            return await self.compare(session, body["subject"], body["left"], body["right"])
+        except ScopeLost as lost:
+            # A read whose scope ended is one honest refusal of that request, not a row of a page.
+            raise lost.fault from None
+        finally:
+            SCOPE.reset(token)
+
+    def _guard(self, session):
+        """This request's own proof, re-run at every outbound step of the read it guards."""
+
+        def guard(document):
+            subject = document.get("subject") if isinstance(document, dict) else None
+            if subject is not None and subject not in self.subjects:
+                # A subject outside the deployment's closed allowlist is refused for that request,
+                # however the request was shaped, and stops the rest of its work.
+                raise ScopeLost(Fault("forbidden", 403))
+            if not self.session_valid(session):
+                raise ScopeLost(Fault("session_expired", 401))
+            try:
+                self._ready()
+            except Fault as refusal:
+                # A deployment or permission word is this request's own end, not a peer failure.
+                raise ScopeLost(refusal) from None
+
+        return guard
+
+    def _prove(self, session):
+        """Run this request's proof once, outside the client, and report its fault as itself."""
+        try:
+            self._guard(session)({})
+        except ScopeLost as lost:
+            raise lost.fault from None
 
     def _ready(self):
         """This deployment may read personas for this operator, or the honest reason why not.
@@ -182,26 +241,14 @@ class WebPersonas:
             raise Fault("too_many_requests", 429)
         self.active += 1
 
-    async def _serve(self, name, body, session):
-        if name == "catalog":
-            self._shape(body, {"cursor"})
-            return await self.catalog(session, body["cursor"])
-        if name == "history":
-            self._shape(body, {"subject", "kind", "cursor"})
-            return await self.history(session, body["subject"], body["kind"], body["cursor"])
-        if name == "revision":
-            self._shape(body, {"subject", "revision_id"})
-            return await self.revision(session, body["subject"], body["revision_id"])
-        self._shape(body, {"subject", "left", "right"})
-        return await self.compare(session, body["subject"], body["left"], body["right"])
-
-    def _shape(self, body, keys):
-        require(set(body) == keys, "invalid_input", 400)
-
     # ------------------------------------------------------------------- scope
 
+    def _shape(self, body, keys):
+        """One route's exact body: the browser may add nothing and may omit nothing."""
+        require(set(body) == keys, "invalid_input", 400)
+
     def _fingerprint(self):
-        return self.console.authority()[0]
+        return self.authority()
 
     def _subject(self, value):
         require(isinstance(value, str) and value in self.subjects, "forbidden", 403)
@@ -227,16 +274,10 @@ class WebPersonas:
             cursor, "catalog", authority, self.connection_id, self.subjects, CATALOG_PAGE
         )
         window = self.subjects[position : position + CATALOG_SUBJECTS_PER_PAGE]
+        # The reader only ever reports a correlated "this character does not exist" as one row's
+        # absence; a network, credential, timeout or protocol failure has already ended this page
+        # above, so nothing here can turn a broken peer into a directory with holes in it.
         results, failures = await self.client.catalog(window)
-        read = [result for result in results if result is not None]
-        unreadable = [
-            failure for failure in failures if failure is not None and failure.code != "not_found"
-        ]
-        # A subject this deployment allows but the character service does not hold is a stated
-        # absence inside a real page. A page where *nothing* could be read is not a directory with
-        # entries missing - it is a failed read, and it is reported as the fault it was.
-        if unreadable and not read:
-            raise unreadable[0]
         entries = []
         for index, subject in enumerate(window):
             entries.append(self._entry(subject, results[index], failures[index]))

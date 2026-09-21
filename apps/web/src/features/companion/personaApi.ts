@@ -19,6 +19,10 @@ export type SessionState = {
  * `personas_not_configured`, `personas_disabled` and `persona_read_required` are the deployment
  * and this account's permission; the rest are one failed or stale read. None of them is ever
  * rendered as an empty list.
+ *
+ * `forbidden` is the one code this console uses for two different refusals - its own session, host
+ * or CSRF check, and a character service that refuses this deployment's own reading identity - so
+ * its sentence names both possibilities instead of guessing at one of them.
  */
 export const messages: Record<string, string> = {
   personas_not_configured: "这个部署没有登记人格页。",
@@ -26,7 +30,8 @@ export const messages: Record<string, string> = {
   persona_read_required: "当前账号没有读取人格的权限。",
   unauthorized: "账号或密码不正确，或登录已失效。",
   session_expired: "登录已过期，请重新登录。",
-  forbidden: "请求未通过会话安全检查，请重新连接。",
+  forbidden:
+    "这次请求没有被接受：会话安全检查未通过，或角色服务拒绝了这个角色。",
   too_many_requests: "同时读取的请求过多，请稍后重试。",
   cursor_conflict: "这一页的续读位置已失效。",
   version_conflict: "人格在这期间已经变化。",

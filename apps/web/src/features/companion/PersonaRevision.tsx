@@ -1,5 +1,6 @@
 import { StatusRail } from "../../components/StatusRail";
 import {
+  bodyState,
   changeLabels,
   fieldLabels,
   shortDigest,
@@ -7,6 +8,7 @@ import {
   stateLabel,
   type CompareField,
   type CompareView,
+  type RevisionBody,
   type RevisionView,
 } from "./personaTypes";
 
@@ -18,17 +20,60 @@ type Props = {
   unavailable: string;
 };
 
-function Value({ label, value }: { label: string; value: string | null }) {
+const BODY_CLASS: Record<string, string> = {
+  absent: "persona-absent",
+  null: "persona-absent",
+  empty: "persona-absent",
+  text: "",
+};
+
+/**
+ * One field of a body, in one of its three real states.
+ *
+ * `present` comes from the server's own per-field projection - the `present` list for one revision
+ * and `presence` for each side of a comparison - so "not provided", "stated as null" and "stated as
+ * the empty string" stay three different readings. Text keeps its own line breaks and is rendered
+ * as text, never as markup.
+ */
+function Value({
+  label,
+  value,
+  present,
+}: {
+  label: string;
+  value: string | null;
+  present: boolean;
+}) {
+  const state = bodyState(value, present);
   return (
     <div>
       <dt>{label}</dt>
-      <dd
-        className={
-          value === null || value === "" ? "persona-absent" : undefined
-        }
-      >
-        {value === null || value === "" ? "这一版没有这个字段" : value}
+      <dd className={BODY_CLASS[state.kind]} data-body-state={state.kind}>
+        {state.text}
       </dd>
+    </div>
+  );
+}
+
+/** The four interpreted fields of one revision, each foldable so long text stays readable. */
+function Body({ revision }: { revision: RevisionBody }) {
+  return (
+    <div className="persona-content">
+      {["persona", "tone", "style", "address"].map((name) => {
+        const present = revision.present.includes(name);
+        const state = bodyState(revision.content[name] ?? null, present);
+        return (
+          <details key={name} className="persona-field" open>
+            <summary>{fieldLabels[name]}</summary>
+            <p
+              className={`persona-field-body ${BODY_CLASS[state.kind]}`}
+              data-body-state={state.kind}
+            >
+              {state.text}
+            </p>
+          </details>
+        );
+      })}
     </div>
   );
 }
@@ -41,14 +86,16 @@ function Changed({ name, field }: { name: string; field: CompareField }) {
         tone={field.change === "unchanged" ? "gray" : "yellow"}
         label={`${fieldLabels[name] ?? name} · ${changeLabels[field.change]}`}
       >
-        <dl className="persona-facts">
+        <dl className="persona-facts persona-sides">
           <Value
-            label={`基线${field.presence.left ? "" : "（缺）"}`}
+            label="基线"
             value={field.left}
+            present={field.presence.left}
           />
           <Value
-            label={`对照${field.presence.right ? "" : "（缺）"}`}
+            label="对照"
             value={field.right}
+            present={field.presence.right}
           />
         </dl>
       </StatusRail>
@@ -109,7 +156,6 @@ export function PersonaRevision({
       </StatusRail>
     );
   }
-  const content = revision.revision.content ?? {};
   return (
     <section className="persona-revision" aria-label="选中的版本">
       <h3>
@@ -121,19 +167,14 @@ export function PersonaRevision({
         {`来源 ${revision.revision.source ?? "未记录"} · 时间 ${shortTime(revision.revision.created_at)} · 状态 ${stateLabel(revision.state)}`}
         {revision.revision.note ? ` · 备注 ${revision.revision.note}` : ""}
       </p>
-      <dl className="persona-facts persona-content">
-        {["persona", "tone", "style", "address"].map((name) => (
-          <Value
-            key={name}
-            label={fieldLabels[name]}
-            value={content[name] ?? null}
-          />
-        ))}
-      </dl>
+      <Body revision={revision.revision} />
       <p className="muted">
         {revision.revision.additional_fields.length
           ? `另有本页不解释的字段：${revision.revision.additional_fields.join("、")}。`
           : "这一版没有本页不解释的字段。"}
+      </p>
+      <p className="muted">
+        {`这一版的指针：当前发布 ${shortDigest(revision.published_revision)} · 当前草稿 ${shortDigest(revision.draft_revision)} · 版本 ${revision.persona_version}`}
       </p>
     </section>
   );

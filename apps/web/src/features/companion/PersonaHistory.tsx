@@ -22,6 +22,14 @@ type Props = {
   current: number;
   busy: boolean;
   baseline: string | null;
+  /**
+   * What this character's and this kind's own read said when it failed.
+   *
+   * It belongs to the scope the page is showing now: the rows of a previous character are never
+   * carried over, so a failure here is stated as this scope having no history rather than as an
+   * empty one.
+   */
+  failure: string;
   onKind: (kind: HistoryKind) => void;
   onPrevious: () => void;
   onNext: () => void;
@@ -87,6 +95,7 @@ export function PersonaHistory({
   current,
   busy,
   baseline,
+  failure,
   onKind,
   onPrevious,
   onNext,
@@ -106,7 +115,8 @@ export function PersonaHistory({
             type="button"
             className="button persona-kind"
             aria-pressed={item === kind}
-            disabled={busy}
+            // Switching kind is always possible: it is a new scope, and the read it replaces is
+            // abandoned rather than waited for.
             onClick={() => onKind(item)}
           >
             {kindLabels[item]}
@@ -119,7 +129,9 @@ export function PersonaHistory({
             ? "正在读取这一页…"
             : page
               ? `第 ${current + 1} 页 · 本页 ${entries.length} 条 · 基线版本 ${page.persona_version} · 按角色服务返回的顺序`
-              : "这一页还没有读取结果。"}
+              : failure
+                ? `${subject} 的${kindLabels[kind]}历史这一次没有读到。`
+                : "这一页还没有读取结果。"}
         </p>
         <div className="persona-pager-actions">
           <button
@@ -152,9 +164,20 @@ export function PersonaHistory({
         </div>
       </div>
       {!page ? (
-        <p className="persona-empty" role="status">
-          {busy ? "正在读取这一页…" : "这一页还没有读取结果。"}
-        </p>
+        failure ? (
+          // This character and this kind really have no result, and the page says which read
+          // failed. Rows from another character are never shown here under this name.
+          <StatusRail tone="red" label="这一项历史没有读到">
+            <p>{`${subject} 的${kindLabels[kind]}历史没有读到：${failure}`}</p>
+            <p>
+              这里不会显示别的角色或别的类别的旧结果，也不会把它当成没有记录。
+            </p>
+          </StatusRail>
+        ) : (
+          <p className="persona-empty" role="status">
+            {busy ? "正在读取这一页…" : "这一页还没有读取结果。"}
+          </p>
+        )
       ) : !entries.length ? (
         <p className="persona-empty" role="status">
           {busy

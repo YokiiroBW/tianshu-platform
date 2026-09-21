@@ -59,6 +59,19 @@ class Auth:
             if key in settings:
                 policy[key] = settings[key]
         self.policy_digest = digest(policy)
+        # The persona page reads through a deployment credential of its own. Its *effective value*
+        # is part of the authority a browser session is pinned to, so rotating or removing that
+        # credential expires every session and every cursor opened against the previous one - a
+        # session is not allowed to outlive the identity it was admitted with. Only the resolved
+        # digest is ever kept; the variable's name is configuration and its value never is.
+        table = settings.get("persona_connections")
+        self.persona_envs = tuple(
+            sorted(
+                entry["token_env"]
+                for entry in (table.values() if isinstance(table, dict) else ())
+                if isinstance(entry, dict) and isinstance(entry.get("token_env"), str)
+            )
+        )
         envs = []
         for key, item in self.principals.items():
             contracts.check("common#id", key)
@@ -183,6 +196,7 @@ class Auth:
                 "credentials": {
                     k: digest(secret(p["token_env"])) for k, p in self.principals.items()
                 },
+                "persona": {name: digest(secret(name)) for name in self.persona_envs},
                 "expired": sorted(
                     k
                     for k, e in self.entries.items()

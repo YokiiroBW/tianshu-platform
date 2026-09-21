@@ -76,6 +76,11 @@
   font-size: var(--text-small);
   margin: 0;
 }
+.persona-page .persona-intro {
+  max-width: 46rem;
+  margin-top: var(--space-2);
+  line-height: 1.6;
+}
 .persona-error {
   margin: 0;
   padding: var(--space-3);
@@ -118,10 +123,10 @@
 }
 .persona-layout {
   display: grid;
-  /* Both tracks may shrink, and the directory column may never take more than 40% of the row:
-     at 200% text a flat 20rem directory starves the detail column below its own content width
-     and the page grows a horizontal scrollbar. */
-  grid-template-columns: minmax(0, min(20rem, 40%)) minmax(0, 1fr);
+  /* One column by default; the frozen two-column layout starts at 1100px (see the media queries
+     below). Both tracks may shrink, and at 200% text the directory column keeps its own width
+     without starving the detail column. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
   align-items: start;
 }
@@ -130,6 +135,28 @@
   display: grid;
   gap: var(--space-3);
   min-width: 0;
+}
+/* The compact selector exists for widths where a 20-row card list would push the body far down;
+   it is shown by the media query at the end of this file and never duplicates authority. */
+.persona-picker {
+  display: none;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--color-muted);
+}
+.persona-picker select {
+  min-width: 0;
+  min-height: var(--control-height);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-input);
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+}
+.persona-picker select:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
 }
 .persona-subjects,
 .persona-rows {
@@ -196,6 +223,36 @@
   border-left: var(--rail-width) solid var(--color-line);
   padding-left: var(--space-3);
 }
+/* The four interpreted fields of one revision fold one by one, so a long persona stays readable. */
+.persona-field {
+  border-top: 1px solid var(--color-line);
+  padding: var(--space-2) 0;
+}
+.persona-field summary {
+  cursor: pointer;
+  color: var(--color-muted);
+  font-size: var(--text-small);
+}
+.persona-field summary:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+.persona-field-body {
+  margin: var(--space-2) 0 0;
+  border-left: var(--rail-width) solid var(--color-line);
+  padding-left: var(--space-3);
+  /* Real text keeps its own line breaks and long tokens wrap instead of widening the page. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.persona-pointer {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.persona-pointer .persona-facts dd {
+  font-variant-numeric: tabular-nums;
+}
 .persona-rows li {
   min-width: 0;
 }
@@ -232,11 +289,54 @@
   padding-top: var(--space-3);
 }
 
-@media (max-width: 60rem) {
+/* The frozen breakpoints: a 240px directory column beside the body from 1100px, a labelled
+   selection list above the body from 768px, and one stacked column below that - where the
+   directory is a single compact selector instead of twenty cards before the body. */
+@media (min-width: 68.75rem) {
+  .persona-layout {
+    grid-template-columns: 15rem minmax(0, 1fr);
+  }
+}
+@media (min-width: 48rem) and (max-width: 68.749rem) {
   .persona-layout {
     grid-template-columns: minmax(0, 1fr);
   }
+  .persona-subjects {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .persona-subjects > li {
+    flex: 1 1 14rem;
+    min-width: 0;
+  }
 }
+@media (max-width: 47.999rem) {
+  .persona-subjects {
+    display: none;
+  }
+  .persona-picker {
+    display: grid;
+  }
+  /* Every tool stacks, and a comparison reads as old version above new version, field by field. */
+  .persona-actions,
+  .persona-pager-actions,
+  .persona-row-actions,
+  .persona-kinds {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .persona-page .button {
+    width: 100%;
+    justify-content: center;
+  }
+  .persona-changes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .persona-sides {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 30rem) {
   .persona-page {
     padding: var(--space-4);
@@ -244,10 +344,6 @@
   .persona-toolbar {
     flex-direction: column;
     gap: var(--space-4);
-  }
-  .persona-page .button {
-    width: 100%;
-    justify-content: center;
   }
   .persona-pager-actions,
   .persona-row-actions,

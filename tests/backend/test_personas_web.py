@@ -37,9 +37,12 @@ import aiohttp
 from aiohttp import web
 from fixtures import ENV, ROOT
 from personas_fixture import (
+    BROWSER_SUBJECTS,
     CONNECTION,
     PERSONA_ENV,
+    PERSONA_TOKEN,
     REVISION_FIELDS,
+    Personas,
     Synthetic,
     UNIT_SUBJECTS as SUBJECTS,
     copy_candidate,
@@ -159,6 +162,16 @@ class PersonaPageTests(unittest.IsolatedAsyncioTestCase):
             logged, "history", {"subject": subject, "kind": kind, "cursor": cursor}, **kwargs
         )
 
+    def console(self):
+        """The very console the running app assembled, for its own session and authority state."""
+        from services.platform.web_console import WebConsole
+
+        for route in self.app.router.routes():
+            console = getattr(route.handler, "__self__", None)
+            if isinstance(console, WebConsole):
+                return console
+        raise AssertionError("the console route was not assembled")
+
     def adapter(self):
         """The very adapter the running app assembled, for its own bounded read gate."""
         from services.platform.web_console import WebConsole
@@ -277,6 +290,34 @@ class PersonaPageTests(unittest.IsolatedAsyncioTestCase):
                 Platform(settings)
             self.assertEqual(getattr(caught.exception, "code", None), "invalid_input")
 
+    def test_the_browser_operators_own_credential_is_never_the_persona_credential(self):
+        """The page's reader is not the browser identity, so it may not name its variable."""
+        with mock.patch.dict(os.environ, {**ENV, **PERSONA_ENV}):
+            settings = persona_settings(self.temp.name, self.base_url, self.ca)
+            operator_env = settings["principals"]["admin"]["token_env"]
+            self.assertEqual(operator_env, "TS012_ADMIN")
+            settings["persona_connections"][CONNECTION]["token_env"] = operator_env
+            with self.assertRaises(Exception) as caught:
+                Platform(settings)
+            self.assertEqual(getattr(caught.exception, "code", None), "invalid_input")
+
+    def test_another_identitys_secret_under_another_name_is_refused(self):
+        """A different variable that holds the operator's secret is the same reuse, refused."""
+        with mock.patch.dict(os.environ, {**ENV, **PERSONA_ENV}):
+            borrowed = os.environ["TS012_ADMIN"]
+            settings = persona_settings(self.temp.name, self.base_url, self.ca)
+            settings["persona_connections"][CONNECTION]["token_env"] = "TS025_PERSONA_BORROWED"
+            with mock.patch.dict(os.environ, {"TS025_PERSONA_BORROWED": borrowed}):
+                with self.assertRaises(Exception) as caught:
+                    Platform(settings)
+                self.assertEqual(getattr(caught.exception, "code", None), "invalid_input")
+            # The same deployment with its own secret is accepted: the rule is the reuse, not the
+            # presence of a variable.
+            with mock.patch.dict(
+                os.environ, {"TS025_PERSONA_BORROWED": PERSONA_ENV["TS025_PERSONA_ADMIN"] + "-own"}
+            ):
+                Platform(settings)
+
     def test_subject_allowlist_shape_is_bounded(self):
         with mock.patch.dict(os.environ, {**ENV, **PERSONA_ENV}):
             for subjects in ([], ["actor:a"] * 2, ["actor:a"] * 65, ["not an id"], [7]):
@@ -300,6 +341,90 @@ class PersonaPageTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(getattr(caught.exception, "code", None), "invalid_input")
 
     # ------------------------------------------------------------------ identity
+
+    async def test_rotating_the_persona_credential_ends_the_session_and_its_cursor(self):
+        """The reader's own credential is part of the authority a session is pinned to.
+
+        Rotating it is a change of who can read, so a session opened under the previous credential
+        must not keep reading through the new one, and a directory cursor issued then must not
+        continue afterwards. Both are proved here against the running console.
+        """
+        subjects = [
+            name for name in BROWSER_SUBJECTS if name not in {"actor:broken", "actor:missing"}
+        ]
+        settings = persona_settings(
+            self.temp.name,
+            self.base_url,
+            self.ca,
+            subjects=[*subjects, "actor:missing"],
+        )
+        self.peer.personas = Personas(tuple(subjects))
+        await self.boot(settings)
+        logged = await self.login()
+        page = await self.catalog(logged)
+        self.assertEqual(page["count"], 20)
+        self.assertTrue(page["has_more"])
+        old_authority = self.console().authority()[0]
+        with mock.patch.dict(os.environ, {"TS025_PERSONA_ADMIN": PERSONA_TOKEN + "-rotated"}):
+            rotated = self.console().authority()[0]
+            self.assertNotEqual(rotated, old_authority)
+            # The old session is gone: not a stale page, the same refusal a logout gives, and the
+            # peer is never asked.
+            calls = len(self.peer.calls)
+            answer = await self.catalog(logged, expected=401)
+            self.assertEqual(answer["code"], "session_expired")
+            self.assertEqual(len(self.peer.calls), calls)
+            # The cursor that was issued under the old authority no longer continues.
+            adapter = self.adapter()
+            with self.assertRaises(Exception) as caught:
+                adapter.cursor.read(
+                    page["next_cursor"],
+                    "catalog",
+                    rotated,
+                    CONNECTION,
+                    tuple(settings["web_personas"]["allowed_subjects"]),
+                    20,
+                )
+            self.assertEqual(getattr(caught.exception, "code", None), "cursor_conflict")
+
+    async def test_removing_the_persona_credential_ends_the_session_and_states_the_gap(self):
+        """A removed or invalidated variable is not a cached secret: the pinned session ends.
+
+        `secret()` resolves both a missing variable and one whose value is no longer usable to the
+        same absence, so emptying the variable is the same fact as deleting it - without tearing
+        down the rest of the process environment the console itself reads.
+        """
+        logged = await self.login()
+        before = self.console().authority()[0]
+        with mock.patch.dict(os.environ, {"TS025_PERSONA_ADMIN": ""}):
+            self.assertNotEqual(self.console().authority()[0], before)
+            calls = len(self.peer.calls)
+            # The session that was pinned to the previous credential is over, and the peer is never
+            # asked again on its behalf.
+            answer = await self.catalog(logged, expected=401)
+            self.assertEqual(answer["code"], "session_expired")
+            status, refused = await self.current()
+            self.assertEqual((status, refused["code"]), (401, "session_expired"))
+            self.assertEqual(len(self.peer.calls), calls)
+            # A fresh session on a fresh client is a legitimate session; the read is then refused
+            # for the stated reason that this deployment has no reader credential, never as an
+            # empty directory.
+            fresh_client = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
+            self.addAsyncCleanup(fresh_client.close)
+            fresh = await self.login(fresh_client)
+            answer = await self.catalog(fresh, expected=503, session=fresh_client)
+            self.assertEqual(answer["code"], "dependency_unavailable")
+            self.assertEqual(len(self.peer.calls), calls)
+
+    def test_the_reader_refuses_a_secret_that_now_belongs_to_another_identity(self):
+        """Beyond configuration time: the value is re-read, and a borrowed one is never sent."""
+        adapter = self.adapter()
+        with mock.patch.dict(os.environ, {"TS012_COMPANION": PERSONA_ENV["TS025_PERSONA_ADMIN"]}):
+            with self.assertRaises(Exception) as caught:
+                adapter.client.credential()
+        self.assertEqual(getattr(caught.exception, "code", None), "forbidden")
+        # Its own value is still usable, and a peer refusal is still the peer's to give.
+        self.assertEqual(adapter.client.credential(), PERSONA_TOKEN)
 
     async def test_login_without_persona_read_is_forbidden(self):
         settings = persona_settings(self.temp.name, self.base_url, self.ca)
@@ -443,6 +568,88 @@ class PersonaPageTests(unittest.IsolatedAsyncioTestCase):
         answer = await self.catalog(logged, expected=503)
         self.assertEqual(answer["code"], "dependency_unavailable")
         self.peer.mode = "normal"
+
+    async def test_one_refused_character_fails_the_whole_page(self):
+        """Only a correlated absence is one row's fact; a refusal is the page's failure.
+
+        The peer holds both characters and refuses one of them. A page that showed the readable
+        one and quietly dropped the other would be claiming a partial read as a finished
+        directory, so the whole request fails with the peer's own refusal instead.
+        """
+        logged = await self.login()
+        self.peer.mode = "one-forbidden"
+        answer = await self.catalog(logged, expected=403)
+        self.assertEqual(answer["code"], "forbidden")
+        # The one refusal is still one page's failure, not a directory with a hole in it and not an
+        # answer the browser could render as "ready with one character missing".
+        self.assertNotIn("entries", answer)
+        self.peer.mode = "normal"
+
+    async def test_a_credential_the_peer_refuses_is_not_a_partly_ready_page(self):
+        """A peer that will not accept the reader's credential fails the read, not one row."""
+        with mock.patch.dict(
+            os.environ, {"TS025_PERSONA_ADMIN": "synthetic-ts025-not-the-peer-credential"}
+        ):
+            await self.boot(persona_settings(self.temp.name, self.base_url, self.ca))
+            logged = await self.login()
+            answer = await self.catalog(logged, expected=401)
+            self.assertEqual(answer["code"], "unauthorized")
+            self.assertNotIn("entries", answer)
+            self.assertEqual(self.peer.calls, [])
+
+    async def test_an_error_packet_answering_another_request_is_not_an_absence(self):
+        """A `not_found` correlated to a different request may not become "no such character"."""
+        logged = await self.login()
+        self.peer.personas.subjects.pop("actor:b")
+        self.peer.mode = "wrong-request-id"
+        answer = await self.catalog(logged, expected=502)
+        self.assertEqual(answer["code"], "invalid_upstream")
+        self.assertNotIn("entries", answer)
+        self.peer.mode = "normal"
+
+    async def test_logout_stops_the_directory_that_is_already_reading(self):
+        """A directory read that lost its session stops where it is and starts nothing new.
+
+        The first outbound step is held open until the operator has really logged out, so the
+        assertion is about what the *running* read does afterwards: no further character is
+        attempted, the answer is the session's own refusal, and the bounded gate is released. The
+        requests that were already sent are not claimed back - only the ones that had not started.
+        """
+        logged = await self.login()
+        adapter = self.adapter()
+        gate = asyncio.Event()
+        started = []
+        real = adapter.client.call
+
+        async def watched(document):
+            started.append(document["subject"])
+            if len(started) == 1:
+                await gate.wait()
+            return await real(document)
+
+        adapter.client.call = watched
+        try:
+            task = asyncio.create_task(self.catalog(logged, expected=401))
+            while not started:
+                await asyncio.sleep(0.01)
+            await self.call("logout", {}, logged["csrf"])
+            sent_before = len(started)
+            self.assertLessEqual(sent_before, 4)
+            gate.set()
+            answer = await task
+        finally:
+            adapter.client.call = real
+            gate.set()
+        self.assertEqual(answer["code"], "session_expired")
+        # Nothing new was attempted after the logout, and the four-at-once ceiling still held.
+        self.assertEqual(len(started), sent_before)
+        self.assertLessEqual(len(self.peer.calls), 4)
+        self.assertEqual(adapter.active, 0)
+        # The gate is free again: a fresh login reads the directory normally.
+        self.peer.calls.clear()
+        fresh = await self.login()
+        page = await self.catalog(fresh)
+        self.assertEqual(page["code"], "ready")
 
     async def test_forged_catalog_cursor_is_a_conflict_not_page_one(self):
         logged = await self.login()
@@ -687,6 +894,52 @@ class PersonaPageShapeTests(unittest.TestCase):
             candidate.request_validator.validate(document)
         with self.assertRaises(Exception):
             candidate.request_validator.validate({"operation": "list", "request_id": "req:1"})
+
+    def test_error_packets_must_answer_this_exact_request(self):
+        """The association rule, read straight off the candidate's own error sample.
+
+        A refusal that carries somebody else's `request_id` cannot be proved to be this call's
+        refusal, so it is an unusable answer - never a `not_found` this page would show as "that
+        character does not exist". A refusal this product cannot attribute at all is refused the
+        same way, which is what the whole route relies on.
+        """
+        from services.platform.contracts import Fault
+        from services.platform.persona_client import PersonaClient
+        from services.platform.persona_page_config import load_candidate
+
+        candidate = load_candidate(candidate_directory())
+        samples = json.loads(
+            (Path(candidate_directory()) / "examples.json").read_text(encoding="utf-8")
+        )["examples"]
+        sample = next(item for item in samples if item["status"] == 404)
+        client = PersonaClient(
+            CONNECTION,
+            {"base_url": "https://127.0.0.1:1", "token_env": "TS025_PERSONA_ADMIN"},
+            candidate,
+        )
+        mismatched = dict(sample["response"], request_id="web-persona-somebody-else")
+        with self.assertRaises(Fault) as caught:
+            client._fault(mismatched, 404, "get", "web-persona-this-call")
+        self.assertEqual(caught.exception.code, "invalid_upstream")
+        self.assertEqual(caught.exception.status, 502)
+        # No correlation id to compare with: the same refusal, for the same reason.
+        with self.assertRaises(Fault) as caught:
+            client._fault(mismatched, 404, "get")
+        self.assertEqual(caught.exception.code, "invalid_upstream")
+        # The producer's own refusal, correlated to this call, is repeated as itself.
+        with self.assertRaises(Fault) as caught:
+            client._fault(
+                dict(sample["response"], request_id="web-persona-this-call"),
+                404,
+                "get",
+                "web-persona-this-call",
+            )
+        self.assertEqual(caught.exception.code, "not_found")
+        self.assertEqual(caught.exception.status, 404)
+        # An error packet of a shape this product does not own is not repeated either.
+        with self.assertRaises(Fault) as caught:
+            client._fault({"code": "not_found"}, 404, "get", "web-persona-this-call")
+        self.assertEqual(caught.exception.code, "invalid_upstream")
 
     def test_cursor_is_bound_and_bounded(self):
         from services.platform.persona_page_config import PageCursor

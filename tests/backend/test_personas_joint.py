@@ -262,45 +262,53 @@ class JointPersonaPageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(states["actor:beta"], "published")
         self.assertEqual(errors["actor:delta"], "not_found")
         self.assertIsNone(states["actor:delta"])
-        # `actor:epsilon` is readable by the Core but its answer does not satisfy the pinned
-        # candidate (see the deviation test); the row states that, and the page is not empty.
-        self.assertEqual(errors["actor:epsilon"], "invalid_upstream")
+        # `actor:epsilon` is declared without a version, which the producer records as
+        # `imported: null`; the corrected candidate reads that as the real value it is.
+        self.assertIsNone(errors["actor:epsilon"])
+        self.assertEqual(states["actor:epsilon"], "published")
         # The Core holds a character this deployment does not allow, and it is not here.
         self.assertNotIn("actor:gamma", json.dumps(page, ensure_ascii=False))
         self.assertEqual(
             page["entries"][1]["published_revision"], self.seeds["actor:beta"]["second"]
         )
 
-    async def test_a_deployment_entry_without_a_version_is_a_stated_deviation(self):
-        """One real producer/schema gap, stated as a fact rather than smoothed over.
+    async def test_a_deployment_entry_without_a_version_is_readable(self):
+        """The producer's own `imported: null` is read, not refused: one corrected wire domain.
 
-        A `roles` entry declared without a version is recorded by the Core as `imported: null`,
-        while the pinned candidate's `get` branch requires `imported` to be an integer. TS-025
-        consumes the contract it verified, so it refuses that one answer - and says which character
-        it refused and why - instead of dropping the row, showing it as empty, or quietly
-        reinterpreting the field. Fixing this belongs to the producer or to a new candidate
-        revision; this consumer may not widen a pinned contract on its own.
+        A `roles` entry declared without a version (or with an explicit null, or as the shorthand
+        string) is recorded by the Core as `imported: null`. The coordinator's corrected candidate
+        `candidate-v1-r2` allows exactly that one value - `null` or a positive integer - and nothing
+        else changed. This is the real producer answer, so the assertion below is about the product
+        reading it rather than about a schema in isolation.
         """
         raw = await self.core_call({"operation": "get", "subject": "actor:epsilon"})
-        self.assertIsNone(raw["persona"]["imported"])
+        persona = raw["persona"]
+        self.assertIsNone(persona["imported"])
+        self.assertIs(type(persona["version"]), int)
         from services.platform.persona_page_config import load_candidate
 
-        validator = load_candidate(os.environ["TS025_CANDIDATE_DIR"]).response_validator
-        failures = [
-            f"{'/'.join(str(part) for part in error.path)}: {error.message}"
-            for error in validator.iter_errors(raw)
-        ]
-        self.assertTrue(failures)
-        self.assertIn("imported", " ".join(failures))
+        candidate = load_candidate(os.environ["TS025_CANDIDATE_DIR"])
+        self.assertEqual(
+            [error.message for error in candidate.response_validator.iter_errors(raw)], []
+        )
         logged = await self.login()
         page = await self.page(logged, "catalog", {"cursor": None})
         row = next(entry for entry in page["entries"] if entry["subject"] == "actor:epsilon")
-        self.assertEqual(row["error"], "invalid_upstream")
-        self.assertIsNone(row["state"])
-        self.assertIsNone(row["version"])
+        self.assertIsNone(row["error"])
+        self.assertEqual(row["state"], persona["state"])
+        self.assertEqual(row["version"], persona["version"])
+        self.assertEqual(row["published_revision"], persona["published_revision"])
         self.assertEqual(page["count"], 4)
-        # The other three characters are unaffected: one refusal never erases a page.
-        self.assertEqual([entry["error"] for entry in page["entries"]].count(None), 2)
+        # Its revision body is readable too: the pointer the directory states is one this page can
+        # follow, and the text is the producer's own.
+        body = await self.page(
+            logged,
+            "revision",
+            {"subject": "actor:epsilon", "revision_id": persona["published_revision"]},
+        )
+        self.assertTrue(body["is_published"])
+        self.assertEqual(body["revision"]["source"], "initial_config")
+        self.assertIn("戊", body["revision"]["content"]["persona"])
 
     async def test_history_reads_every_kind_from_the_producer(self):
         logged = await self.login()
@@ -483,6 +491,8 @@ class JointPersonaPageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manifest["producer_commit"], fixture.COMPANION_COMMIT)
         self.assertEqual(manifest["allowed_consumer_task"], fixture.COMPANION_TASK)
         self.assertEqual(manifest["status"], "candidate_not_published")
+        self.assertEqual(manifest["version"], "0.1.1")
+        self.assertEqual(manifest["package"], "persona-management/candidate-v1-r2")
         self.assertIs(manifest["production_publish_authorized"], False)
         on_disk = hashlib.sha256(
             (Path(os.environ["TS025_CANDIDATE_DIR"]) / "manifest.json")

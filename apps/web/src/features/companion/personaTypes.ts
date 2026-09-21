@@ -165,16 +165,36 @@ export const stateLabels: Record<string, string> = {
   retired: "已停用",
 };
 
-/** Why one directory row is not readable: the page repeats the code it actually received. */
+/**
+ * Why one directory row has no persona to show.
+ *
+ * The server reports a row's own absence only when the character service answered *this* request
+ * with a correlated `not_found`; every other failure ends the whole directory read, so a row is
+ * never used as a place to hide a broken answer. Anything else this page ever receives is still
+ * printed with the code it actually carried rather than a word this page invented.
+ */
 export const rowErrorLabels: Record<string, string> = {
   not_found: "角色服务里没有这个角色",
-  invalid_upstream: "回答无法使用",
-  dependency_unavailable: "暂时读不到",
-  timeout: "没有按时回答",
-  forbidden: "没有读取权限",
-  unauthorized: "连接凭据未被接受",
-  invalid_input: "请求被拒绝",
 };
+
+/**
+ * The three states one body field can be in, told apart instead of collapsed into "no text".
+ *
+ * `present` is the producer's own statement that the field was part of the revision (the server
+ * projects it per field and per side), so a field that was never there, a field that was stated as
+ * `null` and a field that was stated as the empty string are three different facts.
+ */
+export type BodyState = "absent" | "null" | "empty" | "text";
+
+export function bodyState(
+  value: string | null,
+  present: boolean,
+): { kind: BodyState; text: string } {
+  if (!present) return { kind: "absent", text: "未提供" };
+  if (value === null) return { kind: "null", text: "明确为null" };
+  if (value === "") return { kind: "empty", text: "空字符串" };
+  return { kind: "text", text: value };
+}
 
 export function stateLabel(state: string | null) {
   if (!state) return "未知";

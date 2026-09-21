@@ -146,8 +146,16 @@ class WebConsole:
         # this console only assembles its route below.
         self.assets = WebAssets(platform, self)
         # The persona page is the same shape with a different peer: one registered read-only
-        # window, one route prefix, and the session protection is the one above.
-        self.personas = WebPersonas(platform, self)
+        # window, one route prefix, and the session protection is the one above. It is given the
+        # finished reader, the frozen rule and three narrow callbacks - never this console.
+        self.personas = WebPersonas(
+            configured=platform.settings.get("web_personas") is not None,
+            rule=platform.personas,
+            reader=platform.persona_reader(),
+            authorised=self.persona_read_authorised,
+            session_valid=self.session_valid,
+            authority=lambda: self.authority()[0],
+        )
 
     def verify_password(self, password):
         """One fixed-cost verifier for the login form and the management unlock step."""
@@ -211,6 +219,21 @@ class WebConsole:
             return False
         fingerprint, _ = self.authority()
         return session["fingerprint"] == fingerprint
+
+    def persona_read_authorised(self):
+        """May the current operator read personas? Asked again at every outbound step of a read.
+
+        The deployment's local operator identity must be exactly that, and it must carry the
+        explicit persona read action. Login, config.publish and device.control grant nothing. The
+        answer is computed from live configuration, so revoking the action ends reads that are
+        already in flight instead of only the next one.
+        """
+        principal = self.platform.auth.principals.get(self.config["principal"], {})
+        return (
+            principal.get("kind") == "operator"
+            and principal.get("service") == "platform"
+            and "persona.read" in set(principal.get("actions", []))
+        )
 
     def issue(self, authenticated=False, fingerprint=None):
         require(len(self.sessions) < 128, "too_many_requests", 429)
@@ -417,11 +440,13 @@ class WebConsole:
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith(PERSONAS_PREFIX):
-            # The persona page reads through its own registered character-service credential. The
-            # session, the authority and the subject allowlist are proved once more here, after
-            # the peer has answered and before any body is returned.
+            # The persona page reads through its own registered character-service credential and
+            # proves this session, this action and this subject allowlist at the start of every
+            # outbound step and again before answering. This console makes the same proof once more
+            # on its own account, immediately before the body leaves here.
             result = await self.personas.route(request.path, body, session)
             require(self.session_valid(session), "session_expired", 401)
+            require(self.persona_read_authorised(), "persona_read_required", 403)
             return web.json_response(result)
         raise Fault("not_found", 404)
 
