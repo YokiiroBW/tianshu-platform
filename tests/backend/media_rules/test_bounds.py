@@ -18,6 +18,7 @@ Three properties are checked against real resources rather than by mocking:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import tempfile
 import time
@@ -33,6 +34,7 @@ import services.platform.media.rules as rules
 import services.platform.media.rules.evaluator as evaluator_module
 import services.platform.media.rules.regex_process as regex_process
 from services.platform.media.rules import (
+    CLEANUP_TIMEOUT_SECONDS,
     DECISION_DOWNLOAD,
     DECISION_RULE_ERROR,
     DECISION_SKIP,
@@ -42,6 +44,7 @@ from services.platform.media.rules import (
     REASON_EVALUATION_TIMEOUT,
     REASON_INPUT_TOO_LARGE,
     REASON_REGEX_TIMEOUT,
+    REASON_REGEX_WORKER_FAILED,
     RegexWorker,
     RuleEvaluationError,
     RuleEvaluator,
@@ -488,102 +491,327 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
         that is running and was never handed over. Both slots must stay spent — the third request is
         refused as ``busy`` immediately, without creating anything — and the capacity must come back
         exactly once, after the handovers are released and the children really exit.
+
+        The fifth review measured the other half of that ownership: after two such rounds every child
+        really had exited and the slots were back to zero, but the instance still retained 2 then 4
+        workers. So the same conditions are run twice, and each round asserts the retained set is empty
+        again afterwards — capacity and references come back on the *real* state of the resource, while
+        the failed close that produced them is remembered as one bounded flag rather than by holding
+        dead process objects. Facts are recorded first and the manual cleanup happens in ``finally``,
+        so a failure here is reported as the assertion it is.
         """
 
         self.assertEqual(MAX_CONCURRENT_REQUESTS, 2)
         policy = document(whitelist=[group("wl", rule("r1", "title", "regex", "动画"))])
         await require_usable_worker(self)
-        created: list[object] = []
-        born = [asyncio.Event(), asyncio.Event()]
-        release = [asyncio.Event(), asyncio.Event()]
         real_create = asyncio.create_subprocess_exec
-        started = 0
-
-        async def delayed(*args: object, **kwargs: object):
-            nonlocal started
-            index = min(started, MAX_CONCURRENT_REQUESTS - 1)
-            started += 1
-            process = await real_create(*args, **kwargs)
-            created.append(process)
-            born[index].set()
-            await release[index].wait()
-            return process
-
         evaluator = RuleEvaluator()
+        rounds: list[dict[str, int | str]] = []
+        created: list[object] = []
+        releases: list[asyncio.Event] = []
         try:
-            with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
-                requests = [
-                    asyncio.ensure_future(
-                        evaluator.evaluate(
-                            metadata(title="动画"),
-                            policy,
-                            accessible=True,
-                            quality_satisfied=False,
-                            snapshot_revision="rev-1",
+            for cycle in (1, 2):
+                born = [asyncio.Event(), asyncio.Event()]
+                release = [asyncio.Event(), asyncio.Event()]
+                releases.extend(release)
+                this_round: list[object] = []
+                started = 0
+
+                async def delayed(*args: object, **kwargs: object):
+                    nonlocal started
+                    index = min(started, MAX_CONCURRENT_REQUESTS - 1)
+                    started += 1
+                    process = await real_create(*args, **kwargs)
+                    this_round.append(process)
+                    created.append(process)
+                    born[index].set()
+                    await release[index].wait()
+                    return process
+
+                with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
+                    requests = [
+                        asyncio.ensure_future(
+                            evaluator.evaluate(
+                                metadata(title="动画"),
+                                policy,
+                                accessible=True,
+                                quality_satisfied=False,
+                                snapshot_revision=f"rev-{cycle}",
+                            )
                         )
+                        for _ in range(MAX_CONCURRENT_REQUESTS)
+                    ]
+                    for event in born:
+                        try:
+                            await asyncio.wait_for(event.wait(), timeout=15.0)
+                        except TimeoutError:
+                            for request in requests:
+                                if request.done() and not request.cancelled():
+                                    require_real_child(self, request.exception())
+                            self.fail(
+                                "each request must really create its own child before the cancel"
+                            )
+                    self.assertEqual(len(this_round), 2, "both requests own a real child")
+                    for request in requests:
+                        request.cancel()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await request
+                    rounds.append(
+                        {
+                            "cycle": cycle,
+                            "slots_after_requests_end": evaluator._active,
+                            "retained_before_release": len(evaluator._workers),
+                            "creations_started": started,
+                            "children_alive": sum(
+                                1 for process in this_round if process.returncode is None
+                            ),
+                        }
                     )
-                    for _ in range(MAX_CONCURRENT_REQUESTS)
-                ]
-                for event in born:
-                    try:
-                        await asyncio.wait_for(event.wait(), timeout=15.0)
-                    except TimeoutError:
-                        for request in requests:
-                            if request.done() and not request.cancelled():
-                                require_real_child(self, request.exception())
-                        self.fail("each request must really create its own child before the cancel")
-                self.assertEqual(len(created), 2, "both requests own a real child")
-                for request in requests:
-                    request.cancel()
-                    with self.assertRaises(asyncio.CancelledError):
-                        await request
+                    with self.assertRaises(RuleEvaluationError) as caught:
+                        await evaluator.validate_policy(policy)
+                    self.assertEqual(caught.exception.code, REASON_BUSY)
+                    refused = await evaluator.evaluate(
+                        metadata(title="动画"),
+                        policy,
+                        accessible=True,
+                        quality_satisfied=False,
+                        snapshot_revision=f"rev-{cycle}",
+                    )
+                    self.assertEqual(refused.decision, DECISION_RULE_ERROR)
+                    self.assertEqual(refused.reason, REASON_BUSY)
+                    self.assertFalse(refused.automatic_enqueue_allowed)
+                    self.assertTrue(refused.requires_rule_attention)
+                    self.assertEqual(started, 2, "nothing was created while the slots were spent")
+                    for event in release:
+                        event.set()
+                    for _ in range(200):
+                        if evaluator._active == 0 and not evaluator._workers:
+                            break
+                        await asyncio.sleep(0.02)
+                    rounds[-1]["slots_after_exit"] = evaluator._active
+                    rounds[-1]["retained_after_exit"] = len(evaluator._workers)
+                    for process in this_round:
+                        self.assertIsNotNone(
+                            process.returncode, "each late child was really killed"
+                        )
+                    recovered = await evaluator.evaluate(
+                        metadata(),
+                        text_policy(),
+                        accessible=True,
+                        quality_satisfied=False,
+                        snapshot_revision=f"rev-{cycle}",
+                    )
+                    self.assertEqual(
+                        recovered.decision, DECISION_SKIP, "normal requests work again"
+                    )
+                    rounds[-1]["recovered"] = recovered.decision
+
+            for row in rounds:
                 self.assertEqual(
-                    evaluator._active,
+                    row["slots_after_requests_end"],
                     2,
                     "a request that ended with a live child still spends its slot",
                 )
-                with self.assertRaises(RuleEvaluationError) as caught:
-                    await evaluator.validate_policy(policy)
-                self.assertEqual(caught.exception.code, REASON_BUSY)
-                refused = await evaluator.evaluate(
-                    metadata(title="动画"),
-                    policy,
-                    accessible=True,
-                    quality_satisfied=False,
-                    snapshot_revision="rev-1",
-                )
-                self.assertEqual(refused.decision, DECISION_RULE_ERROR)
-                self.assertEqual(refused.reason, REASON_BUSY)
-                self.assertFalse(refused.automatic_enqueue_allowed)
-                self.assertTrue(refused.requires_rule_attention)
-                self.assertEqual(started, 2, "nothing was created while the slots were spent")
-                for event in release:
-                    event.set()
-                for _ in range(100):
-                    if evaluator._active == 0:
-                        break
-                    await asyncio.sleep(0.02)
+                self.assertEqual(row["retained_before_release"], 2)
+                self.assertEqual(row["creations_started"], 2)
+                self.assertEqual(row["children_alive"], 2)
                 self.assertEqual(
-                    evaluator._active, 0, "the capacity comes back once the children end"
+                    row["slots_after_exit"], 0, "the capacity comes back once the children end"
                 )
-                for process in created:
-                    self.assertIsNotNone(process.returncode, "each late child was really killed")
-                recovered = await evaluator.evaluate(
-                    text_policy(),
+                self.assertEqual(
+                    row["retained_after_exit"],
+                    0,
+                    "a worker whose child really exited is released, however its close ended",
+                )
+                self.assertEqual(row["recovered"], DECISION_SKIP)
+            # Two independent normal requests still fit in the budget: the releases above gave back
+            # exactly one slot each, so nothing was released twice and no stale slot is left behind.
+            both = await asyncio.gather(
+                evaluator.evaluate(
                     metadata(),
+                    text_policy(),
                     accessible=True,
                     quality_satisfied=False,
-                    snapshot_revision="rev-1",
-                )
-                self.assertEqual(recovered.decision, DECISION_SKIP, "normal requests work again")
+                    snapshot_revision="rev-final",
+                ),
+                evaluator.evaluate(
+                    metadata(),
+                    text_policy(),
+                    accessible=True,
+                    quality_satisfied=False,
+                    snapshot_revision="rev-final",
+                ),
+            )
+            self.assertEqual([decision.decision for decision in both], [DECISION_SKIP] * 2)
+            self.assertEqual(evaluator._active, 0)
+            self.assertEqual(len(evaluator._workers), 0)
         finally:
-            for event in release:
+            for event in releases:
                 event.set()
             for process in created:
                 if getattr(process, "returncode", None) is None:
                     process.kill()
                 await process.wait()
-            await evaluator.close_quietly()
+            # The real interface, and a failure here is not allowed to replace the assertion above:
+            # whatever this close reports belongs to the cleanup, and the evidence for this case is the
+            # recorded rounds. ``close_quietly`` does not exist on the evaluator — calling it used to
+            # raise AttributeError and hide the first real failure.
+            with contextlib.suppress(RuleEvaluationError):
+                await evaluator.aclose()
+
+    async def test_a_late_exit_does_not_turn_a_failed_close_into_a_success(self):
+        """The instance's own close answer is fixed by its first attempt, not by the workers' state.
+
+        The fifth review measured this on real children: a request held at the creation barrier made the
+        first ``aclose()`` fail by name after its published second, the handover was then released and
+        the child really exited — and the second and third closes returned normally. Releasing the
+        resource is correct; rewriting what the first close reported is not. So after the real exit this
+        case requires the same failure from every later close, the same cleanup object and the same
+        absolute deadline (no second wait is opened), and the worker released from the owned set, which
+        is what keeps a long-lived instance from accumulating dead workers.
+        """
+
+        await require_usable_worker(self)
+        real_create = asyncio.create_subprocess_exec
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        created: list[object] = []
+        evaluator = RuleEvaluator()
+        policy = document(whitelist=[group("wl", rule("r1", "title", "regex", "动画"))])
+        request: asyncio.Future | None = None
+        facts: dict[str, object] = {}
+        try:
+
+            async def delayed(*args: object, **kwargs: object):
+                process = await real_create(*args, **kwargs)
+                created.append(process)
+                entered.set()
+                await release.wait()
+                return process
+
+            with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
+                request = asyncio.ensure_future(evaluator.validate_policy(policy))
+                try:
+                    await asyncio.wait_for(entered.wait(), timeout=15.0)
+                except TimeoutError:
+                    if request.done() and not request.cancelled():
+                        require_real_child(self, request.exception())
+                    self.fail("the creation must really hold a child before the first close")
+                worker = next(iter(evaluator._workers))
+                started = time.monotonic()
+                with self.assertRaises(RuleEvaluationError) as first:
+                    await evaluator.aclose()
+                facts["first_close"] = first.exception.code
+                facts["first_seconds"] = time.monotonic() - started
+                facts["retained_at_failure"] = len(evaluator._workers)
+                facts["child_alive_at_failure"] = created[0].returncode is None
+                cleanup, deadline = worker._cleanup, worker._cleanup_deadline
+                release.set()
+                with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
+                    await request
+                for _ in range(200):
+                    if created[0].returncode is not None and not evaluator._workers:
+                        break
+                    await asyncio.sleep(0.02)
+                facts["child_exit"] = created[0].returncode
+                facts["retained_after_exit"] = len(evaluator._workers)
+                facts["worker_settled"] = worker.settled
+                facts["fixed_conclusion"] = worker._cleanup_settled
+                with self.assertRaises(RuleEvaluationError) as second:
+                    await evaluator.aclose()
+                with self.assertRaises(RuleEvaluationError) as third:
+                    await evaluator.aclose()
+                facts["second_close"] = second.exception.code
+                facts["third_close"] = third.exception.code
+                facts["same_cleanup"] = worker._cleanup is cleanup
+                facts["same_deadline"] = worker._cleanup_deadline == deadline
+        finally:
+            release.set()
+            if request is not None:
+                with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
+                    await request
+            for process in created:
+                if getattr(process, "returncode", None) is None:
+                    process.kill()
+                await process.wait()
+            with contextlib.suppress(RuleEvaluationError):
+                await evaluator.aclose()
+
+        self.assertEqual(facts["first_close"], REASON_REGEX_WORKER_FAILED)
+        self.assertGreaterEqual(float(facts["first_seconds"]), CLEANUP_TIMEOUT_SECONDS * 0.9)
+        self.assertTrue(facts["child_alive_at_failure"], "the child was really still running")
+        self.assertEqual(facts["retained_at_failure"], 1, "the unreclaimed worker stays owned")
+        self.assertIsNotNone(facts["child_exit"], "the late handover really exited")
+        self.assertTrue(facts["worker_settled"], "and the resource really is settled afterwards")
+        self.assertFalse(
+            facts["fixed_conclusion"],
+            "the first cleanup concluded a failure; a later exit does not revise that conclusion",
+        )
+        self.assertEqual(facts["retained_after_exit"], 0, "but the reference is released")
+        self.assertEqual(facts["second_close"], REASON_REGEX_WORKER_FAILED)
+        self.assertEqual(facts["third_close"], REASON_REGEX_WORKER_FAILED)
+        self.assertTrue(facts["same_cleanup"], "no second cleanup was created")
+        self.assertTrue(facts["same_deadline"], "and the published deadline was not pushed back")
+
+    async def test_a_cleanup_that_failed_after_reaping_withholds_the_verdict(self):
+        """A cleanup that reaps the child and *then* fails is still a failed request retirement.
+
+        The fifth review's probe found the worst version of this on real children: the cleanup reaped
+        the child, obtained its exit code, and then raised — the exception was swallowed, the worker
+        answered from the child's *current* state, and so a normal ``validate_policy`` passed and
+        ``evaluate`` delivered ``download``/``eligible`` with ``enqueue=true``. Real exit and evidenced
+        retirement are two different facts, so here the reaper really reaps and then fails: the
+        validate call must fail by name, and the evaluate call must withhold the verdict as the fixed
+        ``rule_error``/``regex_worker_failed``, even though both children really exited.
+        """
+
+        await require_usable_worker(self)
+        policy = document(whitelist=[group("wl", rule("r1", "title", "regex", "动画"))])
+        real_reap = regex_process.RegexWorker._reap_killed
+        exits_before_raise: list[int | None] = []
+        evaluator = RuleEvaluator()
+        facts: dict[str, object] = {}
+
+        async def reap_then_fail(worker, process, timeout=regex_process.CLEANUP_TIMEOUT_SECONDS):
+            await real_reap(worker, process, timeout)
+            exits_before_raise.append(process.returncode)
+            raise RuntimeError("the cleanup failed after the child had already been reaped")
+
+        try:
+            with mock.patch.object(regex_process.RegexWorker, "_reap_killed", reap_then_fail):
+                with self.assertRaises(RuleEvaluationError) as caught:
+                    await evaluator.validate_policy(policy)
+                facts["validate"] = caught.exception.code
+                decision = await evaluator.evaluate(
+                    metadata(title="动画"),
+                    policy,
+                    accessible=True,
+                    quality_satisfied=False,
+                    snapshot_revision="rev-cleanup-failure",
+                )
+                facts["decision"] = decision.decision
+                facts["reason"] = decision.reason
+                facts["enqueue"] = decision.automatic_enqueue_allowed
+                facts["attention"] = decision.requires_rule_attention
+                facts["exits_before_raise"] = list(exits_before_raise)
+                facts["slots"] = evaluator._active
+                facts["retained"] = len(evaluator._workers)
+        finally:
+            for worker in tuple(evaluator._workers):
+                worker.force_kill()
+            with contextlib.suppress(RuleEvaluationError):
+                await evaluator.aclose()
+
+        self.assertEqual(facts["validate"], REASON_REGEX_WORKER_FAILED)
+        self.assertEqual(facts["decision"], DECISION_RULE_ERROR)
+        self.assertEqual(facts["reason"], REASON_REGEX_WORKER_FAILED)
+        self.assertFalse(facts["enqueue"], "a request whose cleanup failed must not be enqueued")
+        self.assertTrue(facts["attention"])
+        self.assertEqual(len(facts["exits_before_raise"]), 2, "both children were really reaped")
+        for code in facts["exits_before_raise"]:
+            self.assertIsNotNone(code, "the exit code existed before the cleanup failed")
+        self.assertEqual(facts["slots"], 0, "the really-exited children returned their capacity")
+        self.assertEqual(facts["retained"], 0, "and their references")
 
 
 class ProjectionBudgetTest(unittest.IsolatedAsyncioTestCase):

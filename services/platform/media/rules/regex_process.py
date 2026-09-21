@@ -143,6 +143,13 @@ class RegexWorker:
         #: caller joins it, so the absolute deadline and the public result are decided once.
         self._cleanup: asyncio.Task[None] | None = None
         self._cleanup_deadline: float | None = None
+        #: The *fixed* public conclusion of that one cleanup, written once when it ends and never
+        #: revised: ``True`` only when it completed normally and evidenced every resource settled
+        #: inside its deadline, ``False`` when it raised, was cancelled, or ran out of its deadline
+        #: with something still unsettled. It is deliberately separate from :attr:`settled`, which is
+        #: the *live* state of the resources and can still become true later, when a child that
+        #: outlived the deadline finally exits. Capacity and references follow the live state; the
+        #: answer to "did this close reclaim what it owned" follows this one.
         self._cleanup_settled: bool | None = None
         #: One-way escalation: once a hard failure has joined, the child is killed rather than asked.
         self._escalated = False
@@ -489,27 +496,34 @@ class RegexWorker:
         return bool(response["matched"])
 
     async def aclose(self, *, timeout: float = CLEANUP_TIMEOUT_SECONDS) -> None:
-        """Close this worker as a barrier, or fail by name.
+        """Close this worker as a barrier, or fail by name — once, with that answer fixed.
 
-        A successful return from here means this worker is *settled*: the child it holds has a real exit
-        code, and the creation can no longer produce another. There is no third outcome. A close that
-        ran out of its shared deadline while a creation was still holding a child it had not handed over
-        cannot claim to have reclaimed it — the handle is not in this worker's hands yet, and no amount
-        of waiting inside a published budget changes that — so it raises the existing
-        ``regex_worker_failed`` instead. The worker keeps owning whatever is left, and the moment that
-        child is handed over it is killed and waited for.
+        A successful return from here means this worker's one cleanup completed normally *and*
+        evidenced every resource settled inside its deadline: the child it holds has a real exit code,
+        and the creation can no longer produce another. There is no third outcome. A close that ran out
+        of its shared deadline while a creation was still holding a child it had not handed over cannot
+        claim to have reclaimed it — the handle is not in this worker's hands yet, and no amount of
+        waiting inside a published budget changes that — so it raises the existing
+        ``regex_worker_failed`` instead. So does a cleanup that failed in its own right, even when the
+        child had already been reaped before it failed.
+
+        That answer belongs to the *close*, not to the resources: the worker keeps owning whatever is
+        left, the child is killed and waited for the moment it is handed over, and a later close still
+        reports the failure this one reported. A child that exits after the deadline returns capacity
+        and releases references; it does not turn this close into a success.
         """
 
         if not await self._retire(timeout):
             raise RuleEvaluationError(REASON_REGEX_WORKER_FAILED, "regex_worker")
 
     async def close_quietly(self, timeout: float = CLEANUP_TIMEOUT_SECONDS) -> bool:
-        """Retire this worker without raising, and report whether it ended up settled.
+        """Retire this worker without raising, and report this cleanup's fixed conclusion.
 
-        Quiet is about the exception, never about ownership: a caller that gets ``False`` still owns
-        this worker and must keep holding it, because a child that has not been handed over cannot be
-        reaped by waiting for it. Nothing here releases anything, and the failure it reports is the
-        shared cleanup's own outcome — a second caller observes the same result, not a fresh attempt.
+        Quiet is about the exception, never about ownership or about the answer: a caller that gets
+        ``False`` still owns this worker and must keep holding it, because a child that has not been
+        handed over cannot be reaped by waiting for it. Nothing here releases anything, the result is
+        the shared cleanup's own outcome — a second caller observes the same fixed answer, not a fresh
+        attempt — and a cleanup that raised reports ``False`` even if the child really exited first.
         """
 
         return await self._retire(timeout)
@@ -571,14 +585,38 @@ class RegexWorker:
         """Record the one cleanup's outcome, and read it so it is never "never retrieved"."""
 
         _consume_task(task)
-        self._cleanup_settled = self.settled
-        if self._cleanup_settled:
+        self._conclude_cleanup(task)
+        if self.settled:
             self._announce_settlement()
+
+    def _conclude_cleanup(self, task: asyncio.Task[None]) -> bool:
+        """Fix this worker's public close conclusion once, from the cleanup's real result.
+
+        Three different things are kept apart on purpose, because conflating them is what the fifth
+        review measured: the *real* state of the resources (``settled``, which may still become true
+        after the deadline when a late child finally exits), the *fixed* public conclusion of this one
+        cleanup (this value), and the ownership of the capacity slot and of the worker reference
+        (decided by the owner, from the live state). A cleanup that raised — including one that had
+        already reaped the child and *then* failed — or was cancelled, or ended with anything still
+        unsettled, concludes a failure. That conclusion is never revised: a child exiting afterwards
+        gives capacity and references back, and does not rewrite what this close already reported.
+
+        The value is written once, so every concurrent or repeated caller observes the same answer, and
+        the task's own result is read here rather than merely consumed: "the wait finished" is not
+        "the reclamation succeeded".
+        """
+
+        if self._cleanup_settled is None:
+            if task.cancelled() or task.exception() is not None:
+                self._cleanup_settled = False
+            else:
+                self._cleanup_settled = self.settled
+        return self._cleanup_settled
 
     async def _retire(
         self, timeout: float = CLEANUP_TIMEOUT_SECONDS, *, immediate: bool = False
     ) -> bool:
-        """Join this worker's one cleanup and report whether it is settled.
+        """Join this worker's one cleanup and report its fixed public conclusion.
 
         The escalation is deliberate and one-way. A hard failure — an expired budget, a cancellation,
         a protocol violation — issues the kill *before* the first await, so the cleanup budget is
@@ -591,9 +629,10 @@ class RegexWorker:
         Concurrency is by sharing, not by repeating: the first caller establishes the cleanup and its
         deadline, every later caller — a second close, a cancelled request, an evaluator sweeping its
         workers — waits for that same task, so N concurrent retirements cost one budget and cannot each
-        restart a fresh second of waiting. The answer is the worker's real state, never "the wait
-        finished, so it must be clean": a cleanup that ends without the child having been handed over
-        reports ``False``, and so does a second caller asking the same question later.
+        restart a fresh second of waiting. What is returned is that one cleanup's fixed conclusion, not
+        the live state of the resources: a close that ran out of its deadline reports the named failure
+        it already reported, even once the child it could not wait for has exited on its own, and a
+        second caller asking the same question later gets that same answer rather than a fresh attempt.
 
         The caller's own cancellation still leaves after the cleanup has finished, and it takes priority
         over the reported failure: a cancelled request must not be turned into an ordinary decision.
@@ -603,10 +642,11 @@ class RegexWorker:
         cancelled = await self._await_cleanup(task)
         if cancelled is not None:
             raise cancelled
-        settled = self.settled
-        if settled:
+        if self.settled:
+            # The resources are really gone — possibly only now, after the deadline. That returns the
+            # capacity and releases references; it does not change what this cleanup concluded.
             self._announce_settlement()
-        return settled
+        return self._conclude_cleanup(task)
 
     async def _await_cleanup(self, task: asyncio.Task[None]) -> asyncio.CancelledError | None:
         """Wait for the shared cleanup, holding this caller's own cancellation until it has finished.
@@ -621,8 +661,9 @@ class RegexWorker:
             try:
                 # ``asyncio.wait`` never cancels the cleanup and never re-raises *its* outcome: this
                 # coroutine is a waiter, not the owner, and the cleanup's failures are its own. The
-                # result is read rather than assumed — a wait that finished is not a successful
-                # retirement, which is what ``_retire`` asks the worker's own state about afterwards.
+                # task's result is then read by ``_conclude_cleanup`` rather than assumed — a wait that
+                # finished is not a successful retirement, which is exactly what a cleanup that reaped
+                # the child and *then* raised would otherwise be mistaken for.
                 await asyncio.wait({task})
                 _consume_task(task)
                 return cancelled

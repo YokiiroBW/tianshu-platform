@@ -224,6 +224,11 @@ class _Handles:
 
     process: RegexWorker | None = None
     handles: dict[tuple[int, int], int] = field(default_factory=dict)
+    #: The *fixed* conclusion of that worker's one cleanup, recorded when the request's own retirement
+    #: ran. It is not the live resource state: a request whose child really exited but whose cleanup
+    #: failed in its own right must still not deliver a verdict, and ``settled`` would say the
+    #: opposite. Only consulted when ``process`` is set, which is also when this was written.
+    retired: bool = False
 
     def record(self, position: tuple[int, int], handle: int) -> None:
         self.handles[position] = handle
@@ -265,6 +270,12 @@ class RuleEvaluator:
         self._slots: list[_Slot] = []
         self._closed = False
         self._workers: set[RegexWorker] = set()
+        #: The fixed conclusion of this instance's own close. A close that could not evidence the
+        #: retirement of every worker it owned keeps that answer: once the workers really exit, a later
+        #: close releases them and returns their capacity, but it does not become a success merely
+        #: because the set it walks is empty now. One bounded flag — the error is remembered here, not
+        #: by retaining dead process objects.
+        self._close_failed = False
 
     @property
     def _active(self) -> int:
@@ -293,6 +304,7 @@ class RuleEvaluator:
         for slot in tuple(self._slots):
             if slot.finished and (slot.worker is None or slot.worker.settled):
                 self._release_slot(slot)
+                self._drop_settled_worker(slot)
 
     def _hold_slot(self, slot: _Slot, worker: RegexWorker) -> None:
         """Tie a slot to the worker it pays for; the slot comes back when that worker is settled."""
@@ -301,10 +313,11 @@ class RuleEvaluator:
         worker.on_settled(lambda: self._release_after_settlement(slot))
 
     def _release_after_settlement(self, slot: _Slot) -> None:
-        """The worker settled: release the slot, but only once its request has really ended."""
+        """The worker settled: give back its slot and let go of the worker itself, once each."""
 
         if slot.finished:
             self._release_slot(slot)
+            self._drop_settled_worker(slot)
 
     def _finish_slot(self, slot: _Slot) -> None:
         """The request is over: release the slot now, or keep holding it for an unsettled resource."""
@@ -312,12 +325,29 @@ class RuleEvaluator:
         slot.finished = True
         if slot.worker is None or slot.worker.settled:
             self._release_slot(slot)
+            self._drop_settled_worker(slot)
 
     def _release_slot(self, slot: _Slot) -> None:
         """Release a slot exactly once, whatever asks for it first."""
 
         if slot in self._slots:
             self._slots.remove(slot)
+
+    def _drop_settled_worker(self, slot: _Slot) -> None:
+        """Let go of a worker that has really settled, once its request has ended.
+
+        This is reference ownership, not the public conclusion: a worker whose close already reported a
+        failure is still released here the moment its child really exits, because keeping a dead process
+        object alive in order to remember an error is how an instance that stays open accumulates
+        workers. The error itself survives as one bounded flag. The guard is what makes the three
+        callers — a late settlement, the request's own ``finally`` and the sweep — idempotent, and it is
+        also what keeps a worker that is still serving a request owned, since that is what lets
+        ``aclose`` retire it.
+        """
+
+        worker = slot.worker
+        if worker is not None and slot.finished and worker.settled:
+            self._workers.discard(worker)
 
     async def __aenter__(self) -> "RuleEvaluator":
         return self
@@ -328,12 +358,17 @@ class RuleEvaluator:
     async def aclose(self) -> None:
         """Refuse new calls and retire every process this instance still owns.
 
-        Closing has exactly two outcomes. It returns normally only when every worker this instance owns
-        is *settled* — child reaped, creation unable to produce another — and otherwise it raises the
-        existing ``regex_worker_failed``: a worker whose creation never handed its child over cannot be
-        reclaimed by waiting, and reporting success for it would be a claim this instance cannot
-        evidence. Nothing is released by a failure: the worker stays owned, and so does the capacity it
-        occupies.
+        Closing has exactly two outcomes, and its own answer is fixed by the first one. It returns
+        normally only when every worker this instance owns was retired with evidence — child reaped,
+        creation unable to produce another — and otherwise it raises the existing
+        ``regex_worker_failed``: a worker whose creation never handed its child over cannot be reclaimed
+        by waiting, and reporting success for it would be a claim this instance cannot evidence.
+
+        The answer belongs to the close, not to the workers' current state. A worker that exits after
+        that deadline is released — its slot comes back and the reference goes — but a later close still
+        reports the failure the first one reported, instead of turning into a success because the set it
+        walks happens to be empty now. Nothing is released by the failure itself: while the resource is
+        unsettled the worker stays owned and so does the capacity it occupies.
 
         The order is what makes the successful return a barrier: the closed mark is set *before* any
         process work, and a worker can only ever be registered while that mark is still false. So when
@@ -341,18 +376,23 @@ class RuleEvaluator:
         worker that was registered has been killed and reaped. A child that appears at the
         create/cleanup boundary of a request that is being cancelled right now is retired by the worker
         that owns it, which is why the worker is retired *before* it leaves the owned set.
-
-        A worker leaves that set only once it is settled. A worker whose creation never handed its
-        child over is swept again rather than dropped, and the sweep is still bounded: the wait for each
-        worker is that worker's own shared cleanup deadline, and the workers are waited for together, so
-        a close of two unsettled workers still costs one cleanup budget rather than two.
         """
 
         self._closed = True
-        await self._retire_owned_workers()
+        if not await self._retire_owned_workers():
+            self._close_failed = True
+        if self._close_failed:
+            raise RuleEvaluationError(REASON_REGEX_WORKER_FAILED, "regex_worker")
 
-    async def _retire_owned_workers(self) -> None:
-        """Retire the owned workers until every one of them is settled, or fail by name.
+    async def _retire_owned_workers(self) -> bool:
+        """Retire the owned workers until every one of them is settled, and report the conclusion.
+
+        Two different questions are answered here, and conflating them is what the fifth review
+        measured. *Ownership* follows the live state: a worker whose child really exited is released
+        from the set even when its own close already reported a failure, so a long-lived instance does
+        not accumulate dead workers. The *return value* follows each worker's fixed conclusion: one
+        cleanup that could not evidence its reclamation makes this close a failure, whatever the set
+        looks like afterwards.
 
         The set can only shrink once ``_closed`` is set, so this loop terminates after at most the
         number of requests that were in flight; the bound is there to make a silent exit impossible
@@ -361,16 +401,21 @@ class RuleEvaluator:
         a worker that was already reaped, and two unsettled workers cost one budget rather than two.
         """
 
+        concluded = True
         for _ in range(MAX_CONCURRENT_REQUESTS + 1):
             if not self._workers:
-                return
+                return concluded
             workers = tuple(self._workers)
             outcomes = await asyncio.gather(*(worker.close_quietly() for worker in workers))
-            for worker, settled in zip(workers, outcomes):
-                if settled:
+            for worker, retired in zip(workers, outcomes):
+                if worker.settled:
+                    # The resource really is gone, so the reference goes with it. That is ownership,
+                    # not the public answer below.
                     self._workers.discard(worker)
+                if not retired:
+                    concluded = False
             if not self._workers:
-                return
+                return concluded
         # Unreachable for a worker that can be settled at all, but a silent exit would be worse than a
         # loud one: whatever is left has its kill issued synchronously rather than abandoned, and stays
         # owned — dropping it here is exactly the loss this loop exists to prevent.
@@ -379,7 +424,8 @@ class RuleEvaluator:
             if worker.settled:
                 self._workers.discard(worker)
         if self._workers:
-            raise RuleEvaluationError(REASON_REGEX_WORKER_FAILED, "regex_worker")
+            concluded = False
+        return concluded
 
     def _spawn_worker(self, slot: _Slot) -> RegexWorker:
         """Register a worker for one in-flight request, or refuse because this instance is closed.
@@ -408,9 +454,12 @@ class RuleEvaluator:
         the rules an item happened to reach today. The whole call is bounded by the request budget:
         process creation, the handshake and every compile share one deadline.
 
-        "Valid" also means the worker behind the compilation is settled. A policy whose child could not
-        be reclaimed is not a policy this call may bless, so the same named failure the process layer
-        raises is raised here rather than returning a policy that leaves a live child behind.
+        "Valid" also means the worker behind the compilation was retired with evidence. A policy whose
+        cleanup could not evidence its reclamation is not a policy this call may bless, so the same
+        named failure the process layer raises is raised here rather than returning a policy that
+        leaves a live child behind. The question asked is the *fixed* conclusion of that one cleanup,
+        not the child's current state: a cleanup that failed — including one that reaped the child and
+        then failed in its own right — is a failure even though the process really exited.
         """
 
         if self._closed:
@@ -432,7 +481,7 @@ class RuleEvaluator:
                     raise RuleEvaluationError(
                         failed.failure.code, _failure_field(policy, failed.failure)
                     ) from None
-                if handles.process is not None and not handles.process.settled:
+                if handles.process is not None and not handles.retired:
                     raise RuleEvaluationError(REASON_REGEX_WORKER_FAILED, "regex_worker")
             return policy
         finally:
@@ -461,11 +510,13 @@ class RuleEvaluator:
         compile and every search share one deadline, and cleanup gets its own separate budget. A
         request that runs out of time reports ``rule_error``; it never turns into a normal ``skip``.
 
-        The same holds for a request whose child could not be reclaimed inside the cleanup budget: a
-        ``download``/``skip`` verdict is only delivered for a request whose resources are settled, and
-        an unsettled one becomes the fixed ``rule_error``/``regex_worker_failed`` instead — enqueue
-        forbidden, rule attention required. A failure that already has its own name keeps it; it is
-        never rewritten into a success.
+        The same holds for a request whose worker could not be retired: a ``download``/``skip`` verdict
+        is only delivered for a request whose retirement concluded successfully, and one whose cleanup
+        failed — or ran out of its deadline — becomes the fixed ``rule_error``/``regex_worker_failed``
+        instead: enqueue forbidden, rule attention required. What decides that is the fixed conclusion
+        of that one cleanup, not the child's current state, so a cleanup that failed *after* the child
+        had already been reaped is still a failure and still withholds the verdict. A failure that
+        already has its own name keeps it; it is never rewritten into a success.
         """
 
         if self._closed:
@@ -512,10 +563,13 @@ class RuleEvaluator:
         if (
             decision.decision != DECISION_RULE_ERROR
             and handles.process is not None
-            and not handles.process.settled
+            and not handles.retired
         ):
-            # The verdict was computed, but the child behind it could not be reclaimed. Delivering it
-            # would be reporting a clean outcome for a request that still owns a live process.
+            # The verdict was computed, but the worker's one cleanup did not conclude a successful
+            # retirement — it may have failed in its own right, or run out of its deadline while the
+            # child was still unreclaimed. Delivering the verdict would report a clean outcome for a
+            # request whose reclamation this instance cannot evidence, even if the child has exited
+            # since: the fixed conclusion is what this answer follows, not the current process state.
             failure = _Failure(REASON_REGEX_WORKER_FAILED)
             builder.set_failure(failure)
             return _rule_error_decision(metadata, snapshot_revision, policy, failure, builder)
@@ -698,13 +752,17 @@ class RuleEvaluator:
             yield handles
         finally:
             # Cleanup has its own budget, separate from the (possibly exhausted) request deadline:
-            # the child is always retired, and always before the worker leaves the owned set. A worker
-            # that is not settled yet — a creation that never handed its child over — stays owned, so
-            # the object that still has a child to answer for is not dropped by this request. Nothing
-            # is released here either: the slot this request pays for comes back when the worker is
-            # settled, and the caller above decides what an unsettled worker means for its own answer.
-            settled = await handles.process.close_quietly(process_layer.CLEANUP_TIMEOUT_SECONDS)
-            if settled:
+            # the child is always retired, and always before the worker leaves the owned set. The value
+            # recorded here is that one cleanup's *fixed* conclusion — what the caller above must ask
+            # about — while the reference is released on the *live* state: a worker that is not settled
+            # yet stays owned, so the object that still has a child to answer for is not dropped by this
+            # request, and one whose child has really exited is released even if its close reported a
+            # failure. Nothing else is released here: the slot this request pays for comes back when the
+            # worker is settled.
+            handles.retired = await handles.process.close_quietly(
+                process_layer.CLEANUP_TIMEOUT_SECONDS
+            )
+            if handles.process.settled:
                 self._workers.discard(handles.process)
 
 

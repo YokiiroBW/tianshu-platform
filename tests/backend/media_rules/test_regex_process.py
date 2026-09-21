@@ -258,6 +258,16 @@ async def start_or_skip(test: unittest.TestCase, worker: RegexWorker, **kwargs: 
         raise
 
 
+async def close_outcome(worker: RegexWorker) -> str:
+    """How one close ended: its failure code, or the fact that it returned normally."""
+
+    try:
+        await worker.aclose()
+    except RuleEvaluationError as error:
+        return error.code
+    return "returned normally"
+
+
 FIXTURE_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".runtime"
 )
@@ -676,13 +686,18 @@ class CancellationTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_hard_failure_escalates_a_graceful_close_at_the_failure_point(self):
         """A close that is already waiting politely must be escalated by the fault, not outlast it.
 
-        The child is spinning inside a real catastrophic backtracking ``re.search``, which is the state
+        The child is spinning inside a real catastrophic backtracking ``re.search`` — a real stage
+        marker written by the child itself is what says the search was entered — which is the state
         where closing its input cannot end it: the polite close can only wait out its 0.2 s grace and
-        then kill. The cancellation arrives 50 ms into that grace, and the kill must belong to *that*
-        moment. The two timings are far apart, so the elapsed time between the cancellation and the
-        child's death is what tells them apart: a kill left to the grace would take another ~150 ms,
-        while a kill issued at the failure point returns at once. The child's exit code is the second
-        half of the evidence — it is killed by the product, not by this test, and never signalled here.
+        then kill. The cancellation arrives *inside* the call's own 50 ms budget, which is checked
+        rather than assumed, and the kill must belong to that moment: the elapsed time between the
+        cancellation and the child's death is what tells the two apart, because a kill left to the
+        grace would take another ~150 ms while a kill issued at the failure point returns at once.
+
+        The kill is observed where it happens — the moment ``Process.kill`` is really called — and the
+        exit code is the child's own, never simulated here: on this platform a killed child reports the
+        platform's real code (1 on Windows, -9 elsewhere), so the assertion names that fact instead of
+        pretending a POSIX signal is the only possible evidence.
         """
 
         with ControlledScripts() as scripts:
@@ -694,27 +709,56 @@ class CancellationTest(unittest.IsolatedAsyncioTestCase):
             pid = worker.pid
             assert pid is not None
             handle = await worker.compile(CATASTROPHIC_PATTERN, 0, timeout=CALL_BUDGET)
+            call_started = time.monotonic()
             task = asyncio.ensure_future(
                 worker.search(handle, CATASTROPHIC_TEXT, timeout=CALL_BUDGET)
             )
             reached = await scripts.await_marker(pid)
             self.assertTrue(reached, "the child really entered the backtracking search")
             self.assertFalse(task.done(), "the expression is still running inside the child")
+            kills: list[float] = []
+            real_kill = process.kill
+
+            def record_kill(*args: object, **kwargs: object) -> None:
+                kills.append(time.monotonic())
+                real_kill(*args, **kwargs)
+
+            process.kill = record_kill  # type: ignore[method-assign]
             # A polite close starts first and is genuinely inside its grace period below.
             closing = asyncio.ensure_future(worker.aclose())
-            await asyncio.sleep(CALL_TIMEOUT_SECONDS)
-            started = time.monotonic()
+            await asyncio.sleep(CALL_TIMEOUT_SECONDS / 4)
+            cancel_moment = time.monotonic()
+            self.assertLess(
+                cancel_moment - call_started,
+                CALL_TIMEOUT_SECONDS,
+                "the cancellation happens inside the call's original budget, not after it",
+            )
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
-            escalated = time.monotonic() - started
+            escalated = time.monotonic() - cancel_moment
             self.assertLess(
                 escalated,
                 ESCALATION_CEILING,
                 "the kill belongs to the hard failure, not to the end of the close grace",
             )
+            self.assertTrue(kills, "the product issued the kill itself")
+            self.assertGreaterEqual(
+                kills[0], cancel_moment, "the kill belongs to the failure, not to the grace"
+            )
+            self.assertLess(
+                kills[0] - cancel_moment, ESCALATION_CEILING, "and it was issued at that moment"
+            )
+            await self.await_exit(process)
             self.assertIsNotNone(process.returncode, "the escalated close reaps the child")
-            self.assertEqual(process.returncode, -9, "the spinning child was killed")
+            self.assertNotEqual(
+                process.returncode, 0, "the spinning child was killed, not finished"
+            )
+            self.assertEqual(
+                process.returncode,
+                1 if os.name == "nt" else -9,
+                "the real exit code of a killed child on this platform",
+            )
             await closing
             self.assertFalse(worker.alive)
             self.assertTrue(worker.settled, "the child's exit is the evidence the close needed")
@@ -1040,6 +1084,62 @@ class CreationBarrierTest(unittest.IsolatedAsyncioTestCase):
                     process.kill()
                     await process.wait()
             self.assertIsNotNone(process.returncode)
+
+    async def test_a_cleanup_that_fails_after_reaping_still_fails_every_close(self):
+        """An exit code existing is not the cleanup succeeding — and the failure is fixed, not revised.
+
+        The fifth review's probe measured this on real children: the cleanup reaped the child, so the
+        exit code was already recorded, and then it failed — and because the exception was consumed and
+        the answer read from the child's *current* state, the close returned normally, ``validate_policy``
+        passed and ``evaluate`` delivered ``download``. Real reclamation and evidenced reclamation are
+        two different facts. So the reaper here really reaps first: the first close, a concurrent close
+        and a repeated close all report the named failure, the child is genuinely gone, and the fixed
+        conclusion stays a failure even though the live state says settled.
+        """
+
+        with ControlledScripts() as scripts:
+            script = scripts.fixture("lingering.py")
+            worker = RegexWorker(script)
+            await start_or_skip(self, worker)
+            process = worker.managed_process
+            assert process is not None
+            real_reap = RegexWorker._reap_killed
+            exits_before_failure: list[int | None] = []
+
+            async def reap_then_explode(inner_self, inner_process, timeout=CLEANUP_TIMEOUT_SECONDS):
+                await real_reap(inner_self, inner_process, timeout)
+                exits_before_failure.append(inner_process.returncode)
+                raise RuntimeError("the cleanup failed after the child had already been reaped")
+
+            try:
+                with mock.patch.object(RegexWorker, "_reap_killed", reap_then_explode):
+                    first, concurrent = await asyncio.gather(
+                        close_outcome(worker), close_outcome(worker)
+                    )
+                    repeated = await close_outcome(worker)
+                self.assertEqual(
+                    [first, concurrent, repeated],
+                    [REASON_REGEX_WORKER_FAILED] * 3,
+                    "every close of that one cleanup reports the same fixed failure",
+                )
+                self.assertEqual(
+                    exits_before_failure,
+                    [process.returncode],
+                    "the exit code existed before the cleanup failed",
+                )
+                self.assertIsNotNone(process.returncode, "the child really exited")
+                self.assertTrue(
+                    worker.settled,
+                    "the resource really is settled — that is exactly why live state cannot decide",
+                )
+                self.assertFalse(
+                    worker._cleanup_settled,
+                    "the fixed conclusion of that cleanup is a failure and stays one",
+                )
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
 
     async def await_exit(self, process: object, timeout: float = 5.0) -> None:
         deadline = time.monotonic() + timeout
