@@ -753,6 +753,121 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(facts["same_cleanup"], "no second cleanup was created")
         self.assertTrue(facts["same_deadline"], "and the published deadline was not pushed back")
 
+    async def test_a_cancelled_close_waiter_still_fixes_the_instance_conclusion(self):
+        """The instance's close conclusion survives a waiter that is cancelled while it waits.
+
+        The sixth review measured this on real children: the first ``aclose()`` was cancelled during its
+        wait, the worker's shared cleanup correctly concluded a failure — and the instance recorded
+        nothing, because the aggregate was only written after a normal return. Once the handover was
+        released and the child really exited, the second and third closes therefore returned normally
+        for a close that had failed. So this case requires the conclusion to be recorded *without* any
+        caller returning normally: the cancelled waiter still leaves with its own ``CancelledError``
+        first (never replaced by a verdict), a concurrent uncancelled waiter joins that same close and
+        reads the same failure, and every later close keeps failing while the resource is released.
+        """
+
+        await require_usable_worker(self)
+        real_create = asyncio.create_subprocess_exec
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        created: list[object] = []
+        evaluator = RuleEvaluator()
+        policy = document(whitelist=[group("wl", rule("r1", "title", "regex", "动画"))])
+        request: asyncio.Future | None = None
+        cancelled_waiter: asyncio.Future | None = None
+        joining_waiter: asyncio.Future | None = None
+        facts: dict[str, object] = {}
+        try:
+
+            async def delayed(*args: object, **kwargs: object):
+                process = await real_create(*args, **kwargs)
+                created.append(process)
+                entered.set()
+                await release.wait()
+                return process
+
+            with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
+                request = asyncio.ensure_future(evaluator.validate_policy(policy))
+                try:
+                    await asyncio.wait_for(entered.wait(), timeout=15.0)
+                except TimeoutError:
+                    if request.done() and not request.cancelled():
+                        require_real_child(self, request.exception())
+                    self.fail("the creation must really hold a child before the first close")
+                worker = next(iter(evaluator._workers))
+                started = time.monotonic()
+                cancelled_waiter = asyncio.ensure_future(evaluator.aclose())
+                for _ in range(200):
+                    if worker._cleanup is not None:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertIsNotNone(worker._cleanup, "the first close started the one cleanup")
+                # A second caller joins the very same close. It is not cancelled, and it must read the
+                # same answer as every later close instead of deciding again from the current set.
+                joining_waiter = asyncio.ensure_future(evaluator.aclose())
+                await asyncio.sleep(0.02)
+                cancelled_waiter.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await cancelled_waiter
+                facts["cancelled_seconds"] = time.monotonic() - started
+                facts["child_alive_after_cancel"] = created[0].returncode is None
+                facts["worker_conclusion_after_cancel"] = worker._cleanup_settled
+                facts["recorded_without_a_normal_return"] = evaluator._close_failed
+                with self.assertRaises(RuleEvaluationError) as joined:
+                    await joining_waiter
+                facts["joining_close"] = joined.exception.code
+                cleanup, deadline = worker._cleanup, worker._cleanup_deadline
+                release.set()
+                with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
+                    await request
+                for _ in range(200):
+                    if created[0].returncode is not None and not evaluator._workers:
+                        break
+                    await asyncio.sleep(0.02)
+                facts["child_exit"] = created[0].returncode
+                facts["slots_after_exit"] = evaluator._active
+                facts["retained_after_exit"] = len(evaluator._workers)
+                with self.assertRaises(RuleEvaluationError) as second:
+                    await evaluator.aclose()
+                with self.assertRaises(RuleEvaluationError) as third:
+                    await evaluator.aclose()
+                facts["second_close"] = second.exception.code
+                facts["third_close"] = third.exception.code
+                facts["same_cleanup"] = worker._cleanup is cleanup
+                facts["same_deadline"] = worker._cleanup_deadline == deadline
+        finally:
+            release.set()
+            for waiter in (cancelled_waiter, joining_waiter, request):
+                if waiter is not None:
+                    with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
+                        await waiter
+            for process in created:
+                if getattr(process, "returncode", None) is None:
+                    process.kill()
+                await process.wait()
+            with contextlib.suppress(RuleEvaluationError):
+                await evaluator.aclose()
+
+        self.assertGreaterEqual(
+            float(facts["cancelled_seconds"]),
+            CLEANUP_TIMEOUT_SECONDS * 0.9,
+            "the cancellation is held until the shared close is finished, then re-raised",
+        )
+        self.assertTrue(facts["child_alive_after_cancel"], "the child was really still running")
+        self.assertFalse(facts["worker_conclusion_after_cancel"], "the worker concluded a failure")
+        self.assertTrue(
+            facts["recorded_without_a_normal_return"],
+            "the instance recorded that failure even though no caller returned normally",
+        )
+        self.assertEqual(facts["joining_close"], REASON_REGEX_WORKER_FAILED)
+        self.assertIsNotNone(facts["child_exit"], "the late handover really exited")
+        self.assertEqual(facts["slots_after_exit"], 0, "the real exit returns the capacity")
+        self.assertEqual(facts["retained_after_exit"], 0, "and the worker reference with it")
+        self.assertEqual(facts["second_close"], REASON_REGEX_WORKER_FAILED)
+        self.assertEqual(facts["third_close"], REASON_REGEX_WORKER_FAILED)
+        self.assertTrue(facts["same_cleanup"], "no second cleanup was created")
+        self.assertTrue(facts["same_deadline"], "and the published deadline was not pushed back")
+
     async def test_a_cleanup_that_failed_after_reaping_withholds_the_verdict(self):
         """A cleanup that reaps the child and *then* fails is still a failed request retirement.
 

@@ -44,6 +44,7 @@ from .policy import parse_policy, regex_rules
 from .regex_process import (
     IPC_MAX_REQUEST_BYTES,
     RegexWorker,
+    own_cancellation,
     remaining,
 )
 from .types import (
@@ -270,6 +271,10 @@ class RuleEvaluator:
         self._slots: list[_Slot] = []
         self._closed = False
         self._workers: set[RegexWorker] = set()
+        #: This instance's one close: created by the first caller, joined by every later one. It is a
+        #: task the instance owns rather than state a caller has to return through, so a caller that is
+        #: cancelled while waiting cannot lose the conclusion the close reached.
+        self._closing: asyncio.Task[bool] | None = None
         #: The fixed conclusion of this instance's own close. A close that could not evidence the
         #: retirement of every worker it owned keeps that answer: once the workers really exit, a later
         #: close releases them and returns their capacity, but it does not become a success merely
@@ -370,6 +375,14 @@ class RuleEvaluator:
         walks happens to be empty now. Nothing is released by the failure itself: while the resource is
         unsettled the worker stays owned and so does the capacity it occupies.
 
+        The answer also belongs to the *instance*, not to whichever caller happened to wait: the first
+        close establishes one shared close that the instance owns, every later caller joins that same
+        one instead of deciding again from the current set, and its outcome is recorded from the close's
+        own result — so a caller that is cancelled while waiting still leaves with its
+        ``CancelledError`` first, without the already-determined failure being lost. That is the gap the
+        sixth review measured: a cancelled first close left the aggregate unrecorded, and later closes
+        then reported success for a close that had failed.
+
         The order is what makes the successful return a barrier: the closed mark is set *before* any
         process work, and a worker can only ever be registered while that mark is still false. So when
         this coroutine returns, no request can be about to create a child behind its back, and every
@@ -379,20 +392,90 @@ class RuleEvaluator:
         """
 
         self._closed = True
-        if not await self._retire_owned_workers():
+        task = self._ensure_close()
+        cancelled = await self._await_close(task)
+        if cancelled is not None:
+            # The caller's own cancellation leaves first and is never replaced by a verdict: a request
+            # that was cancelled must not be turned into an ordinary outcome. The shared close is not
+            # cancelled with it, so the workers are still retired and the conclusion is still recorded.
+            raise cancelled
+        if not self._conclude_close(task):
+            # The close's own exception, when it had one, stays the cause: the published outcome is the
+            # named failure, but an internal fault is still diagnosable instead of being flattened.
+            cause = None if task.cancelled() else task.exception()
+            raise RuleEvaluationError(REASON_REGEX_WORKER_FAILED, "regex_worker") from cause
+
+    def _ensure_close(self) -> asyncio.Task[bool]:
+        """Create this instance's one close, or join the one that already exists.
+
+        Exactly one close exists per instance, created by the first caller: the closed mark is already
+        set, so no worker can be registered afterwards and the aggregate answer cannot be invalidated
+        by a later arrival. Later callers join *this* task — they do not sweep the current set and
+        decide again, which is what let an empty set look like a success after a failure.
+        """
+
+        if self._closing is None:
+            task = asyncio.ensure_future(self._retire_owned_workers())
+            self._closing = task
+            task.add_done_callback(self._close_finished)
+        return self._closing
+
+    def _close_finished(self, task: asyncio.Task[bool]) -> None:
+        """Record the shared close's outcome the moment it ends, whoever is waiting — or nobody."""
+
+        self._conclude_close(task)
+
+    def _conclude_close(self, task: asyncio.Task[bool]) -> bool:
+        """Fix this instance's aggregate close conclusion from the close's own result, once.
+
+        Written from the close's result rather than from a caller's normal return, because a waiter may
+        be cancelled: the conclusion must survive a caller that never gets an answer, and the record is
+        idempotent — once a close has concluded a failure, every later caller reads that same failure.
+        The error is kept as one bounded flag; the workers themselves are still released on their real
+        settlement, so remembering a failure never means holding a dead process object.
+        """
+
+        if task.cancelled():
             self._close_failed = True
-        if self._close_failed:
-            raise RuleEvaluationError(REASON_REGEX_WORKER_FAILED, "regex_worker")
+        else:
+            error = task.exception()
+            if error is not None or not task.result():
+                self._close_failed = True
+        return not self._close_failed
+
+    async def _await_close(self, task: asyncio.Task[bool]) -> asyncio.CancelledError | None:
+        """Wait for the shared close, holding this caller's cancellation until the close is finished.
+
+        The shared close is never cancelled by a waiter: it is the instance retiring its own workers,
+        and dropping it would leave live children behind *and* lose the conclusion. The cancellation is
+        held and re-raised once the close is done, so it still takes priority for this caller over the
+        verdict the close reached. Waiting is by joining that one task, so two waiters — including one
+        that is cancelled and one that is not — cost one cleanup budget, not two.
+        """
+
+        cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                # ``asyncio.wait`` observes the task without cancelling it and without re-raising its
+                # outcome: the close's failures belong to the close, and are read from its result by
+                # ``_conclude_close`` — including by the done callback, which runs even when this
+                # waiter never returns normally.
+                await asyncio.wait({task})
+                return cancelled
+            except asyncio.CancelledError as error:
+                cancelled = cancelled or own_cancellation(error)
+                if task.done():
+                    return cancelled
 
     async def _retire_owned_workers(self) -> bool:
         """Retire the owned workers until every one of them is settled, and report the conclusion.
 
-        Two different questions are answered here, and conflating them is what the fifth review
-        measured. *Ownership* follows the live state: a worker whose child really exited is released
-        from the set even when its own close already reported a failure, so a long-lived instance does
-        not accumulate dead workers. The *return value* follows each worker's fixed conclusion: one
-        cleanup that could not evidence its reclamation makes this close a failure, whatever the set
-        looks like afterwards.
+        This is the body of the instance's one close. Two different questions are answered here, and
+        conflating them is what the fifth review measured. *Ownership* follows the live state: a worker
+        whose child really exited is released from the set even when its own close already reported a
+        failure, so a long-lived instance does not accumulate dead workers. The *return value* follows
+        each worker's fixed conclusion: one cleanup that could not evidence its reclamation makes this
+        close a failure, whatever the set looks like afterwards.
 
         The set can only shrink once ``_closed`` is set, so this loop terminates after at most the
         number of requests that were in flight; the bound is there to make a silent exit impossible
