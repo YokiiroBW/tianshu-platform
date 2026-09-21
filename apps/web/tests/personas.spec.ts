@@ -105,6 +105,52 @@ async function scenario(
   });
 }
 
+/** A late answer the page must not act on: a refusal, a success, or a broken connection. */
+type LateAnswer =
+  { body: object } | { status: number; code: string } | "failed";
+
+type Held = {
+  /** How many requests this read has caught so far. */
+  caught: () => number;
+  /** Let every caught request answer, or fail, exactly once. */
+  release: (answer: LateAnswer) => void;
+};
+
+/**
+ * Hold one of the page's own reads open until the test lets it go.
+ *
+ * A reply that arrives *after* the operator switched character, switched kind or logged out is the
+ * only way to see whether a stale answer - a stale failure above all - can still move the page. The
+ * route keeps the request in this process, so the page keeps running while it is unanswered. A read
+ * the page cancels is watched through `requestfailed` instead: answering a request the page already
+ * abandoned is accepted here and simply ignored by the browser, so this route cannot report it.
+ */
+async function holdRead(page: Page, path: string): Promise<Held> {
+  let answer: LateAnswer | null = null;
+  const waiters: (() => void)[] = [];
+  let caught = 0;
+  await page.route(`**/api/web/personas/${path}`, async (route) => {
+    caught += 1;
+    if (!answer) await new Promise<void>((resolve) => waiters.push(resolve));
+    const chosen = answer ?? "failed";
+    if (chosen === "failed") await route.abort("failed");
+    else if ("body" in chosen)
+      await route.fulfill({ status: 200, json: chosen.body });
+    else
+      await route.fulfill({
+        status: chosen.status,
+        json: { code: chosen.code },
+      });
+  });
+  return {
+    caught: () => caught,
+    release: (late) => {
+      answer = late;
+      for (const wake of waiters.splice(0)) wake();
+    },
+  };
+}
+
 /** What actually overflows, so a failure names the element instead of only the page width. */
 async function overflow(page: Page) {
   return page.evaluate(() => {
@@ -770,6 +816,261 @@ test("切类别失败与快速 A→B→A：晚到的旧结果不许冠新名", a
   await page.unroute("**/api/web/personas/history");
 });
 
+/**
+ * A late failure is not this page's failure.
+ *
+ * The path is real: a character's revision read is opened, the operator moves to another character
+ * whose history reads perfectly well, and only then does the first read answer - with a refusal, a
+ * contradicting version, an expired session or a broken connection. None of those may empty,
+ * forbid, re-label or log out the page the operator is actually looking at.
+ */
+test("迟到的旧角色失败不污染已经切到的角色：403、401、409 与断线", async ({
+  page,
+}) => {
+  await page.goto("/#/companion/2");
+  await login(page);
+  await openFirst(page);
+  await expect(rows(page)).toHaveCount(20);
+  const variants: { name: string; answer: LateAnswer }[] = [
+    {
+      name: "403 persona_read_required",
+      answer: { status: 403, code: "persona_read_required" },
+    },
+    {
+      name: "401 session_expired",
+      answer: { status: 401, code: "session_expired" },
+    },
+    {
+      name: "409 version_conflict",
+      answer: { status: 409, code: "version_conflict" },
+    },
+    { name: "断线", answer: "failed" },
+  ];
+  for (const variant of variants) {
+    // Alpha's revision read is opened and held, so it can only answer after the switch.
+    await subject(page, "actor:alpha").click();
+    await expect(rows(page)).toHaveCount(20);
+    const held = await holdRead(page, "revision");
+    await rows(page)
+      .first()
+      .getByRole("button", { name: "查看这一版" })
+      .click();
+    await expect.poll(held.caught, { message: variant.name }).toBe(1);
+    await subject(page, "actor:beta").click();
+    await expect(page.locator(".persona-history")).toHaveAttribute(
+      "aria-label",
+      "actor:beta 的历史",
+    );
+    await expect(rows(page).first()).toBeVisible();
+    // Beta's own page, exactly as the console answered it: the count the late reply must not touch.
+    const betaRows = await rows(page).count();
+    expect(betaRows, variant.name).toBeGreaterThan(0);
+    // Now the old read answers. Every word of it belongs to the character that was left.
+    held.release(variant.answer);
+    await page.waitForTimeout(700);
+    await expect(
+      page.locator(".persona-history"),
+      variant.name,
+    ).toHaveAttribute("aria-label", "actor:beta 的历史");
+    await expect(rows(page), variant.name).toHaveCount(betaRows);
+    await expect(rail(page, "可读"), variant.name).toBeVisible();
+    await expect(page.locator(".persona-login"), variant.name).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "退出登录" }),
+      variant.name,
+    ).toBeVisible();
+    for (const word of [
+      "未授权",
+      "登录已过期",
+      "版本已过期",
+      "已选版本不可用",
+      "读取中断",
+      "persona_read_required",
+      "session_expired",
+      "version_conflict",
+    ])
+      await expect(
+        page.locator(".persona-state"),
+        `${variant.name} ${word}`,
+      ).not.toContainText(word);
+    await page.unroute("**/api/web/personas/revision");
+  }
+});
+
+/**
+ * The session re-read a 401 triggers is itself an await, and the operator can move on during it.
+ *
+ * The refusal is this page's own refusal at the moment it arrives; what makes it stale is what
+ * happened while the console was re-reading the session. The answer to that re-read may not log out
+ * a page that has moved on to another character in the meantime.
+ */
+test("迟到的会话复查不许注销已经换过的页面", async ({ page }) => {
+  await page.goto("/#/companion/2");
+  await login(page);
+  await openFirst(page);
+  await expect(rows(page)).toHaveCount(20);
+  let sessionReads = 0;
+  let releaseSession = () => {};
+  const heldSession = new Promise<void>((resolve) => {
+    releaseSession = resolve;
+  });
+  await page.route("**/api/web/session", async (route) => {
+    sessionReads += 1;
+    await heldSession;
+    await route.fulfill({ json: { authenticated: false, csrf: "stub-csrf" } });
+  });
+  await page.route("**/api/web/personas/history", async (route) => {
+    const body = route.request().postDataJSON() as { subject: string };
+    if (body.subject === "actor:beta")
+      await route.fulfill({
+        status: 401,
+        json: { code: "session_expired" },
+      });
+    else await route.continue();
+  });
+  await subject(page, "actor:beta").click();
+  // Wait until beta's refusal has really been taken and the console is re-reading the session.
+  await expect.poll(() => sessionReads).toBeGreaterThan(0);
+  await subject(page, "actor:alpha").click();
+  await expect(page.locator(".persona-history")).toHaveAttribute(
+    "aria-label",
+    "actor:alpha 的历史",
+  );
+  await expect(rows(page)).toHaveCount(20);
+  releaseSession();
+  await page.waitForTimeout(600);
+  await expect(page.locator(".persona-login")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+  await expect(rail(page, "可读")).toBeVisible();
+  await expect(page.locator(".persona-history")).toHaveAttribute(
+    "aria-label",
+    "actor:alpha 的历史",
+  );
+  await expect(rows(page)).toHaveCount(20);
+  await page.unroute("**/api/web/session");
+  await page.unroute("**/api/web/personas/history");
+});
+
+/**
+ * A refusal of the read that *is* current still clears the page.
+ *
+ * The fix for stale answers must not turn into ignoring refusals: when the action is really revoked
+ * for the character on screen, or the session is really gone, the page says so and stops showing
+ * what it can no longer stand behind.
+ */
+test("当前读取被撤权仍然清空整页", async ({ page }) => {
+  await page.goto("/#/companion/2");
+  await login(page);
+  await openFirst(page);
+  await expect(rows(page)).toHaveCount(20);
+  await rows(page).first().getByRole("button", { name: "查看这一版" }).click();
+  await expect(page.locator(".persona-revision")).toContainText("当前发布");
+  // The action is revoked now, and the read that is running right now is refused because of it.
+  await page.route("**/api/web/personas/history", async (route) =>
+    route.fulfill({ status: 403, json: { code: "persona_read_required" } }),
+  );
+  await subject(page, "actor:beta").click();
+  await expect(page.locator(".persona-state")).toContainText("未授权");
+  await expect(page.locator(".persona-state")).toContainText(
+    "persona_read_required",
+  );
+  await expect(page.locator(".persona-subject")).toHaveCount(0);
+  await expect(rows(page)).toHaveCount(0);
+  await expect(page.locator(".persona-revision")).toHaveCount(0);
+  // Being unable to read is not being logged out: the session is untouched and stated as such.
+  await expect(page.locator(".persona-login")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+  await page.unroute("**/api/web/personas/history");
+  // Reading again after the revocation is lifted restores exactly one whole page.
+  await page.getByRole("button", { name: "重新读取" }).click();
+  await expect(rail(page, "可读")).toBeVisible();
+  await expect(page.locator(".persona-subject")).toHaveCount(20);
+  // And a session that really is gone still ends the page, with the login form as its next state.
+  await page.route("**/api/web/personas/history", async (route) =>
+    route.fulfill({ status: 401, json: { code: "session_expired" } }),
+  );
+  await page.route("**/api/web/session", async (route) =>
+    route.fulfill({ json: { authenticated: false, csrf: "stub-csrf" } }),
+  );
+  await subject(page, "actor:beta").click();
+  await expect(page.getByLabel("管理员账号")).toBeVisible();
+  await expect(rows(page)).toHaveCount(0);
+  await expect(page.locator(".persona-subject")).toHaveCount(0);
+});
+
+/**
+ * Leaving is always allowed, including in the middle of a read the operator no longer wants.
+ *
+ * The exit button is not disabled by reading: clicking it cancels this page's own reads, clears
+ * every sensitive state in the same turn, and reports the server's receipt as what it was. A read
+ * that was in the air cannot refill the page afterwards.
+ */
+test("读取进行中也能退出：按钮可用、立即清空、迟到的回答不回来", async ({
+  page,
+}) => {
+  await page.goto("/#/companion/2");
+  await login(page);
+  await openFirst(page);
+  await expect(rows(page)).toHaveCount(20);
+  const held = await holdRead(page, "history");
+  const failed: string[] = [];
+  page.on("requestfailed", (request) => {
+    if (request.url().includes("/api/web/personas/"))
+      failed.push(
+        `${request.url().split("/").pop()} ${request.failure()?.errorText}`,
+      );
+  });
+  await subject(page, "actor:beta").click();
+  await expect.poll(held.caught).toBe(1);
+  // The page is reading right now - and the operator can still walk away from it.
+  await expect(page.locator(".persona-page")).toHaveAttribute(
+    "aria-busy",
+    "true",
+  );
+  const out = page.getByRole("button", { name: "退出登录" });
+  await expect(out).toBeEnabled();
+  // The server's receipt is held back, so "cleared at the click" is what is on screen now.
+  await page.route("**/api/web/logout", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await route.continue();
+  });
+  await out.click();
+  await expect(page.locator(".persona-subject")).toHaveCount(0);
+  await expect(page.getByLabel("管理员账号")).toBeVisible();
+  await expect(page.locator(".persona-notice")).toContainText("正在通知服务器");
+  await expect(page.locator(".persona-notice")).toContainText(
+    "服务器已注销这个会话",
+  );
+  await page.unroute("**/api/web/logout");
+  // The abandoned read answers now, with a whole page's worth of rows. None of it may come back.
+  held.release({
+    body: {
+      subject: "actor:beta",
+      kind: "revisions",
+      persona_version: 9,
+      consistency: "revision",
+      limit: 20,
+      count: 1,
+      entries: [{ revision_id: "f".repeat(64), source: "late-beta-answer" }],
+      has_more: false,
+      next_cursor: null,
+    },
+  });
+  await page.waitForTimeout(700);
+  await expect(page.getByLabel("管理员账号")).toBeVisible();
+  await expect(page.locator(".persona-subject")).toHaveCount(0);
+  // Nothing of the abandoned answer is anywhere on the page, and the pane itself is gone.
+  await expect(page.locator(".persona-detail")).toHaveCount(0);
+  await expect(page.locator(".persona-rows > li")).toHaveCount(0);
+  await expect(page.locator(".persona-page")).not.toContainText(
+    "late-beta-answer",
+  );
+  // Cancelled, not merely ignored: the browser recorded this read as aborted at the click.
+  expect(failed.join(" "), "the read really was taken back").toContain(
+    "net::ERR_ABORTED",
+  );
+});
+
 test("再次进入页面重新读取，不把上一次的结果当成这一次的", async ({ page }) => {
   await page.goto("/#/companion/2");
   await login(page);
@@ -822,6 +1123,18 @@ test("登出立即清空本页，注销完成与未确认分别呈现", async ({
   await expect(page.locator(".persona-state")).toContainText(
     "dependency_unavailable",
   );
+  await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+  await expect(page.locator(".persona-subject")).toHaveCount(20);
+  await page.unroute("**/api/web/logout");
+  // A logout the console itself refuses is reported with the code the console sent, and the session
+  // the server still holds is shown again rather than passed off as a finished logout.
+  await page.route("**/api/web/logout", async (route) =>
+    route.fulfill({ status: 403, json: { code: "forbidden" } }),
+  );
+  await page.getByRole("button", { name: "退出登录" }).click();
+  await expect(page.locator(".persona-subject")).toHaveCount(0);
+  await expect(page.locator(".persona-state")).toContainText("退出未确认");
+  await expect(page.locator(".persona-state")).toContainText("forbidden");
   await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
   await expect(page.locator(".persona-subject")).toHaveCount(20);
   await page.unroute("**/api/web/logout");
@@ -931,11 +1244,24 @@ test("冻结布局：左目录 240px、顶部选择器、手机纵排且正文�
     return { right: Math.round(catalog.right), left: Math.round(detail.left) };
   });
   expect(beside.left).toBeGreaterThanOrEqual(beside.right);
-  // 768–1099px: the directory becomes a labelled selection list above the body.
-  for (const width of [1024, 900, 768]) {
-    await page.setViewportSize({ width, height: 900 });
-    await expect(page.locator(".persona-picker")).toBeHidden();
-    await expect(page.locator(".persona-subjects")).toBeVisible();
+  // 768–1099px: the twenty cards belong to the wide layout only. This range gets the same labelled
+  // compact selector the phone layout uses, paging included, so the body follows right after it
+  // instead of thousands of pixels of directory.
+  for (const width of [1099, 1024, 900, 768]) {
+    await page.setViewportSize({ width, height: 768 });
+    await expect(page.locator(".persona-subjects")).toBeHidden();
+    const picker = page.locator(".persona-picker select");
+    await expect(picker).toBeVisible();
+    await expect(page.locator(".persona-picker")).toContainText("角色目录");
+    const short = await page
+      .locator(".persona-catalog")
+      .evaluate((element) =>
+        Math.round(element.getBoundingClientRect().height),
+      );
+    expect(
+      short,
+      `${width}px replaces the twenty cards instead of merely hiding them`,
+    ).toBeLessThan(tall / 8);
     const stacked = await page.evaluate(() => {
       const catalog = document
         .querySelector(".persona-catalog")!
@@ -943,16 +1269,40 @@ test("冻结布局：左目录 240px、顶部选择器、手机纵排且正文�
       const detail = document
         .querySelector(".persona-detail")!
         .getBoundingClientRect();
-      return Math.round(detail.top) >= Math.round(catalog.bottom) - 1;
+      return {
+        above: Math.round(detail.top) >= Math.round(catalog.bottom) - 1,
+        reach: Math.round(
+          document.querySelector(".persona-history")!.getBoundingClientRect()
+            .top + window.scrollY,
+        ),
+      };
     });
     expect(
-      stacked,
+      stacked.above,
       `${width}px`.concat(" keeps the selector above the body"),
     ).toBe(true);
+    expect(
+      stacked.reach,
+      `${width}px keeps the body within reach`,
+    ).toBeLessThan(2 * 768);
+    // The directory still pages twenty characters at a time, through the selector.
+    await expect(page.locator(".persona-catalog .persona-pager")).toContainText(
+      "共 22 个",
+    );
     await noOverflow(page);
+    if (width === 1024)
+      await page.screenshot({
+        path: testInfo.outputPath("layout-1024.png"),
+        fullPage: true,
+      });
   }
-  // <=767px: one compact selector instead of twenty cards, every tool stacked, and the body is
-  // reachable without scrolling past a two-and-a-half-thousand-pixel directory.
+  // The compact selector is a real directory control at this width too: choosing from it re-reads.
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await expect(rows(page)).toHaveCount(20);
+  await page.locator(".persona-picker select").selectOption({ index: 1 });
+  await expect(rows(page).first()).toBeVisible();
+  await expect(rail(page, "可读")).toBeVisible();
+  // <=767px: the same compact selector, every tool stacked, and the body within reach.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator(".persona-subjects")).toBeHidden();
   const picker = page.locator(".persona-picker select");

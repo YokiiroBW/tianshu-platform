@@ -289,9 +289,10 @@
   padding-top: var(--space-3);
 }
 
-/* The frozen breakpoints: a 240px directory column beside the body from 1100px, a labelled
-   selection list above the body from 768px, and one stacked column below that - where the
-   directory is a single compact selector instead of twenty cards before the body. */
+/* The frozen breakpoints: a 240px directory column beside the body from 1100px, and one labelled
+   compact selector above the body below that - the twenty cards are an instrument of the wide
+   layout only, so from 768px to 1099px the directory is the same selector the phone layout uses,
+   with its paging kept, instead of a card list that pushes the body thousands of pixels down. */
 @media (min-width: 68.75rem) {
   .persona-layout {
     grid-template-columns: 15rem minmax(0, 1fr);
@@ -302,12 +303,10 @@
     grid-template-columns: minmax(0, 1fr);
   }
   .persona-subjects {
-    display: flex;
-    flex-wrap: wrap;
+    display: none;
   }
-  .persona-subjects > li {
-    flex: 1 1 14rem;
-    min-width: 0;
+  .persona-picker {
+    display: grid;
   }
 }
 @media (max-width: 47.999rem) {

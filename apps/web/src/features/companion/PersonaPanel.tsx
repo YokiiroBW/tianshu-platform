@@ -53,10 +53,32 @@ type Read = "catalog" | "history" | "revision" | "compare";
 /** What the detail pane is showing: one character and one history kind, nothing else. */
 type Scope = { subject: string; kind: HistoryKind };
 
+/**
+ * What one read was started under: the page's scope generation and the session it belongs to.
+ *
+ * Every side effect of a read - the answer, every word of a failure, the session it re-reads - has
+ * to be checked against this first. A failure needs that proof exactly as much as a success does:
+ * a request that was refused after the operator left its scope must not empty, forbid or log out
+ * the page that is on screen now.
+ */
+type Mark = Scope & { token: number; session: string };
+
+/** One session's identity for this page: a different login, or none at all, is a different page. */
+function sessionKey(state: SessionState | null) {
+  return state?.authenticated ? `session:${state.csrf}` : "anonymous";
+}
+
 export default function PersonaPanel() {
   const [session, setSession] = useState<SessionState | null>(null);
   const [unreachable, setUnreachable] = useState("");
   const [busy, setBusy] = useState(true);
+  /**
+   * A logout this page has already submitted.
+   *
+   * Only this - never `busy` - disables the exit button: reading is something the operator may walk
+   * away from at any moment, and the page must not hold them here until a read it started answers.
+   */
+  const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState("");
   const [stale, setStale] = useState<{ code: string; from: Read } | null>(null);
   const [notice, setNotice] = useState("");
@@ -82,6 +104,8 @@ export default function PersonaPanel() {
   const active = useRef<AbortController | null>(null);
   /** The scope's own history read, cancelled when the scope changes and by nothing else. */
   const scoped = useRef<AbortController | null>(null);
+  /** The same logout guard as `loggingOut`, read in the click's own turn so one click means one. */
+  const leaving = useRef(false);
   const live = useRef<SessionState | null>(null);
   /**
    * The scope every read is stamped with, and its generation.
@@ -171,12 +195,29 @@ export default function PersonaPanel() {
   }, []);
 
   /** The scope a read is running under, captured before its first byte leaves. */
-  const stamp = useCallback(
-    () => ({
+  const mark = useCallback(
+    (): Mark => ({
       token: generation.current,
       subject: scopeRef.current.subject,
       kind: scopeRef.current.kind,
+      session: sessionKey(live.current),
     }),
+    [],
+  );
+
+  /**
+   * Is this read still this page's own read?
+   *
+   * Asked before every side effect a read can have, including the ones inside `guard`: the answer,
+   * each error word, the cleared panel and the re-read session. A read whose scope or whose session
+   * has been replaced is not this page's read any more, so it may neither fill nor clear it - the
+   * operator has already moved on to another character, another kind or another login.
+   */
+  const stillMine = useCallback(
+    (signal: AbortSignal, started: Mark) =>
+      !signal.aborted &&
+      started.token === generation.current &&
+      started.session === sessionKey(live.current),
     [],
   );
 
@@ -187,20 +228,27 @@ export default function PersonaPanel() {
    * stale and offers to open the first page again, because only the operator knows whether the
    * newer list is what they wanted. A deployment that cannot read at all is stated as that, and an
    * empty directory is only ever reported when the server really returned zero rows.
+   *
+   * Nothing here touches the page before `stillMine` says the read is still the current one: a
+   * refusal that arrives after the operator switched character, switched kind, logged out or logged
+   * in again belongs to a page that no longer exists, and the panel showing beta (or the new
+   * session) must survive it untouched. A refusal of a read that *is* still current - a revoked
+   * action, an expired session - still clears the page, because that is a true statement about it.
    */
   const guard = useCallback(
     async <T,>(
       signal: AbortSignal,
       from: Read,
+      started: Mark,
       work: (state: SessionState) => Promise<T>,
     ): Promise<{ answer: T | null; failure: string }> => {
       const state = live.current;
       if (!state) return { answer: null, failure: "" };
-      setStale(null);
+      if (stillMine(signal, started)) setStale(null);
       try {
         return { answer: await work(state), failure: "" };
       } catch (cause) {
-        if (signal.aborted) return { answer: null, failure: "" };
+        if (!stillMine(signal, started)) return { answer: null, failure: "" };
         if (!(cause instanceof PersonaError)) {
           const text = reason(cause);
           setError(text);
@@ -218,8 +266,10 @@ export default function PersonaPanel() {
           return { answer: null, failure: reason(cause) };
         }
         if (sessionCodes.includes(cause.code)) {
-          // A revoked or expired login is a state of this page, not a stale panel.
+          // A revoked or expired login is a state of this page, not a stale panel - but a session
+          // re-read that comes back after this page has moved on says nothing about it either.
           const fresh = await readSession(signal).catch(() => null);
+          if (!stillMine(signal, started)) return { answer: null, failure: "" };
           applySession(fresh?.authenticated ? fresh : null);
           forget();
           setError(cause.message);
@@ -230,7 +280,7 @@ export default function PersonaPanel() {
         return { answer: null, failure: text };
       }
     },
-    [applySession, forget],
+    [applySession, forget, stillMine],
   );
 
   /**
@@ -239,13 +289,13 @@ export default function PersonaPanel() {
    */
   const loadCatalog = useCallback(
     async (signal: AbortSignal, position: number, cursor: string | null) => {
-      const token = generation.current;
+      const started = mark();
       setBusy(true);
       setError("");
-      const { answer } = await guard(signal, "catalog", (state) =>
+      const { answer } = await guard(signal, "catalog", started, (state) =>
         read<CatalogPage>("catalog", { cursor }, state.csrf, signal),
       );
-      if (signal.aborted || token !== generation.current) return;
+      if (!stillMine(signal, started)) return;
       if (answer) {
         setCatalog(answer);
         setAbsent("");
@@ -262,7 +312,7 @@ export default function PersonaPanel() {
       }
       setBusy(false);
     },
-    [enter, guard],
+    [enter, guard, mark, stillMine],
   );
 
   const connect = useCallback(async () => {
@@ -303,19 +353,23 @@ export default function PersonaPanel() {
   /** One history page at one position, in the same shape as the directory. */
   const loadHistory = useCallback(
     async (signal: AbortSignal, position: number, cursor: string | null) => {
-      const started = stamp();
+      const started = mark();
       setBusy(true);
       setError("");
       setNotice("");
-      const { answer, failure } = await guard(signal, "history", (state) =>
-        read<HistoryPage>(
-          "history",
-          { subject: started.subject, kind: started.kind, cursor },
-          state.csrf,
-          signal,
-        ),
+      const { answer, failure } = await guard(
+        signal,
+        "history",
+        started,
+        (state) =>
+          read<HistoryPage>(
+            "history",
+            { subject: started.subject, kind: started.kind, cursor },
+            state.csrf,
+            signal,
+          ),
       );
-      if (signal.aborted || started.token !== generation.current) return;
+      if (!stillMine(signal, started)) return;
       if (answer) {
         setPages((loaded) => [...loaded.slice(0, position), answer]);
         setCurrent(position);
@@ -329,7 +383,7 @@ export default function PersonaPanel() {
       }
       setBusy(false);
     },
-    [guard, stamp],
+    [guard, mark, stillMine],
   );
 
   useEffect(() => {
@@ -350,21 +404,24 @@ export default function PersonaPanel() {
   }, []);
 
   async function openRevision(revisionId: string) {
-    const started = stamp();
+    const started = mark();
     const controller = start();
     setBusy(true);
     setError("");
     setNotice("");
-    const { answer } = await guard(controller.signal, "revision", (state) =>
-      read<RevisionView>(
-        "revision",
-        { subject: started.subject, revision_id: revisionId },
-        state.csrf,
-        controller.signal,
-      ),
+    const { answer } = await guard(
+      controller.signal,
+      "revision",
+      started,
+      (state) =>
+        read<RevisionView>(
+          "revision",
+          { subject: started.subject, revision_id: revisionId },
+          state.csrf,
+          controller.signal,
+        ),
     );
-    if (controller.signal.aborted || started.token !== generation.current)
-      return;
+    if (!stillMine(controller.signal, started)) return;
     if (answer) {
       setRevision(answer);
       setComparison(null);
@@ -378,21 +435,24 @@ export default function PersonaPanel() {
 
   async function compareWith(revisionId: string) {
     if (!baseline) return;
-    const started = stamp();
+    const started = mark();
     const controller = start();
     setBusy(true);
     setError("");
     setNotice("");
-    const { answer } = await guard(controller.signal, "compare", (state) =>
-      read<CompareView>(
-        "compare",
-        { subject: started.subject, left: baseline, right: revisionId },
-        state.csrf,
-        controller.signal,
-      ),
+    const { answer } = await guard(
+      controller.signal,
+      "compare",
+      started,
+      (state) =>
+        read<CompareView>(
+          "compare",
+          { subject: started.subject, left: baseline, right: revisionId },
+          state.csrf,
+          controller.signal,
+        ),
     );
-    if (controller.signal.aborted || started.token !== generation.current)
-      return;
+    if (!stillMine(controller.signal, started)) return;
     if (answer) {
       setComparison(answer);
       setRevision(null);
@@ -433,19 +493,30 @@ export default function PersonaPanel() {
    * Log out: this page stops holding anything readable first, and tells the server afterwards.
    *
    * The session, the directory, the history, the body, the comparison and the baseline are cleared
-   * in the same turn as the click, and every read still waiting is abandoned - the page does not
-   * wait for a network reply to stop showing what it was showing. The server's answer is then
+   * in the same turn as the click, and every read still waiting - the scope's own history read
+   * included - is cancelled rather than awaited: the operator asked to stop, so nothing that was in
+   * flight may come back and refill a page that is being cleared. The server's answer is then
    * reported as what it was: a confirmed logout, or a logout this page could not confirm - and a
    * logout the server refused leaves a session that really is still live, which the page then shows
    * again rather than pretending the operator is out.
+   *
+   * A read in progress is not a reason to keep the operator here: the button stays usable while the
+   * page is reading, and only a logout already submitted disables it, so one click cannot become
+   * two logouts.
    */
   async function exit() {
     const state = live.current;
-    if (!state) return;
+    if (!state || leaving.current) return;
+    leaving.current = true;
+    setLoggingOut(true);
+    active.current?.abort();
+    scoped.current?.abort();
     const controller = start();
     generation.current += 1;
     applySession(null);
     forget();
+    // The permission word belonged to the session that is ending, not to whatever comes next.
+    setAbsent("");
     setBusy(true);
     setError("");
     setNotice("已退出登录：本页已经清空，正在通知服务器注销这个会话。");
@@ -462,9 +533,14 @@ export default function PersonaPanel() {
             : `退出未确认：${reason(cause)}`;
       }
     }
-    // The session the server actually holds, as the server states it: anonymous after a confirmed
-    // logout, and still this operator's session when the logout was refused.
-    await connect();
+    try {
+      // The session the server actually holds, as the server states it: anonymous after a confirmed
+      // logout, and still this operator's session when the logout was refused.
+      await connect();
+    } finally {
+      leaving.current = false;
+      setLoggingOut(false);
+    }
     if (unconfirmed) setError(unconfirmed);
   }
 
@@ -524,7 +600,8 @@ export default function PersonaPanel() {
             <button
               type="button"
               className="button"
-              disabled={busy}
+              // Cancelling your own read is always allowed: only a logout already submitted waits.
+              disabled={loggingOut}
               onClick={() => void exit()}
             >
               <LogOut aria-hidden="true" />
