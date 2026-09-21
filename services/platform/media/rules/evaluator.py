@@ -20,13 +20,17 @@ without losing evidence:
   match", because that would silently download an item a rule was supposed to exclude.
 
 One evaluator instance runs at most two requests at a time; the third gets ``busy`` immediately and
-there is no hidden queue. Every request owns its own regex process, so no text, compiled pattern or
-handle is shared between two requests, and external cancellation propagates: the child is killed
-with a synchronous kill before the ``CancelledError`` leaves this module.
+there is no hidden queue. A slot of that budget covers a request *and* the resources that request
+still owns, so a cancelled request whose child could not be reaped keeps its slot until the child
+really ends — capacity is spent by a live process, not by a finished coroutine. Every request owns
+its own regex process, so no text, compiled pattern or handle is shared between two requests, and
+external cancellation propagates: the child is killed with a synchronous kill before the
+``CancelledError`` leaves this module.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import re
 import time
@@ -228,6 +232,21 @@ class _Handles:
         return self.handles.get(position)
 
 
+@dataclass
+class _Slot:
+    """One unit of the instance's concurrency budget, held until its resources are settled.
+
+    A slot is not "one request": it covers the request *and* whatever that request still owns. A
+    request whose child has not been reaped — a creation that never handed its process over, a child
+    that could not be waited for — keeps its slot after the request itself has ended, because the
+    capacity is still spent. Releasing it early is how a cancelled request used to let two more
+    children be created on top of two that were still alive.
+    """
+
+    finished: bool = False
+    worker: RegexWorker | None = None
+
+
 class RuleEvaluator:
     """Async context manager that validates and evaluates subscription policies.
 
@@ -243,9 +262,62 @@ class RuleEvaluator:
 
     def __init__(self, *, worker_script: str | None = None) -> None:
         self._worker_script = worker_script
-        self._active = 0
+        self._slots: list[_Slot] = []
         self._closed = False
         self._workers: set[RegexWorker] = set()
+
+    @property
+    def _active(self) -> int:
+        """How much of the concurrency budget is spent: requests plus unreclaimed resources."""
+
+        return len(self._slots)
+
+    def _admit(self) -> _Slot | None:
+        """Take one of the two capacity slots, or ``None`` when both are spent.
+
+        Nothing is queued: a caller that arrives when the budget is gone is told ``busy`` immediately.
+        A slot whose request has ended but whose child has not been reaped is still spent, so an
+        unsettled resource cannot be hidden by finishing its request.
+        """
+
+        self._sweep_slots()
+        if len(self._slots) >= MAX_CONCURRENT_REQUESTS:
+            return None
+        slot = _Slot()
+        self._slots.append(slot)
+        return slot
+
+    def _sweep_slots(self) -> None:
+        """Release the slots of finished requests whose resources really are settled."""
+
+        for slot in tuple(self._slots):
+            if slot.finished and (slot.worker is None or slot.worker.settled):
+                self._release_slot(slot)
+
+    def _hold_slot(self, slot: _Slot, worker: RegexWorker) -> None:
+        """Tie a slot to the worker it pays for; the slot comes back when that worker is settled."""
+
+        slot.worker = worker
+        worker.on_settled(lambda: self._release_after_settlement(slot))
+
+    def _release_after_settlement(self, slot: _Slot) -> None:
+        """The worker settled: release the slot, but only once its request has really ended."""
+
+        if slot.finished:
+            self._release_slot(slot)
+
+    def _finish_slot(self, slot: _Slot) -> None:
+        """The request is over: release the slot now, or keep holding it for an unsettled resource."""
+
+        slot.finished = True
+        if slot.worker is None or slot.worker.settled:
+            self._release_slot(slot)
+
+    def _release_slot(self, slot: _Slot) -> None:
+        """Release a slot exactly once, whatever asks for it first."""
+
+        if slot in self._slots:
+            self._slots.remove(slot)
 
     async def __aenter__(self) -> "RuleEvaluator":
         return self
@@ -256,40 +328,46 @@ class RuleEvaluator:
     async def aclose(self) -> None:
         """Refuse new calls and retire every process this instance still owns.
 
-        Closing is a barrier, and the order is what makes it one: the closed mark is set *before* any
+        Closing has exactly two outcomes. It returns normally only when every worker this instance owns
+        is *settled* — child reaped, creation unable to produce another — and otherwise it raises the
+        existing ``regex_worker_failed``: a worker whose creation never handed its child over cannot be
+        reclaimed by waiting, and reporting success for it would be a claim this instance cannot
+        evidence. Nothing is released by a failure: the worker stays owned, and so does the capacity it
+        occupies.
+
+        The order is what makes the successful return a barrier: the closed mark is set *before* any
         process work, and a worker can only ever be registered while that mark is still false. So when
         this coroutine returns, no request can be about to create a child behind its back, and every
         worker that was registered has been killed and reaped. A child that appears at the
-        create/cleanup boundary of a request that is being cancelled right now is retired by the
-        worker that owns it, which is why the worker is retired *before* it leaves the owned set.
-        Nothing outside ``self._workers`` is ever touched.
+        create/cleanup boundary of a request that is being cancelled right now is retired by the worker
+        that owns it, which is why the worker is retired *before* it leaves the owned set.
 
-        A worker leaves that set only once it is *settled* — child reaped, creation unable to produce
-        another. A worker whose creation never handed its child over cannot be settled by waiting for
-        it, so it stays owned and is swept again by the next close instead of being dropped while it
-        still has something to answer for. This close is still bounded: the unsettled worker's child is
-        killed synchronously, and the worker's own creation callback kills whatever arrives later.
+        A worker leaves that set only once it is settled. A worker whose creation never handed its
+        child over is swept again rather than dropped, and the sweep is still bounded: the wait for each
+        worker is that worker's own shared cleanup deadline, and the workers are waited for together, so
+        a close of two unsettled workers still costs one cleanup budget rather than two.
         """
 
         self._closed = True
         await self._retire_owned_workers()
 
     async def _retire_owned_workers(self) -> None:
-        """Retire the owned workers until every one of them is settled.
+        """Retire the owned workers until every one of them is settled, or fail by name.
 
         The set can only shrink once ``_closed`` is set, so this loop terminates after at most the
         number of requests that were in flight; the bound is there to make a silent exit impossible
-        rather than to be reached. Each round closes every worker it still owns: closing is idempotent
-        and shares one cleanup deadline per worker, so a repeated round costs nothing for a worker that
-        was already reaped.
+        rather than to be reached. Each round closes every worker it still owns, concurrently: closing
+        is idempotent and shares one cleanup deadline per worker, so a repeated round costs nothing for
+        a worker that was already reaped, and two unsettled workers cost one budget rather than two.
         """
 
         for _ in range(MAX_CONCURRENT_REQUESTS + 1):
             if not self._workers:
                 return
-            for worker in tuple(self._workers):
-                await worker.close_quietly()
-                if worker.settled:
+            workers = tuple(self._workers)
+            outcomes = await asyncio.gather(*(worker.close_quietly() for worker in workers))
+            for worker, settled in zip(workers, outcomes):
+                if settled:
                     self._workers.discard(worker)
             if not self._workers:
                 return
@@ -300,20 +378,26 @@ class RuleEvaluator:
             worker.force_kill()
             if worker.settled:
                 self._workers.discard(worker)
+        if self._workers:
+            raise RuleEvaluationError(REASON_REGEX_WORKER_FAILED, "regex_worker")
 
-    def _spawn_worker(self) -> RegexWorker:
+    def _spawn_worker(self, slot: _Slot) -> RegexWorker:
         """Register a worker for one in-flight request, or refuse because this instance is closed.
 
         Registering happens here and only here, synchronously: a request therefore either registers
         its worker before ``aclose`` can observe the set — in which case ``aclose`` retires it — or it
         is refused outright. There is no third case in which a child is created after the set was
         already swept.
+
+        The slot is tied to the worker here as well, so the capacity this request spends comes back at
+        the moment the worker is settled — not at the moment the request ends.
         """
 
         if self._closed:
             raise RuleEvaluationError(ERROR_CLOSED, "evaluator")
         worker = RegexWorker(self._worker_script)
         self._workers.add(worker)
+        self._hold_slot(slot, worker)
         return worker
 
     async def validate_policy(self, document: object) -> RulePolicy:
@@ -323,30 +407,36 @@ class RuleEvaluator:
         every expression once, up front, so "valid" means valid for the whole policy rather than for
         the rules an item happened to reach today. The whole call is bounded by the request budget:
         process creation, the handshake and every compile share one deadline.
+
+        "Valid" also means the worker behind the compilation is settled. A policy whose child could not
+        be reclaimed is not a policy this call may bless, so the same named failure the process layer
+        raises is raised here rather than returning a policy that leaves a live child behind.
         """
 
         if self._closed:
             raise RuleEvaluationError(ERROR_CLOSED, "evaluator")
         deadline = time.monotonic() + process_layer.REQUEST_TIMEOUT_SECONDS
         policy = parse_policy(document)
-        if self._active >= MAX_CONCURRENT_REQUESTS:
+        slot = self._admit()
+        if slot is None:
             raise RuleEvaluationError(REASON_BUSY, "evaluator")
-        self._active += 1
         try:
             if remaining(deadline) <= 0:
                 raise RuleEvaluationError(REASON_EVALUATION_TIMEOUT, "request")
             if policy.has_regex:
                 handles = _Handles()
                 try:
-                    async with self._pattern(policy, handles, deadline):
+                    async with self._pattern(policy, handles, slot, deadline):
                         pass
                 except _EvaluationFailed as failed:
                     raise RuleEvaluationError(
                         failed.failure.code, _failure_field(policy, failed.failure)
                     ) from None
+                if handles.process is not None and not handles.process.settled:
+                    raise RuleEvaluationError(REASON_REGEX_WORKER_FAILED, "regex_worker")
             return policy
         finally:
-            self._active -= 1
+            self._finish_slot(slot)
 
     async def evaluate(
         self,
@@ -370,6 +460,12 @@ class RuleEvaluator:
         The whole call is bounded by the request budget: process creation, the handshake, every
         compile and every search share one deadline, and cleanup gets its own separate budget. A
         request that runs out of time reports ``rule_error``; it never turns into a normal ``skip``.
+
+        The same holds for a request whose child could not be reclaimed inside the cleanup budget: a
+        ``download``/``skip`` verdict is only delivered for a request whose resources are settled, and
+        an unsettled one becomes the fixed ``rule_error``/``regex_worker_failed`` instead — enqueue
+        forbidden, rule attention required. A failure that already has its own name keeps it; it is
+        never rewritten into a success.
         """
 
         if self._closed:
@@ -377,38 +473,53 @@ class RuleEvaluator:
         deadline = time.monotonic() + process_layer.REQUEST_TIMEOUT_SECONDS
         policy = parse_policy(document)
         _validate_caller_facts(metadata, accessible, quality_satisfied, snapshot_revision)
-        if self._active >= MAX_CONCURRENT_REQUESTS:
+        slot = self._admit()
+        if slot is None:
             return _busy_decision(metadata.item_key, snapshot_revision, policy)
-        self._active += 1
         handles = _Handles()
         builder = _TraceBuilder(policy)
+        decision: RuleDecision | None = None
         try:
             if remaining(deadline) <= 0:
                 failure = _Failure(REASON_EVALUATION_TIMEOUT)
                 builder.set_failure(failure)
-                return _rule_error_decision(metadata, snapshot_revision, policy, failure, builder)
-            async with self._pattern(policy, handles, deadline):
-                return await self._judge(
-                    metadata,
-                    policy,
-                    handles,
-                    builder,
-                    accessible,
-                    quality_satisfied,
-                    snapshot_revision,
-                    deadline,
+                decision = _rule_error_decision(
+                    metadata, snapshot_revision, policy, failure, builder
                 )
+            else:
+                async with self._pattern(policy, handles, slot, deadline):
+                    decision = await self._judge(
+                        metadata,
+                        policy,
+                        handles,
+                        builder,
+                        accessible,
+                        quality_satisfied,
+                        snapshot_revision,
+                        deadline,
+                    )
         except _EvaluationFailed as failed:
             if failed.failure.code in _FATAL_CODES:
                 # A closed evaluator is a configuration/ownership bug in the caller, not an item
                 # outcome: it is raised so the caller cannot record it as "we could not decide".
                 raise RuleEvaluationError(failed.failure.code, "evaluator") from None
             builder.set_failure(failed.failure)
-            return _rule_error_decision(
+            decision = _rule_error_decision(
                 metadata, snapshot_revision, policy, failed.failure, builder
             )
         finally:
-            self._active -= 1
+            self._finish_slot(slot)
+        if (
+            decision.decision != DECISION_RULE_ERROR
+            and handles.process is not None
+            and not handles.process.settled
+        ):
+            # The verdict was computed, but the child behind it could not be reclaimed. Delivering it
+            # would be reporting a clean outcome for a request that still owns a live process.
+            failure = _Failure(REASON_REGEX_WORKER_FAILED)
+            builder.set_failure(failure)
+            return _rule_error_decision(metadata, snapshot_revision, policy, failure, builder)
+        return decision
 
     async def _judge(
         self,
@@ -535,7 +646,7 @@ class RuleEvaluator:
 
     @contextlib.asynccontextmanager
     async def _pattern(
-        self, policy: RulePolicy, handles: _Handles, deadline: float
+        self, policy: RulePolicy, handles: _Handles, slot: _Slot, deadline: float
     ) -> AsyncIterator[_Handles]:
         """Compile every expression of the policy for this request, then always retire the child.
 
@@ -555,7 +666,7 @@ class RuleEvaluator:
             return
         # Registered before the first await, through the closed barrier: from here on this worker is
         # visible to ``aclose``, which kills and reaps it whatever happens to this request.
-        handles.process = self._spawn_worker()
+        handles.process = self._spawn_worker(slot)
         try:
             budget = min(process_layer.STARTUP_TIMEOUT_SECONDS, remaining(deadline))
             try:
@@ -589,9 +700,11 @@ class RuleEvaluator:
             # Cleanup has its own budget, separate from the (possibly exhausted) request deadline:
             # the child is always retired, and always before the worker leaves the owned set. A worker
             # that is not settled yet — a creation that never handed its child over — stays owned, so
-            # the object that still has a child to answer for is not dropped by this request.
-            await handles.process.close_quietly(process_layer.CLEANUP_TIMEOUT_SECONDS)
-            if handles.process.settled:
+            # the object that still has a child to answer for is not dropped by this request. Nothing
+            # is released here either: the slot this request pays for comes back when the worker is
+            # settled, and the caller above decides what an unsettled worker means for its own answer.
+            settled = await handles.process.close_quietly(process_layer.CLEANUP_TIMEOUT_SECONDS)
+            if settled:
                 self._workers.discard(handles.process)
 
 

@@ -478,6 +478,113 @@ class ConcurrencyTest(unittest.IsolatedAsyncioTestCase):
         recovered = await self.evaluate(text_policy())
         self.assertEqual(recovered.decision, DECISION_SKIP)
 
+    async def test_a_request_that_ended_with_a_live_child_still_spends_its_slot(self):
+        """A slot covers the request *and* the resources it still owns, not just the request object.
+
+        The fourth review's probe found four live children and four retained workers behind a budget of
+        two: two cancelled requests released their slots while the children their creations had produced
+        were still running, so two more requests were admitted and produced two more children. Here the
+        creations are held open *after* the child exists, so each cancelled request ends with a child
+        that is running and was never handed over. Both slots must stay spent — the third request is
+        refused as ``busy`` immediately, without creating anything — and the capacity must come back
+        exactly once, after the handovers are released and the children really exit.
+        """
+
+        self.assertEqual(MAX_CONCURRENT_REQUESTS, 2)
+        policy = document(whitelist=[group("wl", rule("r1", "title", "regex", "动画"))])
+        await require_usable_worker(self)
+        created: list[object] = []
+        born = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        real_create = asyncio.create_subprocess_exec
+        started = 0
+
+        async def delayed(*args: object, **kwargs: object):
+            nonlocal started
+            index = min(started, MAX_CONCURRENT_REQUESTS - 1)
+            started += 1
+            process = await real_create(*args, **kwargs)
+            created.append(process)
+            born[index].set()
+            await release[index].wait()
+            return process
+
+        evaluator = RuleEvaluator()
+        try:
+            with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
+                requests = [
+                    asyncio.ensure_future(
+                        evaluator.evaluate(
+                            metadata(title="动画"),
+                            policy,
+                            accessible=True,
+                            quality_satisfied=False,
+                            snapshot_revision="rev-1",
+                        )
+                    )
+                    for _ in range(MAX_CONCURRENT_REQUESTS)
+                ]
+                for event in born:
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=15.0)
+                    except TimeoutError:
+                        for request in requests:
+                            if request.done() and not request.cancelled():
+                                require_real_child(self, request.exception())
+                        self.fail("each request must really create its own child before the cancel")
+                self.assertEqual(len(created), 2, "both requests own a real child")
+                for request in requests:
+                    request.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await request
+                self.assertEqual(
+                    evaluator._active,
+                    2,
+                    "a request that ended with a live child still spends its slot",
+                )
+                with self.assertRaises(RuleEvaluationError) as caught:
+                    await evaluator.validate_policy(policy)
+                self.assertEqual(caught.exception.code, REASON_BUSY)
+                refused = await evaluator.evaluate(
+                    metadata(title="动画"),
+                    policy,
+                    accessible=True,
+                    quality_satisfied=False,
+                    snapshot_revision="rev-1",
+                )
+                self.assertEqual(refused.decision, DECISION_RULE_ERROR)
+                self.assertEqual(refused.reason, REASON_BUSY)
+                self.assertFalse(refused.automatic_enqueue_allowed)
+                self.assertTrue(refused.requires_rule_attention)
+                self.assertEqual(started, 2, "nothing was created while the slots were spent")
+                for event in release:
+                    event.set()
+                for _ in range(100):
+                    if evaluator._active == 0:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertEqual(
+                    evaluator._active, 0, "the capacity comes back once the children end"
+                )
+                for process in created:
+                    self.assertIsNotNone(process.returncode, "each late child was really killed")
+                recovered = await evaluator.evaluate(
+                    text_policy(),
+                    metadata(),
+                    accessible=True,
+                    quality_satisfied=False,
+                    snapshot_revision="rev-1",
+                )
+                self.assertEqual(recovered.decision, DECISION_SKIP, "normal requests work again")
+        finally:
+            for event in release:
+                event.set()
+            for process in created:
+                if getattr(process, "returncode", None) is None:
+                    process.kill()
+                await process.wait()
+            await evaluator.close_quietly()
+
 
 class ProjectionBudgetTest(unittest.IsolatedAsyncioTestCase):
     """The 64 KiB per-field projection budget, exercised through the real normalizer.

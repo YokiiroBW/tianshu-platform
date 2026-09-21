@@ -65,6 +65,11 @@ CALL_BUDGET = 5.0
 CATASTROPHIC_PATTERN = r"^(a+)+$"
 CATASTROPHIC_TEXT = "a" * 40 + "b"
 
+#: How long a hard failure may take to escalate a polite close. The close grace is 0.2 s and the
+#: cancellation lands 50 ms into it, so a kill issued at the failure point returns in milliseconds
+#: while one left to the end of the grace still needs ~150 ms. The ceiling sits between the two.
+ESCALATION_CEILING = 0.12
+
 READY = "sys.stdout.write(json.dumps({'ready': True, 'protocol': 1, 'pid': os.getpid()}) + '\\n')"
 
 #: Named fixture scripts. Each is a complete, correctly indented program: the tests below assert that
@@ -176,6 +181,32 @@ SCRIPTS: dict[str, str] = {
         "        sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
         " 'matched': True}) + '\\n')\n"
         "    sys.stdout.flush()\n"
+    ),
+    # A worker that really runs the expression it is asked for. It announces the search through a
+    # marker file — stderr is DEVNULL in production, so a marker is the only channel a test can
+    # synchronise on — and then enters ``re.search`` for real. With a catastrophic pattern that call
+    # does not return: the child is spinning inside ``re``, which is exactly the state where a closed
+    # pipe means nothing and only a kill can end it. The marker is written *before* the search starts,
+    # so a test that waits for it knows the child is about to be inside ``re`` rather than at startup.
+    "backtracking_search.py": (
+        "import json, os, re, sys\n"
+        f"{READY}\n"
+        "sys.stdout.flush()\n"
+        "patterns = {}\n"
+        "for line in sys.stdin:\n"
+        "    command = json.loads(line)\n"
+        "    if command['op'] == 'compile':\n"
+        "        patterns[command['seq']] = re.compile(command['pattern'])\n"
+        "        sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
+        " 'handle': command['seq']}) + '\\n')\n"
+        "        sys.stdout.flush()\n"
+        "    else:\n"
+        "        open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"
+        " 'entered-' + str(os.getpid())), 'w').close()\n"
+        "        found = patterns[command['handle']].search(command['text']) is not None\n"
+        "        sys.stdout.write(json.dumps({'seq': command['seq'], 'ok': True,"
+        " 'matched': found}) + '\\n')\n"
+        "        sys.stdout.flush()\n"
     ),
 }
 
@@ -393,6 +424,11 @@ class FixtureScriptTest(unittest.TestCase):
             finally:
                 child.kill()
                 child.wait(timeout=10)
+                # A killed child still holds its pipes open: closing them here is what keeps this test
+                # from leaving a ResourceWarning behind for a later case to trip over.
+                for stream in (child.stdin, child.stdout, child.stderr):
+                    if stream is not None:
+                        stream.close()
 
 
 class RealWorkerTest(unittest.IsolatedAsyncioTestCase):
@@ -637,6 +673,52 @@ class CancellationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(process.returncode, "no backtracking match may outlive its request")
         self.assertFalse(worker.alive)
 
+    async def test_a_hard_failure_escalates_a_graceful_close_at_the_failure_point(self):
+        """A close that is already waiting politely must be escalated by the fault, not outlast it.
+
+        The child is spinning inside a real catastrophic backtracking ``re.search``, which is the state
+        where closing its input cannot end it: the polite close can only wait out its 0.2 s grace and
+        then kill. The cancellation arrives 50 ms into that grace, and the kill must belong to *that*
+        moment. The two timings are far apart, so the elapsed time between the cancellation and the
+        child's death is what tells them apart: a kill left to the grace would take another ~150 ms,
+        while a kill issued at the failure point returns at once. The child's exit code is the second
+        half of the evidence — it is killed by the product, not by this test, and never signalled here.
+        """
+
+        with ControlledScripts() as scripts:
+            script = scripts.fixture("backtracking_search.py")
+            worker = RegexWorker(script)
+            await start_or_skip(self, worker)
+            process = worker.managed_process
+            assert process is not None
+            pid = worker.pid
+            assert pid is not None
+            handle = await worker.compile(CATASTROPHIC_PATTERN, 0, timeout=CALL_BUDGET)
+            task = asyncio.ensure_future(
+                worker.search(handle, CATASTROPHIC_TEXT, timeout=CALL_BUDGET)
+            )
+            reached = await scripts.await_marker(pid)
+            self.assertTrue(reached, "the child really entered the backtracking search")
+            self.assertFalse(task.done(), "the expression is still running inside the child")
+            # A polite close starts first and is genuinely inside its grace period below.
+            closing = asyncio.ensure_future(worker.aclose())
+            await asyncio.sleep(CALL_TIMEOUT_SECONDS)
+            started = time.monotonic()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            escalated = time.monotonic() - started
+            self.assertLess(
+                escalated,
+                ESCALATION_CEILING,
+                "the kill belongs to the hard failure, not to the end of the close grace",
+            )
+            self.assertIsNotNone(process.returncode, "the escalated close reaps the child")
+            self.assertEqual(process.returncode, -9, "the spinning child was killed")
+            await closing
+            self.assertFalse(worker.alive)
+            self.assertTrue(worker.settled, "the child's exit is the evidence the close needed")
+
     async def await_exit(self, process: object, timeout: float = 5.0) -> None:
         """Wait for the child to have really exited, so the assertions read a real state."""
 
@@ -720,6 +802,16 @@ class CreationBarrierTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_closing_during_creation_prevents_a_late_child(self):
+        """A close that races the creation reports exactly what it could and could not reclaim.
+
+        The child is real and held behind a barrier *after* it was produced, so at the moment of the
+        close it is running and not yet this worker's. The close must spend the published cleanup budget
+        waiting for that handover, must fail by name when the handle never arrives inside it — a
+        reclamation it cannot evidence is not reported as one — and must not invent an exit code. Once
+        the barrier is released, the product's own cleanup kills and reaps the late child, and only then
+        is the worker dead.
+        """
+
         with ControlledScripts() as scripts:
             script = scripts.fixture("silent_on_start.py")
             created: list[object] = []
@@ -730,7 +822,15 @@ class CreationBarrierTest(unittest.IsolatedAsyncioTestCase):
                     task = asyncio.ensure_future(worker.start(timeout=CALL_BUDGET))
                     await entered.wait()
                     self.assertIsNone(worker.managed_process, "the race really is at the creation")
-                    await worker.aclose()
+                    with self.assertRaises(RuleEvaluationError) as caught:
+                        await worker.aclose()
+                    self.assertEqual(
+                        caught.exception.code,
+                        REASON_REGEX_WORKER_FAILED,
+                        "a close that could not reclaim its child fails by name",
+                    )
+                    self.assertTrue(worker.alive, "and does not call the worker clean")
+                    self.assertFalse(worker.settled)
                     release.set()
                     with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
                         await task
@@ -746,6 +846,11 @@ class CreationBarrierTest(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNotNone(process.returncode, "a late child is killed, not adopted")
                 self.assertFalse(worker.alive, "a close cannot be followed by a live worker")
                 self.assertIsNotNone(worker.returncode)
+                # The failure was recorded when the deadline expired; the exit evidence that arrived
+                # afterwards does not rewrite it into a success.
+                with self.assertRaises(RuleEvaluationError) as repeated:
+                    await worker.aclose()
+                self.assertEqual(repeated.exception.code, REASON_REGEX_WORKER_FAILED)
             finally:
                 release.set()
                 for process in created:
@@ -787,10 +892,11 @@ class CreationBarrierTest(unittest.IsolatedAsyncioTestCase):
         """A child that exists but was never handed over is not declared away by the close.
 
         ``create_subprocess_exec`` is held open *after* it produced a real child, so the close below
-        races a child that is running and is not yet this worker's. Three things must hold, and the
-        first two are what an earlier round got wrong: the close spends the published cleanup budget
-        rather than the 0.2 s close grace, it does not report the worker as settled — "closed" is not
-        evidence about a child nobody has seen — and it does not invent an exit code for that child.
+        races a child that is running and is not yet this worker's. Four things must hold, and the first
+        three are what earlier rounds got wrong: the close spends the published cleanup budget rather
+        than the 0.2 s close grace, it does not report the worker as settled — "closed" is not evidence
+        about a child nobody has seen — it fails by name instead of returning normally, because a
+        reclamation it cannot evidence is not a successful close, and it does not invent an exit code.
         Once the handover is released, the child is killed and reaped like any other.
         """
 
@@ -810,8 +916,14 @@ class CreationBarrierTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(created), 1, "the child really exists behind the barrier")
                     self.assertIsNone(worker.managed_process, "and has not been handed over")
                     started = time.monotonic()
-                    await worker.aclose()
+                    with self.assertRaises(RuleEvaluationError) as caught:
+                        await worker.aclose()
                     elapsed = time.monotonic() - started
+                    self.assertEqual(
+                        caught.exception.code,
+                        REASON_REGEX_WORKER_FAILED,
+                        "the close fails by name rather than claiming a reclamation it has no evidence",
+                    )
                     self.assertGreaterEqual(
                         elapsed,
                         CLEANUP_TIMEOUT_SECONDS * 0.9,
@@ -837,6 +949,97 @@ class CreationBarrierTest(unittest.IsolatedAsyncioTestCase):
                     if process.returncode is None:
                         process.kill()
                     await self.await_exit(process)
+
+    async def test_a_handover_released_inside_the_budget_keeps_the_one_shared_cleanup(self):
+        """The late creation joins the close that is already running instead of starting its own.
+
+        The fourth review measured the shared deadline being pushed back by 109 ms when a creation that
+        had failed after a close replaced the cleanup object: two owners of one budget, and the public
+        deadline moving underneath the first caller. The identity of the cleanup task and the absolute
+        deadline it was created with are therefore recorded before the handover arrives and must be
+        unchanged after it, while the close itself still finishes inside its published budget and a
+        second, later waiter sees the same completed result rather than a second attempt.
+        """
+
+        with ControlledScripts() as scripts:
+            script = scripts.fixture("lingering.py")
+            created: list[object] = []
+            born, release, delayed = await self.hold_handover(created)
+            worker = RegexWorker(script)
+            try:
+                with mock.patch.object(asyncio, "create_subprocess_exec", side_effect=delayed):
+                    task = asyncio.ensure_future(worker.start(timeout=CALL_BUDGET))
+                    try:
+                        await asyncio.wait_for(born.wait(), timeout=30.0)
+                    except TimeoutError:
+                        self.require_a_child_was_created(task, created)
+                        self.fail("the creation neither produced a child nor failed")
+                    closing = asyncio.ensure_future(worker.aclose())
+                    await asyncio.sleep(0.1)
+                    # The shared cleanup and the absolute deadline it was created with are internal
+                    # state; reading them here is the only way to see the two things the review
+                    # measured, and this case is about exactly those two identities.
+                    first_cleanup = worker._cleanup
+                    first_deadline = worker._cleanup_deadline
+                    self.assertIsNotNone(first_cleanup, "the close really started a cleanup")
+                    release.set()
+                    with contextlib.suppress(RuleEvaluationError, asyncio.CancelledError):
+                        await task
+                    await closing
+                    self.assertIs(
+                        worker._cleanup,
+                        first_cleanup,
+                        "the late handover joins the running cleanup instead of replacing it",
+                    )
+                    self.assertEqual(
+                        worker._cleanup_deadline,
+                        first_deadline,
+                        "and the one absolute deadline the close published is not pushed back",
+                    )
+                    self.assertFalse(worker.alive)
+                    self.assertTrue(worker.settled, "the close finished with real exit evidence")
+                    second = await worker.aclose()
+                    self.assertIsNone(second, "a later waiter observes the same finished cleanup")
+                for process in created:
+                    self.assertIsNotNone(process.returncode, "the handed-over child was reaped")
+            finally:
+                release.set()
+                for process in created:
+                    if process.returncode is None:
+                        process.kill()
+                    await self.await_exit(process)
+
+    async def test_a_cleanup_that_raises_is_not_a_successful_close(self):
+        """A cleanup failing in its own right is reported as a failure, never swallowed as success.
+
+        ``_reap_killed`` is the step that observes the child's exit, and here it fails. The close must
+        report the named failure instead of returning normally, and the worker must not claim to be
+        settled: an exception raised while the evidence was being established is not the evidence.
+        """
+
+        with ControlledScripts() as scripts:
+            script = scripts.fixture("lingering.py")
+            worker = RegexWorker(script)
+            await start_or_skip(self, worker)
+            process = worker.managed_process
+            assert process is not None
+
+            async def explode(inner_self, inner_process, timeout=CLEANUP_TIMEOUT_SECONDS):
+                raise RuntimeError("the transport went away while the exit was being observed")
+
+            try:
+                with mock.patch.object(RegexWorker, "_reap_killed", explode):
+                    with self.assertRaises(RuleEvaluationError) as caught:
+                        await worker.aclose()
+                self.assertEqual(caught.exception.code, REASON_REGEX_WORKER_FAILED)
+                self.assertFalse(worker.settled, "a failed cleanup is not a settled worker")
+            finally:
+                # The real child this case created must not outlive it: the failed cleanup killed it
+                # but could not observe the exit, so the exit is observed here before the case ends.
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
+            self.assertIsNotNone(process.returncode)
 
     async def await_exit(self, process: object, timeout: float = 5.0) -> None:
         deadline = time.monotonic() + timeout
