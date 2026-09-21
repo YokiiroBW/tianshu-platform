@@ -84,6 +84,7 @@ export type ModuleId = Module["id"];
 // Room remains a separate chunk. Future modules register one lazy page here.
 export const pages = {
   companion: lazy(() => import("../features/companion/CompanionPage")),
+  personas: lazy(() => import("../features/companion/PersonaPanel")),
   workbench: lazy(() => import("../features/workbench/WorkbenchPage")),
   room: lazy(() => import("../features/room/RoomPage")),
   settings: lazy(() => import("../features/settings/SettingsPage")),

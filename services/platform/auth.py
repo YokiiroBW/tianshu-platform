@@ -31,6 +31,7 @@ ACTIONS = {
     "source.current",
     "source.dispatch",
     "device.control",
+    "persona.read",
 }
 PURPOSES = {"dialogue", "config.snapshot"}
 
@@ -51,6 +52,12 @@ class Auth:
         policy = {k: settings.get(k) for k in ("mode", "principals", "entries", "input_entries")}
         if "asset_connections" in settings:
             policy["asset_connections"] = settings["asset_connections"]
+        # Both persona sections are part of the authority a browser session is pinned to, so
+        # re-pointing the character service or narrowing the subject allowlist expires the
+        # sessions that were opened against the previous deployment.
+        for key in ("persona_connections", "web_personas"):
+            if key in settings:
+                policy[key] = settings[key]
         self.policy_digest = digest(policy)
         envs = []
         for key, item in self.principals.items():

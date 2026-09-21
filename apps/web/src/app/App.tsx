@@ -137,6 +137,8 @@ export function App() {
   else if (current.id === "room") page = <pages.room />;
   else if (current.id === "companion" && section === 0)
     page = <pages.companion />;
+  else if (current.id === "companion" && section === 2)
+    page = <pages.personas />;
   else if (current.id === "home" && section === 0) page = <pages.home />;
   else if (current.id === "resources" && section === 1)
     page = <pages.resources />;

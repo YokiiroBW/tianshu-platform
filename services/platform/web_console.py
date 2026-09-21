@@ -23,6 +23,7 @@ from .transport import CoreFault
 from .web_assets import WebAssets
 from .web_dialogue import WebDialogue
 from .web_models import WebModels
+from .web_personas import WebPersonas
 from .web_sender import WebSender
 
 COOKIE = "tianshu_session"
@@ -31,6 +32,7 @@ LOGIN_TTL = 600
 MODELS_PREFIX = "/api/web/models/"
 HOME_PREFIX = "/api/web/home/"
 TASKS_PREFIX = "/api/web/tasks/"
+PERSONAS_PREFIX = "/api/web/personas/"
 # The asset page is assembled here as one route; its scope, rules and read record belong to
 # `services.platform.web_assets`.
 ASSETS_PREFIX = "/api/web/assets/"
@@ -143,6 +145,9 @@ class WebConsole:
         # The asset page is a read-only window: it owns its own scope, rules and read record, and
         # this console only assembles its route below.
         self.assets = WebAssets(platform, self)
+        # The persona page is the same shape with a different peer: one registered read-only
+        # window, one route prefix, and the session protection is the one above.
+        self.personas = WebPersonas(platform, self)
 
     def verify_password(self, password):
         """One fixed-cost verifier for the login form and the management unlock step."""
@@ -195,6 +200,17 @@ class WebConsole:
         self.sessions = {k: v for k, v in self.sessions.items() if v["expires"] > now}
         token = request.cookies.get(COOKIE, "")
         return token, self.sessions.get(digest(token))
+
+    def session_valid(self, session):
+        """The whole authority of one in-flight read: the same live session, pinned to the same
+        deployment. A logout, an expiry, a revoked action, a rotated credential or a changed
+        persona configuration all fail this one check."""
+        if session is None or session["expires"] <= self.clock():
+            return False
+        if not any(item is session for item in self.sessions.values()):
+            return False
+        fingerprint, _ = self.authority()
+        return session["fingerprint"] == fingerprint
 
     def issue(self, authenticated=False, fingerprint=None):
         require(len(self.sessions) < 128, "too_many_requests", 429)
@@ -399,6 +415,13 @@ class WebConsole:
             require(current is session, "session_expired", 401)
             fingerprint, _ = self.authority()
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
+            return web.json_response(result)
+        if request.path.startswith(PERSONAS_PREFIX):
+            # The persona page reads through its own registered character-service credential. The
+            # session, the authority and the subject allowlist are proved once more here, after
+            # the peer has answered and before any body is returned.
+            result = await self.personas.route(request.path, body, session)
+            require(self.session_valid(session), "session_expired", 401)
             return web.json_response(result)
         raise Fault("not_found", 404)
 

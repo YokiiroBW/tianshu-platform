@@ -1,0 +1,257 @@
+/* Persona directory and version comparison. Tokens only; no colour, gradient or radius is
+   invented here, and every layout collapses to one column without horizontal scrolling. */
+
+.persona-page {
+  display: grid;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  min-width: 0;
+}
+.persona-page h2,
+.persona-page h3 {
+  margin: 0;
+}
+.persona-toolbar,
+.persona-actions,
+.persona-pager,
+.persona-pager-actions,
+.persona-row-actions,
+.persona-kinds {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.persona-toolbar {
+  justify-content: space-between;
+  align-items: flex-start;
+  border-bottom: 1px solid var(--color-line);
+  padding-bottom: var(--space-4);
+}
+.persona-page .eyebrow {
+  margin: 0 0 var(--space-1);
+  color: var(--color-muted);
+  font-size: var(--text-small);
+  letter-spacing: 0.08em;
+}
+.persona-page .button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-input);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  cursor: pointer;
+}
+.persona-page .button svg {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+.persona-page .button.primary {
+  background: var(--color-accent);
+  color: var(--color-surface);
+  border-color: transparent;
+}
+.persona-page .button[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  background: var(--color-selection);
+}
+.persona-page .button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.persona-page .button:focus-visible,
+.persona-subject:focus-visible,
+.persona-page input:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+.persona-page .muted {
+  color: var(--color-muted);
+  font-size: var(--text-small);
+  margin: 0;
+}
+.persona-error {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  color: var(--color-red);
+  background: var(--color-red-soft);
+}
+.persona-notice {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  color: var(--color-blue);
+  background: var(--color-blue-soft);
+}
+.persona-login {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+  max-width: 26rem;
+}
+.persona-login form {
+  display: grid;
+  gap: var(--space-4);
+  width: 100%;
+}
+.persona-login label {
+  display: grid;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+}
+.persona-login input {
+  min-width: 0;
+  min-height: var(--control-height);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-input);
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+}
+.persona-layout {
+  display: grid;
+  /* Both tracks may shrink, and the directory column may never take more than 40% of the row:
+     at 200% text a flat 20rem directory starves the detail column below its own content width
+     and the page grows a horizontal scrollbar. */
+  grid-template-columns: minmax(0, min(20rem, 40%)) minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+.persona-catalog,
+.persona-detail {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.persona-subjects,
+.persona-rows {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.persona-subject {
+  display: grid;
+  gap: var(--space-1);
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: var(--space-3);
+  font: inherit;
+  cursor: pointer;
+}
+.persona-subject[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  background: var(--color-selection);
+}
+.persona-subject-id {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.persona-subject-meta,
+.persona-subject-time {
+  color: var(--color-muted);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.persona-facts {
+  display: grid;
+  /* `min(11rem, 100%)` keeps one track inside a narrow column when the text is enlarged. */
+  grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+.persona-facts div {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.persona-facts dt {
+  color: var(--color-muted);
+  font-size: var(--text-small);
+}
+.persona-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.persona-facts .persona-absent {
+  color: var(--color-muted);
+  font-style: italic;
+}
+.persona-content dd {
+  border-left: var(--rail-width) solid var(--color-line);
+  padding-left: var(--space-3);
+}
+.persona-rows li {
+  min-width: 0;
+}
+.persona-changes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
+  gap: var(--space-3);
+}
+.persona-change {
+  min-width: 0;
+}
+.persona-revision,
+.persona-history {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.persona-revision {
+  border-top: 1px solid var(--color-line);
+  padding-top: var(--space-4);
+}
+.persona-empty {
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px dashed var(--color-line);
+  border-radius: var(--radius-panel);
+  color: var(--color-muted);
+}
+.persona-state .status-rail {
+  align-items: flex-start;
+}
+.persona-foot {
+  border-top: 1px solid var(--color-line);
+  padding-top: var(--space-3);
+}
+
+@media (max-width: 60rem) {
+  .persona-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 30rem) {
+  .persona-page {
+    padding: var(--space-4);
+  }
+  .persona-toolbar {
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+  .persona-page .button {
+    width: 100%;
+    justify-content: center;
+  }
+  .persona-pager-actions,
+  .persona-row-actions,
+  .persona-actions {
+    width: 100%;
+  }
+}

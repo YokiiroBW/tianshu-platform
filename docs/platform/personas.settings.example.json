@@ -1,0 +1,33 @@
+{
+  "_about": "TS-025 人格目录与版本比较：在 docs/platform/web-console.settings.example.json 上追加或替换以下三处即可，其余键不变。本文件只列这三个键的合成示例，不是完整设置文件；不含任何真实地址、真实账号或真实凭据。",
+  "principals": {
+    "admin": {
+      "actions": [
+        "origin.issue",
+        "config.view",
+        "config.publish",
+        "persona.read"
+      ]
+    }
+  },
+  "persona_connections": {
+    "characters-local": {
+      "base_url": "https://127.0.0.1:4823",
+      "token_env": "TS025_PERSONA_ADMIN",
+      "ca_file": "C:/local-rehearsal/companion-localhost.pem",
+      "timeout_seconds": 10
+    }
+  },
+  "web_personas": {
+    "enabled": true,
+    "connection_id": "characters-local",
+    "allowed_subjects": [
+      "actor:alpha",
+      "actor:beta",
+      "actor:extra-01",
+      "actor:missing"
+    ],
+    "candidate_directory": "C:/YOKI/Codex/tianshu-peiban-bot/contracts/persona-management/candidate-v1",
+    "allow_candidate": true
+  }
+}
