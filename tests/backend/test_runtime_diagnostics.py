@@ -6,10 +6,12 @@ really written by this process, and every vocabulary claim against the frozen pu
 
 import asyncio
 import hashlib
+import inspect
 import io
 import json
 import os
 import ssl
+import sys
 import tempfile
 import threading
 import time
@@ -303,7 +305,17 @@ class VocabularyTests(SinkTestCase):
         self.assertEqual(records[0]["error_code"], "internal_error")
         self.assertEqual(records[0]["level"], "ERROR")
 
-    async def test_outbound_only_accepts_the_registered_kinds(self):
+    def test_outbound_only_accepts_the_registered_kinds(self):
+        """A sync entry point that really awaits: an unawaited coroutine is not a test at all.
+
+        unittest calls a plain method and keeps whatever it returns, so an `async def test_` in a
+        synchronous case is reported as a pass without one assertion having run. The body therefore
+        lives in a coroutine that this method drives to completion; the assertions and the scenario
+        are unchanged.
+        """
+        asyncio.run(self.outbound_only_accepts_the_registered_kinds())
+
+    async def outbound_only_accepts_the_registered_kinds(self):
         self.capture()
         correlation = diagnostics.new_correlation()
         for kind in diagnostics.OUTBOUND_KINDS:
@@ -611,7 +623,11 @@ class DurabilityTests(SinkTestCase):
         self.assertIsNone(diagnostics.event("runtime.starting", "INFO", "started"))
         self.assertFalse(diagnostics.accept(diagnostics.new_correlation()))
 
-    async def test_a_refused_event_never_changes_the_callers_own_result(self):
+    def test_a_refused_event_never_changes_the_callers_own_result(self):
+        """The sync entry point awaits the coroutine below, so its assertions really run."""
+        asyncio.run(self.a_refused_event_never_changes_the_callers_own_result())
+
+    async def a_refused_event_never_changes_the_callers_own_result(self):
         occupied = Path(self.temp.name) / "occupied"
         occupied.write_text("file", encoding="utf-8")
         sink = diagnostics.Diagnostics(str(occupied))
@@ -624,7 +640,11 @@ class DurabilityTests(SinkTestCase):
         self.assertIsNone(await diagnostics.outbound("succeeded"))
         self.assertIsNone(diagnostics.event("cli.action.finished", "INFO", "succeeded"))
 
-    async def test_nothing_is_written_when_no_sink_was_ever_assembled(self):
+    def test_nothing_is_written_when_no_sink_was_ever_assembled(self):
+        """The same wiring: the coroutine is awaited rather than merely constructed."""
+        asyncio.run(self.nothing_is_written_when_no_sink_was_ever_assembled())
+
+    async def nothing_is_written_when_no_sink_was_ever_assembled(self):
         diagnostics.reset()
         self.assertIsNone(diagnostics.event("runtime.starting", "INFO", "started"))
         self.assertIsNone(await diagnostics.outbound("started"))
@@ -1567,3 +1587,42 @@ class OwnerTests(SinkTestCase):
         self.assertIn("cli.action.started", names)
         self.assertIn("logging.recovered", names)
         self.assertIn("logging.unavailable", names)
+
+
+class TestWiringTests(unittest.TestCase):
+    """No case in this module may be a coroutine that nobody awaits.
+
+    unittest reports a pass for an `async def test_` it merely called in a synchronous case: the
+    coroutine is built, never driven, and the runner's "ok" says nothing about the assertions
+    inside it. That is worse than a missing test, because the count claims coverage that never ran,
+    so the wiring is checked here rather than trusted. An async case belongs in an
+    `IsolatedAsyncioTestCase`; a case that needs this module's synchronous sink fixture drives its
+    coroutine body from a sync entry point with `asyncio.run`.
+    """
+
+    def test_every_async_case_is_reached_by_an_entry_point_that_awaits_it(self):
+        miswired = []
+        for name, member in sorted(vars(sys.modules[__name__]).items()):
+            if not isinstance(member, type) or not issubclass(member, unittest.TestCase):
+                continue
+            if issubclass(member, unittest.IsolatedAsyncioTestCase):
+                continue
+            for attribute, value in vars(member).items():
+                if attribute.startswith("test") and inspect.iscoroutinefunction(value):
+                    miswired.append(f"{name}.{attribute}")
+        self.assertEqual(miswired, [])
+
+    def test_the_three_wrapped_cases_are_sync_entry_points_that_await_a_coroutine(self):
+        wrapped = [
+            (VocabularyTests, "test_outbound_only_accepts_the_registered_kinds"),
+            (DurabilityTests, "test_a_refused_event_never_changes_the_callers_own_result"),
+            (DurabilityTests, "test_nothing_is_written_when_no_sink_was_ever_assembled"),
+        ]
+        for case, name in wrapped:
+            entry = getattr(case, name)
+            body = getattr(case, name.removeprefix("test_"))
+            # The entry point is what unittest calls; it must not be a coroutine itself, and the
+            # coroutine it drives must exist, so the two cannot drift apart silently.
+            self.assertFalse(inspect.iscoroutinefunction(entry), name)
+            self.assertTrue(inspect.iscoroutinefunction(body), name)
+            self.assertIn("asyncio.run(", inspect.getsource(entry), name)
