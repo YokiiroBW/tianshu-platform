@@ -574,10 +574,17 @@ class Sources:
         """Read an actual authenticated HTTPS Core response, then atomically confirm it."""
         from .transport import core_post
 
+        ticket = await self.store.run_local(self._prepare_dispatch, header, ingest)
+        response = await core_post(self.core, ingest, self.contracts)
+        await self.store.run_local(self._confirm_dispatch, header, ticket, response)
+        return response
+
+    def _prepare_dispatch(self, header, ingest):
         with self.store.connect(write=True) as db:
             self.auth.authenticate(header, db, "source.dispatch")
-        ticket = self.prepare_mapping(header, ingest)
-        response = await core_post(self.core, ingest, self.contracts)
+        return self.prepare_mapping(header, ingest)
+
+    def _confirm_dispatch(self, header, ticket, response):
         with self.store.connect(write=True) as db:
             principal, _ = self.auth.authenticate(header, db, "source.dispatch")
             exchange = db.execute(
@@ -585,4 +592,3 @@ class Sources:
             ).fetchone()
             require(exchange[0] == principal)
             self._confirm(db, ticket, response)
-        return response

@@ -28,6 +28,7 @@ does own is *when* that scope must be re-proved: the request's own guard travels
 import asyncio
 import contextvars
 import hmac
+import inspect
 import ssl
 import uuid
 
@@ -97,11 +98,13 @@ class ScopeLost(Exception):
 SCOPE = contextvars.ContextVar("persona_read_scope", default=None)
 
 
-def prove(document):
+async def prove(document):
     """Re-prove the current request's own scope, when this task carries one."""
     guard = SCOPE.get()
     if guard is not None:
-        guard(document)
+        result = guard(document)
+        if inspect.isawaitable(result):
+            await result
 
 
 class PersonaClient:
@@ -155,7 +158,7 @@ class PersonaClient:
         operation = document.get("operation")
         require(operation in CANDIDATE_OPERATIONS, "invalid_input", 400)
         validate_request(self.candidate, document)
-        prove(document)
+        await prove(document)
         span = diagnostics.Span("persona_call")
         sent = False
         try:
@@ -166,7 +169,7 @@ class PersonaClient:
                 async with self.slots:
                     # The wait is over and nothing has been sent yet: this is the last moment at
                     # which a request that lost its authority can still be stopped for free.
-                    prove(document)
+                    await prove(document)
                     token = self.credential()
                     sent = True
                     await diagnostics.outbound("started")
@@ -188,7 +191,7 @@ class PersonaClient:
                             )
             # The answer answered *something*; whether it may still be read here is this request's
             # own question, and it is asked again after every await above.
-            prove(document)
+            await prove(document)
         except asyncio.CancelledError:
             # A cancelled read always gets its terminal outbound outcome, queued or sent: an
             # outbound event with no end reads as a call still in flight, which is a worse
@@ -410,7 +413,7 @@ class PersonaClient:
             document = {"operation": "get", "subject": subject, "request_id": request_id()}
             # This item's own turn to prove the scope: a read that lost its session, its action or
             # its allowlist must not even start the next character's request.
-            prove(document)
+            await prove(document)
             try:
                 results[index] = await self.call(document)
             except Fault as error:

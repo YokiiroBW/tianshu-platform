@@ -318,9 +318,12 @@ class GatewaySubchain(unittest.IsolatedAsyncioTestCase):
                 return await response.json()
 
         self.assertEqual(await send("subchain-ok"), response_body)
-        self.assertEqual(len(config_requests), 1)
-        platform.contracts.check("model#config_request", config_requests[0])
-        self.assertEqual(config_requests[0]["query"]["origin"]["assertion_ref"], source_ref)
+        # The integrated gateway reads at admission and revalidates immediately
+        # before sending. Both requests must preserve the configuration authority.
+        self.assertEqual(len(config_requests), 2)
+        for request in config_requests:
+            platform.contracts.check("model#config_request", request)
+            self.assertEqual(request["query"]["origin"]["assertion_ref"], source_ref)
         self.assertEqual(recorded[0][0]["model"], "fixture-text-model")
         self.assertEqual(recorded[0][1]["Authorization"], bearer("UPSTREAM"))
         async with client.get(

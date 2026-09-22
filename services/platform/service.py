@@ -205,10 +205,15 @@ class Platform:
             runtime_state=lambda: self._runtime_state,
             config_problem=self.contract_problem,
         )
+        from .local_work import LocalWork
+
+        self.local_work = LocalWork()
+        self.store.run_local = self.local_work.run
 
     def close(self):
         """Mark this runtime as no longer serving, so readiness stops presenting it as current."""
         self._runtime_state = "closed"
+        self.local_work.close()
 
     def persona_reader(self):
         """The one upstream client this deployment's page may read through, or `None`.

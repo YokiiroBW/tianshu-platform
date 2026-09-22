@@ -276,28 +276,28 @@ def create_app(platform, probe=None):
 
     async def resolve(request):
         return web.json_response(
-            await asyncio.to_thread(
+            await platform.local_work.run(
                 platform.origins.resolve, request.headers["Authorization"], request[BODY]
             )
         )
 
     async def snapshot(request):
         return web.json_response(
-            await asyncio.to_thread(
+            await platform.local_work.run(
                 platform.models.snapshot, request.headers["Authorization"], request[BODY]
             )
         )
 
     async def native_snapshot(request):
         return web.json_response(
-            await asyncio.to_thread(
+            await platform.local_work.run(
                 platform.models.native_snapshot, request.headers["Authorization"], request[BODY]
             )
         )
 
     async def source_access(request):
         return web.json_response(
-            await asyncio.to_thread(
+            await platform.local_work.run(
                 platform.sources.read, request.headers["Authorization"], request[BODY]
             )
         )
@@ -305,7 +305,7 @@ def create_app(platform, probe=None):
     async def send(request):
         require(console.config is not None, "dependency_unavailable", 503)
         return web.json_response(
-            await asyncio.to_thread(
+            await platform.local_work.run(
                 console.sender.send, request.headers["Authorization"], request[BODY]
             )
         )
@@ -320,4 +320,9 @@ def create_app(platform, probe=None):
     app.router.add_post("/internal/v1/source-access/read", source_access)
     app.router.add_post("/internal/v1/conversation/send", send)
     app.router.add_route("*", "/{path:.*}", console.handle)
+
+    async def close_local_work(app):
+        platform.local_work.close()
+
+    app.on_cleanup.append(close_local_work)
     return app

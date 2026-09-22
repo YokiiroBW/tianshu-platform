@@ -30,6 +30,8 @@ from .web_sender import WebSender
 COOKIE = "tianshu_session"
 SESSION_TTL = 8 * 3600
 LOGIN_TTL = 600
+ANONYMOUS_SESSION_LIMIT = 32
+AUTHENTICATED_SESSION_LIMIT = 128
 # The one fact the serving boundary cannot work out for itself: whether this request really was
 # authenticated. A cookie header, an Authorization header or a path that reached the console are all
 # things a stranger can produce, so none of them is evidence; only this console knows when a password
@@ -162,6 +164,7 @@ class WebConsole:
             authorised=self.persona_read_authorised,
             session_valid=self.session_valid,
             authority=lambda: self.authority()[0],
+            run_local=platform.local_work.run,
         )
 
     def verify_password(self, password):
@@ -222,10 +225,17 @@ class WebConsole:
         persona configuration all fail this one check."""
         if session is None or session["expires"] <= self.clock():
             return False
-        if not any(item is session for item in self.sessions.values()):
+        if not any(item is session for item in tuple(self.sessions.values())):
             return False
         fingerprint, _ = self.authority()
-        return session["fingerprint"] == fingerprint
+        return session["fingerprint"] == fingerprint and self.session_live(session)
+
+    def session_live(self, session):
+        return (
+            session is not None
+            and session["expires"] > self.clock()
+            and any(item is session for item in tuple(self.sessions.values()))
+        )
 
     def persona_read_authorised(self):
         """May the current operator read personas? Asked again at every outbound step of a read.
@@ -243,7 +253,17 @@ class WebConsole:
         )
 
     def issue(self, authenticated=False, fingerprint=None):
-        require(len(self.sessions) < 128, "too_many_requests", 429)
+        now = self.clock()
+        self.sessions = {k: v for k, v in self.sessions.items() if v["expires"] > now}
+        matching = [(k, v) for k, v in self.sessions.items() if v["authenticated"] == authenticated]
+        if authenticated:
+            require(len(matching) < AUTHENTICATED_SESSION_LIMIT, "too_many_requests", 429)
+        elif len(matching) >= ANONYMOUS_SESSION_LIMIT:
+            candidates = [
+                (k, v) for k, v in matching if v is not getattr(self, "authenticating", None)
+            ]
+            oldest = min(candidates, key=lambda pair: pair[1]["expires"])[0]
+            self.sessions.pop(oldest)
         token = secrets.token_urlsafe(32)
         session = {
             "csrf": secrets.token_urlsafe(32),
@@ -313,7 +333,8 @@ class WebConsole:
                 token, session = self.issue()
             result = {"authenticated": False, "csrf": session["csrf"]}
             if session["authenticated"]:
-                fingerprint, conversations = self.authority()
+                fingerprint, conversations = await self.platform.local_work.run(self.authority)
+                require(self.session_live(session), "session_expired", 401)
                 require(session["fingerprint"] == fingerprint, "session_expired", 401)
                 # A live session that was created by a verified password and still belongs to this
                 # deployment: presenting it is authentication, and this is the only place a page
@@ -327,7 +348,7 @@ class WebConsole:
                         "available": self.dialogue.available(),
                         "code": "ready" if self.dialogue.available() else "core_web_not_connected",
                         "model": "not_configured"
-                        if not self.dialogue.model_configured()
+                        if not await self.platform.local_work.run(self.dialogue.model_configured)
                         else "unverified",
                     },
                 )
@@ -369,22 +390,27 @@ class WebConsole:
             async with self.login_lock:
                 self.failures = [t for t in self.failures if t > self.clock() - 60]
                 require(len(self.failures) < 5, "too_many_requests", 429)
-                valid = await asyncio.to_thread(self.verify_password, body["password"])
-                valid &= hmac.compare_digest(
-                    body["username"].encode(), self.config["username"].encode()
-                )
-                if not valid:
-                    self.failures.append(self.clock())
-                    raise Fault("unauthorized", 401)
-                fingerprint, _ = self.authority()
-                require(
-                    self.sessions.get(digest(token)) is session
-                    and session["expires"] > self.clock(),
-                    "session_expired",
-                    401,
-                )
-                self.sessions.pop(digest(token), None)
-                token, session = self.issue(True, fingerprint)
+                self.authenticating = session
+                try:
+                    valid = await asyncio.to_thread(self.verify_password, body["password"])
+                    valid &= hmac.compare_digest(
+                        body["username"].encode(), self.config["username"].encode()
+                    )
+                    if not valid:
+                        self.failures.append(self.clock())
+                        raise Fault("unauthorized", 401)
+                    fingerprint, _ = await self.platform.local_work.run(self.authority)
+                    require(self.session_live(session), "session_expired", 401)
+                    require(
+                        self.sessions.get(digest(token)) is session
+                        and session["expires"] > self.clock(),
+                        "session_expired",
+                        401,
+                    )
+                    self.sessions.pop(digest(token), None)
+                    token, session = self.issue(True, fingerprint)
+                finally:
+                    self.authenticating = None
             # The operator's own password was just verified against this deployment's hash: a real
             # authentication happened in this request, whatever else the answer says.
             request[CONSOLE_AUTH] = AUTH_SUCCEEDED
@@ -408,7 +434,8 @@ class WebConsole:
             )
             return response
         require(session["authenticated"], "unauthorized", 401)
-        fingerprint, _ = self.authority()
+        fingerprint, _ = await self.platform.local_work.run(self.authority)
+        require(self.session_live(session), "session_expired", 401)
         require(session["fingerprint"] == fingerprint, "session_expired", 401)
         # The session is live, authenticated and still pinned to this deployment's current policy:
         # that, and only that, is what makes this an authenticated request rather than one that
@@ -420,7 +447,8 @@ class WebConsole:
             result = await self.models.route(request.path, body, session)
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
-            fingerprint, _ = self.authority()
+            fingerprint, _ = await self.platform.local_work.run(self.authority)
+            require(self.session_live(session), "session_expired", 401)
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         operation = {
@@ -434,7 +462,8 @@ class WebConsole:
             # A revoked/expired login cannot receive results from an in-flight read.
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
-            fingerprint, _ = self.authority()
+            fingerprint, _ = await self.platform.local_work.run(self.authority)
+            require(self.session_live(session), "session_expired", 401)
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith(HOME_PREFIX):
@@ -442,15 +471,19 @@ class WebConsole:
             # The same re-check: a session revoked while HA was being asked gets no reading.
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
-            fingerprint, _ = self.authority()
+            fingerprint, _ = await self.platform.local_work.run(self.authority)
+            require(self.session_live(session), "session_expired", 401)
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith(TASKS_PREFIX):
-            result = self.tasks.route(request.path, body, session)
+            result = await self.platform.local_work.run(
+                self.tasks.route, request.path, body, session
+            )
             # A read-only projection still belongs to the session that asked for it.
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
-            fingerprint, _ = self.authority()
+            fingerprint, _ = await self.platform.local_work.run(self.authority)
+            require(self.session_live(session), "session_expired", 401)
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith(ASSETS_PREFIX):
@@ -459,7 +492,8 @@ class WebConsole:
             result = await self.assets.route(request.path, body, session)
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
-            fingerprint, _ = self.authority()
+            fingerprint, _ = await self.platform.local_work.run(self.authority)
+            require(self.session_live(session), "session_expired", 401)
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith(PERSONAS_PREFIX):
@@ -468,7 +502,11 @@ class WebConsole:
             # outbound step and again before answering. This console makes the same proof once more
             # on its own account, immediately before the body leaves here.
             result = await self.personas.route(request.path, body, session)
-            require(self.session_valid(session), "session_expired", 401)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
             require(self.persona_read_authorised(), "persona_read_required", 403)
             return web.json_response(result)
         raise Fault("not_found", 404)

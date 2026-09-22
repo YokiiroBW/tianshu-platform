@@ -945,7 +945,7 @@ class OutboundTerminalTests(unittest.IsolatedAsyncioTestCase):
         client.slots = asyncio.Semaphore(1)
         document = {"operation": "get"}
         with patch.object(persona_client, "validate_request", lambda *a: None):
-            with patch.object(persona_client, "prove", lambda *a: None):
+            with patch.object(persona_client, "prove", return_value=None):
                 # The only slot is taken, so this read is queued and has provably sent nothing.
                 await client.slots.acquire()
                 with patch.dict(os.environ, {"TS012_ADMIN": CREDENTIAL}, clear=False):

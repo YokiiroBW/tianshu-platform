@@ -16,6 +16,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -741,6 +742,34 @@ class HomeTests(unittest.IsolatedAsyncioTestCase):
         # Nothing left this process, so the claim is given back instead of blocking the intent.
         self.assertEqual(self.intent()["state"], "prepared")
         self.assertEqual(self.intent()["owner"], None)
+
+    async def test_locking_during_transmission_ledger_wait_sends_no_device_command(self):
+        logged = await self.unlocked_login()
+        entered, blocker = threading.Event(), []
+        original = Home._transmit
+
+        def held(home, intent, owner):
+            connection = sqlite3.connect(
+                home.ledger_path, isolation_level=None, check_same_thread=False
+            )
+            connection.execute("BEGIN IMMEDIATE")
+            blocker.append(connection)
+            entered.set()
+            return original(home, intent, owner)
+
+        with patch.object(Home, "_transmit", held):
+            pending = asyncio.create_task(self.control(logged, "study-light-on", 0, expected=403))
+            try:
+                async with asyncio.timeout(3):
+                    while not entered.is_set():
+                        await asyncio.sleep(0.005)
+                await self.call("home/lock", {}, logged["csrf"])
+                blocker[0].rollback()
+                self.assertEqual("control_required", (await pending)["code"])
+                self.assertEqual([], self.services())
+            finally:
+                for connection in blocker:
+                    connection.close()
 
     async def test_a_reading_that_changed_during_the_observation_refuses_to_act(self):
         logged = await self.unlocked_login()

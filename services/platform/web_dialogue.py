@@ -81,14 +81,14 @@ class WebDialogue:
             400,
         )
         require(self.available(), "core_web_not_connected", 503)
-        header, entry, actor_entry, scope = self.selection(body)
+        header, entry, actor_entry, scope = await self.p.local_work.run(self.selection, body)
         if scope["conversation_id"] is None or scope["person_id"] is None:
             return {
                 "snapshot": None,
                 "state": "not_started",
-                "submissions": self.submissions(body, entry),
+                "submissions": await self.p.local_work.run(self.submissions, body, entry),
             }
-        origin = self.p.origins.issue(header, actor_entry)
+        origin = await self.p.local_work.run(self.p.origins.issue, header, actor_entry)
         query = {
             "schema_version": 1,
             "query": {
@@ -117,10 +117,9 @@ class WebDialogue:
             "dependency_unavailable",
             503,
         )
-        _, current_entry, _, current_scope = self.selection(body)
+        _, current_entry, _, current_scope = await self.p.local_work.run(self.selection, body)
         require(current_entry == entry and current_scope == scope, "scope_changed", 409)
-        with self.p.store.connect(write=True) as db:
-            self.p.origins.context(db, origin["assertion_ref"], "platform", "companion", "dialogue")
+        await self.p.local_work.run(self._check_origin, origin["assertion_ref"])
         turns = result["history"] + result["active_turns"]
         terminal = {"sent", "failed", "cancelled", "observed", "closed_unknown"}
         require(
@@ -153,7 +152,7 @@ class WebDialogue:
         return {
             "snapshot": result,
             "state": "current",
-            "submissions": self.submissions(body, entry),
+            "submissions": await self.p.local_work.run(self.submissions, body, entry),
         }
 
     async def send(self, body):
@@ -175,36 +174,14 @@ class WebDialogue:
         except ValueError:
             raise Fault("invalid_input", 400) from None
         require(self.available(), "core_web_not_connected", 503)
-        require(self.model_configured(), "model_not_configured", 503)
-        header, entry, _, _ = self.selection(body)
+        require(await self.p.local_work.run(self.model_configured), "model_not_configured", 503)
+        header, entry, _, _ = await self.p.local_work.run(self.selection, body)
         semantic = digest({"body": body, "account": entry["account"]})
-        with closing(sqlite3.connect(self.path, timeout=5)) as db:
-            db.execute("BEGIN IMMEDIATE")
-            prior = db.execute(
-                "SELECT semantic,message_id,state,result FROM submissions WHERE id=?",
-                (body["client_id"],),
-            ).fetchone()
-            if prior:
-                require(prior[0] == semantic, "idempotency_conflict", 409)
-                return {
-                    "message_id": prior[1],
-                    "state": prior[2],
-                    "result": loads(prior[3]) if prior[3] else None,
-                }
-            message_id = "message:" + uuid.uuid4().hex
-            db.execute(
-                "INSERT INTO submissions VALUES(?,?,?,?,?,?,?,NULL)",
-                (
-                    body["client_id"],
-                    semantic,
-                    body["conversation"],
-                    body["actor"],
-                    canonical(entry["account"]),
-                    message_id,
-                    "unknown",
-                ),
-            )
-            db.commit()
+        message_id, prior = await self.p.local_work.run(
+            self._prepare_submission, body, entry, semantic
+        )
+        if prior is not None:
+            return prior
         data = {
             "message_key": {"channel": entry["channel"], "message_id": message_id, "revision": 1},
             "author": entry["account"],
@@ -216,7 +193,9 @@ class WebDialogue:
         }
         started = False
         try:
-            origin = self.p.sources.register_input(header, body["conversation"], data)
+            origin = await self.p.local_work.run(
+                self.p.sources.register_input, header, body["conversation"], data
+            )
             ingest = {
                 "schema_version": 1,
                 "command": {
@@ -252,12 +231,7 @@ class WebDialogue:
         except (OSError, sqlite3.Error, asyncio.CancelledError):
             # Initial durable unknown survives process/caller interruption. Never replay.
             raise
-        with closing(sqlite3.connect(self.path, timeout=5)) as db:
-            db.execute(
-                "UPDATE submissions SET state=?,result=? WHERE id=?",
-                (state, canonical(result), body["client_id"]),
-            )
-            db.commit()
+        await self.p.local_work.run(self._finish_submission, body, state, result)
         return {"message_id": message_id, "state": state, "result": result}
 
     async def cancel(self, body):
@@ -285,8 +259,8 @@ class WebDialogue:
             None,
         )
         require(turn is not None)
-        header, _, actor_entry, _ = self.selection(body)
-        origin = self.p.origins.issue(header, actor_entry)
+        header, _, actor_entry, _ = await self.p.local_work.run(self.selection, body)
+        origin = await self.p.local_work.run(self.p.origins.issue, header, actor_entry)
         request = {
             "command": {
                 "schema_version": 1,
@@ -308,3 +282,45 @@ class WebDialogue:
             self.p.contracts,
             "conversation#cancel_response",
         )
+
+    def _check_origin(self, reference):
+        with self.p.store.connect(write=True) as db:
+            self.p.origins.context(db, reference, "platform", "companion", "dialogue")
+
+    def _prepare_submission(self, body, entry, semantic):
+        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            prior = db.execute(
+                "SELECT semantic,message_id,state,result FROM submissions WHERE id=?",
+                (body["client_id"],),
+            ).fetchone()
+            if prior:
+                require(prior[0] == semantic, "idempotency_conflict", 409)
+                return None, {
+                    "message_id": prior[1],
+                    "state": prior[2],
+                    "result": loads(prior[3]) if prior[3] else None,
+                }
+            message_id = "message:" + uuid.uuid4().hex
+            db.execute(
+                "INSERT INTO submissions VALUES(?,?,?,?,?,?,?,NULL)",
+                (
+                    body["client_id"],
+                    semantic,
+                    body["conversation"],
+                    body["actor"],
+                    canonical(entry["account"]),
+                    message_id,
+                    "unknown",
+                ),
+            )
+            db.commit()
+        return message_id, None
+
+    def _finish_submission(self, body, state, result):
+        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+            db.execute(
+                "UPDATE submissions SET state=?,result=? WHERE id=?",
+                (state, canonical(result), body["client_id"]),
+            )
+            db.commit()

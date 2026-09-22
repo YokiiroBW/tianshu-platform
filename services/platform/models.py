@@ -5,6 +5,7 @@ Models owner but keep separate tables, version sequences and revocation key spac
 """
 
 import copy
+import contextvars
 import ipaddress
 from urllib.parse import urlsplit
 
@@ -18,6 +19,14 @@ from .contracts import canonical, digest, epoch, loads, require
 DEFAULT_MAX_LIFETIME = 3600
 MIN_MAX_LIFETIME = 1
 MAX_MAX_LIFETIME = 86400
+WRITE_GUARD = contextvars.ContextVar("platform_model_write_guard", default=None)
+
+
+def guard_write():
+    """Recheck a browser action after waiting for the authoritative write lock."""
+    guard = WRITE_GUARD.get()
+    if guard is not None:
+        guard()
 
 
 def validate_max_lifetime(settings):
@@ -174,6 +183,7 @@ class Models:
         with self.store.connect(write=True) as db:
             identity, _ = self.auth.authenticate(header, db, "config.publish", operator=True)
             self.validate_publication(document)
+            guard_write()
             return self._store_publication(
                 db,
                 identity,
@@ -188,6 +198,7 @@ class Models:
         with self.store.connect(write=True) as db:
             identity, _ = self.auth.authenticate(header, db, "config.publish", operator=True)
             self.validate_native_publication(document)
+            guard_write()
             return self._store_publication(
                 db,
                 identity,
@@ -231,6 +242,7 @@ class Models:
                 "not_found",
                 404,
             )
+            guard_write()
             db.execute("UPDATE configs SET revoked=1 WHERE version=?", (version,))
             db.execute(
                 "INSERT INTO audit(principal,operation,object_id,observed_at) VALUES(?,?,?,?)",
@@ -246,6 +258,7 @@ class Models:
                 "not_found",
                 404,
             )
+            guard_write()
             db.execute("UPDATE native_configs SET revoked=1 WHERE version=?", (version,))
             db.execute(
                 "INSERT INTO audit(principal,operation,object_id,observed_at) VALUES(?,?,?,?)",

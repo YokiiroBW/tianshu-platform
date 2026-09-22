@@ -357,7 +357,7 @@ class Home:
         require(self.config is not None, "home_disabled", 403)
         if path == "/api/web/home/view":
             require(body == {}, "invalid_input", 400)
-            return self.view(session)
+            return await self.p.local_work.run(self.view, session)
         if path == "/api/web/home/refresh":
             require(body == {}, "invalid_input", 400)
             return await self.refresh(session)
@@ -509,7 +509,7 @@ class Home:
             reading["unit"] = unit
         # The registered unit is the reviewed one; HA may only confirm it.
         reading["unit"] = entity["unit"] or reading["unit"]
-        self._store_reading(entity_id, reading)
+        await self.p.local_work.run(self._store_reading, entity_id, reading)
         return reading
 
     async def _read_one(self, client, entity_id):
@@ -517,14 +517,14 @@ class Home:
             await self._observe(client, entity_id)
         except Fault as exc:
             # One unreachable entity never hides the others, and never becomes a fake reading.
-            self._store_attempt(entity_id, exc.code)
+            await self.p.local_work.run(self._store_attempt, entity_id, exc.code)
 
     async def refresh(self, session):
         """A real observation round: one bounded GET per registered entity."""
         require(self.token is not None, "device_credential_missing", 503)
         async with self._client() as client:
             await asyncio.gather(*(self._read_one(client, key) for key in self.entities))
-        return self.view(session)
+        return await self.p.local_work.run(self.view, session)
 
     def _availability(self, row):
         """Current, expired, offline or unknown: never a silent zero and never a fake "off"."""
@@ -575,9 +575,11 @@ class Home:
                 "principal": self.console.config["principal"],
             }
         )
-        intent = self._intent(client_id)
+        intent = await self.p.local_work.run(self._intent, client_id)
         if intent is None:
-            intent = self._prepare(client_id, semantic, template, expected)
+            intent = await self.p.local_work.run(
+                self._prepare, client_id, semantic, template, expected
+            )
         # One client id is one reviewed intent: different content never reuses the outcome.
         require(intent["semantic"] == semantic, "idempotency_conflict", 409)
         return await self._settle(template, intent, session)
@@ -708,6 +710,7 @@ class Home:
         earlier view that could have gone stale, so the connector's own pre-send observation
         becomes the first one. Any real revision must still be the one the connector holds.
         """
+        require(self.console.session_valid(session), "session_expired", 401)
         code = self.code(session)
         require(code == "ready", code, 403)
         require(
@@ -721,13 +724,13 @@ class Home:
         """At most one transmitted command per reviewed intent, however many requests arrive."""
         for _ in range(CLAIM_ATTEMPTS):
             if intent["state"] not in ACTIVE_STATES:
-                return self._replay(intent)
-            claim = self._claim(intent)
+                return await self.p.local_work.run(self._replay, intent)
+            claim = await self.p.local_work.run(self._claim, intent)
             if claim is None:
                 outcome = await self._await_owner(intent)
                 if outcome is not RETRY:
                     return outcome
-                intent = self._intent(intent["client_id"])
+                intent = await self.p.local_work.run(self._intent, intent["client_id"])
                 require(intent is not None, "dependency_unavailable", 503)
                 continue
             owner, sending = claim
@@ -738,10 +741,10 @@ class Home:
         """Another owner holds this intent: wait for its outcome instead of sending again."""
         deadline = self.clock() + self._lease() + 1
         while self.clock() < deadline:
-            row = self._intent(intent["client_id"])
+            row = await self.p.local_work.run(self._intent, intent["client_id"])
             require(row is not None, "dependency_unavailable", 503)
             if row["state"] not in ACTIVE_STATES:
-                return self._replay(row)
+                return await self.p.local_work.run(self._replay, row)
             if row["state"] == PREPARED or (row["lease_expires_at"] or 0) <= self.clock():
                 # The owner gave the claim back, or died: taking over is safe from here.
                 return RETRY
@@ -757,23 +760,33 @@ class Home:
                 # nothing is ever transmitted again for it.
                 reading = await self._observe(client, template["entity_id"])
                 if reading["state"] == SERVICES[template["service"]]:
-                    return self._answer(intent, OBSERVED, "recovered_at_target", True)
-                self._record(intent, UNKNOWN, "control_unverified", False)
+                    return await self.p.local_work.run(
+                        self._answer, intent, OBSERVED, "recovered_at_target", True
+                    )
+                await self.p.local_work.run(
+                    self._record, intent, UNKNOWN, "control_unverified", False
+                )
                 raise self._fault("control_unverified")
             try:
-                self._authorize(intent, session)
+                await self.p.local_work.run(self._authorize, intent, session)
                 reading = await self._observe(client, template["entity_id"])
                 # The observation is asynchronous: the operator's authority and the reading they
                 # acted on are checked again before anything leaves this process.
-                self._authorize(intent, session)
+                await self.p.local_work.run(self._authorize, intent, session)
                 if reading["state"] == SERVICES[template["service"]]:
-                    return self._answer(intent, OBSERVED, "recovered_at_target", True)
-                claimed = self._transmit(intent, owner)
+                    return await self.p.local_work.run(
+                        self._answer, intent, OBSERVED, "recovered_at_target", True
+                    )
+                claimed = await self.p.local_work.run(
+                    self._authorized_transmit, intent, owner, session
+                )
             except Fault:
-                self._release(intent, owner)
+                await self.p.local_work.run(self._release, intent, owner)
                 raise
             if not claimed:
                 raise self._fault("control_in_progress")
+            require(self.console.session_live(session), "session_expired", 401)
+            self._gate(session)
             try:
                 state, code, reported = await self._invoke(client, template)
             except Fault as exc:
@@ -784,9 +797,13 @@ class Home:
                 else:
                     state, code, reported = UNKNOWN, exc.code, False
         if state not in {ACCEPTED, OBSERVED}:
-            self._record(intent, state, code, reported)
+            await self.p.local_work.run(self._record, intent, state, code, reported)
             raise self._fault(code)
-        return self._answer(intent, state, code, reported)
+        return await self.p.local_work.run(self._answer, intent, state, code, reported)
+
+    def _authorized_transmit(self, intent, owner, session):
+        self._authorize(intent, session)
+        return self._transmit(intent, owner)
 
     async def _invoke(self, client, template):
         """Call the entity's own domain service; a receipt is an acceptance, not an execution."""

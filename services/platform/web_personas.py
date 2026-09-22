@@ -120,6 +120,7 @@ class WebPersonas:
         authorised,
         session_valid,
         authority,
+        run_local=None,
     ):
         self.configured = bool(configured)
         self.rule = rule
@@ -131,6 +132,7 @@ class WebPersonas:
         self.authorised = authorised
         self.session_valid = session_valid
         self.authority = authority
+        self.run_local = run_local
         self.cursor = PageCursor()
         self.active = 0
 
@@ -159,7 +161,7 @@ class WebPersonas:
         require(name in ROUTES, "not_found", 404)
         # Authority first: a session that stopped being readable - logged out, expired, rotated or
         # re-pointed - is exactly that, never a deployment problem and never a page.
-        self._prove(session)
+        await self._prove(session)
         self._admit()
         try:
             result = await self._serve(name, body, session)
@@ -167,7 +169,7 @@ class WebPersonas:
             self.active -= 1
         # The same proofs again after every `await`: a session, a read action or an authority
         # that stopped holding while the peer was answering does not get a body.
-        self._prove(session)
+        await self._prove(session)
         return result
 
     async def _serve(self, name, body, session):
@@ -177,7 +179,7 @@ class WebPersonas:
         including the directory's worker tasks, which inherit this request's context - so the peer
         is never asked anything under an authority that has already ended.
         """
-        token = SCOPE.set(self._guard(session))
+        token = SCOPE.set(self._async_guard(session))
         try:
             if name == "catalog":
                 self._shape(body, {"cursor"})
@@ -215,10 +217,19 @@ class WebPersonas:
 
         return guard
 
-    def _prove(self, session):
+    def _async_guard(self, session):
+        async def guard(document):
+            if self.run_local is None:
+                self._guard(session)(document)
+            else:
+                await self.run_local(self._guard(session), document)
+
+        return guard
+
+    async def _prove(self, session):
         """Run this request's proof once, outside the client, and report its fault as itself."""
         try:
-            self._guard(session)({})
+            await self._async_guard(session)({})
         except ScopeLost as lost:
             raise lost.fault from None
 
@@ -269,7 +280,9 @@ class WebPersonas:
     async def catalog(self, session, cursor):
         """One page of the deployment's own closed subject list, ascending, fixed at 20."""
         require(cursor is None or isinstance(cursor, str), "invalid_input", 400)
-        authority = self._fingerprint()
+        authority = (
+            await self.run_local(self._fingerprint) if self.run_local else self._fingerprint()
+        )
         position = self.cursor.read(
             cursor, "catalog", authority, self.connection_id, self.subjects, CATALOG_PAGE
         )

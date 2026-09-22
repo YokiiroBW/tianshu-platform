@@ -133,7 +133,7 @@ class Assets:
             )
             connection_id = data["connection_id"]
             require(isinstance(connection_id, str), "invalid_input", 400)
-            connection = self.authorize(header, connection_id)
+            connection = await self.store.run_local(self.authorize, header, connection_id)
             operation, body = data["operation"], data["body"]
             require(isinstance(operation, str) and operation in OPERATIONS, "forbidden", 403)
             require(isinstance(body, dict), "invalid_input", 400)
@@ -219,7 +219,7 @@ class Assets:
                         upstream_id = result.get("request_id")
                         require(upstream_id in (request_id, "unknown"), "invalid_upstream", 502)
                         # Recheck local revocation and credential rotation before delivery.
-                        self.authorize(header, connection_id)
+                        await self.store.run_local(self.authorize, header, connection_id)
                         require(secret(connection["token_env"]) == token, "unauthorized", 401)
                         await asyncio.sleep(0)
                         require(time.monotonic() - started < DEADLINE, "deadline_exceeded", 504)

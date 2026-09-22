@@ -10,10 +10,12 @@ two writes). Those windows are exercised explicitly: a committed request must re
 same result, must never be reported as a false failure, and must never create a new version.
 """
 
+import asyncio
 import json
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -161,6 +163,42 @@ class WebModelsTests(unittest.IsolatedAsyncioTestCase):
     def lose_receipts(self):
         """Reproduce the interruption window: claim and publish, but never settle the receipt."""
         return patch.object(WebModels, "_record", lambda self, intent, result: None)
+
+    async def test_lock_wait_cannot_preserve_revoked_browser_write_authority(self):
+        for target, (table, template) in TARGETS.items():
+            for action in ("models/lock", "logout"):
+                with self.subTest(target=target, action=action):
+                    logged = await self.unlocked_login()
+                    entered = threading.Event()
+                    original = self.console.models._prepare
+
+                    def preparing(*args):
+                        entered.set()
+                        return original(*args)
+
+                    lock = sqlite3.connect(self.console.models.ledger_path, isolation_level=None)
+                    lock.execute("BEGIN IMMEDIATE")
+                    client_id = str(__import__("uuid").uuid4())
+                    try:
+                        with patch.object(self.console.models, "_prepare", preparing):
+                            pending = asyncio.create_task(
+                                self.publish(
+                                    logged,
+                                    template,
+                                    None,
+                                    client_id=client_id,
+                                    expected_status=401 if action == "logout" else 403,
+                                )
+                            )
+                            async with asyncio.timeout(3):
+                                while not entered.is_set():
+                                    await asyncio.sleep(0.005)
+                            await self.call(action, {}, logged["csrf"])
+                            lock.rollback()
+                            await pending
+                    finally:
+                        lock.close()
+                    self.assertEqual([], self.rows(table))
 
     async def assert_recovered(self, logged, target, template, client_id, version):
         """Retry the same request with the same session and require the committed result."""

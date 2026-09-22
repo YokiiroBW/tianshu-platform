@@ -225,7 +225,7 @@ class WebModels:
     async def route(self, path, body, session):
         if path == "/api/web/models/view":
             require(body == {}, "invalid_input", 400)
-            return self.view(session)
+            return await self.p.local_work.run(self.view, session)
         if path == "/api/web/models/unlock":
             return await self.unlock(body, session)
         if path == "/api/web/models/lock":
@@ -233,12 +233,28 @@ class WebModels:
             session.pop("management", None)
             return {"unlocked": False, "code": self.code(session)}
         if path == "/api/web/models/preview":
-            return self.preview(body, session)
+            return await self.p.local_work.run(self._guarded, self.preview, body, session)
         if path == "/api/web/models/publish":
-            return self.publish(body, session)
+            return await self.p.local_work.run(self._guarded, self.publish, body, session)
         if path == "/api/web/models/revoke":
-            return self.revoke(body, session)
+            return await self.p.local_work.run(self._guarded, self.revoke, body, session)
         raise Fault("not_found", 404)
+
+    def _guarded(self, operation, body, session):
+        # Queue waiting must not preserve a login that has since ended.
+        from .models import WRITE_GUARD
+
+        require(self.console.session_valid(session), "session_expired", 401)
+
+        def guard():
+            require(self.console.session_live(session), "session_expired", 401)
+            self._gate(session)
+
+        token = WRITE_GUARD.set(guard)
+        try:
+            return operation(body, session)
+        finally:
+            WRITE_GUARD.reset(token)
 
     async def unlock(self, body, session):
         """Re-authentication step: an ordinary chat login never carries management rights."""
