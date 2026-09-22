@@ -160,12 +160,12 @@ class RenewalAuthorityTests(unittest.TestCase):
                 validate_settings({**self.settings, "model_origin_renewal_http": value})
         validate_settings({**self.settings, "model_origin_renewal_http": False})
 
-    def test_coordinator_candidate_pinned_bytes_and_all_examples(self):
+    def test_coordinator_frozen_contract_pinned_bytes_and_all_examples(self):
         source = CONTRACT.parents[1] / "model-origin-renewal/v1"
         raw = (source / "manifest.json").read_bytes()
         self.assertEqual(
             hashlib.sha256(raw).hexdigest(),
-            "9db7a18ba29ba542d7cdbf2951912520fe83d801f09ab544ba9c9208bca04b55",
+            "c5017724187c1386b647fcc5b41ab3cb1702f27d6192f3a87fcefb23e7a5a61c",
         )
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
