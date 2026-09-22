@@ -203,3 +203,50 @@ SAN——容器内用 `127.0.0.1` 连接时，证书需要带 `IP:127.0.0.1`（�
 
 该命令在本机结果为 `Ran 176 tests ... OK (skipped=4)`；跳过项就是上表中标注未验证的容器运行时
 项目，跳过原因是明确写出的，不当作通过。
+
+## 8. TS-111 正式构建输入（2026-09-22，覆盖第 1/7 节旧构建说明）
+
+镜像现在为 console / builder / runtime 三阶段。保留 Node 24.19.0、Python 3.12.11，
+所有 FROM 绑定 linux/amd64 的官方子 manifest digest（不是镜像 ID）；实读 Registry 的
+index/manifest/config 摘要及版本环境见 `scripts/build/base-images.json`。摘要固定并不代表拉取过镜像层。
+官方来源：[Node](https://hub.docker.com/_/node)、[Python](https://hub.docker.com/_/python)。
+
+console 显式安装 npm 11.6.2，消费根 package.json/package-lock.json、apps/web 的源码与配置，
+执行 npm ci 和 npm run build。runtime 只复制该阶段 dist；本机 dist、依赖目录不会入上下文。
+builder 固定 setuptools 80.9.0 / wheel 0.45.1，关闭产品构建隔离中的动态解析，先生成非 editable wheel。
+`runtime.lock` 仅将既有 requirements-dev.txt 的15个运行包原版本冻结并添加wheel哈希，排除ruff；
+哈希来源为固定网关基线 ec20f95e 的 uv.lock，已核该固定Git输入。没有修改pyproject或开发锁/产品依赖版本。
+全新 runtime venv 用 --require-hashes / --only-binary 安装后再 --no-deps 安装产品wheel，
+pip check 与 `python -I -m services.platform --help` 失败即阻断构建；runtime 不带构建后端或测试工具。
+
+本地复核入口（默认只打印计划；scope必须是本产品.runtime下全新目录，不复用测试环境）：
+
+```text
+python scripts/build/check_install.py --scope .runtime/ts111-install-new
+python scripts/build/check_install.py --scope .runtime/ts111-install-new --execute
+```
+
+它使用调用者Python创建两个新venv，并在源码之外运行已安装module及console入口、四个子命令help，
+严格比较运行包完整集合和导入来源，结果为scope/evidence.json。实际本地Python为3.12.14，
+与镜像3.12.11补丁版本不同；Windows wheel安装不证明Linux wheel能运行。
+
+产品Git不含contracts目录。协调者必须先在**新私有构建context**放入固定产品源码，
+逐包核协调根原manifest字节摘要并复制合同，不能直接用旧根Git合同或规范化行尾。
+`python scripts/build/snapshot_contract.py --source <协调根/contracts/包/v1> --target <新context/contracts/包/v1> --manifest-sha256 <协调冻结原字节SHA256> --execute`
+为该步骤提供入口（无execute只输出计划）。它验证所有成员后才创建新目标，按manifest声明的hash_basis验核，
+但复制始终使用原字节；拒绝错hash、缺失、越界路径及覆盖。逐包分别调用；不自动批准依赖或candidate。
+本轮7正式包仅在.runtime中验核复制，续期manifest固定c5017724187c1386b647fcc5b41ab3cb1702f27d6192f3a87fcefb23e7a5a61c。
+
+Linux由协调在显式新合成scope、确认本地Docker上下文后执行（本轮未执行）：
+
+```sh
+docker build --platform linux/amd64 --pull --tag tianshu-platform:ts111-review <verified-context>
+docker image inspect tianshu-platform:ts111-review --format '{{.Os}}/{{.Architecture}} {{.Id}} {{.Config.User}}'
+docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m --cpus 1 --entrypoint python tianshu-platform:ts111-review -I -m pip check
+docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m --cpus 1 tianshu-platform:ts111-review --help
+```
+
+image inspect 的 Id 是本地构建身份，不能填作registry digest。以上只做安装/入口检查，不配置真实数据，
+不证明鉴权ready、挂载权限、容器健康检查、SIGTERM或NAS通过；这些由DEP-G统一接线验证。
+本地实际：新venv wheel及完整依赖校验通过；6命令入口通过；Node/npm正式安装与网页构建通过（既有>500kB chunk提示）；
+9构建输入边界+13镜像定义专项通过0skip。Linux镜像层拉取/build/run、UID/GID实效与NAS均未执行。

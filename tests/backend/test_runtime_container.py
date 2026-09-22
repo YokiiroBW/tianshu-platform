@@ -78,16 +78,16 @@ class ImageDefinitionTests(unittest.TestCase):
     def test_the_image_definition_exists_and_pins_its_bases(self):
         self.assertTrue(DOCKERFILE.is_file())
         froms = [line for line in self.lines if line.startswith("FROM ")]
-        # Two stages: one that really builds the console, and the runtime that never inherits it.
-        self.assertEqual(len(froms), 2, froms)
-        runtime = [line for line in froms if line.startswith("FROM python:3.12.")]
-        console = [line for line in froms if line.startswith("FROM node:")]
+        # Three stages isolate the console, Python wheel build and installed runtime.
+        self.assertEqual(len(froms), 3, froms)
+        runtime = [line for line in froms if " python:3.12." in line and " AS runtime" in line]
+        console = [line for line in froms if " node:" in line]
         self.assertEqual(len(runtime), 1, froms)
         self.assertEqual(len(console), 1, froms)
         # Exact tags, not a floating major: the toolchain that built the artifact is the one the
         # definition names.
-        self.assertRegex(console[0], r"^FROM node:\d+\.\d+\.\d+-")
-        self.assertRegex(runtime[0], r"^FROM python:3\.12\.\d+-")
+        self.assertRegex(console[0], r"^FROM --platform=linux/amd64 node:\d+\.\d+\.\d+-")
+        self.assertRegex(runtime[0], r"^FROM --platform=linux/amd64 python:3\.12\.\d+-")
         self.assertIn(" AS console", console[0])
         self.assertIn(" AS runtime", runtime[0])
         self.assertNotIn(":latest", self.text)
@@ -98,7 +98,7 @@ class ImageDefinitionTests(unittest.TestCase):
         stage = self.text[self.text.index(" AS console") : self.text.index(" AS runtime")]
         # Strictly from the lockfile: `npm install` would resolve ranges on the day of the build.
         self.assertIn("RUN npm ci", stage)
-        self.assertNotIn("npm install", self.text)
+        self.assertIn("npm install --global npm@11.6.2", self.text)
         self.assertIn("COPY package.json package-lock.json ./", stage)
         # The real build, which is also the real typecheck.
         self.assertIn("RUN npm run build", stage)
@@ -136,6 +136,8 @@ class ImageDefinitionTests(unittest.TestCase):
                     "package-lock.json",
                     "apps/web/",
                     "--from=console",
+                    "--from=builder",
+                    "scripts/build/tools.lock",
                 ),
                 source,
             )
@@ -145,14 +147,16 @@ class ImageDefinitionTests(unittest.TestCase):
         # so nothing about the frontend toolchain can leak into what is deployed.
         stage = self.text[self.text.index(" AS console") : self.text.index(" AS runtime")]
         self.assertIn("COPY apps/web/ ./apps/web/", stage)
-        self.assertNotIn("COPY services/", stage)
+        self.assertNotIn("COPY services/", stage.split(" AS builder")[0])
 
     def test_dependencies_come_from_the_project_metadata_only(self):
         # A second pin list in the Dockerfile would drift from pyproject.toml, so the image must
         # install the project itself and never restate a version.
-        self.assertIn("RUN python -m pip install --no-compile .", self.text)
+        self.assertIn("--require-hashes -r runtime.lock", self.text)
+        self.assertIn("--no-build-isolation", self.text)
+        self.assertIn("--no-index --no-deps /wheels/*.whl", self.text)
         installs = [line for line in self.lines if "pip install" in line]
-        self.assertEqual(len(installs), 1)
+        self.assertEqual(len(installs), 3)
         for name in ("aiohttp", "jsonschema", "referencing", "ruff"):
             self.assertNotIn(name, self.text, name)
         # Node dependencies come from the lockfile, and only the build stage installs them.
@@ -183,7 +187,7 @@ class ImageDefinitionTests(unittest.TestCase):
         self.assertNotIn("Authorization", healthcheck)
 
     def test_the_entry_point_is_the_serve_command_on_the_declared_port(self):
-        self.assertIn('ENTRYPOINT ["python", "-m", "services.platform"]', self.text)
+        self.assertIn('ENTRYPOINT ["python", "-I", "-m", "services.platform"]', self.text)
         self.assertIn('CMD ["--settings", "/etc/tianshu/settings.json", "serve"', self.text)
         self.assertIn('--port", "8443', self.text)
         self.assertIn("EXPOSE 8443", self.text)
@@ -192,7 +196,7 @@ class ImageDefinitionTests(unittest.TestCase):
 
     def test_state_and_logs_are_declared_as_volumes_outside_the_image(self):
         self.assertIn('VOLUME ["/var/lib/tianshu", "/var/log/tianshu"]', self.text)
-        self.assertIn("chown -R 10001:10001 /var/lib/tianshu /var/log/tianshu", self.text)
+        self.assertIn("chown 10001:10001 /var/lib/tianshu /var/log/tianshu", self.text)
 
     def test_the_ignore_rules_keep_secrets_and_local_state_out(self):
         for pattern in (
@@ -223,7 +227,7 @@ class ImageDefinitionTests(unittest.TestCase):
     def test_a_build_that_is_not_verified_is_not_claimed_as_verified(self):
         # The definition must not pretend a container was built or run: it says so in its own text,
         # and this suite records the same fact as a skip rather than a pass.
-        self.assertIn("not the same as proving the deployment works", self.text)
+        self.assertIn("pending Linux validation", self.text)
 
 
 class DeploymentTemplateTests(unittest.TestCase):

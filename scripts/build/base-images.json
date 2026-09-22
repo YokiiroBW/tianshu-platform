@@ -1,0 +1,29 @@
+{
+  "checked_on": "2026-09-22",
+  "registry": "https://registry-1.docker.io/v2/",
+  "evidence": "registry manifests and config fetched over verified HTTPS; no layers pulled or containers executed",
+  "images": [
+    {
+      "repository": "docker.io/library/node",
+      "tag": "24.19.0-bookworm-slim",
+      "index_digest": "sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df",
+      "manifest_digest": "sha256:e5a8dee7bc1e6a215d224a7ef8206f7e77271bc3cabd5febf2beafac0674f174",
+      "config_digest": "sha256:622f209f6c16ba5af4d9a337cae6577d096f17174b904cfc6a5b0c81a2679c24",
+      "platform": "linux/amd64",
+      "version_environment": [
+        "NODE_VERSION=24.19.0"
+      ]
+    },
+    {
+      "repository": "docker.io/library/python",
+      "tag": "3.12.11-slim-bookworm",
+      "index_digest": "sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+      "manifest_digest": "sha256:c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49",
+      "config_digest": "sha256:688a685f6a1fa9250d7c6cee916889cbca364e4b027520110e0fce80c64a13e0",
+      "platform": "linux/amd64",
+      "version_environment": [
+        "PYTHON_VERSION=3.12.11"
+      ]
+    }
+  ]
+}

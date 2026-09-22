@@ -54,3 +54,8 @@ docs
 *.pfx
 settings.json
 *.settings.local.json
+
+# Build residue is never source input.
+**/*.egg-info
+/build
+.env.*
