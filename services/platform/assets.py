@@ -174,7 +174,7 @@ class Assets:
             remaining = DEADLINE - (time.monotonic() - started)
             require(remaining > 0, "deadline_exceeded", 504)
             attempted = True
-            diagnostics.outbound("started")
+            await diagnostics.outbound("started")
             async with asyncio.timeout(remaining):
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=remaining),
@@ -251,7 +251,7 @@ class Assets:
                             "invalid_upstream",
                             502,
                         )
-                        diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
+                        await diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
                         return {
                             "ok": True,
                             "request_id": request_id,
@@ -263,9 +263,11 @@ class Assets:
                         }
         except asyncio.CancelledError:
             # A cancelled read is reported as cancelled and nothing else: cancellation stops this
-            # caller's wait, and no claim is made about what the peer did with the request.
+            # caller's wait, and no claim is made about what the peer did with the request. The
+            # terminal record is confirmed within the terminal bound, with its obligation handed to
+            # the sink first, so a second cancellation ends the read without ending the record.
             if attempted:
-                diagnostics.outbound("cancelled", duration_ms=span.elapsed() * 1000.0)
+                await diagnostics.outbound("cancelled", duration_ms=span.elapsed() * 1000.0)
             raise
         except TimeoutError:
             failure = Fault("deadline_exceeded", 504)
@@ -277,11 +279,11 @@ class Assets:
             failure = exc
         if attempted:
             if failure.code in ("deadline_exceeded", "timeout"):
-                diagnostics.outbound(
+                await diagnostics.outbound(
                     "timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout"
                 )
             else:
-                diagnostics.outbound(
+                await diagnostics.outbound(
                     "failed",
                     duration_ms=span.elapsed() * 1000.0,
                     error_code=diagnostics.safe_code(failure.code),

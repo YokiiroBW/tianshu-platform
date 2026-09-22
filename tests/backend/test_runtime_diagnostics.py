@@ -76,6 +76,16 @@ def wait_until(predicate, timeout=5.0, interval=0.01):
     return predicate()
 
 
+async def wait_for(predicate, timeout=5.0, interval=0.01):
+    """The same bounded wait from a coroutine: it yields, so the loop keeps running."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(interval)
+    return predicate()
+
+
 class SinkTestCase(unittest.TestCase):
     """A case that owns its process-wide sink and always puts the module back as it found it."""
 
@@ -257,10 +267,18 @@ class VocabularyTests(SinkTestCase):
     def test_finish_records_the_terminal_state_and_the_authorisation_result(self):
         self.capture()
         correlation = diagnostics.new_correlation()
-        diagnostics.finish(200, 4.25, correlation)
+        diagnostics.finish(200, 4.25, correlation, auth=diagnostics.AUTH_SUCCEEDED)
         names = [record["event"] for record in self.emitted()]
         self.assertEqual(names, ["http.request.finished", "http.auth.succeeded"])
         self.assertEqual(self.emitted()[0]["duration_ms"], 4.25)
+
+    def test_finish_without_a_disposition_never_claims_authentication(self):
+        """The absent claim is the honest one: a caller that proves nothing gets nothing written."""
+        self.capture()
+        diagnostics.finish(200, 1.0, diagnostics.new_correlation())
+        names = [record["event"] for record in self.emitted()]
+        self.assertEqual(names, ["http.request.finished"])
+        self.assertNotIn("http.auth.succeeded", names)
 
     def test_a_refusal_is_recorded_as_a_rejected_authorisation_exactly_once(self):
         self.capture()
@@ -274,7 +292,7 @@ class VocabularyTests(SinkTestCase):
 
     def test_an_unknown_path_never_claims_authentication_happened(self):
         self.capture()
-        diagnostics.finish(404, 1.0, diagnostics.new_correlation(), known_path=False)
+        diagnostics.finish(404, 1.0, diagnostics.new_correlation())
         names = [record["event"] for record in self.emitted()]
         self.assertEqual(names, ["http.request.finished", "http.request.unknown_path"])
 
@@ -285,14 +303,14 @@ class VocabularyTests(SinkTestCase):
         self.assertEqual(records[0]["error_code"], "internal_error")
         self.assertEqual(records[0]["level"], "ERROR")
 
-    def test_outbound_only_accepts_the_registered_kinds(self):
+    async def test_outbound_only_accepts_the_registered_kinds(self):
         self.capture()
         correlation = diagnostics.new_correlation()
         for kind in diagnostics.OUTBOUND_KINDS:
-            diagnostics.outbound(kind, correlation_id=correlation, duration_ms=2.0)
+            await diagnostics.outbound(kind, correlation_id=correlation, duration_ms=2.0)
         names = [record["event"] for record in self.emitted()]
         self.assertEqual(names, ["outbound.call." + kind for kind in diagnostics.OUTBOUND_KINDS])
-        self.assertIsNone(diagnostics.outbound("exploded", correlation_id=correlation))
+        self.assertIsNone(await diagnostics.outbound("exploded", correlation_id=correlation))
         self.assertEqual(len(self.emitted()), len(diagnostics.OUTBOUND_KINDS))
 
     def test_an_unregistered_event_name_is_refused_and_never_swallowed(self):
@@ -593,7 +611,7 @@ class DurabilityTests(SinkTestCase):
         self.assertIsNone(diagnostics.event("runtime.starting", "INFO", "started"))
         self.assertFalse(diagnostics.accept(diagnostics.new_correlation()))
 
-    def test_a_refused_event_never_changes_the_callers_own_result(self):
+    async def test_a_refused_event_never_changes_the_callers_own_result(self):
         occupied = Path(self.temp.name) / "occupied"
         occupied.write_text("file", encoding="utf-8")
         sink = diagnostics.Diagnostics(str(occupied))
@@ -603,13 +621,13 @@ class DurabilityTests(SinkTestCase):
         published = {"config_version": 7}
         self.assertFalse(diagnostics.accept(diagnostics.new_correlation()))
         self.assertEqual(published, {"config_version": 7})
-        self.assertIsNone(diagnostics.outbound("succeeded"))
+        self.assertIsNone(await diagnostics.outbound("succeeded"))
         self.assertIsNone(diagnostics.event("cli.action.finished", "INFO", "succeeded"))
 
-    def test_nothing_is_written_when_no_sink_was_ever_assembled(self):
+    async def test_nothing_is_written_when_no_sink_was_ever_assembled(self):
         diagnostics.reset()
         self.assertIsNone(diagnostics.event("runtime.starting", "INFO", "started"))
-        self.assertIsNone(diagnostics.outbound("started"))
+        self.assertIsNone(await diagnostics.outbound("started"))
         self.assertTrue(diagnostics.admittable())
         self.assertEqual(log_files(self.directory), [])
 
@@ -925,6 +943,276 @@ class OutboundTerminalTests(unittest.IsolatedAsyncioTestCase):
         # A read that never left the queue is not "started", and its end says it was not sent.
         self.assertEqual(self.named("outbound.call.started"), [])
         self.assertEqual(cancelled[0]["error_code"], "outbound_not_sent")
+
+
+class SettlementTests(SinkTestCase):
+    """Shutdown reports what really happened to the events it accepted.
+
+    A clean seal on a file that never received them is not a success, a timely exit is not a durable
+    one, and neither can be turned into the other by asking a second time. Every assertion here is
+    made on the sink's own state and on the bytes it really wrote; no test flushes on the
+    implementation's behalf before checking.
+    """
+
+    def failing_sink(self, **kwargs):
+        sink = self.durable(**kwargs)
+
+        def failed(line):
+            raise OSError("synthetic write failure")
+
+        sink._sink.write = failed
+        return sink
+
+    def test_a_write_failure_before_a_stop_is_never_reported_as_settled(self):
+        sink = self.failing_sink()
+        accepted = sink.emit("runtime.started", "INFO", "succeeded")
+        self.assertTrue(wait_until(lambda: sink.state == diagnostics.UNAVAILABLE))
+        self.assertFalse(sink.close(0.5))
+        self.assertTrue(sink._owner_done.wait(5.0))
+        # The owner stopped, and that is all it did: one accepted event was never written.
+        self.assertFalse(sink._final_ok)
+        self.assertEqual(sink.unconfirmed, 1)
+        self.assertEqual(sum(path.stat().st_size for path in self.directory.glob("*.jsonl")), 0)
+        # The accepted event is still there to be reconciled, not thrown away to make the count
+        # work: the queue is the evidence, and dropping it is not a way to become settled.
+        self.assertTrue(any(item[0] == "line" and item[2] == accepted for item in sink._queue))
+
+    def test_a_repeated_close_and_flush_never_overwrite_a_failure(self):
+        sink = self.failing_sink()
+        sink.emit("runtime.started", "INFO", "succeeded")
+        self.assertTrue(wait_until(lambda: sink.state == diagnostics.UNAVAILABLE))
+        first = sink.close(0.5)
+        sink._owner_done.wait(5.0)
+        counted = sink.unconfirmed
+        # Asking again is not a way to become settled: the failure is a fact about this process, and
+        # a later caller must not be able to read a success into it.
+        for _ in range(3):
+            self.assertFalse(sink.close(0.5))
+            self.assertFalse(sink.flush(0.1))
+        self.assertFalse(first)
+        self.assertEqual(sink.unconfirmed, counted)
+        self.assertEqual(counted, 1)
+
+    def test_a_sync_failure_before_a_stop_is_never_reported_as_settled(self):
+        sink = self.durable()
+        sink.emit("runtime.started", "INFO", "succeeded")
+
+        def failed():
+            raise OSError("synthetic sync failure")
+
+        sink._sink.sync = failed
+        self.assertTrue(wait_until(lambda: sink.state == diagnostics.UNAVAILABLE))
+        self.assertFalse(sink.close(0.5))
+        self.assertTrue(sink._owner_done.wait(5.0))
+        # Written is not the same as durable: the bytes exist, the watermark never moved, and the
+        # shutdown says so instead of counting the write syscall as a confirmation.
+        self.assertEqual(sink._synced, 0)
+        self.assertFalse(sink._final_ok)
+        self.assertEqual(sink.unconfirmed, 1)
+        self.assertFalse(sink.flush(0.1))
+
+    def test_a_seal_that_fails_never_reports_a_settled_shutdown(self):
+        sink = self.durable()
+        self.assertIsNotNone(sink.emit_durable("runtime.started", "INFO", "succeeded"))
+
+        def failed():
+            raise OSError("synthetic seal failure")
+
+        sink._sink.seal = failed
+        self.assertFalse(sink.close(0.5))
+        self.assertTrue(sink._owner_done.wait(5.0))
+        self.assertFalse(sink._final_ok)
+        self.assertFalse(sink.flush(0.1))
+        # The descriptor is still released exactly once, by the thread that opened it.
+        self.assertIsNone(sink._sink.fd)
+
+    def test_a_healthy_shutdown_still_settles_every_accepted_event(self):
+        """The control: the stricter verdict must not turn every shutdown into a failure."""
+        sink = self.durable()
+        accepted = [sink.emit("cli.action.started", "INFO", "started") for _ in range(3)]
+        self.assertTrue(sink.close(2.0))
+        self.assertTrue(sink._owner_done.wait(5.0))
+        self.assertTrue(sink._final_ok)
+        self.assertTrue(sink.flush(0.1))
+        self.assertEqual(sink.unconfirmed, 0)
+        records = read_events(self.directory)
+        self.assertEqual([record["sequence"] for record in records], accepted)
+
+    def test_a_close_that_runs_out_of_its_bound_counts_what_was_not_yet_durable(self):
+        sink = self.durable()
+        sink.emit("runtime.started", "INFO", "succeeded")
+        release = threading.Event()
+        real = sink._sink.sync
+
+        def held_sync():
+            release.wait(5)
+            return real()
+
+        sink._sink.sync = held_sync
+        try:
+            # The bound expires with an accepted event not yet fsynced: that is recorded as
+            # unconfirmed rather than reported as a prompt, clean stop.
+            self.assertFalse(sink.close(0.05))
+            self.assertEqual(sink.unconfirmed, 1)
+        finally:
+            release.set()
+        self.assertTrue(sink._owner_done.wait(5.0))
+        # The owner still finished its own work, and the event really is durable now - but the
+        # confirmation that expired stays expired instead of being quietly rewritten.
+        self.assertTrue(sink._final_ok)
+        self.assertEqual(sink.unconfirmed, 1)
+        self.assertEqual(len(read_events(self.directory)), 1)
+
+
+class CancellationSettlementTests(unittest.IsolatedAsyncioTestCase):
+    """A cancelled call's terminal record is owned by the sink, not by the cancelled task.
+
+    The upstream is a real TLS peer and the disk is really held open, so the terminal bound really
+    expires. Nothing here flushes before asserting: a test that asks the sink to finish the work
+    first would be doing the implementation's job, and would pass even if the record had been
+    dropped when the task went away.
+    """
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.logs = self.directory / "logs"
+        self.sink = diagnostics.Diagnostics(str(self.logs), terminal_timeout=0.25)
+        diagnostics.activate(self.sink)
+        self.addCleanup(diagnostics.reset)
+        self.addCleanup(self.stop_sink)
+        self.tls = certificates(self.directory / "tls")
+        self.release = threading.Event()
+        self.held = 0
+        self.holding = threading.Event()
+
+    def stop_sink(self):
+        self.release.set()
+        self.sink.close(2.0)
+        self.sink._owner_done.wait(10.0)
+
+    def raw(self):
+        """What is really on disk right now, read without asking the sink to do anything."""
+        return read_events(self.logs)
+
+    def hold_writes(self):
+        """Hold the next write in the owner thread, so the terminal bound really expires."""
+        real = self.sink._sink.write
+
+        def held(line):
+            self.held += 1
+            self.holding.set()
+            self.release.wait(10)
+            return real(line)
+
+        self.sink._sink.write = held
+
+    async def hanging_upstream(self):
+        entered = asyncio.Event()
+
+        async def hang(request):
+            entered.set()
+            await asyncio.sleep(2.0)
+            return web.json_response({})
+
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(
+            self.tls["valid"]["certificate_file"], self.tls["valid"]["private_key_file"]
+        )
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", hang)
+        runner, base = await start_server(app, tls=context)
+        self.addAsyncCleanup(runner.cleanup)
+        return entered, base
+
+    def settings_for(self, base):
+        return {
+            "base_url": base,
+            "token_env": "TS012_ADMIN",
+            "ca_file": self.tls["valid"]["certificate_file"],
+            "timeout_seconds": 10,
+        }
+
+    async def cancelled_call(self):
+        """One real in-flight call, cancelled: returns once its handler reached the wait."""
+        entered, base = await self.hanging_upstream()
+        payload = {"query": {"request_id": "request:synthetic-cancel-settlement"}}
+        with patch.dict(os.environ, {"TS012_ADMIN": CREDENTIAL}, clear=False):
+            task = asyncio.ensure_future(
+                transport.core_web_call(
+                    self.settings_for(base), "web-snapshot", payload, None, None
+                )
+            )
+            await asyncio.wait_for(entered.wait(), 5)
+            # The started event is durable before the hold, so the only record still owed is the
+            # cancelled terminal itself.
+            self.assertTrue(await wait_for(lambda: self.sink._synced >= 1))
+            self.hold_writes()
+            task.cancel()
+            self.assertTrue(await wait_for(self.holding.is_set, timeout=5))
+        return task
+
+    async def test_a_cancelled_terminal_is_counted_when_its_bound_expires(self):
+        task = await self.cancelled_call()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 10)
+        # No flush, no close, no help: the record could not be confirmed inside the terminal bound,
+        # and that is what the process says about itself.
+        self.assertEqual(self.sink.state, diagnostics.UNAVAILABLE)
+        self.assertGreaterEqual(self.sink.unconfirmed, 1)
+        self.assertEqual(self.sink.error, "log_flush_timeout")
+        # The obligation is still the sink's, and the sink really does write it once the disk moves:
+        # a cancelled caller hands the record over instead of taking it away with it.
+        self.release.set()
+        self.assertTrue(await wait_for(lambda: self.sink._synced >= self.sink._sequence))
+        self.assertEqual(
+            [
+                record["outcome"]
+                for record in self.raw()
+                if record["event"] == "outbound.call.cancelled"
+            ],
+            ["cancelled"],
+        )
+        self.assertEqual(self.sink._owed, set())
+
+    async def test_a_second_cancellation_does_not_drop_the_terminal_record(self):
+        task = await self.cancelled_call()
+        # The obligation was registered before the wait, so a second cancellation ends the wait
+        # without ending the responsibility.
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 10)
+        self.release.set()
+        self.assertTrue(await wait_for(lambda: self.sink._synced >= self.sink._sequence))
+        records = [record for record in self.raw() if record["event"] == "outbound.call.cancelled"]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["outcome"], "cancelled")
+        # Settled by the sink, so nothing had to be counted as unconfirmed.
+        self.assertEqual(self.sink.unconfirmed, 0)
+        self.assertEqual(self.sink._owed, set())
+
+    async def test_a_cancelled_terminal_racing_a_shutdown_is_still_written(self):
+        task = await self.cancelled_call()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 10)
+        # The shutdown bound expires while the disk is held: it reports that it could not confirm
+        # settlement rather than reporting a clean, prompt stop.
+        self.assertFalse(self.sink.close(0.05))
+        self.assertGreaterEqual(self.sink.unconfirmed, 1)
+        self.release.set()
+        self.assertTrue(self.sink._owner_done.wait(10))
+        # The owner still finished its own work: the record is durable, and the segment is sealed.
+        self.assertTrue(self.sink._final_ok)
+        self.assertTrue(await wait_for(lambda: bool(self.raw())))
+        self.assertEqual(
+            [
+                record["outcome"]
+                for record in self.raw()
+                if record["event"] == "outbound.call.cancelled"
+            ],
+            ["cancelled"],
+        )
 
 
 class SlowDiskTests(SinkTestCase):

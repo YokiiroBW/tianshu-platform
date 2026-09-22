@@ -17,6 +17,7 @@ from aiohttp import web
 
 from .auth import secret
 from .contracts import Fault, digest, loads, require
+from .diagnostics import AUTH_SUCCEEDED
 from .home import Home
 from .tasks import Tasks
 from .transport import CoreFault
@@ -29,6 +30,12 @@ from .web_sender import WebSender
 COOKIE = "tianshu_session"
 SESSION_TTL = 8 * 3600
 LOGIN_TTL = 600
+# The one fact the serving boundary cannot work out for itself: whether this request really was
+# authenticated. A cookie header, an Authorization header or a path that reached the console are all
+# things a stranger can produce, so none of them is evidence; only this console knows when a password
+# was verified or when a live session it issued after one was presented. It sets this key at exactly
+# those points and nowhere else, and the boundary writes `http.auth.succeeded` only when it is set.
+CONSOLE_AUTH = web.RequestKey("console_authenticated", str)
 MODELS_PREFIX = "/api/web/models/"
 HOME_PREFIX = "/api/web/home/"
 TASKS_PREFIX = "/api/web/tasks/"
@@ -308,6 +315,10 @@ class WebConsole:
             if session["authenticated"]:
                 fingerprint, conversations = self.authority()
                 require(session["fingerprint"] == fingerprint, "session_expired", 401)
+                # A live session that was created by a verified password and still belongs to this
+                # deployment: presenting it is authentication, and this is the only place a page
+                # request can demonstrate that.
+                request[CONSOLE_AUTH] = AUTH_SUCCEEDED
                 result.update(
                     authenticated=True,
                     username=self.config["username"],
@@ -374,11 +385,18 @@ class WebConsole:
                 )
                 self.sessions.pop(digest(token), None)
                 token, session = self.issue(True, fingerprint)
+            # The operator's own password was just verified against this deployment's hash: a real
+            # authentication happened in this request, whatever else the answer says.
+            request[CONSOLE_AUTH] = AUTH_SUCCEEDED
             response = web.json_response({"authenticated": True, "csrf": session["csrf"]})
             self.set_cookie(response, token, True)
             return response
         if request.path == "/api/web/logout":
             require(body == {}, "invalid_input", 400)
+            if session["authenticated"]:
+                # Ending a session that was authenticated is itself an authenticated request; an
+                # unauthenticated visitor logging out has proved nothing about identity.
+                request[CONSOLE_AUTH] = AUTH_SUCCEEDED
             self.sessions.pop(digest(token), None)
             response = web.json_response({"authenticated": False})
             response.del_cookie(
@@ -392,6 +410,11 @@ class WebConsole:
         require(session["authenticated"], "unauthorized", 401)
         fingerprint, _ = self.authority()
         require(session["fingerprint"] == fingerprint, "session_expired", 401)
+        # The session is live, authenticated and still pinned to this deployment's current policy:
+        # that, and only that, is what makes this an authenticated request rather than one that
+        # merely carried a cookie. A later refusal in this same request answers 401/403 and is
+        # recorded as a refusal, which the boundary gives precedence to.
+        request[CONSOLE_AUTH] = AUTH_SUCCEEDED
         if request.path.startswith(MODELS_PREFIX):
             # Management authority is server-side session state, never a browser claim.
             result = await self.models.route(request.path, body, session)

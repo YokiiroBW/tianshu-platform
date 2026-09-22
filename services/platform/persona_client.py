@@ -162,14 +162,14 @@ class PersonaClient:
             async with asyncio.timeout(DEADLINE_SECONDS):
                 # Waiting for an outbound slot is part of the same bounded wait: a queued read
                 # never gets its own fresh ten seconds.
-                diagnostics.outbound("queued")
+                await diagnostics.outbound("queued")
                 async with self.slots:
                     # The wait is over and nothing has been sent yet: this is the last moment at
                     # which a request that lost its authority can still be stopped for free.
                     prove(document)
                     token = self.credential()
                     sent = True
-                    diagnostics.outbound("started")
+                    await diagnostics.outbound("started")
                     async with aiohttp.ClientSession(
                         timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=False
                     ) as session:
@@ -194,19 +194,21 @@ class PersonaClient:
             # outbound event with no end reads as a call still in flight, which is a worse
             # misreport than the one it replaces. The fixed code separates a read that could not
             # have reached the peer from one that may have, without inventing a field to say so.
-            diagnostics.outbound(
+            # The terminal record is confirmed within the terminal bound and its obligation is the
+            # sink's from before the wait, so a second cancellation cannot drop it.
+            await diagnostics.outbound(
                 "cancelled",
                 duration_ms=span.elapsed() * 1000.0,
                 error_code=None if sent else "outbound_not_sent",
             )
             raise
         except TimeoutError:
-            diagnostics.outbound(
+            await diagnostics.outbound(
                 "timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout"
             )
             raise Fault("timeout", 503) from None
         except (aiohttp.ClientError, OSError, ssl.SSLError):
-            diagnostics.outbound(
+            await diagnostics.outbound(
                 "failed",
                 duration_ms=span.elapsed() * 1000.0,
                 error_code="dependency_unavailable",
@@ -216,7 +218,7 @@ class PersonaClient:
             # Only a call that actually left this process is an outbound result; a scope that ended
             # before the socket was written is reported as this request's own refusal.
             if sent:
-                diagnostics.outbound(
+                await diagnostics.outbound(
                     "failed",
                     duration_ms=span.elapsed() * 1000.0,
                     error_code=diagnostics.safe_code(exc.code),
@@ -227,13 +229,13 @@ class PersonaClient:
         except Fault as exc:
             # The peer answered, but not with something this page may use: the call still has a
             # terminal outbound outcome and it is not a success.
-            diagnostics.outbound(
+            await diagnostics.outbound(
                 "failed",
                 duration_ms=span.elapsed() * 1000.0,
                 error_code=diagnostics.safe_code(exc.code),
             )
             raise
-        diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
+        await diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
         return result
 
     async def _read(self, response, operation, request_id=None):

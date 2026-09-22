@@ -37,7 +37,7 @@ from runtime_fixture import (
 
 from web_fixtures import PASSWORD
 
-from services.platform import diagnostics, diagnostics_config, runtime_health
+from services.platform import diagnostics, diagnostics_config, models, runtime_health
 from services.platform.contracts import Fault
 from services.platform.server import create_app
 from services.platform.service import Platform, registered_credentials, validate_settings
@@ -249,6 +249,124 @@ class ServingBoundaryTests(ProbeTestCase):
         # The refusal happens in front of the work, so there is nothing to undo and nothing new in
         # the log either: a refused request is never admitted.
         self.assertEqual(len(self.records()), before)
+
+    async def test_a_public_page_with_an_unrelated_cookie_claims_nothing(self):
+        """The measured false positive: a correct Host and a cookie that authenticates nothing.
+
+        The console serves its own page to anybody; the cookie here was never issued by this
+        deployment and authenticates nothing at all. The mere presence of a `Cookie` header is
+        something a stranger can produce, so it is not evidence of authentication.
+        """
+        client = await self.console()
+        async with client.get(
+            self.url + "/", headers={"Cookie": "unregistered=synthetic-not-a-session"}
+        ) as response:
+            self.assertEqual(response.status, 200)
+        names = [record["event"] for record in self.records()]
+        self.assertIn("http.request.finished", names)
+        self.assertNotIn("http.auth.succeeded", names)
+        self.assertNotIn("http.auth.rejected", names)
+
+    async def test_a_forged_authorization_header_on_a_console_route_claims_nothing(self):
+        """A header nobody verified is a header, not an identity."""
+        client = await self.console()
+        async with client.get(
+            self.url + "/api/web/snapshot",
+            headers={"Authorization": "Bearer synthetic-forged-credential"},
+        ) as response:
+            self.assertEqual(response.status, 403)
+        names = [record["event"] for record in self.records()]
+        self.assertNotIn("http.auth.succeeded", names)
+
+    async def test_the_console_page_after_a_real_login_still_claims_only_what_it_verified(self):
+        """The contrast that makes the rule meaningful: a real session, on a route that checks it.
+
+        The session request really presents a session this deployment issued after verifying the
+        operator's password, so it is recorded. The public page load that follows carries the same
+        cookie but verifies nothing, so it claims nothing - which is exactly the difference the
+        measured false positive had erased.
+        """
+        client = await self.console()
+        await self.login(client)
+        before = len(self.named("http.auth.succeeded"))
+        async with client.get(self.url + "/api/web/session") as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(len(self.named("http.auth.succeeded")), before + 1)
+        after = len(self.named("http.auth.succeeded"))
+        async with client.get(self.url + "/") as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(len(self.named("http.auth.succeeded")), after)
+
+    async def test_a_cancelled_request_settles_its_own_terminal_record(self):
+        """The inbound half of the same rule, checked without the test finishing the work.
+
+        The disk is held, so the terminal bound really expires. Nothing here flushes or closes on the
+        implementation's behalf: the sink reports for itself what became of the record, and the
+        record is still written by the owner afterwards.
+        """
+        client = await self.console()
+        correlation = diagnostics.new_correlation()
+        release = threading.Event()
+        holding = threading.Event()
+        real = self.sink._sink.write
+
+        def held(line):
+            # Only the terminal record is held. The request's own admission is confirmed first, so
+            # the request really reaches the handler and really is cancelled: the disk is held at the
+            # one moment that matters, which is when the terminal record asks to be made durable.
+            if b"http.request.finished" in line:
+                holding.set()
+                release.wait(10)
+            return real(line)
+
+        def cancelled(header, request):
+            raise asyncio.CancelledError()
+
+        self.platform.origins.resolve = cancelled
+        self.sink._sink.write = held
+        try:
+            try:
+                async with client.post(
+                    self.url + "/internal/v1/origins/resolve",
+                    json=self.resolve_body(),
+                    headers={
+                        "Authorization": "Bearer synthetic-canary",
+                        diagnostics.HEADER: correlation,
+                    },
+                ) as response:
+                    await response.read()
+            except aiohttp.ClientError:
+                pass
+            for _ in range(500):
+                if holding.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            self.assertTrue(holding.is_set())
+            # No flush, no close: the confirmation expired inside the terminal bound and the sink
+            # says so about itself rather than the test making it true.
+            for _ in range(500):
+                if self.sink.state == diagnostics.UNAVAILABLE:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(self.sink.state, diagnostics.UNAVAILABLE)
+            self.assertEqual(self.sink.error, "log_flush_timeout")
+            self.assertGreaterEqual(self.sink.unconfirmed, 1)
+        finally:
+            release.set()
+        for _ in range(500):
+            if self.sink._synced >= self.sink._sequence:
+                break
+            await asyncio.sleep(0.01)
+        # The obligation stayed with the sink, which wrote and fsynced the record once the disk
+        # moved: a cancelled request does not take its terminal record with it.
+        finished = [
+            record
+            for record in self.records()
+            if record["event"] == "http.request.finished"
+            and record["correlation_id"] == correlation
+        ]
+        self.assertEqual([record["outcome"] for record in finished], ["cancelled"])
+        self.assertEqual(self.sink._owed, set())
 
     async def test_a_cancelled_request_still_gets_its_terminal_state(self):
         client = await self.console()
@@ -530,6 +648,76 @@ class ReadinessTests(ProbeTestCase):
         self.assertFalse(probe._inflight)
         self.assertEqual(running["most"], 1)
         self.assertEqual(probe._cached["status"], "ready")
+
+    async def test_a_late_result_never_becomes_a_fresh_green(self):
+        """A check that outlived its own budget reports the moment it started, not the moment it
+        happened to arrive: otherwise a slow, stale snapshot would be served as a current fact."""
+        await self.boot()
+        now = {"value": 1000.0}
+        probe = runtime_health.Probe(
+            self.platform.health, clock=lambda: now["value"], budget=0.05, cache_seconds=1.0
+        )
+        release = threading.Event()
+        real = probe.evaluate
+        calls = {"count": 0}
+
+        def slow():
+            calls["count"] += 1
+            release.wait(10)
+            return real()
+
+        probe.evaluate = slow
+        try:
+            timed_out = await probe.ready()
+            self.assertEqual(timed_out["status"], "not_ready")
+            # The clock moves well past the cache TTL while the check is still running, so the answer
+            # it eventually produces is a fact about a moment that has already gone.
+            now["value"] += 10.0
+        finally:
+            release.set()
+        for _ in range(500):
+            if not probe._inflight:
+                break
+            await asyncio.sleep(0.01)
+        self.assertFalse(probe._inflight)
+        late = probe._cached
+        self.assertEqual(late["status"], "ready")
+        # The owner is free, and the late answer is not handed back as a current one: the next
+        # caller really checks again.
+        served = await probe.ready()
+        self.assertEqual(calls["count"], 2)
+        self.assertIsNot(served, late)
+        self.assertEqual(served["status"], "ready")
+
+    async def test_a_result_that_arrived_late_but_still_inside_its_ttl_is_reused(self):
+        """The control: the age is the check's own, so a slow-but-recent answer is still reused."""
+        await self.boot()
+        now = {"value": 1000.0}
+        probe = runtime_health.Probe(
+            self.platform.health, clock=lambda: now["value"], budget=0.05, cache_seconds=30.0
+        )
+        release = threading.Event()
+        real = probe.evaluate
+        calls = {"count": 0}
+
+        def slow():
+            calls["count"] += 1
+            release.wait(10)
+            return real()
+
+        probe.evaluate = slow
+        try:
+            self.assertEqual((await probe.ready())["status"], "not_ready")
+            now["value"] += 1.0
+        finally:
+            release.set()
+        for _ in range(500):
+            if not probe._inflight:
+                break
+            await asyncio.sleep(0.01)
+        late = probe._cached
+        self.assertIs(await probe.ready(), late)
+        self.assertEqual(calls["count"], 1)
 
     async def test_a_stale_green_is_not_reused_as_a_current_fact(self):
         await self.boot()
@@ -952,11 +1140,26 @@ class PreflightTests(ProbeTestCase):
             "a top-level key this build does not know": {**base, "mystery": 1},
             "no database path": {k: v for k, v in base.items() if k != "database_path"},
             "a flag that is not a boolean": {**base, "native_config_http": "yes"},
+            # The publication lifetime is validated by the model owner while it is assembled, which
+            # is exactly the kind of rule a preflight is tempted to re-implement - and to get wrong.
+            "a lifetime the model owner refuses": {**base, "config_max_lifetime_seconds": 0},
+            "a lifetime past the published maximum": {
+                **base,
+                "config_max_lifetime_seconds": 86401,
+            },
+            "a lifetime that is not an integer": {
+                **base,
+                "config_max_lifetime_seconds": "3600",
+            },
         }
         for description, settings in cases.items():
             with self.subTest(description):
                 with self.assertRaises(Fault):
                     validate_settings(copy.deepcopy(settings))
+                # The real composition root refuses it too, so the preflight is not the only thing
+                # that knows about the rule.
+                with self.assertRaises(Fault):
+                    Platform(copy.deepcopy(settings))
                 report = runtime_health.preflight(
                     settings,
                     credential_names=registered_credentials(settings),
@@ -971,6 +1174,51 @@ class PreflightTests(ProbeTestCase):
                     {"invalid_input", "dependency_unavailable"} & set(report["reasons"]),
                     report["reasons"],
                 )
+
+    def test_a_deployment_that_already_booted_is_not_ready_when_only_the_lifetime_is_wrong(self):
+        """The measured divergence: a booted deployment whose only fault is one setting.
+
+        Everything else here is a real, already-initialised deployment - store, sidecars and static
+        build all exist - so the *only* thing that can make this red is the configuration check
+        itself. A preflight that answered `ready` here would be calling a deployment ready that the
+        service then refuses to start.
+        """
+        settings = runtime_settings(self.temp.name, static=built_static(self.directory / "static"))
+        create_app(Platform(settings))
+        report = runtime_health.preflight(
+            settings,
+            credential_names=registered_credentials(settings),
+            credential_present=lambda name: os.environ.get(name) is not None,
+            validate=validate_settings,
+        )
+        self.assertEqual(report["status"], "ready", report["reasons"])
+        broken = {**settings, "config_max_lifetime_seconds": 0}
+        report = runtime_health.preflight(
+            broken,
+            credential_names=registered_credentials(broken),
+            credential_present=lambda name: os.environ.get(name) is not None,
+            validate=validate_settings,
+        )
+        self.assertEqual(report["status"], "not_ready", report)
+        self.assertEqual(report["checks"]["config"], "failed")
+        self.assertIn("invalid_input", report["reasons"])
+        self.assertNotIn("requires_initialization", report["reasons"])
+        with self.assertRaises(Fault) as refused:
+            Platform(broken)
+        self.assertEqual(refused.exception.code, "invalid_input")
+
+    def test_the_lifetime_rule_is_the_model_owners_own(self):
+        """One rule, one place: the validator and the model owner agree by construction."""
+        settings = runtime_settings(self.temp.name)
+        self.assertEqual(models.validate_max_lifetime({}), models.DEFAULT_MAX_LIFETIME)
+        self.assertEqual(models.validate_max_lifetime(settings), models.DEFAULT_MAX_LIFETIME)
+        self.assertEqual(
+            models.validate_max_lifetime({**settings, "config_max_lifetime_seconds": 86400}), 86400
+        )
+        for bad in (0, -1, 86401, True, 1.0, "3600", None):
+            with self.subTest(repr(bad)):
+                with self.assertRaises(Fault):
+                    models.validate_max_lifetime({"config_max_lifetime_seconds": bad})
 
     def test_a_first_boot_on_an_empty_directory_is_still_only_uninitialized(self):
         """Nothing about a good deployment may be reported as broken just because it is new."""

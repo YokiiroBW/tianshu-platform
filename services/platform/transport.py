@@ -25,7 +25,7 @@ async def core_web_call(settings, path, payload, contracts, schema):
     token = secret(settings["token_env"])
     require(token is not None, "dependency_unavailable", 503)
     span = diagnostics.Span("core_web_call")
-    diagnostics.outbound("started")
+    await diagnostics.outbound("started")
     sent = False
     try:
         tls = ssl.create_default_context(cafile=settings.get("ca_file"))
@@ -62,31 +62,35 @@ async def core_web_call(settings, path, payload, contracts, schema):
                     )
                     raise CoreFault(result, response.status)
                 contracts.check(schema, result)
-                diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
+                await diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
                 return result
     except Fault as exc:
-        diagnostics.outbound(
+        await diagnostics.outbound(
             "failed",
             duration_ms=span.elapsed() * 1000.0,
             error_code=diagnostics.safe_code(exc.code),
         )
         raise
     except TimeoutError:
-        diagnostics.outbound("timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout")
+        await diagnostics.outbound(
+            "timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout"
+        )
         raise Fault("dependency_unavailable", 503) from None
     except asyncio.CancelledError:
         # Cancellation is a terminal state of this call, not the absence of one: the started event
         # already exists, so leaving it without an end would misreport a call that is over as one
         # still in flight. The fixed code says whether anything could have left this process, and
-        # nothing is retried or claimed about the remote result either way.
-        diagnostics.outbound(
+        # nothing is retried or claimed about the remote result either way. The terminal record is
+        # confirmed within the terminal bound, and its obligation belongs to the sink before the
+        # wait starts, so a second cancellation ends this call without ending the record.
+        await diagnostics.outbound(
             "cancelled",
             duration_ms=span.elapsed() * 1000.0,
             error_code=None if sent else "outbound_not_sent",
         )
         raise
     except (aiohttp.ClientError, OSError, ssl.SSLError):
-        diagnostics.outbound(
+        await diagnostics.outbound(
             "failed",
             duration_ms=span.elapsed() * 1000.0,
             error_code="dependency_unavailable",
@@ -131,7 +135,7 @@ async def core_post(settings, ingest, contracts=None):
     token = secret(settings["token_env"])
     require(token is not None, "dependency_unavailable", 503)
     span = diagnostics.Span("core_post")
-    diagnostics.outbound("started")
+    await diagnostics.outbound("started")
     sent = False
     try:
         tls = ssl.create_default_context(cafile=settings.get("ca_file"))
@@ -157,22 +161,25 @@ async def core_post(settings, ingest, contracts=None):
                     require(total <= 1_048_576, "budget_exceeded", 413)
                     chunks.append(chunk)
                 result = loads(b"".join(chunks))
-                diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
+                await diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
                 return result
     except Fault as exc:
-        diagnostics.outbound(
+        await diagnostics.outbound(
             "failed",
             duration_ms=span.elapsed() * 1000.0,
             error_code=diagnostics.safe_code(exc.code),
         )
         raise
     except TimeoutError:
-        diagnostics.outbound("timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout")
+        await diagnostics.outbound(
+            "timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout"
+        )
         raise Fault("dependency_unavailable", 503) from None
     except asyncio.CancelledError:
-        # Same rule as the web call above: the started event gets its end, and a cancelled call is
-        # never reported as one that is still running.
-        diagnostics.outbound(
+        # Same rule as the web call above: the started event gets its end, confirmed within the
+        # terminal bound with the obligation owned by the sink, and a cancelled call is never
+        # reported as one that is still running.
+        await diagnostics.outbound(
             "cancelled",
             duration_ms=span.elapsed() * 1000.0,
             error_code=None if sent else "outbound_not_sent",
@@ -180,7 +187,7 @@ async def core_post(settings, ingest, contracts=None):
         raise
     except (aiohttp.ClientError, OSError, ssl.SSLError):
         # The request may have committed at Core. Retry the original semantic/key.
-        diagnostics.outbound(
+        await diagnostics.outbound(
             "failed",
             duration_ms=span.elapsed() * 1000.0,
             error_code="dependency_unavailable",

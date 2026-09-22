@@ -13,7 +13,7 @@ from aiohttp import web
 from . import diagnostics, diagnostics_config, runtime_health
 from .contracts import Fault, loads, require
 from .service import registered_credentials
-from .web_console import WebConsole
+from .web_console import CONSOLE_AUTH, WebConsole
 
 PLATFORM = web.AppKey("platform", object)
 BODY = web.RequestKey("body", dict)
@@ -108,6 +108,7 @@ def create_app(platform, probe=None):
     async def boundary(request, handler):
         # A closed native port stays undiscoverable: it answers with the contract's own opaque 404.
         native = request.path == NATIVE_SNAPSHOT
+        internal = request.path.startswith("/internal/")
         request_id = "request:" + uuid.uuid4().hex
         correlation = None
         context = None
@@ -203,30 +204,34 @@ def create_app(platform, probe=None):
         except asyncio.CancelledError:
             # Cancellation is this request's terminal state, so it is recorded here and only here:
             # one place owns request lifecycle, and a cancelled request never produces a response.
-            # A task being torn down cannot await, so the terminal record is emitted and its
-            # durability obligation is handed to the sink, which is the only thing that owns the
-            # file: the record is written by the owner thread or the sink turns red, and neither
-            # outcome is decided by whether this task was allowed to keep running.
+            # The record is then confirmed within the terminal bound, and the obligation is handed
+            # to the sink *before* the wait: a task that is cancelled a second time while it waits
+            # cannot take the record with it, because the sink already owns it and will either
+            # settle it or count it as unconfirmed. Nothing about the business result changes.
             if admitted and correlation is not None:
-                diagnostics.event(
+                sequence = diagnostics.event(
                     "http.request.finished",
                     "INFO",
                     "cancelled",
                     correlation_id=correlation,
                     duration_ms=max(0.0, (time.monotonic() - started) * 1000.0),
                 )
+                await diagnostics.settle_async(sequence)
             raise
         finally:
             if context is not None:
                 diagnostics.reset_correlation(context)
         if response.status in (401, 403):
             auth = diagnostics.AUTH_REJECTED
-        elif reached_handler and (
-            request.headers.get("Authorization") is not None or request.headers.get("Cookie")
+        elif request.get(CONSOLE_AUTH) == diagnostics.AUTH_SUCCEEDED or (
+            internal and reached_handler and request.headers.get("Authorization") is not None
         ):
-            # A credential was actually presented to the code that authenticates it and was not
-            # refused. A public static asset, a pre-authentication 400 and an unknown path never
-            # reach this branch, so none of them is written as a successful authentication.
+            # Two facts, and only these two, are evidence that this request was authenticated: the
+            # console verified a password or presented a live session it had already verified, or an
+            # internal route really ran the code that authenticates the Bearer it was given. The
+            # mere existence of a Cookie or an Authorization header is not evidence of anything, so
+            # a public page carrying an unrelated cookie, an unknown path and a refusal that happens
+            # before authentication all stay `not_attempted`.
             auth = diagnostics.AUTH_SUCCEEDED
         if admitted and correlation is not None:
             # The terminal events are confirmed durable, bounded, before the answer leaves. A sink

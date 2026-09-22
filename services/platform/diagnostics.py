@@ -454,9 +454,16 @@ class Diagnostics:
         self._owner_done = threading.Event()
         self._final_ok = None
         self._waiters = []
-        # Every bounded confirmation that ran out of time, counted so "we could not confirm this
-        # one" is a fact about the process rather than a line someone has to go looking for.
+        # Every accepted event whose durability was never confirmed, counted so "we could not
+        # confirm this one" is a fact about the process rather than a line someone has to go
+        # looking for. `_counted` is what keeps it one fact per event: a bounded wait that expires
+        # and the owner stopping with the same event unwritten are two observations of one event.
         self._unconfirmed = 0
+        self._counted = set()
+        # Sequences this sink has taken responsibility for confirming on behalf of a caller that
+        # may not live to wait for them - a cancelled request or a cancelled outbound call. The
+        # owner settles them when the watermark passes, and counts them when it cannot.
+        self._owed = set()
         self._sink = None
         self._thread = None
         if directory is not None:
@@ -517,7 +524,14 @@ class Diagnostics:
 
     @property
     def unconfirmed(self):
-        """How many bounded confirmations this process could not complete."""
+        """How many accepted events this process could not confirm durable.
+
+        A healthy sink with events still in flight reports zero: "not yet on the platter" is not the
+        same statement as "never got there". The count only moves when a promise is really broken -
+        a bounded confirmation that expired, an obligation the sink could not meet, or the owner
+        stopping with accepted events unwritten - and it is never reset afterwards, because a later
+        `close` or `flush` must not be able to overwrite a failure that already happened.
+        """
         return self._unconfirmed
 
     def emit(
@@ -572,7 +586,7 @@ class Diagnostics:
             woken = self._wait_async(waiter, bound)
         if not woken or not waiter.confirmed:
             self._abandon(waiter)
-            self._unconfirmed += 1
+            self._note_unconfirmed(sequence)
             # A stuck sink stops admission instead of blocking a caller without limit. The event
             # itself stays queued: what could not be confirmed is never dropped and never resent.
             self._fail("log_flush_timeout")
@@ -597,20 +611,26 @@ class Diagnostics:
             await asyncio.wait_for(waiter.async_event.wait(), max(0.0, bound))
         except (TimeoutError, asyncio.TimeoutError):
             self._abandon(waiter)
-            self._unconfirmed += 1
+            self._note_unconfirmed(sequence)
             self._fail("log_flush_timeout")
             return None
         if not waiter.confirmed:
             # Released because the sink failed, not because the bytes landed.
-            self._unconfirmed += 1
+            self._note_unconfirmed(sequence)
             self._fail("log_flush_timeout")
             return None
         return sequence
 
     def confirm(self, sequence, *, timeout=None, loop=None):
-        """Wait, bounded, for an already-accepted event to become durable. True means confirmed."""
+        """Wait, bounded, for an already-accepted event to become durable. True means confirmed.
+
+        The obligation is registered with the sink before the wait, so a caller that is torn down
+        while it waits cannot make the event disappear from the process's own accounting: the owner
+        still settles it, or counts it.
+        """
         if sequence is None:
             return False
+        self.hand_over(sequence)
         waiter = self._register(sequence, loop)
         if waiter is None:
             return True
@@ -618,7 +638,7 @@ class Diagnostics:
         woken = waiter.thread_event.wait(max(0.0, bound))
         if not woken or not waiter.confirmed:
             self._abandon(waiter)
-            self._unconfirmed += 1
+            self._note_unconfirmed(sequence)
             self._fail("log_flush_timeout")
             return False
         return True
@@ -627,6 +647,7 @@ class Diagnostics:
         """`confirm` for a caller on the event loop; the wait yields instead of blocking."""
         if sequence is None:
             return False
+        self.hand_over(sequence)
         loop = asyncio.get_running_loop()
         waiter = self._register(sequence, loop)
         if waiter is None:
@@ -636,14 +657,54 @@ class Diagnostics:
             await asyncio.wait_for(waiter.async_event.wait(), max(0.0, bound))
         except (TimeoutError, asyncio.TimeoutError):
             self._abandon(waiter)
-            self._unconfirmed += 1
+            self._note_unconfirmed(sequence)
             self._fail("log_flush_timeout")
             return False
         if not waiter.confirmed:
-            self._unconfirmed += 1
+            self._note_unconfirmed(sequence)
             self._fail("log_flush_timeout")
             return False
         return True
+
+    def hand_over(self, sequence):
+        """Take responsibility for one accepted event that its caller may not live to confirm.
+
+        This is the cancellation path's half of the bargain. A request or an outbound call that is
+        being torn down may be cancelled a second time while it waits, and the record must not
+        vanish with it, so the sequence is handed to the sink *before* any waiting starts: the owner
+        settles it when the watermark passes it, and counts it as unconfirmed if the sink fails or
+        the owner stops first. Returns True when the event is (or becomes) the sink's business.
+        """
+        if sequence is None:
+            return False
+        with self._condition:
+            if self._synced >= sequence:
+                return True
+            if self._owner_done.is_set() or self._sink is None:
+                # Nothing can meet this promise any more; saying so once is the honest answer.
+                self._record_unconfirmed([sequence])
+                return False
+            self._owed.add(sequence)
+            return True
+
+    def settle(self, sequence, *, timeout=None):
+        """Hand one event over and wait, bounded, for it to become durable. The thread-side form."""
+        if sequence is None:
+            return False
+        self.hand_over(sequence)
+        return self.confirm(sequence, timeout=timeout)
+
+    async def settle_async(self, sequence, *, timeout=None):
+        """`settle` for a caller on the event loop: the obligation outlives this wait.
+
+        A second cancellation ends this coroutine's wait, and that is fine: the obligation was
+        handed to the sink before the wait began, so the record is still settled or still counted
+        rather than silently dropped.
+        """
+        if sequence is None:
+            return False
+        self.hand_over(sequence)
+        return await self.confirm_async(sequence, timeout=timeout)
 
     def retransmit(self, record):
         """Re-send a previously emitted record unchanged.
@@ -729,12 +790,14 @@ class Diagnostics:
         The fsync is done by the owner thread and never by the caller, so a flush can never race
         the writer for the descriptor. `False` means the wait expired or the sink is unavailable:
         durability was not confirmed, which is a different statement from "the events were lost".
+        Once the owner has stopped this reports that owner's own settlement, so a flush after a
+        failed close cannot quietly turn the failure into a success.
         """
         deadline = self.clock() + timeout
         if self._sink is None:
             return True
         if self._owner_done.is_set():
-            return bool(self._final_ok)
+            return self._settled()
         with self._condition:
             if self.state == UNAVAILABLE or self.state == RECOVERING:
                 return False
@@ -746,34 +809,80 @@ class Diagnostics:
         return barrier.wait(max(0.0, deadline - self.clock()))
 
     def close(self, timeout=2.0):
-        """Stop the writer after a bounded wait; a stuck sink must not hang shutdown.
+        """Stop the writer after a bounded wait, and report whether the log really settled.
 
         One monotonic deadline covers the whole operation, and the caller never seals or closes
         the file itself: it asks the owner to stop, waits as long as it was given, and reports
         whether the owner confirmed. When the bound expires the owner is left alone to finish - it
         keeps whatever it already accepted, seals its own segment and closes its own descriptor -
         so nothing is stolen, nothing accepted is dropped and no shutdown waits forever.
+
+        `True` is a statement about *settlement*, not about the owner having stopped promptly: it
+        means every accepted event is durable and the segment was sealed. A clean seal on a file
+        that never received the events this sink accepted is not a success, and neither is a timely
+        exit with them still queued - those answer `False`, and the events stay counted as
+        unconfirmed. Repeating the call returns the same verdict: a failure is a fact about this
+        process, not a value a later caller can overwrite.
         """
         deadline = self.clock() + timeout
         with self._condition:
             # From this instant the sink refuses new work, whatever the writer is still doing.
             self._closed = True
             self._stop_requested = True
-            if self._sink is not None and self._thread is not None:
+            finished = self._owner_done.is_set()
+            if not finished and self._sink is not None and self._thread is not None:
                 self._queue.append(("stop",))
             self._condition.notify_all()
         if self._sink is None or self._thread is None:
             self._owner_done.set()
-            return True
-        confirmed = self._owner_done.wait(max(0.0, deadline - self.clock()))
-        if not confirmed:
-            self._unconfirmed += 1
-        return confirmed
+            return self._settled()
+        if finished:
+            # A repeated close reports what really happened rather than asking the owner again.
+            return self._settled()
+        if not self._owner_done.wait(max(0.0, deadline - self.clock())):
+            # The bound expired with accepted events possibly unwritten: those are recorded as
+            # unconfirmed now, and the owner's own exit keeps the verdict from being overwritten.
+            self._note_unconfirmed(*self._outstanding())
+            return False
+        return self._settled()
 
     def sealed_segments(self):
         return tuple(self._sink.sealed) if self._sink is not None else ()
 
     # -- internals --------------------------------------------------------------------------
+
+    def _settled(self):
+        """True when every accepted event is durable and the owner sealed its segment.
+
+        The owner's verdict is written once, in its own `finally`, after the seal: before that
+        point the only honest answer is whether anything was accepted at all.
+        """
+        if self._final_ok is None:
+            return self._sequence == self._synced
+        return bool(self._final_ok)
+
+    def _outstanding(self):
+        """The accepted sequences that are not durable yet, as a list, oldest first."""
+        with self._condition:
+            return list(range(self._synced + 1, self._sequence + 1))
+
+    def _note_unconfirmed(self, *sequences):
+        """Count accepted events as unconfirmed, under the lock."""
+        with self._condition:
+            self._record_unconfirmed(sequences)
+
+    def _record_unconfirmed(self, sequences):
+        """Count each event once, whoever noticed it first. Caller holds the condition.
+
+        A sequence can be noticed twice - a bounded wait that expired and the owner stopping with
+        the same event unwritten - and it is one event, so the count is kept per sequence rather
+        than per observation. Nothing here is ever reset.
+        """
+        fresh = [value for value in sequences if value not in self._counted]
+        if not fresh:
+            return
+        self._counted.update(fresh)
+        self._unconfirmed += len(fresh)
 
     def _register(self, sequence, loop):
         """Register one bounded wait, or return None when it is already satisfied."""
@@ -808,6 +917,8 @@ class Diagnostics:
             if sequence <= self._synced:
                 return
             self._synced = sequence
+            # Everything handed over up to this watermark has been settled by the owner itself.
+            self._owed = {value for value in self._owed if value > sequence}
             ready = [waiter for waiter in self._waiters if waiter.sequence <= sequence]
             if ready:
                 self._waiters = [waiter for waiter in self._waiters if waiter.sequence > sequence]
@@ -894,6 +1005,11 @@ class Diagnostics:
 
     def _fail(self, code):
         with self._condition:
+            # Every obligation handed over is now one this sink cannot meet. The events stay queued
+            # - recovery may still write them - but the promise to confirm them was broken here, and
+            # that is what the count records.
+            self._record_unconfirmed(self._owed)
+            self._owed.clear()
             if self.state == UNAVAILABLE:
                 return
             self.state = UNAVAILABLE
@@ -916,23 +1032,29 @@ class Diagnostics:
         Runs in the drain thread's `finally`, so the descriptor is released exactly once, by the
         thread that opened it, whether the loop ended normally, on a failure, or on a stop
         request that arrived while the sink was parked.
+
+        The verdict is about settlement rather than about the syscall. A clean seal on a file that
+        never received the events this sink accepted is not a success, so `_final_ok` is true only
+        when every accepted event was fsynced *and* the segment was then sealed and closed; the
+        events that never made it stay counted as unconfirmed, in a state a caller can still read.
         """
         if self._sink is None:
             return
+        sealed = True
         try:
             self._sink.seal()
-            self._final_ok = True
         except OSError:
-            self._final_ok = False
-            try:
-                self._sink.close()
-            except OSError:
-                pass
+            sealed = False
         finally:
             try:
                 self._sink.close()
             except OSError:
-                pass
+                sealed = False
+        with self._condition:
+            outstanding = self._sequence - self._synced
+            self._record_unconfirmed(range(self._synced + 1, self._sequence + 1))
+            self._owed.clear()
+        self._final_ok = bool(sealed and outstanding == 0)
 
     def _park(self):
         """Wait after a failure. Returns True when the owner must stop instead of retrying.
@@ -1152,7 +1274,7 @@ AUTH_REJECTED = "rejected"
 AUTH_NOT_ATTEMPTED = "not_attempted"
 
 
-def _terminal_events(status, correlation_id, error_code, known_path, auth):
+def _terminal_events(status, correlation_id, error_code, auth):
     """The registered terminal events of one request, in the order they are written."""
     level, outcome, code = classify(status)
     events = [
@@ -1167,9 +1289,9 @@ def _terminal_events(status, correlation_id, error_code, known_path, auth):
         events.append(("http.auth.rejected", "WARNING", "rejected", code))
     elif auth == AUTH_SUCCEEDED:
         events.append(("http.auth.succeeded", "INFO", "succeeded", None))
-    elif auth is None and (status != 404 or known_path):
-        # Legacy callers that pass no disposition keep the old, weaker inference.
-        events.append(("http.auth.succeeded", "INFO", "succeeded", None))
+    # A caller that passes no disposition - and a request that never reached the code which
+    # authenticates - makes no claim at all. The old "no disposition means it must have worked"
+    # inference is gone: it turned the mere presence of a header into an authentication record.
     if status == 404:
         events.append(("http.request.unknown_path", "WARNING", "rejected", "not_found"))
     return events
@@ -1179,16 +1301,18 @@ def finish(
     status,
     duration_ms,
     correlation_id=None,
-    known_path=True,
     error_code=None,
     auth=None,
 ):
     """Record one request's terminal state and the authorisation result it demonstrates.
 
     `auth` is the disposition the boundary actually observed, and it is not inferred from the
-    status alone: a 404 answered before dispatch, a 400 refused before authentication and a public
-    static asset are all *not* evidence that anybody authenticated, so none of them may be written
-    as `http.auth.succeeded`. A 401 or 403 is authorisation refusing, whatever else is true.
+    status alone: a 404 answered before dispatch, a 400 refused before authentication, a public
+    static asset carrying an unrelated cookie and an unknown path are all *not* evidence that
+    anybody authenticated, so none of them may be written as `http.auth.succeeded`. A 401 or 403 is
+    authorisation refusing, whatever else is true. A caller that passes no disposition gets no
+    authentication event at all: an absent claim is the honest record of a request this product
+    cannot prove was authenticated, and it is never upgraded into a success.
 
     `error_code` overrides the status-derived code: that is how an unexpected internal exception
     is recorded as the fixed `internal_error` while the wire answer keeps a code the published
@@ -1199,9 +1323,7 @@ def finish(
     retried or rolled back by this answer: it only says whether the log could confirm the record.
     """
     sequences = []
-    for name, level, outcome, code in _terminal_events(
-        status, correlation_id, error_code, known_path, auth
-    ):
+    for name, level, outcome, code in _terminal_events(status, correlation_id, error_code, auth):
         sequences.append(
             event(
                 name,
@@ -1219,15 +1341,12 @@ async def finish_async(
     status,
     duration_ms,
     correlation_id=None,
-    known_path=True,
     error_code=None,
     auth=None,
 ):
     """`finish` for a caller on the event loop, with the same bounded durable confirmation."""
     sequences = []
-    for name, level, outcome, code in _terminal_events(
-        status, correlation_id, error_code, known_path, auth
-    ):
+    for name, level, outcome, code in _terminal_events(status, correlation_id, error_code, auth):
         sequences.append(
             event(
                 name,
@@ -1266,6 +1385,26 @@ async def confirm_async(sequence, timeout=None):
     return True if sink is None else await sink.confirm_async(sequence, timeout=timeout)
 
 
+def hand_over(sequence):
+    """Hand one accepted event to the sink for confirmation, without waiting for it."""
+    sink = _ACTIVE
+    return True if sink is None else sink.hand_over(sequence)
+
+
+async def settle_async(sequence, timeout=None):
+    """Confirm one accepted event within its bound, with the obligation owned by the sink.
+
+    The one place a cancelled caller goes through. The obligation is registered before the wait, so
+    a second cancellation ends the wait without ending the responsibility: the sink settles the
+    record when the watermark passes it, and counts it as unconfirmed if the sink fails or the owner
+    stops first. Nothing here retries, resends or changes a business result.
+    """
+    sink = _ACTIVE
+    if sink is None:
+        return True
+    return await sink.settle_async(sequence, timeout=timeout)
+
+
 def cli_admit(action):
     """Admit one local CLI action before it does anything, exactly as a request is admitted.
 
@@ -1286,6 +1425,10 @@ def cli_admit(action):
 
 
 OUTBOUND_KINDS = ("queued", "started", "succeeded", "failed", "timed_out", "cancelled")
+# The kinds that end an outbound call. They carry the same durability obligation an HTTP terminal
+# does, so they are confirmed within the terminal bound; `queued` and `started` only announce that a
+# call began and are written without making their caller wait for them.
+OUTBOUND_TERMINAL_KINDS = ("succeeded", "failed", "timed_out", "cancelled")
 _OUTBOUND = {
     "queued": ("DEBUG", "started"),
     "started": ("INFO", "started"),
@@ -1296,16 +1439,23 @@ _OUTBOUND = {
 }
 
 
-def outbound(kind, *, correlation_id=None, duration_ms=None, error_code=None):
+async def outbound(kind, *, correlation_id=None, duration_ms=None, error_code=None):
     """Emit one outbound-call event. `kind` picks a registered name, level and outcome.
 
     Callers cannot supply an event name or a level, so an outbound call can only ever be reported
     through the handful of states the contract registered for it.
+
+    A terminal kind is confirmed before this returns, within the terminal bound and no longer: the
+    obligation goes to the sink first, so a cancellation arriving during the wait - including a
+    second one - leaves the record owed to the sink rather than dropped with this caller. The wait
+    is bounded on purpose. A disk that cannot confirm inside it does not get to keep the caller: the
+    event stays queued, the sink stops admitting new work, and the record is counted as unconfirmed
+    instead of being silently believed.
     """
     if kind not in _OUTBOUND:
         return None
     level, outcome = _OUTBOUND[kind]
-    return event(
+    sequence = event(
         "outbound.call." + kind,
         level,
         outcome,
@@ -1313,6 +1463,9 @@ def outbound(kind, *, correlation_id=None, duration_ms=None, error_code=None):
         duration_ms=duration_ms,
         error_code=error_code,
     )
+    if kind in OUTBOUND_TERMINAL_KINDS:
+        await settle_async(sequence)
+    return sequence
 
 
 def correlation_header():

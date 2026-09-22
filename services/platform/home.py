@@ -401,8 +401,10 @@ class Home:
         token = self.token
         require(token is not None, "device_credential_missing", 503)
         span = diagnostics.Span("home_call")
-        diagnostics.outbound("started")
+        await diagnostics.outbound("started")
+        sent = False
         try:
+            sent = True
             async with client.request(
                 method,
                 self.base_url + path,
@@ -420,22 +422,34 @@ class Home:
                     total += len(chunk)
                     require(total <= RESPONSE_BUDGET, "device_invalid_response", 502)
                     chunks.append(chunk)
-                diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
+                await diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
                 return response.status, b"".join(chunks)
         except Fault as exc:
-            diagnostics.outbound(
+            await diagnostics.outbound(
                 "failed",
                 duration_ms=span.elapsed() * 1000.0,
                 error_code=diagnostics.safe_code(exc.code),
             )
             raise
+        except asyncio.CancelledError:
+            # A cancelled device call gets its terminal outcome like every other adapter: the
+            # started event already exists, so leaving it without an end would report a call that is
+            # over as one still in flight. The record is confirmed within the terminal bound and its
+            # obligation belongs to the sink before the wait, so a second cancellation cannot drop
+            # it; nothing is retried and no claim is made about the device either way.
+            await diagnostics.outbound(
+                "cancelled",
+                duration_ms=span.elapsed() * 1000.0,
+                error_code=None if sent else "outbound_not_sent",
+            )
+            raise
         except (asyncio.TimeoutError, TimeoutError):
-            diagnostics.outbound(
+            await diagnostics.outbound(
                 "timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout"
             )
             raise Fault("device_timeout", 504) from None
         except (aiohttp.ClientError, OSError, ValueError):
-            diagnostics.outbound(
+            await diagnostics.outbound(
                 "failed",
                 duration_ms=span.elapsed() * 1000.0,
                 error_code="dependency_unavailable",

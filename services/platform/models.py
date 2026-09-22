@@ -11,15 +11,34 @@ from urllib.parse import urlsplit
 from .auth import secret
 from .contracts import canonical, digest, epoch, loads, require
 
+# The published-configuration lifetime a deployment may ask for, in seconds. The bound is part of
+# the publication rules the model owner has always enforced; it lives here, beside them, so the
+# entry point and the rolling preflight can ask the same question instead of keeping a second copy
+# that drifts.
+DEFAULT_MAX_LIFETIME = 3600
+MIN_MAX_LIFETIME = 1
+MAX_MAX_LIFETIME = 86400
+
+
+def validate_max_lifetime(settings):
+    """The configured lifetime, refused here when it is not one this build can publish with.
+
+    Pure: it reads one setting and returns it, opening nothing and creating nothing. `Models` calls
+    it while it is assembled and the entry point's pre-store validator calls it too, so a lifetime
+    the preflight accepts is one the real startup accepts.
+    """
+    value = settings.get("config_max_lifetime_seconds", DEFAULT_MAX_LIFETIME)
+    require(
+        type(value) is int and MIN_MAX_LIFETIME <= value <= MAX_MAX_LIFETIME, "invalid_input", 400
+    )
+    return value
+
 
 class Models:
     def __init__(self, store, auth, contracts, origins, settings, clock):
         self.store, self.auth, self.contracts, self.origins = store, auth, contracts, origins
         self.registrations = copy.deepcopy(settings.get("providers", {}))
-        self.max_lifetime = settings.get("config_max_lifetime_seconds", 3600)
-        require(
-            type(self.max_lifetime) is int and 1 <= self.max_lifetime <= 86400, "invalid_input", 400
-        )
+        self.max_lifetime = validate_max_lifetime(settings)
         self.clock = clock
 
     def validate_publication(self, document):

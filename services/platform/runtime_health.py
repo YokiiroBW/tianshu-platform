@@ -296,6 +296,11 @@ class Probe:
         self._inflight = False
         self._cached = None
         self._cached_at = None
+        # When the check that is currently in flight started. A result is a fact about the moment it
+        # was measured, so this - not the moment it happened to arrive - is the age the cache is
+        # judged by. Without it, a check that ran past the budget would come back and be cached as
+        # brand new, which is how a stale snapshot turns into a fresh green.
+        self._started_at = None
 
     # -- liveness ---------------------------------------------------------------------------
 
@@ -316,6 +321,7 @@ class Probe:
             # it is the only one that stays inside the budget without adding work.
             return self._document(dict.fromkeys(CHECK_KEYS, "not_verified"))
         self._inflight = True
+        self._started_at = self.clock()
         loop = asyncio.get_running_loop()
         worker = loop.run_in_executor(None, self.evaluate)
         worker.add_done_callback(self._settle)
@@ -328,7 +334,15 @@ class Probe:
         return document
 
     def _settle(self, worker):
-        """Release the single owner, and cache the answer only when there really was one."""
+        """Release the single owner, and cache the answer against the moment it was measured.
+
+        A late result is still a result - the check really ran - but it is not a *current* one. It
+        is therefore cached with the time its check started, so a snapshot older than the cache TTL
+        is stale the instant it arrives and the next caller starts a real check instead of being
+        handed an old answer wearing a new timestamp. Releasing the owner is what lets that next
+        check run at all, and it happens whatever the outcome was.
+        """
+        started_at, self._started_at = self._started_at, None
         self._inflight = False
         if worker.cancelled():
             return
@@ -338,7 +352,7 @@ class Probe:
             # cached answer: the next probe simply asks again.
             return
         self._cached = worker.result()
-        self._cached_at = self.clock()
+        self._cached_at = self.clock() if started_at is None else started_at
 
     def _fresh(self):
         if self._cached is None or self._cached_at is None:

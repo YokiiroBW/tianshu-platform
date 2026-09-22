@@ -7,7 +7,7 @@ from . import diagnostics, diagnostics_config, runtime_health
 from .auth import Auth, secret
 from .assets import Assets, validate_connections, validate_page
 from .contracts import Contracts, Fault, require
-from .models import Models
+from .models import Models, validate_max_lifetime
 from .origins import Origins
 from .persona_client import PersonaClient
 from .persona_page_config import connections as persona_connections
@@ -108,6 +108,10 @@ def validate_settings(settings):
         )
     contracts = Contracts(settings["contract_directory"], settings.get("source_contract_directory"))
     auth = Auth(settings, contracts)
+    # The publication lifetime is validated by the model owner's own rule rather than by a second
+    # copy of it here: `Models` runs this same function while it is assembled, so a lifetime the
+    # preflight accepts is one the real startup publishes with.
+    validate_max_lifetime(settings)
     credentials = registered_credentials(settings)
     # The readiness credential is its own identity. Reading it from a variable a business
     # principal, the browser operator or a peer already holds would let one identity answer
