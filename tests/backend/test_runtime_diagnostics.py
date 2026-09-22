@@ -1176,21 +1176,66 @@ class CancellationSettlementTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.sink._owed, set())
 
-    async def test_a_second_cancellation_does_not_drop_the_terminal_record(self):
+    async def test_a_second_cancellation_cannot_remove_the_confirmation_deadline(self):
+        """A wait can be cancelled twice; the obligation it carried cannot be cancelled at all.
+
+        The disk is never released while this asserts, and nothing is flushed on the sink's behalf.
+        The second cancellation takes the timeout away with it - the code that would have reported
+        "not confirmed" never runs - so a sink that only noticed at its deadline would answer "still
+        durable, nothing unconfirmed" at every later moment. That is what a promise with no deadline
+        looks like, and it is the one thing this must never say. The obligation is settled when the
+        wait dies, and the waiter that died with it is deregistered rather than left behind.
+        """
         task = await self.cancelled_call()
-        # The obligation was registered before the wait, so a second cancellation ends the wait
-        # without ending the responsibility.
+        accepted = self.sink._sequence
+        # The first cancellation is already inside the terminal confirmation; the second one lands
+        # on the confirmation wait itself.
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await asyncio.wait_for(task, 10)
+        # Well past the 250ms terminal bound, disk still held.
+        await asyncio.sleep(0.4)
+        self.assertEqual(self.sink.state, diagnostics.UNAVAILABLE)
+        self.assertEqual(self.sink.error, "log_flush_timeout")
+        self.assertGreaterEqual(self.sink.unconfirmed, 1)
+        # Settled, not left as a memory: nothing is still owed, and no terminated wait is registered.
+        self.assertEqual(self.sink._owed, set())
+        self.assertEqual(self.sink._waiters, [])
+        # The accepted record is neither dropped nor re-sent: it is still queued, and the durable
+        # watermark has not moved past it.
+        self.assertEqual(self.sink._sequence, accepted)
+        self.assertLess(self.sink._synced, accepted)
+        # Releasing the disk now is cleanup, not the assertion: the owner still writes what was
+        # accepted, exactly once.
         self.release.set()
         self.assertTrue(await wait_for(lambda: self.sink._synced >= self.sink._sequence))
         records = [record for record in self.raw() if record["event"] == "outbound.call.cancelled"]
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["outcome"], "cancelled")
-        # Settled by the sink, so nothing had to be counted as unconfirmed.
+
+    async def test_a_cancelled_admission_is_deregistered_without_inventing_a_failure(self):
+        """An admission nobody is waiting for any more leaves no waiter and claims nothing.
+
+        Nobody was promised a confirmation here - the caller was torn down before it ever got an
+        answer - so the sink is not failed and no event is counted: the accepted record simply stays
+        queued for the owner, exactly as it was. What must not survive the cancellation is the
+        registered wait, because a terminated waiter for a promise nobody is waiting for is how
+        waits accumulate.
+        """
+        self.hold_writes()
+        task = asyncio.ensure_future(diagnostics.accept_async(diagnostics.new_correlation()))
+        self.assertTrue(await wait_for(self.holding.is_set, timeout=5))
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 10)
+        self.assertEqual(self.sink._waiters, [])
+        self.assertEqual(self.sink.state, diagnostics.DURABLE)
         self.assertEqual(self.sink.unconfirmed, 0)
-        self.assertEqual(self.sink._owed, set())
+        # Cleanup only: the owner writes the accepted record once the disk moves, and the sink is
+        # still the durable sink it was.
+        self.release.set()
+        self.assertTrue(await wait_for(lambda: self.sink._synced >= self.sink._sequence))
+        self.assertEqual(self.sink.state, diagnostics.DURABLE)
 
     async def test_a_cancelled_terminal_racing_a_shutdown_is_still_written(self):
         task = await self.cancelled_call()

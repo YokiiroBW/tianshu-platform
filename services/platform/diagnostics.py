@@ -462,7 +462,10 @@ class Diagnostics:
         self._counted = set()
         # Sequences this sink has taken responsibility for confirming on behalf of a caller that
         # may not live to wait for them - a cancelled request or a cancelled outbound call. The
-        # owner settles them when the watermark passes, and counts them when it cannot.
+        # owner settles them when the watermark passes, and counts them when it cannot. A wait that
+        # is itself cancelled cannot leave them as a mere memory: the caller that was torn down while
+        # it waited settles them here, conservatively and at once, instead of leaving a promise with
+        # no deadline behind it.
         self._owed = set()
         self._sink = None
         self._thread = None
@@ -614,6 +617,13 @@ class Diagnostics:
             self._note_unconfirmed(sequence)
             self._fail("log_flush_timeout")
             return None
+        except asyncio.CancelledError:
+            # The caller went away before its own admission was confirmed. Nothing was promised to a
+            # caller that no longer exists and the accepted event stays queued for the owner, but the
+            # wait is over, so it is deregistered here rather than left behind as a waiter nobody is
+            # waiting for.
+            self._abandon(waiter)
+            raise
         if not waiter.confirmed:
             # Released because the sink failed, not because the bytes landed.
             self._note_unconfirmed(sequence)
@@ -644,7 +654,15 @@ class Diagnostics:
         return True
 
     async def confirm_async(self, sequence, *, timeout=None):
-        """`confirm` for a caller on the event loop; the wait yields instead of blocking."""
+        """`confirm` for a caller on the event loop; the wait yields instead of blocking.
+
+        The bound is the one deadline this wait ever has, and it is monotonic. Being cancelled while
+        waiting is *not* a way out of it: a second cancellation takes the timeout with it - the code
+        that would have reported "not confirmed" never runs - so the obligation is settled at that
+        moment instead. The event is counted as unconfirmed, the sink stops admitting new work, and
+        the waiter is deregistered; the accepted event itself is neither dropped nor re-sent, and the
+        cancellation is always re-raised.
+        """
         if sequence is None:
             return False
         self.hand_over(sequence)
@@ -660,6 +678,11 @@ class Diagnostics:
             self._note_unconfirmed(sequence)
             self._fail("log_flush_timeout")
             return False
+        except asyncio.CancelledError:
+            self._abandon(waiter)
+            self._note_unconfirmed(sequence)
+            self._fail("log_flush_timeout")
+            raise
         if not waiter.confirmed:
             self._note_unconfirmed(sequence)
             self._fail("log_flush_timeout")
@@ -672,8 +695,9 @@ class Diagnostics:
         This is the cancellation path's half of the bargain. A request or an outbound call that is
         being torn down may be cancelled a second time while it waits, and the record must not
         vanish with it, so the sequence is handed to the sink *before* any waiting starts: the owner
-        settles it when the watermark passes it, and counts it as unconfirmed if the sink fails or
-        the owner stops first. Returns True when the event is (or becomes) the sink's business.
+        settles it when the watermark passes it, and counts it as unconfirmed if the sink fails, if
+        the wait itself is cancelled, or if the owner stops first. Returns True when the event is
+        (or becomes) the sink's business.
         """
         if sequence is None:
             return False
@@ -697,9 +721,11 @@ class Diagnostics:
     async def settle_async(self, sequence, *, timeout=None):
         """`settle` for a caller on the event loop: the obligation outlives this wait.
 
-        A second cancellation ends this coroutine's wait, and that is fine: the obligation was
-        handed to the sink before the wait began, so the record is still settled or still counted
-        rather than silently dropped.
+        A second cancellation ends this coroutine's wait, and the obligation does not end with it:
+        `confirm_async` settles it at that moment - counted as unconfirmed, sink unavailable, waiter
+        deregistered - so a caller that is torn down twice cannot turn a record that was never
+        confirmed into one the process believes it confirmed. The cancellation is re-raised
+        unchanged, and no business result is touched.
         """
         if sequence is None:
             return False
@@ -1394,10 +1420,11 @@ def hand_over(sequence):
 async def settle_async(sequence, timeout=None):
     """Confirm one accepted event within its bound, with the obligation owned by the sink.
 
-    The one place a cancelled caller goes through. The obligation is registered before the wait, so
-    a second cancellation ends the wait without ending the responsibility: the sink settles the
-    record when the watermark passes it, and counts it as unconfirmed if the sink fails or the owner
-    stops first. Nothing here retries, resends or changes a business result.
+    The one place a cancelled caller goes through. The obligation is registered before the wait, and
+    the wait has one deadline; if a second cancellation takes that deadline away, the obligation is
+    settled at once instead of being left without one - counted as unconfirmed, sink unavailable,
+    waiter deregistered - so "we never confirmed it" is never readable as "it is durable". Nothing
+    here retries, resends or changes a business result, and the cancellation is always re-raised.
     """
     sink = _ACTIVE
     if sink is None:
