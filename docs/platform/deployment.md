@@ -214,7 +214,7 @@ index/manifest/config 摘要及版本环境见 `scripts/build/base-images.json`�
 console 显式安装 npm 11.6.2，消费根 package.json/package-lock.json、apps/web 的源码与配置，
 执行 npm ci 和 npm run build。runtime 只复制该阶段 dist；本机 dist、依赖目录不会入上下文。
 builder 固定 setuptools 80.9.0 / wheel 0.45.1，关闭产品构建隔离中的动态解析，先生成非 editable wheel。
-`runtime.lock` 仅将既有 requirements-dev.txt 的15个运行包原版本冻结并添加wheel哈希，排除ruff；
+`runtime.lock` 仅将既有 requirements-dev.txt 的14个第三方运行包原版本冻结并添加wheel哈希，排除ruff；
 哈希来源为固定网关基线 ec20f95e 的 uv.lock，已核该固定Git输入。没有修改pyproject或开发锁/产品依赖版本。
 全新 runtime venv 用 --require-hashes / --only-binary 安装后再 --no-deps 安装产品wheel，
 pip check 与 `python -I -m services.platform --help` 失败即阻断构建；runtime 不带构建后端或测试工具。
@@ -250,3 +250,5 @@ image inspect 的 Id 是本地构建身份，不能填作registry digest。以�
 不证明鉴权ready、挂载权限、容器健康检查、SIGTERM或NAS通过；这些由DEP-G统一接线验证。
 本地实际：新venv wheel及完整依赖校验通过；6命令入口通过；Node/npm正式安装与网页构建通过（既有>500kB chunk提示）；
 9构建输入边界+13镜像定义专项通过0skip。Linux镜像层拉取/build/run、UID/GID实效与NAS均未执行。
+
+计数纠正（协调授权文档窄修）：应用安装集合为14个第三方运行依赖+产品=15；平台runtime另含pip 25.0.1，仅属安装工具，不计入应用依赖。父实现9b45d813fd8c8ff88ec68f34d94d2f096ff22120及其验证证据保持；未重跑无变化安装/构建。
