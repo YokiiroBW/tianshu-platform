@@ -8,16 +8,21 @@ import asyncio
 import hashlib
 import io
 import json
+import os
+import ssl
 import tempfile
 import threading
 import time
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
-from runtime_fixture import log_files, read_events, require_contract
+from aiohttp import web
 
-from services.platform import diagnostics, diagnostics_config
+from runtime_fixture import certificates, log_files, read_events, require_contract, start_server
+
+from services.platform import diagnostics, diagnostics_config, persona_client, transport
 
 FIELDS = (
     "schema_version",
@@ -35,6 +40,9 @@ FIELDS = (
 )
 
 INSTANCE = str(uuid.uuid4())
+
+# A registered credential has to look like one: `secret` accepts 24-4096 printable characters.
+CREDENTIAL = "synthetic-outbound-terminal-credential"
 
 # Field names that would turn a bounded record into a place untrusted text can be parked.
 FORBIDDEN_FIELDS = (
@@ -86,12 +94,19 @@ class SinkTestCase(unittest.TestCase):
         A live writer still holding a segment open is a sharing violation on Windows, and a test
         that leaves one behind must not report that as a product failure. Closing therefore lives
         here instead of depending on each test's own diligence.
+
+        `close` is deliberately bounded, so a sink whose owner is stuck returns unconfirmed and
+        keeps working in its own time - which is the behaviour under test elsewhere. The directory
+        is therefore only removed once the owner has really finished, or not at all.
         """
         diagnostics.reset()
         sinks = ([self.sink] if self.sink is not None else []) + self.extra_sinks
         self.sink, self.extra_sinks = None, []
         for sink in sinks:
             sink.close(2.0)
+            # The owner releases its descriptor on its own thread; waiting for that is what makes
+            # the cleanup below safe, and it is the only thing this wait is for.
+            sink._owner_done.wait(10.0)
         self.temp.cleanup()
 
     def own(self, sink):
@@ -108,7 +123,15 @@ class SinkTestCase(unittest.TestCase):
         return self.own(diagnostics.Diagnostics(self.directory, **kwargs))
 
     def emitted(self):
-        return [json.loads(line) for line in self.stream.getvalue().splitlines() if line]
+        """The JSON records on the captured stream.
+
+        The same stream also carries the one fixed operator warning a failed sink writes, so only
+        lines that are actually records are parsed: a warning is not an event and must never be
+        read as one.
+        """
+        return [
+            json.loads(line) for line in self.stream.getvalue().splitlines() if line.startswith("{")
+        ]
 
 
 class RecordShapeTests(SinkTestCase):
@@ -272,14 +295,33 @@ class VocabularyTests(SinkTestCase):
         self.assertIsNone(diagnostics.outbound("exploded", correlation_id=correlation))
         self.assertEqual(len(self.emitted()), len(diagnostics.OUTBOUND_KINDS))
 
-    def test_a_bad_event_name_is_swallowed_rather_than_failing_the_request(self):
-        self.capture()
-        # A domain module that names an event wrongly must not turn into a 500 for the caller; the
-        # coverage test is what catches the mistake, not the request path.
-        self.assertIsNone(diagnostics.event("http.request.made_up", "INFO", "succeeded"))
-        self.assertIsNone(
+    def test_an_unregistered_event_name_is_refused_and_never_swallowed(self):
+        sink = self.capture()
+        before = sink._sequence
+        # A domain module that names an event wrongly is a programming error. It is not allowed to
+        # become a silent gap: the sink stops admitting new work with one fixed code and the error
+        # reaches the caller, so "every registered event is written" stays a claim this process can
+        # actually keep.
+        with self.assertRaises(diagnostics.RecordError):
+            diagnostics.event("http.request.made_up", "INFO", "succeeded")
+        self.assertEqual(sink.state, diagnostics.UNAVAILABLE)
+        self.assertEqual(sink.error, "log_record_invalid")
+        self.assertFalse(sink.admit())
+        # The refused record consumed no sequence, so the numbering has no hole in it.
+        self.assertEqual(sink._sequence, before)
+        self.assertEqual(self.emitted(), [])
+        # The only thing on the stream is the one fixed operator warning, which carries a code and
+        # never the rejected name, a value or a path.
+        self.assertEqual(self.stream.getvalue().count("tianshu-diagnostics:"), 1)
+        self.assertNotIn("http.request.made_up", self.stream.getvalue())
+
+    def test_an_unencodable_value_is_refused_without_consuming_a_sequence(self):
+        sink = self.capture()
+        before = sink._sequence
+        with self.assertRaises(diagnostics.RecordError):
             diagnostics.event("http.request.started", "INFO", "succeeded", duration_ms=float("nan"))
-        )
+        self.assertEqual(sink._sequence, before)
+        self.assertEqual(self.emitted(), [])
 
 
 class CorrelationTests(SinkTestCase):
@@ -722,3 +764,473 @@ class ContractLoadingTests(unittest.TestCase):
         )
         self.assertIsNone(broken)
         self.assertEqual(problem, "contract_directory_missing")
+
+
+class OutboundTerminalTests(unittest.IsolatedAsyncioTestCase):
+    """A cancelled outbound call gets an end, and the end says whether anything could have left.
+
+    The upstream is a real TLS peer where a socket can exist at all, and the queued case needs no
+    socket: a read still waiting for its outbound slot has provably sent nothing, and telling those
+    two apart is exactly what the fixed code has to carry.
+    """
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.logs = self.directory / "logs"
+        self.sink = diagnostics.Diagnostics(str(self.logs))
+        diagnostics.activate(self.sink)
+        self.addCleanup(diagnostics.reset)
+        self.addCleanup(self.sink.close, 5.0)
+        self.tls = None
+        if os.environ.get("TS013_TLS_PYTHON"):
+            self.tls = certificates(self.directory / "tls")
+
+    def events(self):
+        self.sink.flush(5.0)
+        return read_events(self.logs)
+
+    def named(self, name):
+        return [record for record in self.events() if record["event"] == name]
+
+    async def hanging_upstream(self):
+        held = asyncio.Event()
+
+        async def hang(request):
+            held.set()
+            # Long enough that the call is certainly still in flight when it is cancelled, short
+            # enough that the peer's own teardown does not hold the suite open.
+            await asyncio.sleep(2.0)
+            return web.json_response({})
+
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(
+            self.tls["valid"]["certificate_file"], self.tls["valid"]["private_key_file"]
+        )
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", hang)
+        runner, base = await start_server(app, tls=context)
+        self.addAsyncCleanup(runner.cleanup)
+        return held, base
+
+    def settings_for(self, base):
+        return {
+            "base_url": base,
+            "token_env": "TS012_ADMIN",
+            "ca_file": self.tls["valid"]["certificate_file"],
+            "timeout_seconds": 10,
+        }
+
+    async def test_a_core_call_cancelled_in_flight_is_not_reported_as_still_running(self):
+        held, base = await self.hanging_upstream()
+        payload = {"query": {"request_id": "request:synthetic-cancel"}}
+        with patch.dict(os.environ, {"TS012_ADMIN": CREDENTIAL}, clear=False):
+            task = asyncio.ensure_future(
+                transport.core_web_call(
+                    self.settings_for(base), "web-snapshot", payload, None, None
+                )
+            )
+            await asyncio.wait_for(held.wait(), 5)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(len(self.named("outbound.call.started")), 1)
+        cancelled = self.named("outbound.call.cancelled")
+        self.assertEqual(len(cancelled), 1)
+        # The request was on the wire, so nothing claims it was never sent - and nothing claims it
+        # succeeded either.
+        self.assertIsNone(cancelled[0]["error_code"])
+        self.assertEqual(cancelled[0]["outcome"], "cancelled")
+        self.assertEqual(self.named("outbound.call.succeeded"), [])
+        self.assertEqual(self.named("outbound.call.failed"), [])
+
+    async def test_a_core_post_cancelled_in_flight_is_not_reported_as_still_running(self):
+        held, base = await self.hanging_upstream()
+        with patch.dict(os.environ, {"TS012_ADMIN": CREDENTIAL}, clear=False):
+            task = asyncio.ensure_future(
+                transport.core_post(self.settings_for(base), {"schema_version": 1})
+            )
+            await asyncio.wait_for(held.wait(), 5)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(len(self.named("outbound.call.started")), 1)
+        cancelled = self.named("outbound.call.cancelled")
+        self.assertEqual(len(cancelled), 1)
+        self.assertIsNone(cancelled[0]["error_code"])
+
+    async def test_a_call_cancelled_before_it_could_connect_says_it_never_left(self):
+        class Never:
+            """A session that cannot be entered: the call ends before any socket exists."""
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                await asyncio.sleep(30)
+
+            async def __aexit__(self, *exc):
+                return False
+
+        settings = {
+            "base_url": "https://127.0.0.1:9",
+            "token_env": "TS012_ADMIN",
+            "timeout_seconds": 10,
+        }
+        with patch.dict(os.environ, {"TS012_ADMIN": CREDENTIAL}, clear=False):
+            with patch.object(transport.aiohttp, "ClientSession", Never):
+                task = asyncio.ensure_future(
+                    transport.core_web_call(
+                        settings, "web-snapshot", {"query": {"request_id": "r"}}, None, None
+                    )
+                )
+                await asyncio.sleep(0.05)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+        cancelled = self.named("outbound.call.cancelled")
+        self.assertEqual(len(cancelled), 1)
+        # Nothing could have reached any peer, and the record says so with a registered code.
+        self.assertEqual(cancelled[0]["error_code"], "outbound_not_sent")
+        self.assertIn("outbound_not_sent", diagnostics.ERROR_CODES)
+
+    async def test_a_queued_persona_read_cancelled_in_the_queue_never_left(self):
+        client = persona_client.PersonaClient.__new__(persona_client.PersonaClient)
+        client.connection_id = "synthetic"
+        client.base_url = "https://127.0.0.1:9"
+        client.token_env = "TS012_ADMIN"
+        client.ca_file = None
+        client.timeout = 5
+        client.candidate = None
+        client.reserved = ()
+        client.slots = asyncio.Semaphore(1)
+        document = {"operation": "get"}
+        with patch.object(persona_client, "validate_request", lambda *a: None):
+            with patch.object(persona_client, "prove", lambda *a: None):
+                # The only slot is taken, so this read is queued and has provably sent nothing.
+                await client.slots.acquire()
+                with patch.dict(os.environ, {"TS012_ADMIN": CREDENTIAL}, clear=False):
+                    task = asyncio.ensure_future(client.call(document))
+                    for _ in range(300):
+                        if self.named("outbound.call.queued"):
+                            break
+                        await asyncio.sleep(0.01)
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+        self.assertEqual(len(self.named("outbound.call.queued")), 1)
+        cancelled = self.named("outbound.call.cancelled")
+        self.assertEqual(len(cancelled), 1)
+        # A read that never left the queue is not "started", and its end says it was not sent.
+        self.assertEqual(self.named("outbound.call.started"), [])
+        self.assertEqual(cancelled[0]["error_code"], "outbound_not_sent")
+
+
+class SlowDiskTests(SinkTestCase):
+    """A slow disk costs a caller its bound; it never costs the process its heartbeat."""
+
+    def slow_sink(self, *, write=None, sync=None, **kwargs):
+        sink = self.durable(**kwargs)
+        if write is not None:
+            sink._sink.write = write
+        if sync is not None:
+            sink._sink.sync = sync
+        return sink
+
+    def test_a_slow_fsync_does_not_block_the_event_loop(self):
+        sink = self.durable(admit_timeout=1.0)
+        real = sink._sink.sync
+        release = threading.Event()
+
+        def slow_sync():
+            release.wait(5)
+            return real()
+
+        sink._sink.sync = slow_sync
+
+        async def measure():
+            ticks = []
+
+            async def ticker():
+                while True:
+                    started = time.monotonic()
+                    await asyncio.sleep(0.01)
+                    ticks.append((time.monotonic() - started) * 1000.0)
+
+            task = asyncio.ensure_future(ticker())
+            admission = asyncio.ensure_future(
+                diagnostics.accept_async(diagnostics.new_correlation())
+            )
+            # The fsync is held for a while, and the loop is free for the whole of it: a heartbeat
+            # that had to wait for the disk would show up here as one long tick.
+            await asyncio.sleep(0.15)
+            release.set()
+            try:
+                admitted = await asyncio.wait_for(admission, 5)
+            finally:
+                task.cancel()
+            return admitted, ticks
+
+        admitted, ticks = asyncio.run(measure())
+        # The admission really happened, and the loop kept its own schedule while it waited for the
+        # fsync: the wait yields instead of blocking the thread that serves every other request.
+        self.assertIsNotNone(admitted)
+        self.assertTrue(ticks)
+        # `ticks` are milliseconds: the loop's own 10ms cadence held while the disk was held for
+        # 150ms, so no tick is anywhere near the length of the stall.
+        self.assertLess(max(ticks), 100.0)
+
+    def test_an_admission_that_cannot_be_confirmed_refuses_the_work(self):
+        sink = self.durable(admit_timeout=0.05)
+        release = threading.Event()
+        real = sink._sink.write
+
+        def held(line):
+            release.wait(5)
+            return real(line)
+
+        sink._sink.write = held
+        try:
+            started = time.monotonic()
+            admitted = diagnostics.accept(diagnostics.new_correlation())
+            elapsed = time.monotonic() - started
+        finally:
+            release.set()
+        self.assertIsNone(admitted)
+        # Bounded: it gives up inside its budget instead of waiting for the disk.
+        self.assertLess(elapsed, 1.0)
+        self.assertGreaterEqual(elapsed, 0.04)
+        self.assertEqual(sink.state, diagnostics.UNAVAILABLE)
+        self.assertFalse(diagnostics.admittable())
+        self.assertEqual(sink.unconfirmed, 1)
+
+    def test_a_terminal_event_is_confirmed_before_the_answer_and_never_claims_it_early(self):
+        sink = self.durable()
+        sink.emit_durable("runtime.starting", "INFO", "started")
+        release = threading.Event()
+        entered = threading.Event()
+        real = sink._sink.write
+
+        def held(line):
+            entered.set()
+            release.wait(5)
+            return real(line)
+
+        sink._sink.write = held
+        try:
+            started = time.monotonic()
+            confirmed = diagnostics.finish(200, 1.0, diagnostics.new_correlation())
+            elapsed = time.monotonic() - started
+            # The write was still held when the answer came back, so it cannot have been a real
+            # confirmation - and it did not pretend to be one.
+            self.assertTrue(entered.is_set())
+            self.assertFalse(confirmed)
+            self.assertLess(elapsed, 1.0)
+            self.assertGreaterEqual(elapsed, 0.2)
+            self.assertEqual(sink.state, diagnostics.UNAVAILABLE)
+        finally:
+            release.set()
+        self.assertTrue(sink.flush(5.0) is False or sink.state == diagnostics.UNAVAILABLE)
+
+    def test_a_terminal_event_is_confirmed_when_the_disk_is_healthy(self):
+        self.durable()
+        self.assertTrue(diagnostics.finish(200, 1.0, diagnostics.new_correlation()))
+        self.assertEqual(diagnostics.current_correlation(), None)
+
+    def test_the_queue_saturating_never_drops_an_accepted_event(self):
+        release = threading.Event()
+        sink = self.durable(queue_limit=4, admit_timeout=0.05)
+        real = sink._sink.write
+
+        def held(line):
+            release.wait(5)
+            return real(line)
+
+        sink._sink.write = held
+        accepted = [diagnostics.event("cli.action.started", "INFO", "started") for _ in range(20)]
+        self.assertTrue(wait_until(lambda: sink.state == diagnostics.UNAVAILABLE, timeout=3))
+        self.assertFalse(sink.admit())
+        self.assertIsNone(diagnostics.accept(diagnostics.new_correlation()))
+        release.set()
+        sink.close(3.0)
+        # Everything that was accepted before the refusal is still there: the sink stopped taking
+        # new work, it did not throw away what it had already promised to write.
+        records = read_events(self.directory)
+        self.assertEqual(
+            [record["sequence"] for record in records],
+            sorted(record["sequence"] for record in records),
+        )
+        self.assertGreaterEqual(len(records), sum(1 for value in accepted if value is not None))
+
+
+class OwnerTests(SinkTestCase):
+    """One thread owns the file, and a caller that runs out of patience never takes it away."""
+
+    def test_close_is_bounded_and_the_owner_still_finishes_on_its_own(self):
+        sink = self.durable()
+        sink.emit_durable("runtime.starting", "INFO", "started")
+        release = threading.Event()
+        real = sink._sink.sync
+
+        def held_sync():
+            release.wait(5)
+            return real()
+
+        sink._sink.sync = held_sync
+        started = time.monotonic()
+        confirmed = sink.close(0.05)
+        elapsed = time.monotonic() - started
+        # Bounded, honest about it, and refusing new work from the instant it was asked to stop.
+        self.assertFalse(confirmed)
+        self.assertLess(elapsed, 1.0)
+        self.assertFalse(sink.admit())
+        self.assertIsNone(diagnostics.accept(diagnostics.new_correlation()))
+        self.assertFalse(sink._owner_done.is_set())
+        release.set()
+        # The owner is left alone to finish: it seals its own segment and closes its own descriptor.
+        self.assertTrue(sink._owner_done.wait(5.0))
+        self.assertIsNone(sink._sink.fd)
+        self.assertTrue(sink.sealed_segments())
+
+    def test_flush_never_fsyncs_on_the_callers_thread(self):
+        sink = self.durable()
+        seen = []
+        real = sink._sink.sync
+
+        def sync():
+            seen.append(threading.current_thread().name)
+            return real()
+
+        sink._sink.sync = sync
+        sink.emit("cli.action.started", "INFO", "started")
+        self.assertTrue(sink.flush(2.0))
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {"tianshu-diagnostics"})
+
+    def test_a_concurrent_shutdown_and_recovery_never_races_the_writer(self):
+        sink = self.durable(admit_timeout=0.1)
+        real = sink._sink.write
+        broke = {"on": True}
+
+        def broken(line):
+            if broke["on"]:
+                raise OSError("device not configured")
+            return real(line)
+
+        sink._sink.write = broken
+        sink.emit("cli.action.started", "INFO", "started")
+        self.assertTrue(wait_until(lambda: sink.state == diagnostics.UNAVAILABLE))
+        errors = []
+
+        def recover():
+            try:
+                sink.recover()
+            except Exception as exc:  # pragma: no cover - a raise here is the failure
+                errors.append(exc)
+
+        def close():
+            try:
+                sink.close(2.0)
+            except Exception as exc:  # pragma: no cover - a raise here is the failure
+                errors.append(exc)
+
+        broke["on"] = False
+        threads = [threading.Thread(target=recover), threading.Thread(target=close)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual(errors, [])
+        # Whatever the race decided, the owner ended up closing exactly one descriptor and the sink
+        # never claimed a durability it had not proved.
+        self.assertTrue(sink._owner_done.wait(5.0))
+        self.assertIsNone(sink._sink.fd)
+        for path in log_files(self.directory):
+            raw = path.read_bytes()
+            self.assertNotIn(b"\r", raw)
+            for line in raw.split(b"\n"):
+                if line:
+                    self.assertEqual(tuple(json.loads(line.decode("utf-8"))), FIELDS)
+
+    def test_retransmission_obeys_capacity_and_identity(self):
+        sink = self.durable(queue_limit=2)
+        sink.emit_durable("cli.action.started", "INFO", "started")
+        sink.flush()
+        original = read_events(self.directory)[0]
+        # Another instance's record is not this sink's to re-send, and neither is a sequence this
+        # stream never allocated.
+        foreign = dict(original, instance_id=str(uuid.uuid4()))
+        self.assertFalse(sink.retransmit(foreign))
+        ahead = dict(original, sequence=original["sequence"] + 5)
+        self.assertFalse(sink.retransmit(ahead))
+        self.assertFalse(sink.retransmit(dict(original, service="elsewhere")))
+        self.assertTrue(sink.retransmit(original))
+        sink.flush()
+        records = read_events(self.directory)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["event_id"], records[1]["event_id"])
+        self.assertEqual(records[0]["sequence"], records[1]["sequence"])
+
+    def test_a_retransmission_never_confirms_events_that_are_still_waiting(self):
+        release = threading.Event()
+        sink = self.durable()
+        first = sink.emit_durable("cli.action.started", "INFO", "started")
+        sink.flush()
+        original = read_events(self.directory)[0]
+        real = sink._sink.write
+
+        def held(line):
+            release.wait(5)
+            return real(line)
+
+        sink._sink.write = held
+        # A high-sequence retransmission must not be able to vouch for the events queued behind it.
+        pending = sink.emit("cli.action.finished", "INFO", "succeeded")
+        self.assertGreater(pending, first)
+        self.assertTrue(sink.retransmit(original))
+        self.assertIsNone(sink.admit_durable("runtime.stopping", "INFO", "started", timeout=0.05))
+        release.set()
+        sink.close(3.0)
+
+    def test_recovery_stays_refused_until_a_real_write_succeeds(self):
+        sink = self.durable(admit_timeout=0.05)
+        real = sink._sink.write
+        broke = {"on": True}
+
+        def broken(line):
+            if broke["on"]:
+                raise OSError("device not configured")
+            return real(line)
+
+        sink._sink.write = broken
+        sink.emit("cli.action.started", "INFO", "started")
+        self.assertTrue(wait_until(lambda: sink.state == diagnostics.UNAVAILABLE))
+        # While the recovery probe is being attempted the sink is neither durable nor admitting:
+        # a state that only a confirmed fsync may leave.
+        observed = []
+
+        def watch():
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                observed.append(sink.state)
+                if sink.state == diagnostics.DURABLE:
+                    return
+                time.sleep(0.005)
+
+        watcher = threading.Thread(target=watch)
+        watcher.start()
+        self.assertFalse(sink.recover())
+        watcher.join(5)
+        self.assertFalse(sink.admit())
+        self.assertEqual(sink.state, diagnostics.UNAVAILABLE)
+        self.assertNotIn(diagnostics.DURABLE, observed)
+        broke["on"] = False
+        self.assertTrue(sink.recover())
+        self.assertEqual(sink.state, diagnostics.DURABLE)
+        self.assertTrue(sink.admit())
+        sink.flush()
+        names = [record["event"] for record in read_events(self.directory)]
+        self.assertIn("cli.action.started", names)
+        self.assertIn("logging.recovered", names)
+        self.assertIn("logging.unavailable", names)

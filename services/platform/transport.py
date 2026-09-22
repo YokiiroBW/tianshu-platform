@@ -1,5 +1,6 @@
 """Deployment-fixed HTTPS only; environment secrets never cross JSON boundaries."""
 
+import asyncio
 import re
 import ssl
 from pathlib import Path
@@ -25,11 +26,13 @@ async def core_web_call(settings, path, payload, contracts, schema):
     require(token is not None, "dependency_unavailable", 503)
     span = diagnostics.Span("core_web_call")
     diagnostics.outbound("started")
+    sent = False
     try:
         tls = ssl.create_default_context(cafile=settings.get("ca_file"))
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=timeout), trust_env=False
         ) as session:
+            sent = True
             async with session.post(
                 settings["base_url"].rstrip("/") + "/internal/v1/conversation/" + path,
                 json=payload,
@@ -71,6 +74,17 @@ async def core_web_call(settings, path, payload, contracts, schema):
     except TimeoutError:
         diagnostics.outbound("timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout")
         raise Fault("dependency_unavailable", 503) from None
+    except asyncio.CancelledError:
+        # Cancellation is a terminal state of this call, not the absence of one: the started event
+        # already exists, so leaving it without an end would misreport a call that is over as one
+        # still in flight. The fixed code says whether anything could have left this process, and
+        # nothing is retried or claimed about the remote result either way.
+        diagnostics.outbound(
+            "cancelled",
+            duration_ms=span.elapsed() * 1000.0,
+            error_code=None if sent else "outbound_not_sent",
+        )
+        raise
     except (aiohttp.ClientError, OSError, ssl.SSLError):
         diagnostics.outbound(
             "failed",
@@ -118,11 +132,13 @@ async def core_post(settings, ingest, contracts=None):
     require(token is not None, "dependency_unavailable", 503)
     span = diagnostics.Span("core_post")
     diagnostics.outbound("started")
+    sent = False
     try:
         tls = ssl.create_default_context(cafile=settings.get("ca_file"))
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=timeout), trust_env=False
         ) as session:
+            sent = True
             async with session.post(
                 url,
                 json=ingest,
@@ -153,6 +169,15 @@ async def core_post(settings, ingest, contracts=None):
     except TimeoutError:
         diagnostics.outbound("timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout")
         raise Fault("dependency_unavailable", 503) from None
+    except asyncio.CancelledError:
+        # Same rule as the web call above: the started event gets its end, and a cancelled call is
+        # never reported as one that is still running.
+        diagnostics.outbound(
+            "cancelled",
+            duration_ms=span.elapsed() * 1000.0,
+            error_code=None if sent else "outbound_not_sent",
+        )
+        raise
     except (aiohttp.ClientError, OSError, ssl.SSLError):
         # The request may have committed at Core. Retry the original semantic/key.
         diagnostics.outbound(

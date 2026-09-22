@@ -2,9 +2,10 @@
 # would otherwise be copied into a layer: local state, test tooling, and above all the deployment's
 # own secrets, which live in mounted files and the environment and never in an image.
 #
-# `apps/web/dist` is deliberately *not* ignored: it is the built console the Dockerfile copies in.
-# Markdown is not ignored either, because the frozen diagnostic contract's manifest covers its
-# README and a normalised or missing copy would fail the readiness check.
+# `apps/web/dist` is ignored on purpose: the image builds its own console from the lockfile in the
+# `console` stage, and excluding the authoring machine's build output is what proves it. Markdown is
+# not ignored, because the frozen diagnostic contract's manifest covers its README and a normalised
+# or missing copy would fail the readiness check.
 
 .git
 .gitattributes
@@ -26,6 +27,10 @@ playwright-report
 test-results
 coverage
 htmlcov
+
+# A console built outside the image is never an input to it.
+apps/web/dist
+dist
 
 # Tests and developer documentation are not needed to run the service.
 tests

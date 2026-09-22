@@ -23,56 +23,83 @@ RESPONSE_LIMIT = 1_048_576
 DEADLINE = 5
 
 
+def validate_connections(settings, principals):
+    """Validate the registered asset connections without a store, a client or a read.
+
+    Extracted so the deployment-time question - "is this connection table usable?" - has exactly
+    one answer: `Assets` asks it when it is assembled, and the rolling preflight asks the same
+    function without constructing a client or opening a database.
+    """
+    connections = copy.deepcopy(settings.get("asset_connections", {}))
+    require(isinstance(connections, dict), "invalid_input", 400)
+    envs = [p["token_env"] for p in principals.values()]
+    if settings.get("core"):
+        envs.append(settings["core"]["token_env"])
+    for connection in connections.values():
+        require(
+            isinstance(connection, dict)
+            and set(connection) == {"endpoint", "ca_file", "token_env"},
+            "invalid_input",
+            400,
+        )
+        url = urlsplit(connection["endpoint"])
+        require(
+            url.scheme == "https"
+            and bool(url.hostname)
+            and url.username is None
+            and url.password is None
+            and url.path == "/assetlink/v1/control"
+            and not url.query
+            and not url.fragment
+            and not any(c.isspace() or ord(c) < 32 for c in connection["endpoint"]),
+            "invalid_input",
+            400,
+        )
+        require(Path(connection["ca_file"]).is_absolute(), "invalid_input", 400)
+        require(
+            re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", connection["token_env"]),
+            "invalid_input",
+            400,
+        )
+        envs.append(connection["token_env"])
+    require(len(envs) == len(set(envs)), "invalid_input", 400)
+    return connections
+
+
+def validate_page(page, principals, connections, contracts):
+    """The read-only asset page's narrowing, refused where it is configured.
+
+    The rule itself lives in the neutral `asset_page_config` module, which knows nothing about this
+    client or about the page: an application client must not depend on one of its consumers, and
+    the page adapter imports the same rule from the same place. This function only gives that rule
+    the two facts it needs - and it needs no store to do it, which is what lets the preflight
+    reach the same verdict as assembly.
+    """
+    if page is None:
+        return None
+    return page_configuration(page, principals, connections, contracts.check)
+
+
 class Assets:
     def __init__(self, store, auth, settings):
         self.store, self.auth = store, auth
-        self.connections = copy.deepcopy(settings.get("asset_connections", {}))
-        require(isinstance(self.connections, dict), "invalid_input", 400)
-        envs = [p["token_env"] for p in auth.principals.values()]
-        if settings.get("core"):
-            envs.append(settings["core"]["token_env"])
-        self.other_token_envs = tuple(envs)
-        for connection in self.connections.values():
-            require(
-                isinstance(connection, dict)
-                and set(connection) == {"endpoint", "ca_file", "token_env"},
-                "invalid_input",
-                400,
-            )
-            url = urlsplit(connection["endpoint"])
-            require(
-                url.scheme == "https"
-                and bool(url.hostname)
-                and url.username is None
-                and url.password is None
-                and url.path == "/assetlink/v1/control"
-                and not url.query
-                and not url.fragment
-                and not any(c.isspace() or ord(c) < 32 for c in connection["endpoint"]),
-                "invalid_input",
-                400,
-            )
-            require(Path(connection["ca_file"]).is_absolute(), "invalid_input", 400)
-            require(
-                re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", connection["token_env"]),
-                "invalid_input",
-                400,
-            )
-            envs.append(connection["token_env"])
-        require(len(envs) == len(set(envs)), "invalid_input", 400)
+        self.connections = validate_connections(settings, auth.principals)
+        # The variables that belong to *other* identities: this client never sends one of their
+        # values, whichever name it was pointed at. A connection's own credential is deliberately
+        # not in this list - it is the one value that connection is supposed to send - and the
+        # uniqueness of all the names together is what the validator above already enforces.
+        self.other_token_envs = tuple(
+            [p["token_env"] for p in auth.principals.values()]
+            + ([settings["core"]["token_env"]] if settings.get("core") else [])
+        )
 
     def configure_page(self, page, contracts):
         """Validate the read-only asset page's narrowing at deployment time, not at read time.
 
-        The page may only ever expose connections this identity is already bound to. The rule
-        itself lives in the neutral `asset_page_config` module, which knows nothing about this
-        client or about the page: an application client must not depend on one of its consumers, and
-        the page adapter imports the same rule from the same place. This method only gives that rule
-        the two facts it needs, so an impossible page is refused where it is configured.
+        The page may only ever expose connections this identity is already bound to; an impossible
+        page is refused here, where it is configured, rather than at read time.
         """
-        if page is None:
-            return None
-        return page_configuration(page, self.auth.principals, self.connections, contracts.check)
+        return validate_page(page, self.auth.principals, self.connections, contracts)
 
     def authorize(self, header, connection_id):
         # A busy local authority must not consume another five seconds after HTTPS.

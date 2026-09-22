@@ -12,6 +12,7 @@ from aiohttp import web
 
 from . import diagnostics, diagnostics_config, runtime_health
 from .contracts import Fault, loads, require
+from .service import registered_credentials
 from .web_console import WebConsole
 
 PLATFORM = web.AppKey("platform", object)
@@ -47,30 +48,56 @@ def create_app(platform, probe=None):
     native_open = platform.native_config_http is True
     health = probe if probe is not None else runtime_health.Probe(platform.health)
     ready_token_env = diagnostics_config.resolve_ready_token_env(platform.settings)
+    # Every variable another registered identity or peer reads. The names are static deployment
+    # configuration, but their *values* are read per request: a rotation must be seen immediately,
+    # and a value that has become the same as a business credential must stop being accepted.
+    business_names = registered_credentials(platform.settings)
 
     def sealed(response):
         # Every answer this boundary produces is uncacheable and never sniffed.
         response.headers.update({"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
         return response
 
+    def ready_token_state():
+        """The readiness credential as it is *now*: `(value, problem)`.
+
+        `problem` is a fixed code, never the value and never a path. A credential that is absent,
+        empty, blank or currently equal to a registered business credential is a server-side
+        configuration fault and answers 503; a caller that simply cannot present it answers 401.
+        The comparison is over bytes because `hmac.compare_digest` refuses non-ASCII text, and a
+        probe carrying a Unicode token must get the same opaque refusal as any other wrong one.
+        """
+        value = os.environ.get(ready_token_env)
+        if not value or not value.strip():
+            return None, "dependency_unavailable"
+        candidate = value.encode("utf-8")
+        for name in business_names:
+            other = os.environ.get(name)
+            if other and hmac.compare_digest(candidate, other.encode("utf-8")):
+                # Reusing an identity's own secret as the probe credential would let anyone who
+                # holds that identity's token read the readiness document as the probe.
+                return None, "dependency_unavailable"
+        return value, None
+
     async def probe_endpoint(request):
         """Answer one probe without admitting it, logging it or writing anything at all.
 
         The readiness credential is read from the environment on every request, so a rotation
         takes effect immediately and never depends on a value cached at startup. A server with no
-        configured token says so; a caller with a missing or wrong one gets 401. The body is the
+        usable token says so; a caller with a missing or wrong one gets 401. The body is the
         closed document plus, for a failure, one fixed code - never a path or a configured value.
         """
         require(request.method in {"GET", "HEAD"}, "not_found", 404)
         if request.path == LIVE_PATH:
             return sealed(web.json_response(health.live()))
-        token = os.environ.get(ready_token_env)
-        if token is None:
-            return sealed(web.json_response({"code": "dependency_unavailable"}, status=503))
+        token, problem = ready_token_state()
+        if problem is not None:
+            return sealed(web.json_response({"code": problem}, status=503))
         supplied = request.headers.get("Authorization", "")
         prefix = "Bearer "
-        if not supplied.startswith(prefix) or not hmac.compare_digest(
-            supplied[len(prefix) :], token
+        presented = supplied[len(prefix) :] if supplied.startswith(prefix) else ""
+        if not presented or not hmac.compare_digest(
+            presented.encode("utf-8"), token.encode("utf-8")
         ):
             return sealed(web.json_response({"code": "unauthorized"}, status=401))
         document = await health.ready()
@@ -86,11 +113,17 @@ def create_app(platform, probe=None):
         context = None
         admitted = False
         unexpected = False
+        # What this exchange actually demonstrates about authorisation. It starts as "nothing" and
+        # is only ever set by the two facts that are real evidence: a credential was presented and
+        # the request got past the code that checks it, or the answer refused one.
+        auth = diagnostics.AUTH_NOT_ATTEMPTED
+        reached_handler = False
         started = time.monotonic()
 
         async def dispatch(request):
-            nonlocal request_id
+            nonlocal request_id, reached_handler
             if not request.path.startswith("/internal/"):
+                reached_handler = True
                 return await console.handle(request)
             # Browser sessions never authorize service RPCs.
             require("Origin" not in request.headers and "Cookie" not in request.headers)
@@ -125,6 +158,9 @@ def create_app(platform, probe=None):
             platform.contracts.check(schema, body)
             request_id = body.get("query", body.get("command", body))["request_id"]
             request[BODY] = body
+            # From here the handler authenticates the presented credential itself; everything
+            # before this line is a pre-authentication refusal that proves nothing about identity.
+            reached_handler = True
             return await handler(request)
 
         try:
@@ -137,13 +173,15 @@ def create_app(platform, probe=None):
                 # never emits an event and never causes a write of any kind.
                 return await probe_endpoint(request)
             correlation = diagnostics.adopt_correlation(request.headers.get(diagnostics.HEADER))
-            if not diagnostics.admittable():
+            if not diagnostics.admitted():
                 # New business is refused while the log cannot be written. Work already in flight
                 # keeps its own result; only the next request is turned away.
                 response = error("dependency_unavailable", 503, request_id, native)
             else:
                 context = diagnostics.use_correlation(correlation)
-                admitted = diagnostics.accept(correlation)
+                # Admission waits for the accepting event's bytes without ever blocking the loop:
+                # a slow disk costs this request its bound, not the whole process its heartbeat.
+                admitted = await diagnostics.accept_async(correlation) is not None
                 if admitted:
                     response = await dispatch(request)
                 else:
@@ -165,7 +203,10 @@ def create_app(platform, probe=None):
         except asyncio.CancelledError:
             # Cancellation is this request's terminal state, so it is recorded here and only here:
             # one place owns request lifecycle, and a cancelled request never produces a response.
-            # The emit does not await, so it is safe on a task that is being torn down.
+            # A task being torn down cannot await, so the terminal record is emitted and its
+            # durability obligation is handed to the sink, which is the only thing that owns the
+            # file: the record is written by the owner thread or the sink turns red, and neither
+            # outcome is decided by whether this task was allowed to keep running.
             if admitted and correlation is not None:
                 diagnostics.event(
                     "http.request.finished",
@@ -178,12 +219,26 @@ def create_app(platform, probe=None):
         finally:
             if context is not None:
                 diagnostics.reset_correlation(context)
+        if response.status in (401, 403):
+            auth = diagnostics.AUTH_REJECTED
+        elif reached_handler and (
+            request.headers.get("Authorization") is not None or request.headers.get("Cookie")
+        ):
+            # A credential was actually presented to the code that authenticates it and was not
+            # refused. A public static asset, a pre-authentication 400 and an unknown path never
+            # reach this branch, so none of them is written as a successful authentication.
+            auth = diagnostics.AUTH_SUCCEEDED
         if admitted and correlation is not None:
-            diagnostics.finish(
+            # The terminal events are confirmed durable, bounded, before the answer leaves. A sink
+            # that cannot confirm them has already stopped admitting new work; the response itself
+            # is the business result and is never rewritten, retried or rolled back because the
+            # log could not keep up.
+            await diagnostics.finish_async(
                 response.status,
                 max(0.0, (time.monotonic() - started) * 1000.0),
                 correlation,
                 error_code="internal_error" if unexpected else None,
+                auth=auth,
             )
         sealed(response)
         if correlation is not None:

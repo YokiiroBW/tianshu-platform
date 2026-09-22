@@ -23,7 +23,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import diagnostics_config
-from .diagnostics import SERVICE
+from .contracts import Fault
+from .diagnostics import SERVICE, safe_code
 
 # A closed set of local checks. The readiness body is exactly this mapping, so a probe can never
 # grow a field that leaks a path, an address or a configured value.
@@ -274,12 +275,15 @@ def inspect_tls(tls, now=None):
 
 
 class Probe:
-    """Readiness with a hard budget, one check at a time, and no expired green.
+    """Readiness with a hard budget, one real check at a time, and no expired green.
 
-    Checks run off the event loop under a single lock, so concurrent probes share one pass. A
-    probe that cannot get in within its budget reports `not_verified` rather than waiting without
-    bound, and a cached answer is only ever reused while it is still fresh - an old green is not
-    a current fact.
+    Checks run off the event loop under a single owner, so concurrent probes share one pass. The
+    owner is held until the underlying check *really* finishes, not merely until the caller's wait
+    expires: cancelling a wait does not cancel a thread, and a second pass started on top of a
+    still-running first one is exactly how a read-only probe turns into an unbounded pile of
+    concurrent work. A caller that arrives while a check is in flight gets the unexpired cache if
+    there is one and the closed `not_verified` document otherwise - never a queued wait, and never
+    a timeout that quietly replaces a good answer with a worse one.
     """
 
     def __init__(
@@ -289,7 +293,7 @@ class Probe:
         self.clock = clock
         self.budget = budget
         self.cache_seconds = cache_seconds
-        self._lock = asyncio.Lock()
+        self._inflight = False
         self._cached = None
         self._cached_at = None
 
@@ -306,24 +310,35 @@ class Probe:
         cached = self._fresh()
         if cached is not None:
             return cached
-        try:
-            await asyncio.wait_for(self._lock.acquire(), self.budget)
-        except (TimeoutError, asyncio.TimeoutError):
-            # Someone else is checking and did not finish inside the budget. Reporting the
-            # unknown keys as unverified keeps this answer honest and bounded.
+        if self._inflight:
+            # One real check is already running and has not finished. This caller neither queues
+            # behind it nor starts a second one: "not verified right now" is the honest answer, and
+            # it is the only one that stays inside the budget without adding work.
             return self._document(dict.fromkeys(CHECK_KEYS, "not_verified"))
+        self._inflight = True
+        loop = asyncio.get_running_loop()
+        worker = loop.run_in_executor(None, self.evaluate)
+        worker.add_done_callback(self._settle)
         try:
-            cached = self._fresh()
-            if cached is not None:
-                return cached
-            document = await asyncio.wait_for(asyncio.to_thread(self.evaluate), self.budget)
+            # Shielded on purpose: the budget bounds *this* answer, and the check itself is left to
+            # finish so that ownership is released by the work rather than by the timeout.
+            document = await asyncio.wait_for(asyncio.shield(worker), self.budget)
         except (TimeoutError, asyncio.TimeoutError):
-            document = self._document(dict.fromkeys(CHECK_KEYS, "not_verified"))
-        finally:
-            self._lock.release()
-        self._cached = document
-        self._cached_at = self.clock()
+            return self._document(dict.fromkeys(CHECK_KEYS, "not_verified"))
         return document
+
+    def _settle(self, worker):
+        """Release the single owner, and cache the answer only when there really was one."""
+        self._inflight = False
+        if worker.cancelled():
+            return
+        error = worker.exception()
+        if error is not None:
+            # A check that raised is not a fact about the deployment, and it never replaces the
+            # cached answer: the next probe simply asks again.
+            return
+        self._cached = worker.result()
+        self._cached_at = self.clock()
 
     def _fresh(self):
         if self._cached is None or self._cached_at is None:
@@ -419,6 +434,8 @@ class Probe:
         if value == "non_durable":
             # Explicit development output is not a durable sink, so it cannot back readiness.
             return "non_durable"
+        # Everything else - unavailable, and `recovering`, which is a sink that has not yet proved
+        # it works again - is a log that cannot be relied on, and readiness says so.
         return "failed"
 
     def _runtime(self):
@@ -428,13 +445,19 @@ class Probe:
         return "ok" if state() == "running" else "failed"
 
 
-def preflight(settings, *, credential_names=(), credential_present=None):
+def preflight(settings, *, credential_names=(), credential_present=None, validate=None):
     """Answer "would this deployment boot safely?" without starting or creating anything.
 
     The composition root is deliberately *not* constructed here: that would create missing
     databases and run migrations, which is exactly what a preflight must not do. A first boot on
     an empty data directory is reported as `requires_initialization` so the operator runs the
     normal startup path instead of a probe quietly inventing a database.
+
+    `validate` is the entry point's own pre-store validation, injected rather than re-implemented:
+    the rolling check therefore asks the *same* question the real startup asks, and a settings
+    file the entry point would refuse can never be reported as ready. The validator reads
+    contracts and validates identities and page narrowing, and opens nothing - no store, no
+    database, no port - so passing it does not weaken the read-only promise above.
     """
     inputs = health_inputs(
         settings, credential_names=credential_names, credential_present=credential_present
@@ -442,9 +465,18 @@ def preflight(settings, *, credential_names=(), credential_present=None):
     reasons = []
     checks = {}
 
-    if inputs.config_problem:
+    problem = inputs.config_problem
+    if problem is None and validate is not None:
+        try:
+            validate(settings)
+        except Fault as exc:
+            # Only the fixed code travels: never the offending value, the path or the exception.
+            problem = safe_code(exc.code)
+        except (ValueError, TypeError, KeyError, OSError, RecursionError):
+            problem = "config_load_failed"
+    if problem:
         checks["config"] = "failed"
-        reasons.append(inputs.config_problem)
+        reasons.append(problem)
     else:
         checks["config"] = "ok"
 

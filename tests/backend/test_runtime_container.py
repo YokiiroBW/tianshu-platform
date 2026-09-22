@@ -75,18 +75,44 @@ class ImageDefinitionTests(unittest.TestCase):
             if line.strip() and not line.startswith("#")
         ]
 
-    def test_the_image_definition_exists_and_pins_its_base(self):
+    def test_the_image_definition_exists_and_pins_its_bases(self):
         self.assertTrue(DOCKERFILE.is_file())
         froms = [line for line in self.lines if line.startswith("FROM ")]
-        self.assertEqual(len(froms), 1)
-        self.assertTrue(froms[0].startswith("FROM python:3.12."), froms[0])
+        # Two stages: one that really builds the console, and the runtime that never inherits it.
+        self.assertEqual(len(froms), 2, froms)
+        runtime = [line for line in froms if line.startswith("FROM python:3.12.")]
+        console = [line for line in froms if line.startswith("FROM node:")]
+        self.assertEqual(len(runtime), 1, froms)
+        self.assertEqual(len(console), 1, froms)
+        # Exact tags, not a floating major: the toolchain that built the artifact is the one the
+        # definition names.
+        self.assertRegex(console[0], r"^FROM node:\d+\.\d+\.\d+-")
+        self.assertRegex(runtime[0], r"^FROM python:3\.12\.\d+-")
+        self.assertIn(" AS console", console[0])
+        self.assertIn(" AS runtime", runtime[0])
         self.assertNotIn(":latest", self.text)
         self.assertNotIn("python:3-slim", self.text)
+
+    def test_the_console_is_really_built_from_the_lockfile(self):
+        """The runtime image can only carry a console this build produced."""
+        stage = self.text[self.text.index(" AS console") : self.text.index(" AS runtime")]
+        # Strictly from the lockfile: `npm install` would resolve ranges on the day of the build.
+        self.assertIn("RUN npm ci", stage)
+        self.assertNotIn("npm install", self.text)
+        self.assertIn("COPY package.json package-lock.json ./", stage)
+        # The real build, which is also the real typecheck.
+        self.assertIn("RUN npm run build", stage)
+        self.assertIn("COPY apps/web/ ./apps/web/", stage)
+        # And the runtime stage takes the console from that stage, never from the build context.
+        self.assertIn("COPY --from=console /build/apps/web/dist/ ./web/", self.text)
+        self.assertNotIn("COPY apps/web/dist/", self.text)
 
     def test_the_service_never_runs_as_root(self):
         self.assertIn("USER 10001:10001", self.text)
         self.assertNotRegex(self.text, r"USER\s+root")
         self.assertIn("useradd", self.text)
+        # The unprivileged user is chosen in the runtime stage, after the build stage has finished.
+        self.assertLess(self.text.index(" AS runtime"), self.text.index("USER 10001:10001"))
 
     def test_no_secret_is_read_or_baked_at_build_time(self):
         for forbidden in ("ARG ", "ENV TOKEN", "ENV SECRET", "ENV PASSWORD", "COPY .env"):
@@ -102,11 +128,24 @@ class ImageDefinitionTests(unittest.TestCase):
             source = line.split()[1]
             self.assertIn(
                 source,
-                ("pyproject.toml", "services/", "contracts/", "apps/web/dist/"),
+                (
+                    "pyproject.toml",
+                    "services/",
+                    "contracts/",
+                    "package.json",
+                    "package-lock.json",
+                    "apps/web/",
+                    "--from=console",
+                ),
                 source,
             )
         self.assertIn("COPY contracts/ ./contracts/", self.text)
-        self.assertIn("COPY apps/web/dist/ ./web/", self.text)
+        self.assertIn("COPY --from=console /build/apps/web/dist/ ./web/", self.text)
+        # Only the console's own sources reach the build stage: the runtime stage never sees them,
+        # so nothing about the frontend toolchain can leak into what is deployed.
+        stage = self.text[self.text.index(" AS console") : self.text.index(" AS runtime")]
+        self.assertIn("COPY apps/web/ ./apps/web/", stage)
+        self.assertNotIn("COPY services/", stage)
 
     def test_dependencies_come_from_the_project_metadata_only(self):
         # A second pin list in the Dockerfile would drift from pyproject.toml, so the image must
@@ -116,20 +155,32 @@ class ImageDefinitionTests(unittest.TestCase):
         self.assertEqual(len(installs), 1)
         for name in ("aiohttp", "jsonschema", "referencing", "ruff"):
             self.assertNotIn(name, self.text, name)
+        # Node dependencies come from the lockfile, and only the build stage installs them.
+        stage = self.text[self.text.index(" AS console") : self.text.index(" AS runtime")]
+        self.assertIn("npm ci", stage)
+        self.assertNotIn("npm ci", self.text[self.text.index(" AS runtime") :])
 
     def test_the_image_carries_no_build_tooling_into_the_runtime(self):
+        runtime = self.text[self.text.index(" AS runtime") :]
         for forbidden in ("apt-get", "curl ", "wget ", "gcc", "node", "npm", "make"):
-            self.assertNotIn(forbidden, self.text, forbidden)
-        self.assertIn("PYTHONDONTWRITEBYTECODE=1", self.text)
+            self.assertNotIn(forbidden, runtime, forbidden)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", runtime)
 
     def test_liveness_is_checked_over_verified_tls(self):
         healthcheck = self.text[self.text.index("HEALTHCHECK") :]
         self.assertIn("/health/live", healthcheck)
-        self.assertIn("create_default_context", healthcheck)
-        self.assertIn("cafile=", healthcheck)
+        # The check runs the product's own command, which keeps hostname checking on, requires a
+        # certificate chain and takes an explicit CA - a probe that waved verification through
+        # would report a healthy process behind an entry point nobody can use.
+        self.assertIn("services.platform", healthcheck)
+        self.assertIn("healthcheck", healthcheck)
+        self.assertIn("--url", healthcheck)
+        self.assertIn("https://", healthcheck)
+        self.assertIn("--ca-file", healthcheck)
         # A readiness check needs a credential the orchestrator would have to hold; liveness does
         # not, and only liveness may decide whether to restart the process.
         self.assertNotIn("/health/ready", healthcheck)
+        self.assertNotIn("Authorization", healthcheck)
 
     def test_the_entry_point_is_the_serve_command_on_the_declared_port(self):
         self.assertIn('ENTRYPOINT ["python", "-m", "services.platform"]', self.text)
@@ -157,11 +208,17 @@ class ImageDefinitionTests(unittest.TestCase):
             self.assertIn(pattern, self.ignored, pattern)
 
     def test_the_ignore_rules_never_drop_what_the_image_must_carry(self):
-        # `apps/web/dist` is copied by the Dockerfile, so ignoring it would break the build; and the
-        # frozen contract's own README is covered by its manifest, so ignoring markdown would make
-        # the readiness check fail on a file that should have been shipped.
-        for pattern in ("apps/web/dist", "dist", "*.md", "README.md", "contracts"):
+        # The frozen contract's own README is covered by its manifest, so ignoring markdown would
+        # make the readiness check fail on a file that should have been shipped.
+        for pattern in ("*.md", "README.md", "contracts", "package-lock.json"):
             self.assertNotIn(pattern, self.ignored, pattern)
+        # `apps/web/dist` is ignored on purpose: the console comes from the build stage, and
+        # excluding the authoring machine's output is what proves the image does not depend on it.
+        self.assertIn("apps/web/dist", self.ignored)
+        self.assertNotIn("apps/web", self.ignored)
+        # The build stage needs the console's sources and the lockfile, and neither is ignored.
+        self.assertNotIn("apps", self.ignored)
+        self.assertNotIn("package.json", self.ignored)
 
     def test_a_build_that_is_not_verified_is_not_claimed_as_verified(self):
         # The definition must not pretend a container was built or run: it says so in its own text,

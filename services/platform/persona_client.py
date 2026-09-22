@@ -190,8 +190,15 @@ class PersonaClient:
             # own question, and it is asked again after every await above.
             prove(document)
         except asyncio.CancelledError:
-            if sent:
-                diagnostics.outbound("cancelled", duration_ms=span.elapsed() * 1000.0)
+            # A cancelled read always gets its terminal outbound outcome, queued or sent: an
+            # outbound event with no end reads as a call still in flight, which is a worse
+            # misreport than the one it replaces. The fixed code separates a read that could not
+            # have reached the peer from one that may have, without inventing a field to say so.
+            diagnostics.outbound(
+                "cancelled",
+                duration_ms=span.elapsed() * 1000.0,
+                error_code=None if sent else "outbound_not_sent",
+            )
             raise
         except TimeoutError:
             diagnostics.outbound(

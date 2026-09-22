@@ -1,10 +1,11 @@
 """Composition root for the two published endpoints and trusted local adapter ports."""
 
+import hmac
 import time
 
 from . import diagnostics, diagnostics_config, runtime_health
 from .auth import Auth, secret
-from .assets import Assets
+from .assets import Assets, validate_connections, validate_page
 from .contracts import Contracts, Fault, require
 from .models import Models
 from .origins import Origins
@@ -54,44 +55,97 @@ def registered_credentials(settings):
     return tuple(sorted(names))
 
 
-class Platform:
-    def __init__(self, settings, *, clock=time.time):
+# Every top-level setting this build understands. An unknown key is refused rather than ignored:
+# a deployment that means something this build does not implement must not look configured.
+SETTINGS_KEYS = frozenset(
+    {
+        "mode",
+        "storage",
+        "database_path",
+        "contract_directory",
+        "principals",
+        "entries",
+        "providers",
+        "config_max_lifetime_seconds",
+        "source_contract_directory",
+        "input_entries",
+        "core",
+        "tls",
+        "asset_connections",
+        "web",
+        "web_models",
+        "web_assets",
+        "native_config_http",
+        "home",
+        "persona_connections",
+        "web_personas",
+        "diagnostics",
+    }
+)
+
+
+def validate_settings(settings):
+    """Everything this deployment refuses before it touches a store, and nothing that writes.
+
+    This is the *same* function the composition root runs first, and the rolling preflight is
+    handed it rather than a second list of rules. That is the whole point: "the preflight says
+    ready" and "the entry point would assemble" have to be one statement, because a preflight that
+    accepts a configuration the real startup refuses is worse than no preflight at all.
+
+    It reads the published contracts and validates identities, credentials and page narrowing. It
+    opens no database, creates no file, migrates nothing and binds no port; the returned contract
+    and identity objects are handed back to the caller so assembly does not load them twice.
+    """
+    require(isinstance(settings, dict), "invalid_input", 400)
+    require(set(settings) <= SETTINGS_KEYS, "invalid_input", 400)
+    require(settings.get("storage") == "sqlite_local", "dependency_unavailable", 503)
+    require(type(settings.get("native_config_http", False)) is bool, "invalid_input", 400)
+    for key in ("database_path", "contract_directory"):
         require(
-            set(settings)
-            <= {
-                "mode",
-                "storage",
-                "database_path",
-                "contract_directory",
-                "principals",
-                "entries",
-                "providers",
-                "config_max_lifetime_seconds",
-                "source_contract_directory",
-                "input_entries",
-                "core",
-                "tls",
-                "asset_connections",
-                "web",
-                "web_models",
-                "web_assets",
-                "native_config_http",
-                "home",
-                "persona_connections",
-                "web_personas",
-                "diagnostics",
-            },
+            isinstance(settings.get(key), str) and bool(settings[key]),
             "invalid_input",
             400,
         )
-        require(settings["storage"] == "sqlite_local", "dependency_unavailable", 503)
+    contracts = Contracts(settings["contract_directory"], settings.get("source_contract_directory"))
+    auth = Auth(settings, contracts)
+    credentials = registered_credentials(settings)
+    # The readiness credential is its own identity. Reading it from a variable a business
+    # principal, the browser operator or a peer already holds would let one identity answer
+    # readiness as another, so the name half of that rule is refused before anything is built.
+    ready_name = diagnostics_config.resolve_ready_token_env(settings)
+    require(ready_name not in credentials, "invalid_input", 400)
+    # A name is not the value it resolves to, so the effective values are compared as well: two
+    # different variables holding one secret are one identity, and a readiness credential that is
+    # currently a business credential's value is refused here rather than accepted quietly. Only
+    # the verdict travels - neither value is ever logged, returned or kept.
+    ready_value = secret(ready_name)
+    if ready_value:
+        candidate = ready_value.encode("utf-8")
+        for name in credentials:
+            other = secret(name)
+            if other and hmac.compare_digest(candidate, other.encode("utf-8")):
+                raise Fault("invalid_input", 400)
+    connections = persona_connections(
+        settings.get("persona_connections"), contracts.check, credentials
+    )
+    if settings.get("web_personas") is not None:
+        page_configuration(settings["web_personas"], connections, auth.mode, contracts.check)
+    assets = validate_connections(settings, auth.principals)
+    validate_page(settings.get("web_assets"), auth.principals, assets, contracts)
+    try:
+        diagnostics_config.parse_diagnostics_settings(settings)
+    except diagnostics_config.ContractProblem:
+        raise Fault("invalid_input", 400) from None
+    return contracts, auth
+
+
+class Platform:
+    def __init__(self, settings, *, clock=time.time):
+        # The pure half runs first and is the only place these rules live, so the preflight and the
+        # real startup cannot drift apart.
+        self.contracts, self.auth = validate_settings(settings)
         # The native snapshot HTTP port stays closed unless the deployment explicitly opens it.
         self.native_config_http = settings.get("native_config_http", False)
-        require(type(self.native_config_http) is bool, "invalid_input", 400)
-        self.contracts = Contracts(
-            settings["contract_directory"], settings.get("source_contract_directory")
-        )
-        self.auth = Auth(settings, self.contracts)
         self.store = Store(settings["database_path"])
         self.origins = Origins(self.store, self.auth, self.contracts, clock)
         self.sources = Sources(self.store, self.auth, self.contracts, self.origins, settings, clock)
@@ -106,14 +160,6 @@ class Platform:
         # credential. The credential variable is its own: it is never a value another service
         # identity, or the browser's own operator, already holds.
         self.other_credentials = registered_credentials(settings)
-        # The readiness credential is its own identity. Reading it from a variable a business
-        # principal, the browser operator or a peer already holds would let one identity answer
-        # readiness as another, so the name half of that rule is refused here at assembly.
-        require(
-            diagnostics_config.resolve_ready_token_env(settings) not in self.other_credentials,
-            "invalid_input",
-            400,
-        )
         self.persona_connections = persona_connections(
             settings.get("persona_connections"),
             self.contracts.check,

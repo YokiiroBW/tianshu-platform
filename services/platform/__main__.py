@@ -5,7 +5,10 @@ import asyncio
 import os
 import signal
 import sqlite3
+import ssl
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -14,7 +17,7 @@ from .assets import REQUEST_LIMIT
 from .auth import secret
 from .contracts import Fault, canonical, loads, require
 from .server import create_app
-from .service import Platform, registered_credentials
+from .service import Platform, registered_credentials, validate_settings
 from .transport import server_tls
 
 # How long shutdown may spend making accepted events durable. Bounded on purpose: a stuck sink
@@ -91,27 +94,47 @@ async def serve_forever(
 
 
 def _preflight(settings):
-    """Validate a deployment without constructing anything that could create or migrate."""
-    try:
-        diagnostics_config.parse_diagnostics_settings(settings)
-    except diagnostics_config.ContractProblem as problem:
-        return {
-            "status": "not_ready",
-            "service": diagnostics.SERVICE,
-            "checks": {"config": "failed"},
-            "reasons": [problem.code],
-            "requires_initialization": False,
-        }
+    """Validate a deployment without constructing anything that could create or migrate.
+
+    The validator is the entry point's own: the same function the real startup runs before it
+    opens a store, so a settings file this preflight calls ready is one the service accepts.
+    """
     return runtime_health.preflight(
         settings,
         credential_names=registered_credentials(settings),
         credential_present=lambda name: secret(name) is not None,
+        validate=validate_settings,
     )
+
+
+def _healthcheck(url, ca_file):
+    """Ask a running container's own liveness endpoint over verified TLS.
+
+    Liveness only, and read-only in the strictest sense: the public document, no credential of any
+    kind, no admission, no event and no write. Verification is not weakened for the container's
+    convenience - the CA is explicit, hostname checking stays on and the certificate chain is
+    required - so a certificate that does not cover the URL's name fails the check instead of
+    reporting a healthy process behind an entry point nobody can actually use.
+    """
+    parts = urlsplit(url)
+    require(parts.scheme == "https" and bool(parts.hostname), "invalid_input", 400)
+    require(isinstance(ca_file, str) and bool(ca_file), "invalid_input", 400)
+    context = ssl.create_default_context(cafile=ca_file)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    with urllib.request.urlopen(url, context=context, timeout=3) as response:
+        document = loads(response.read(4096))
+    require(
+        isinstance(document, dict) and document == {"status": "alive"},
+        "dependency_unavailable",
+        503,
+    )
+    return {"status": "alive", "checked": parts.hostname}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--settings", required=True)
+    parser.add_argument("--settings", help="deployment settings JSON")
     commands = parser.add_subparsers(dest="command", required=True)
     serve = commands.add_parser(
         "serve", help="explicit local rehearsal or authenticated TLS service"
@@ -121,6 +144,11 @@ def main():
     commands.add_parser(
         "preflight", help="validate configuration, contracts and existing data without writing"
     )
+    # The container healthcheck needs no deployment settings: it asks the process that is already
+    # running, and it must keep working when the settings file itself is the thing under suspicion.
+    check = commands.add_parser("healthcheck", help="verify a running live listener over TLS")
+    check.add_argument("--url", required=True)
+    check.add_argument("--ca-file", required=True)
     local = commands.add_parser("local", help="authenticated local adapter; not web/QQ login")
     local.add_argument("--credential-env", required=True)
     local.add_argument(
@@ -153,7 +181,29 @@ def main():
     )
     local.add_argument("--input", help="local JSON input file; never service credentials")
     args = parser.parse_args()
-    settings = loads(Path(args.settings).read_bytes())
+    if args.command == "healthcheck":
+        # Before any settings file is read: a healthcheck that needed the deployment's own
+        # configuration could not report a deployment whose configuration is the problem.
+        try:
+            print(canonical(_healthcheck(args.url, args.ca_file)))
+            return 0
+        except (Fault, OSError, ssl.SSLError, ValueError, TypeError, KeyError):
+            print(canonical({"code": "dependency_unavailable", "status": 503}))
+            return 1
+    if args.settings is None:
+        print(canonical({"code": "invalid_input", "status": 400}))
+        return 1
+    try:
+        settings = loads(Path(args.settings).read_bytes())
+        require(isinstance(settings, dict), "invalid_input", 400)
+    except (Fault, OSError, ValueError, TypeError, KeyError, RecursionError):
+        # The settings file has to be read before a sink can exist, so this is the one failure with
+        # nowhere to log to. It exits with a fixed code and no message: the path, the offending
+        # byte and the exception text never reach the terminal, and nothing is started or created.
+        # `loads` reports a malformed document as a `Fault`, so a settings file that is not JSON is
+        # an ordinary configuration failure here rather than an uncaught traceback.
+        print(canonical({"code": "config_load_failed", "status": 503}))
+        return 1
 
     if args.command == "preflight":
         # A preflight is a pure question about a deployment: it starts nothing, creates nothing and
@@ -209,7 +259,12 @@ def main():
                 tls = server_tls(platform.settings.get("tls"))
             asyncio.run(serve_forever(platform, sink, host=args.host, port=args.port, tls=tls))
             return 0
-        diagnostics.event("cli.action.started", "INFO", "started")
+        if not diagnostics.cli_admit(args.action):
+            # The same admission a request passes, and it sits strictly before the first side
+            # effect: a refused action has not started, so nothing has to be undone and the local
+            # store is untouched.
+            print(canonical({"code": "dependency_unavailable", "status": 503}))
+            return 1
         header = "Bearer " + os.environ.get(args.credential_env, "")
         if args.action == "asset-read" and args.input:
             with Path(args.input).open("rb") as source:
@@ -291,20 +346,27 @@ def main():
         else:
             platform.projections.project(header, data)
             result = {"projected": True, "execution_owned_by": data["owner"]}
-        diagnostics.event("cli.action.finished", "INFO", "succeeded")
+        # The action's own result is what the caller gets: the terminal record is confirmed
+        # durable, bounded, and a sink that cannot confirm it has already stopped admitting new
+        # work rather than changing an outcome that has already happened.
+        diagnostics.confirm(diagnostics.event("cli.action.finished", "INFO", "succeeded"))
         print(canonical(result))
         return 1 if action == "asset-read" and not result["ok"] else 0
     except Fault as exc:
-        diagnostics.event(
-            "cli.action.finished",
-            "INFO",
-            "failed",
-            error_code=diagnostics.safe_code(exc.code),
+        diagnostics.confirm(
+            diagnostics.event(
+                "cli.action.finished",
+                "INFO",
+                "failed",
+                error_code=diagnostics.safe_code(exc.code),
+            )
         )
         print(canonical({"code": exc.code, "status": exc.status}))
     except (ValueError, TypeError, KeyError, OSError, sqlite3.Error):
-        diagnostics.event(
-            "cli.action.finished", "INFO", "failed", error_code="dependency_unavailable"
+        diagnostics.confirm(
+            diagnostics.event(
+                "cli.action.finished", "INFO", "failed", error_code="dependency_unavailable"
+            )
         )
         print(canonical({"code": "dependency_unavailable", "status": 503}))
     finally:

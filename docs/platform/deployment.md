@@ -9,14 +9,14 @@
 
 ## 1. 产物与边界
 
-| 文件                                    | 作用                                                 |
-| --------------------------------------- | ---------------------------------------------------- |
-| `Dockerfile`                            | 单一运行阶段镜像：Python 3.12、非 root、无构建工具   |
-| `.dockerignore`                         | 构建上下文排除规则：本地状态、测试、密钥、数据、日志 |
-| `deploy/platform/settings.example.json` | 生产设置模板：只有环境变量**名**，没有任何凭据值     |
+| 文件                                    | 作用                                                                                     |
+| --------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `Dockerfile`                            | 两阶段镜像：`console` 阶段用锁文件构建网页，`runtime` 阶段只带 Python 与非 root 运行用户 |
+| `.dockerignore`                         | 构建上下文排除规则：本地状态、测试、密钥、数据、日志、本机 `dist`                        |
+| `deploy/platform/settings.example.json` | 生产设置模板：只有环境变量**名**，没有任何凭据值                                         |
 
-镜像只承载**代码、已冻结合同、已构建的网页**；数据库、日志、TLS 私钥、凭据全部在运行时以卷或
-环境变量注入。因此同一镜像可以在环境之间晋升而无需重建，也不存在「镜像里有密钥」这件事。
+镜像只承载**代码、已冻结合同、镜像内构建出的网页**；数据库、日志、TLS 私钥、凭据全部在运行时以卷
+或环境变量注入。因此同一镜像可以在环境之间晋升而无需重建，也不存在「镜像里有密钥」这件事。
 
 镜像内固定布局：
 
@@ -29,16 +29,21 @@
 
 ## 2. 构建
 
-网页必须在**镜像之外**构建，镜像内没有 Node.js：
+镜像**自己**构建网页，不需要在本机先构建：`console` 阶段用 `node:24.19.0-bookworm-slim` 按
+`package-lock.json` 执行 `npm ci`，再 `npm run build`（含类型检查）；`runtime` 阶段用
+`python:3.12.11-slim-bookworm`，只把 `console` 阶段产出的 `dist` 复制为 `/srv/tianshu/web`。
+Node.js 与 npm 只存在于构建阶段，运行阶段镜像里没有它们，也没有任何包管理器。
 
 ```bash
-npm ci
-npm run build          # 先类型检查，再 vite build，产出 apps/web/dist
 docker build --tag tianshu-platform:1.0.0 .
 ```
 
-`Dockerfile` 的 `COPY apps/web/dist/ ./web/` 会在缺失构建时**直接失败**：这是刻意的，宁可构建
-报错，也不发布一个打不开的控制台。
+`.dockerignore` 刻意排除本机的 `apps/web/dist`：镜像里的控制台只能来自镜像内的构建阶段，不可能
+是作者机器上遗留的产物。因此「构建成功」只由 `docker build` 自己证明，本机预先 `npm run build`
+既非必要也不影响镜像内容（本地预览仍可用它）。
+
+`COPY --from=console /build/apps/web/dist/ ./web/` 会在构建阶段没有产出时直接失败：这是刻意的，
+宁可构建报错，也不发布一个打不开的控制台。
 
 ## 3. 起服务
 
@@ -114,16 +119,30 @@ curl --silent --show-error \
 `credentials` 为 `ok` 只表示**已登记的凭据变量都在环境里**，不表示对方服务可达；真实对端可用性
 不在本卡范围。
 
-镜像自带的 `HEALTHCHECK` 走的就是 `/health/live`，并且**校验证书**（`create_default_context`
-配 `cafile`）：不校验的探针会在真正入口已经坏掉时仍然报活。就绪检查需要凭据，因此交给编排器
-按上面的 `curl` 执行，不放进 `HEALTHCHECK`——重启决策只应由活性决定。
+镜像自带的 `HEALTHCHECK` 走的就是 `/health/live`，但**不是**用 `curl`：它调用产品自己的
+`python -m services.platform healthcheck --url https://127.0.0.1:8443/health/live --ca-file
+/etc/tianshu/tls/ca.pem`。这条命令用 `ssl.create_default_context(cafile=...)`，即**保持主机名校验、
+要求证书链**：不校验的探针会在真正入口已经坏掉时仍然报活。因此证书必须把探针使用的主机名写进
+SAN——容器内用 `127.0.0.1` 连接时，证书需要带 `IP:127.0.0.1`（或改成解析到本容器且 SAN 匹配的
+名字），否则健康检查会**正确地**失败。`--ca-file` 指向挂载进 `/etc/tianshu/tls/` 的 CA/证书。
+
+就绪检查需要凭据，因此交给编排器按上面的 `curl` 执行，不放进 `HEALTHCHECK`——重启决策只应由
+活性决定。
 
 ## 5. 退出、容量与故障
 
 - `STOPSIGNAL SIGTERM`：收到后停止接收新连接、冲刷队列、写 `runtime.stopping` 与
   `runtime.stopped`，再退出。刷新有界（5 秒），不会无限等待。
+- 关闭是**有界**的：`close` 先立刻拒绝新业务，再在预算内等唯一写线程收尾；超预算时返回「未确认」
+  而不是继续等待，也绝不从调用方线程去碰那个文件描述符。退出前落盘的事件由写线程负责收尾，
+  超时会被计数（`unconfirmed`）并反映到就绪检查，不会被谎报成已确认。
+- 业务请求的终态事件在**回答之前**确认：正常请求的 `http.request.finished` 先 `fsync` 再返回，
+  因此「客户端拿到了 200」与「这条记录已经落盘」是同一件事。被取消的请求做不到这一点（任务已
+  被拆除、无法再等待），此时终态记录的所有权移交给写线程，不假装已确认。
 - 日志目录达到上限（默认 1 GiB，可配 32 MiB–64 GiB）时：**拒绝新业务并置 `ready=false`**，
   而不是丢掉记录继续假装成功。已发出的外部副作用不因日志失败而重发。
+- 写失败后进入 `recovering`：该状态**不接受**新业务、就绪检查为 `failed`，只有一次真实
+  `fsync` 成功才回到 `durable`；恢复期间既不谎报持久，也不丢弃已受理的记录。
 - 日志目录或权威库所在卷不可写时：`logging` / `store` 检查转红，`/health/ready` 返回 503。
 - 数据库与 sidecar 台账必须与 `/var/lib/tianshu` 一起备份；它们是权威状态，日志目录不是。
 
@@ -153,16 +172,18 @@ curl --silent --show-error \
 
 作者机器上**没有 Docker**，因此以下区分是硬事实，不是保守措辞：
 
-| 项目                                             | 状态                                                    |
-| ------------------------------------------------ | ------------------------------------------------------- |
-| `tsc -p apps/web/tsconfig.json --noEmit`         | 已执行，退出码 0                                        |
-| `vite build --config apps/web/vite.config.ts`    | 已执行，退出码 0，产出 `apps/web/dist`                  |
-| 真实构建产物由平台以 `service_https` 提供并检查  | 已执行（真实 HTTP/TLS 套件，见下）                      |
-| 镜像定义、忽略规则、设置模板的静态核对           | 已执行（`tests/backend/test_runtime_container.py`）     |
-| `docker build`                                   | **未验证**：本机无 Docker，套件显式 skip                |
-| `docker run`、容器 `HEALTHCHECK`、`SIGTERM` 退出 | **未验证**：同上                                        |
-| 一次性 `preflight` 容器不写数据                  | **未验证**：同上（进程内 `preflight` 只读性已单独验证） |
-| 生产 NAS、真实证书链、真实账号、生产库恢复       | **未验证**：本卡不做，也不部署                          |
+| 项目                                                  | 状态                                                                           |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `tsc -p apps/web/tsconfig.json --noEmit`              | 已执行，退出码 0                                                               |
+| `vite build --config apps/web/vite.config.ts`         | 已执行，退出码 0，产出 `apps/web/dist`                                         |
+| 真实构建产物由平台以 `service_https` 提供并检查       | 已执行（真实 HTTP/TLS 套件，见下）                                             |
+| 镜像定义、忽略规则、设置模板的静态核对                | 已执行（`tests/backend/test_runtime_container.py`）                            |
+| `healthcheck` 子命令（TLS 校验、超时、非 JSON 响应）  | 已执行（进程内真实 TLS，见 `tests/backend/test_runtime_health.py`）            |
+| `docker build`（含镜像内 `npm ci` + `npm run build`） | **未验证**：本机无 Docker，套件显式 skip                                       |
+| `docker run`、容器 `HEALTHCHECK`、`SIGTERM` 退出      | **未验证**：同上                                                               |
+| 一次性 `preflight` 容器不写数据                       | **未验证**：同上（进程内 `preflight` 只读性已单独验证）                        |
+| Linux 上的 `SIGTERM` 路径                             | **未验证**：本机 Windows 无 `loop.add_signal_handler`，回退分支未在 Linux 执行 |
+| 生产 NAS、真实证书链、真实账号、生产库恢复            | **未验证**：本卡不做，也不部署                                                 |
 
 上述未验证项在交付记录中标注 `needs_validation`，并由协调方在具备容器运行时的环境中执行。
 **不要**把本节读成「已通过」：`Dockerfile` 存在不等于构建通过。
@@ -173,5 +194,5 @@ curl --silent --show-error \
 .venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_runtime_*.py' -v
 ```
 
-该命令在本机结果为 `Ran 139 tests ... OK (skipped=9)`；跳过项就是上表中标注未验证的容器运行时
+该命令在本机结果为 `Ran 176 tests ... OK (skipped=4)`；跳过项就是上表中标注未验证的容器运行时
 项目，跳过原因是明确写出的，不当作通过。
