@@ -8,6 +8,8 @@ TS-013 后端新增精确来源输入、逐角色 `input/current` 授权、持�
 
 TS-015 后端在唯一 Models owner 内新增原生 `model-protocol/v1` 配置生产者：独立表/版本序列/撤销键空间、显式 `native_config_versions` 授权、默认关闭的快照端口和合同自有错误信封。设置、CLI 与错误语义见 [原生模型配置](docs/platform/native-model-config.md)；网关消费与真实模型仍未验收。
 
+TS-100 后端新增安全运行日志适配器（冻结合同 `contracts/diagnostics/v1`，全量注册不采样、fsync 后才确认、容量耗尽拒绝新业务且不假 ready）、只读健康探针（`/health/live` 公开、`/health/ready` 需独立就绪凭据、九项闭集检查、探针自身不写日志）与生产静态容器基础（`Dockerfile`、`.dockerignore`、设置模板）。事件词汇、持久性语义与探针契约见 [安全运行日志与只读探针](docs/platform/diagnostics.md)，部署命令与**未验证清单**见 [生产静态容器部署](docs/platform/deployment.md)。本机无 Docker，镜像构建与容器运行未执行，交付标注 `needs_validation`。
+
 ## 本地运行
 
 TS-064 后端新增 AssetLink HTTPS 五只读应用/CLI入口、独立主体与连接授权、有界响应与取消。配置和真实双产品隔离联验命令见 [资产只读接入](docs/platform/assetlink.md)；资产网页仍未接入。

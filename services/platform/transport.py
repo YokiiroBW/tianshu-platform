@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from . import diagnostics
 from .auth import secret
 from .contracts import Fault, loads, require
 
@@ -22,6 +23,8 @@ async def core_web_call(settings, path, payload, contracts, schema):
     _, timeout = core_settings(settings)
     token = secret(settings["token_env"])
     require(token is not None, "dependency_unavailable", 503)
+    span = diagnostics.Span("core_web_call")
+    diagnostics.outbound("started")
     try:
         tls = ssl.create_default_context(cafile=settings.get("ca_file"))
         async with aiohttp.ClientSession(
@@ -30,7 +33,12 @@ async def core_web_call(settings, path, payload, contracts, schema):
             async with session.post(
                 settings["base_url"].rstrip("/") + "/internal/v1/conversation/" + path,
                 json=payload,
-                headers={"Authorization": "Bearer " + token},
+                # The same legal correlation travels with the existing call; the body, the
+                # credential and the authorisation are untouched.
+                headers={
+                    "Authorization": "Bearer " + token,
+                    **diagnostics.correlation_header(),
+                },
                 ssl=tls,
                 allow_redirects=False,
             ) as response:
@@ -51,8 +59,24 @@ async def core_web_call(settings, path, payload, contracts, schema):
                     )
                     raise CoreFault(result, response.status)
                 contracts.check(schema, result)
+                diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
                 return result
-    except (aiohttp.ClientError, TimeoutError, OSError, ssl.SSLError):
+    except Fault as exc:
+        diagnostics.outbound(
+            "failed",
+            duration_ms=span.elapsed() * 1000.0,
+            error_code=diagnostics.safe_code(exc.code),
+        )
+        raise
+    except TimeoutError:
+        diagnostics.outbound("timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout")
+        raise Fault("dependency_unavailable", 503) from None
+    except (aiohttp.ClientError, OSError, ssl.SSLError):
+        diagnostics.outbound(
+            "failed",
+            duration_ms=span.elapsed() * 1000.0,
+            error_code="dependency_unavailable",
+        )
         raise Fault("dependency_unavailable", 503) from None
 
 
@@ -92,6 +116,8 @@ async def core_post(settings, ingest, contracts=None):
     url, timeout = core_settings(settings)
     token = secret(settings["token_env"])
     require(token is not None, "dependency_unavailable", 503)
+    span = diagnostics.Span("core_post")
+    diagnostics.outbound("started")
     try:
         tls = ssl.create_default_context(cafile=settings.get("ca_file"))
         async with aiohttp.ClientSession(
@@ -100,7 +126,10 @@ async def core_post(settings, ingest, contracts=None):
             async with session.post(
                 url,
                 json=ingest,
-                headers={"Authorization": "Bearer " + token},
+                headers={
+                    "Authorization": "Bearer " + token,
+                    **diagnostics.correlation_header(),
+                },
                 ssl=tls,
                 allow_redirects=False,
             ) as response:
@@ -111,9 +140,26 @@ async def core_post(settings, ingest, contracts=None):
                     total += len(chunk)
                     require(total <= 1_048_576, "budget_exceeded", 413)
                     chunks.append(chunk)
-                return loads(b"".join(chunks))
-    except (aiohttp.ClientError, TimeoutError, OSError, ssl.SSLError):
+                result = loads(b"".join(chunks))
+                diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
+                return result
+    except Fault as exc:
+        diagnostics.outbound(
+            "failed",
+            duration_ms=span.elapsed() * 1000.0,
+            error_code=diagnostics.safe_code(exc.code),
+        )
+        raise
+    except TimeoutError:
+        diagnostics.outbound("timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout")
+        raise Fault("dependency_unavailable", 503) from None
+    except (aiohttp.ClientError, OSError, ssl.SSLError):
         # The request may have committed at Core. Retry the original semantic/key.
+        diagnostics.outbound(
+            "failed",
+            duration_ms=span.elapsed() * 1000.0,
+            error_code="dependency_unavailable",
+        )
         raise Fault("dependency_unavailable", 503) from None
 
 

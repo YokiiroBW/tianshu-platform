@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from . import diagnostics
 from .asset_page_config import page_configuration
 from .auth import secret
 from .contracts import Fault, canonical, loads, require
@@ -90,6 +91,10 @@ class Assets:
         request_id = str(uuid.uuid4())
         started = time.monotonic()
         upstream_id = None
+        # Timed from the start, but an outbound event is only ever emitted once a call was really
+        # attempted: a refusal that happens before any socket is opened is not an outbound result.
+        span = diagnostics.Span("asset_read")
+        attempted = False
         try:
             if isinstance(data, bytes):
                 require(len(data) <= REQUEST_LIMIT, "budget_exceeded", 413)
@@ -141,6 +146,8 @@ class Assets:
             tls.minimum_version = ssl.TLSVersion.TLSv1_2
             remaining = DEADLINE - (time.monotonic() - started)
             require(remaining > 0, "deadline_exceeded", 504)
+            attempted = True
+            diagnostics.outbound("started")
             async with asyncio.timeout(remaining):
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=remaining),
@@ -157,6 +164,7 @@ class Assets:
                             "Authorization": "Bearer " + token,
                             "Content-Type": "application/json",
                             "Accept-Encoding": "identity",
+                            **diagnostics.correlation_header(),
                         },
                     ) as response:
                         require(
@@ -216,6 +224,7 @@ class Assets:
                             "invalid_upstream",
                             502,
                         )
+                        diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
                         return {
                             "ok": True,
                             "request_id": request_id,
@@ -225,6 +234,12 @@ class Assets:
                             "representation": "index_metadata",
                             "original_available": "not_verified",
                         }
+        except asyncio.CancelledError:
+            # A cancelled read is reported as cancelled and nothing else: cancellation stops this
+            # caller's wait, and no claim is made about what the peer did with the request.
+            if attempted:
+                diagnostics.outbound("cancelled", duration_ms=span.elapsed() * 1000.0)
+            raise
         except TimeoutError:
             failure = Fault("deadline_exceeded", 504)
         except (aiohttp.ClientError, OSError, ssl.SSLError, sqlite3.Error):
@@ -233,6 +248,17 @@ class Assets:
             failure = Fault("invalid_input", 400)
         except Fault as exc:
             failure = exc
+        if attempted:
+            if failure.code in ("deadline_exceeded", "timeout"):
+                diagnostics.outbound(
+                    "timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout"
+                )
+            else:
+                diagnostics.outbound(
+                    "failed",
+                    duration_ms=span.elapsed() * 1000.0,
+                    error_code=diagnostics.safe_code(failure.code),
+                )
         # Never echo an untrusted remote message, body, token or arbitrary correlation.
         return {
             "ok": False,

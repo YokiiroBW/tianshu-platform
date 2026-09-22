@@ -1,0 +1,97 @@
+{
+  "mode": "service_https",
+  "storage": "sqlite_local",
+  "database_path": "/var/lib/tianshu/platform.sqlite",
+  "contract_directory": "/srv/tianshu/contracts/text-dialogue/v1",
+  "principals": {
+    "admin": {
+      "kind": "operator",
+      "service": "platform",
+      "token_env": "TIANSHU_ADMIN_TOKEN",
+      "actions": [
+        "origin.issue",
+        "origin.revoke",
+        "entry.revoke",
+        "principal.revoke",
+        "config.publish",
+        "config.revoke",
+        "config.view",
+        "capability.read",
+        "task.read"
+      ],
+      "account": {
+        "namespace": "web",
+        "immutable_account_id": "replace-with-the-operator-account"
+      },
+      "task_owners": ["companion"]
+    },
+    "connector": {
+      "kind": "service",
+      "service": "nonebot",
+      "token_env": "TIANSHU_CONNECTOR_TOKEN",
+      "actions": ["origin.issue", "mapping.prepare", "source.observe"]
+    },
+    "companion": {
+      "kind": "service",
+      "service": "companion",
+      "token_env": "TIANSHU_COMPANION_TOKEN",
+      "actions": ["mapping.prepare", "mapping.confirm", "source.verify", "task.project"]
+    },
+    "memory": {
+      "kind": "service",
+      "service": "memory",
+      "token_env": "TIANSHU_MEMORY_TOKEN",
+      "actions": ["mapping.confirm"]
+    },
+    "gateway": {
+      "kind": "service",
+      "service": "gateway",
+      "token_env": "TIANSHU_GATEWAY_TOKEN",
+      "actions": ["config.snapshot"],
+      "config_versions": [1]
+    }
+  },
+  "entries": {
+    "config-entry": {
+      "kind": "local_operator",
+      "owner": "admin",
+      "account": {
+        "namespace": "web",
+        "immutable_account_id": "replace-with-the-operator-account"
+      },
+      "channel": {
+        "namespace": "web",
+        "binding_id": "replace-with-a-binding-id",
+        "channel_conversation_id": "config-console",
+        "thread_id": null
+      },
+      "actor_id": "replace-with-an-actor-id",
+      "audience": "self_private",
+      "ttl_seconds": 60,
+      "routes": [
+        { "caller": "gateway", "receiver": "platform", "purpose": "config.snapshot" }
+      ]
+    }
+  },
+  "providers": {},
+  "native_config_http": false,
+  "web": {
+    "origin": "https://platform.replace-with-the-real-origin.invalid",
+    "username": "replace-with-the-operator-name",
+    "password_hash": "scrypt-v1$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000",
+    "principal": "admin",
+    "input_entries": [],
+    "static_directory": "/srv/tianshu/web",
+    "dialogue_enabled": false
+  },
+  "tls": {
+    "certificate_file": "/etc/tianshu/tls/server.pem",
+    "private_key_file": "/etc/tianshu/tls/server-key.pem"
+  },
+  "diagnostics": {
+    "contract_directory": "/srv/tianshu/contracts/diagnostics/v1",
+    "log_directory": "/var/log/tianshu",
+    "log_directory_bytes": 1073741824,
+    "ready_token_env": "TIANSHU_DIAGNOSTICS_TOKEN"
+  }
+}

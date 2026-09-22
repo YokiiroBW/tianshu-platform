@@ -1,0 +1,51 @@
+# What the image build must not carry. The build context is the repository, so anything left in it
+# would otherwise be copied into a layer: local state, test tooling, and above all the deployment's
+# own secrets, which live in mounted files and the environment and never in an image.
+#
+# `apps/web/dist` is deliberately *not* ignored: it is the built console the Dockerfile copies in.
+# Markdown is not ignored either, because the frozen diagnostic contract's manifest covers its
+# README and a normalised or missing copy would fail the readiness check.
+
+.git
+.gitattributes
+.github
+.gitignore
+
+# Local runtime state: virtual environment, installed Node modules, and every ignored artifact.
+.runtime
+.venv
+venv
+node_modules
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.ruff_cache
+playwright-report
+test-results
+coverage
+htmlcov
+
+# Tests and developer documentation are not needed to run the service.
+tests
+docs
+
+# Data and logs are runtime state, never build input.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.log
+*.jsonl
+
+# Secrets and keys of every shape: a certificate or an environment file must be mounted, not baked.
+.env
+*.env
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+settings.json
+*.settings.local.json

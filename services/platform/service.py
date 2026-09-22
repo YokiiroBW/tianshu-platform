@@ -2,9 +2,10 @@
 
 import time
 
-from .auth import Auth
+from . import diagnostics, diagnostics_config, runtime_health
+from .auth import Auth, secret
 from .assets import Assets
-from .contracts import Contracts, require
+from .contracts import Contracts, Fault, require
 from .models import Models
 from .origins import Origins
 from .persona_client import PersonaClient
@@ -13,6 +14,18 @@ from .persona_page_config import page_configuration
 from .projections import Projections
 from .storage import Store
 from .sources import Sources
+
+
+def log_state():
+    """The durable sink's live state, or the honest development answer when there is none.
+
+    Read-only: it reports what the adapter already knows and never attempts a write, so asking
+    about the log can never itself change the log.
+    """
+    sink = diagnostics.active()
+    if sink is None:
+        return diagnostics.NON_DURABLE, None
+    return sink.state, sink.error
 
 
 def registered_credentials(settings):
@@ -66,6 +79,7 @@ class Platform:
                 "home",
                 "persona_connections",
                 "web_personas",
+                "diagnostics",
             },
             "invalid_input",
             400,
@@ -92,6 +106,14 @@ class Platform:
         # credential. The credential variable is its own: it is never a value another service
         # identity, or the browser's own operator, already holds.
         self.other_credentials = registered_credentials(settings)
+        # The readiness credential is its own identity. Reading it from a variable a business
+        # principal, the browser operator or a peer already holds would let one identity answer
+        # readiness as another, so the name half of that rule is refused here at assembly.
+        require(
+            diagnostics_config.resolve_ready_token_env(settings) not in self.other_credentials,
+            "invalid_input",
+            400,
+        )
         self.persona_connections = persona_connections(
             settings.get("persona_connections"),
             self.contracts.check,
@@ -110,6 +132,33 @@ class Platform:
             else None
         )
         self.auth.activate(self.store, clock)
+        # Everything the read-only probes are allowed to know about this deployment, assembled
+        # once as a frozen description. The health module never receives this object, a store or a
+        # console, and nothing here can write.
+        try:
+            self.diagnostics_settings = diagnostics_config.parse_diagnostics_settings(settings)
+        except diagnostics_config.ContractProblem:
+            raise Fault("invalid_input", 400) from None
+        self._runtime_state = "running"
+        # The frozen diagnostics package is an input the deployment names explicitly. A package
+        # that is absent is simply an unconfigured deployment; one that fails verification is
+        # recorded and turns readiness red, because running on unverified contract bytes must
+        # never be reported as a working production entry point.
+        self.diagnostics_contract, self.contract_problem = diagnostics_config.verify_or_none(
+            settings
+        )
+        self.health = runtime_health.health_inputs(
+            settings,
+            credential_names=self.other_credentials,
+            credential_present=lambda name: secret(name) is not None,
+            log_state=log_state,
+            runtime_state=lambda: self._runtime_state,
+            config_problem=self.contract_problem,
+        )
+
+    def close(self):
+        """Mark this runtime as no longer serving, so readiness stops presenting it as current."""
+        self._runtime_state = "closed"
 
     def persona_reader(self):
         """The one upstream client this deployment's page may read through, or `None`.

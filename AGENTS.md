@@ -103,3 +103,15 @@ Python 3.12+，独立 `pyproject.toml` 与固定依赖 `requirements-dev.txt`。
 - 本轮不提供取消：设备控制是 `executor_does_not_cancel`（已发出的指令不撤回、不自动重发），模型发布是 `recorded_fact`（发布新版本而不是抹掉记录）。轮询用 15 秒可见性暂停定时器，不新增事件总线。
 - 最窄：设置 `TS012_CONTRACT_DIR` 后 `.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_tasks.py' -v`；浏览器先 `npm run build`，再 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.tasks.config.ts`（单项目，复用合成后台 4814/4817，桌面与移动在同一会话切换视口）。完整后端仍用原 discover。
 - 协调授权：本任务独占 `apps/web/src/features/settings/` 的任务段（`TasksPanel.tsx`、`tasks.css`、`SettingsPage.tsx` 第 0 段）、`services/platform/tasks.py` 与新增 `apps/web/playwright.tasks.config.ts`；未改 `tokens.css`、模块注册、壳的其余部分、依赖锁与已发布合同。
+
+## TS-100 安全运行日志、只读探针与生产静态容器基础
+
+- 事件词汇、持久性语义与探针契约见 [安全运行日志与只读探针](docs/platform/diagnostics.md)；部署命令、挂载布局与**未验证清单**见 [生产静态容器部署](docs/platform/deployment.md)。交付记录见 [TS-100 交接](docs/handoffs/TS-100.md)。
+- 事件结构是已冻结合同 `contracts/diagnostics/v1` 1.0.0，manifest **原始字节** SHA256 `5d89f7a21637fd57cea4a236e17f8d8c4917799497ff44f87ee68ea614d4805f`；启动与就绪检查都逐字节校验 README、schema 与正反例，因此**不允许**任何行尾规范化（本仓库该包为 CRLF，改成 LF 会失败）。
+- 全量注册不采样；12 字段封闭记录、单行 ≤4096 字节 UTF-8 JSONL（LF，无 CR）；`error_code` 只取已登记固定码，未知异常折叠为 `internal_error`，秘密与正文永不入日志。
+- 持久性是硬要求：先 fsync 再确认；目录到上限（默认 1 GiB，可配 32 MiB–64 GiB）时写 `logging.capacity_exhausted`、**拒绝新业务并置 `ready=false`**；已发出的外部副作用不因日志失败而重发。开发模式无日志目录即 `non_durable`，永不 ready。
+- 探针纯只读：`GET /health/live` 公开且只回答 `{"status":"alive"}`；`GET /health/ready` 需 `Authorization: Bearer $TIANSHU_DIAGNOSTICS_TOKEN`，返回闭集九项检查（`config/contract/store/sidecars/web_static/tls/credentials/logging/runtime`，值仅 `ok/failed/not_configured/not_verified/non_durable`）。探针不写日志、不建库、不迁移，数据库只用 `mode=ro`（从不用 `immutable`）；未知（`not_verified`）与非持久都阻塞就绪；未配置就绪凭据返回 503 而不是通过，且就绪凭据复用任何业务凭据会被启动时拒绝。
+- `not_configured` 表示部署**刻意**没有该能力：只核对本部署实际拥有的 sidecar 台账（`web-models`/`home-controls` 仅在该能力启用时索要），不把未启用的能力当故障。
+- 入口只装配，日志适配器 `diagnostics.py`、合同校验 `diagnostics_config.py` 与探针 `runtime_health.py` 是三个互不反向依赖的叶子模块，不复制领域规则；未改网页效果、引擎、锁与迁移主线。
+- 最窄：`.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_runtime_*.py'`（139 项；容器运行时项在无 Docker 时显式 skip，**不当作通过**）。完整后端仍用原 discover。`preflight` 子命令是只读的滚动前检查，首次部署报 `requires_initialization` 属正确语义。
+- **未验证**：本机无 Docker，`docker build`、`docker run`、容器 `HEALTHCHECK`、`SIGTERM` 优雅退出、一次性 `preflight` 容器均未执行；Windows 上的 `SIGTERM` 路径（`loop.add_signal_handler` 不可用，回退 `signal.signal`）未在 Linux 验证。交付标注 `needs_validation`。

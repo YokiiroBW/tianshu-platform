@@ -3,16 +3,110 @@
 import argparse
 import asyncio
 import os
+import signal
 import sqlite3
 from pathlib import Path
 
 from aiohttp import web
 
-from .contracts import Fault, canonical, loads, require
+from . import diagnostics, diagnostics_config, runtime_health
 from .assets import REQUEST_LIMIT
+from .auth import secret
+from .contracts import Fault, canonical, loads, require
 from .server import create_app
-from .service import Platform
+from .service import Platform, registered_credentials
 from .transport import server_tls
+
+# How long shutdown may spend making accepted events durable. Bounded on purpose: a stuck sink
+# must not turn a stop into a hang, and the events that did not land stay a named, reconcilable
+# gap rather than a claim of a clean flush.
+SHUTDOWN_FLUSH_SECONDS = 5.0
+
+
+def build_sink(settings):
+    """Assemble the one process-wide event sink from the deployment's explicit inputs.
+
+    With no directory configured this is the explicit development mode: events go to stderr, the
+    adapter reports `non_durable`, and readiness stays red so nothing can mistake it for a
+    production sink.
+    """
+    return diagnostics.Diagnostics(
+        diagnostics_config.resolve_log_directory(settings),
+        directory_bytes=diagnostics_config.resolve_log_directory_bytes(settings),
+    )
+
+
+def install_signal_handlers(stop):
+    """Ask the loop to set `stop` when the process is asked to terminate.
+
+    Returns the signals actually installed. Where the running loop cannot take a handler (Windows
+    has no `add_signal_handler`) the fallback registers a plain handler that wakes the loop from
+    the main thread; a signal the platform cannot deliver is simply not claimed.
+    """
+    loop = asyncio.get_running_loop()
+    installed = []
+    for name in ("SIGTERM", "SIGINT"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            loop.add_signal_handler(number, stop.set)
+            installed.append(name)
+            continue
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass
+        try:
+            signal.signal(number, lambda *_: loop.call_soon_threadsafe(stop.set))
+            installed.append(name)
+        except (ValueError, OSError, RuntimeError):
+            continue
+    return tuple(installed)
+
+
+async def serve_forever(
+    platform, sink, *, host, port, tls, install_signals=install_signal_handlers
+):
+    """Run the app in the foreground until asked to stop, then shut down in a fixed order.
+
+    The order matters: stop accepting and drain in-flight work, retire the runtime so readiness
+    stops presenting it as current, record the terminal event, and only then make the log durable
+    and close it. Nothing is killed to look like a clean stop, and every step is bounded.
+    """
+    runner = web.AppRunner(create_app(platform), access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, host, port, ssl_context=tls)
+    await site.start()
+    stop = asyncio.Event()
+    install_signals(stop)
+    diagnostics.event("runtime.started", "INFO", "succeeded")
+    try:
+        await stop.wait()
+    finally:
+        diagnostics.event("runtime.stopping", "INFO", "started")
+        await runner.cleanup()
+        platform.close()
+        diagnostics.event("runtime.stopped", "INFO", "succeeded")
+        sink.flush(SHUTDOWN_FLUSH_SECONDS)
+        sink.close(SHUTDOWN_FLUSH_SECONDS)
+
+
+def _preflight(settings):
+    """Validate a deployment without constructing anything that could create or migrate."""
+    try:
+        diagnostics_config.parse_diagnostics_settings(settings)
+    except diagnostics_config.ContractProblem as problem:
+        return {
+            "status": "not_ready",
+            "service": diagnostics.SERVICE,
+            "checks": {"config": "failed"},
+            "reasons": [problem.code],
+            "requires_initialization": False,
+        }
+    return runtime_health.preflight(
+        settings,
+        credential_names=registered_credentials(settings),
+        credential_present=lambda name: secret(name) is not None,
+    )
 
 
 def main():
@@ -24,6 +118,9 @@ def main():
     )
     serve.add_argument("--port", required=True, type=int)
     serve.add_argument("--host", default="127.0.0.1")
+    commands.add_parser(
+        "preflight", help="validate configuration, contracts and existing data without writing"
+    )
     local = commands.add_parser("local", help="authenticated local adapter; not web/QQ login")
     local.add_argument("--credential-env", required=True)
     local.add_argument(
@@ -56,8 +153,53 @@ def main():
     )
     local.add_argument("--input", help="local JSON input file; never service credentials")
     args = parser.parse_args()
+    settings = loads(Path(args.settings).read_bytes())
+
+    if args.command == "preflight":
+        # A preflight is a pure question about a deployment: it starts nothing, creates nothing and
+        # reports the safe reason codes an operator needs before a container is allowed up.
+        report = _preflight(settings)
+        print(canonical(report))
+        return 0 if report["status"] == "ready" else 1
+
+    sink = build_sink(settings)
+    diagnostics.activate(sink)
+    diagnostics.event("runtime.starting", "INFO", "started")
     try:
-        platform = Platform(loads(Path(args.settings).read_bytes()))
+        platform = Platform(settings)
+    except Fault as exc:
+        # A deployment that cannot be assembled is recorded with a fixed code, never the message.
+        diagnostics.event(
+            "config.load_failed",
+            "ERROR",
+            "failed",
+            error_code=diagnostics.safe_code(exc.code),
+        )
+        diagnostics.event(
+            "runtime.startup_failed", "ERROR", "failed", error_code="config_load_failed"
+        )
+        sink.close(SHUTDOWN_FLUSH_SECONDS)
+        raise
+    except (ValueError, TypeError, KeyError, OSError, sqlite3.Error):
+        diagnostics.event("config.load_failed", "ERROR", "failed", error_code="config_load_failed")
+        diagnostics.event(
+            "runtime.startup_failed", "ERROR", "failed", error_code="config_load_failed"
+        )
+        sink.close(SHUTDOWN_FLUSH_SECONDS)
+        print(canonical({"code": "dependency_unavailable", "status": 503}))
+        return 1
+    diagnostics.event("config.loaded", "INFO", "succeeded")
+    if platform.contract_problem is None and platform.diagnostics_contract is not None:
+        diagnostics.event("contract.loaded", "INFO", "succeeded")
+    elif platform.contract_problem is not None:
+        diagnostics.event(
+            "contract.verify_failed",
+            "ERROR",
+            "failed",
+            error_code=diagnostics.safe_code(platform.contract_problem),
+        )
+
+    try:
         if args.command == "serve":
             require(0 < args.port < 65536, "invalid_input", 400)
             tls = None
@@ -65,14 +207,9 @@ def main():
                 require(args.host == "127.0.0.1")
             else:
                 tls = server_tls(platform.settings.get("tls"))
-            web.run_app(
-                create_app(platform),
-                host=args.host,
-                port=args.port,
-                access_log=None,
-                ssl_context=tls,
-            )
+            asyncio.run(serve_forever(platform, sink, host=args.host, port=args.port, tls=tls))
             return 0
+        diagnostics.event("cli.action.started", "INFO", "started")
         header = "Bearer " + os.environ.get(args.credential_env, "")
         if args.action == "asset-read" and args.input:
             with Path(args.input).open("rb") as source:
@@ -154,12 +291,26 @@ def main():
         else:
             platform.projections.project(header, data)
             result = {"projected": True, "execution_owned_by": data["owner"]}
+        diagnostics.event("cli.action.finished", "INFO", "succeeded")
         print(canonical(result))
         return 1 if action == "asset-read" and not result["ok"] else 0
     except Fault as exc:
+        diagnostics.event(
+            "cli.action.finished",
+            "INFO",
+            "failed",
+            error_code=diagnostics.safe_code(exc.code),
+        )
         print(canonical({"code": exc.code, "status": exc.status}))
     except (ValueError, TypeError, KeyError, OSError, sqlite3.Error):
+        diagnostics.event(
+            "cli.action.finished", "INFO", "failed", error_code="dependency_unavailable"
+        )
         print(canonical({"code": "dependency_unavailable", "status": 503}))
+    finally:
+        sink.flush(SHUTDOWN_FLUSH_SECONDS)
+        sink.close(SHUTDOWN_FLUSH_SECONDS)
+        platform.close()
     return 1
 
 

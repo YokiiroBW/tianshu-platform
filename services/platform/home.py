@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from . import diagnostics
 from .auth import secret
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
 from .storage import is_ledger_key
@@ -399,12 +400,18 @@ class Home:
         """One bounded HA request; redirects are refused instead of followed."""
         token = self.token
         require(token is not None, "device_credential_missing", 503)
+        span = diagnostics.Span("home_call")
+        diagnostics.outbound("started")
         try:
             async with client.request(
                 method,
                 self.base_url + path,
                 json=payload,
-                headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+                headers={
+                    "Authorization": "Bearer " + token,
+                    "Accept": "application/json",
+                    **diagnostics.correlation_header(),
+                },
                 allow_redirects=False,
             ) as response:
                 require(response.status not in REDIRECTS, "device_redirect", 502)
@@ -413,12 +420,26 @@ class Home:
                     total += len(chunk)
                     require(total <= RESPONSE_BUDGET, "device_invalid_response", 502)
                     chunks.append(chunk)
+                diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
                 return response.status, b"".join(chunks)
-        except Fault:
+        except Fault as exc:
+            diagnostics.outbound(
+                "failed",
+                duration_ms=span.elapsed() * 1000.0,
+                error_code=diagnostics.safe_code(exc.code),
+            )
             raise
         except (asyncio.TimeoutError, TimeoutError):
+            diagnostics.outbound(
+                "timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout"
+            )
             raise Fault("device_timeout", 504) from None
         except (aiohttp.ClientError, OSError, ValueError):
+            diagnostics.outbound(
+                "failed",
+                duration_ms=span.elapsed() * 1000.0,
+                error_code="dependency_unavailable",
+            )
             raise Fault("device_unavailable", 503) from None
 
     def _decoded(self, raw):

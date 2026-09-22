@@ -33,6 +33,7 @@ import uuid
 
 import aiohttp
 
+from . import diagnostics
 from .auth import secret
 from .contracts import Fault, loads, require
 from .persona_page_config import (
@@ -155,22 +156,30 @@ class PersonaClient:
         require(operation in CANDIDATE_OPERATIONS, "invalid_input", 400)
         validate_request(self.candidate, document)
         prove(document)
+        span = diagnostics.Span("persona_call")
+        sent = False
         try:
             async with asyncio.timeout(DEADLINE_SECONDS):
                 # Waiting for an outbound slot is part of the same bounded wait: a queued read
                 # never gets its own fresh ten seconds.
+                diagnostics.outbound("queued")
                 async with self.slots:
                     # The wait is over and nothing has been sent yet: this is the last moment at
                     # which a request that lost its authority can still be stopped for free.
                     prove(document)
                     token = self.credential()
+                    sent = True
+                    diagnostics.outbound("started")
                     async with aiohttp.ClientSession(
                         timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=False
                     ) as session:
                         async with session.post(
                             self.base_url + "/internal/v1/persona/manage",
                             json=document,
-                            headers={"Authorization": "Bearer " + token},
+                            headers={
+                                "Authorization": "Bearer " + token,
+                                **diagnostics.correlation_header(),
+                            },
                             ssl=self._tls(),
                             allow_redirects=False,
                         ) as response:
@@ -180,11 +189,45 @@ class PersonaClient:
             # The answer answered *something*; whether it may still be read here is this request's
             # own question, and it is asked again after every await above.
             prove(document)
+        except asyncio.CancelledError:
+            if sent:
+                diagnostics.outbound("cancelled", duration_ms=span.elapsed() * 1000.0)
+            raise
         except TimeoutError:
+            diagnostics.outbound(
+                "timed_out", duration_ms=span.elapsed() * 1000.0, error_code="timeout"
+            )
             raise Fault("timeout", 503) from None
         except (aiohttp.ClientError, OSError, ssl.SSLError):
+            diagnostics.outbound(
+                "failed",
+                duration_ms=span.elapsed() * 1000.0,
+                error_code="dependency_unavailable",
+            )
             raise Fault("dependency_unavailable", 503) from None
-        return self._verify(answer, document)
+        except Fault as exc:
+            # Only a call that actually left this process is an outbound result; a scope that ended
+            # before the socket was written is reported as this request's own refusal.
+            if sent:
+                diagnostics.outbound(
+                    "failed",
+                    duration_ms=span.elapsed() * 1000.0,
+                    error_code=diagnostics.safe_code(exc.code),
+                )
+            raise
+        try:
+            result = self._verify(answer, document)
+        except Fault as exc:
+            # The peer answered, but not with something this page may use: the call still has a
+            # terminal outbound outcome and it is not a success.
+            diagnostics.outbound(
+                "failed",
+                duration_ms=span.elapsed() * 1000.0,
+                error_code=diagnostics.safe_code(exc.code),
+            )
+            raise
+        diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
+        return result
 
     async def _read(self, response, operation, request_id=None):
         """Bounded stream read, then parse. The byte budget is applied to real bytes.
