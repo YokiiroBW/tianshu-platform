@@ -8,6 +8,7 @@ from .auth import Auth, secret
 from .assets import Assets, validate_connections, validate_page
 from .contracts import Contracts, Fault, require
 from .models import Models, validate_max_lifetime
+from .model_origin_renewal import enabled as model_origin_renewal_enabled
 from .origins import Origins
 from .persona_client import PersonaClient
 from .persona_page_config import connections as persona_connections
@@ -76,6 +77,7 @@ SETTINGS_KEYS = frozenset(
         "web_models",
         "web_assets",
         "native_config_http",
+        "model_origin_renewal_http",
         "home",
         "persona_connections",
         "web_personas",
@@ -100,6 +102,7 @@ def validate_settings(settings):
     require(set(settings) <= SETTINGS_KEYS, "invalid_input", 400)
     require(settings.get("storage") == "sqlite_local", "dependency_unavailable", 503)
     require(type(settings.get("native_config_http", False)) is bool, "invalid_input", 400)
+    model_origin_renewal_enabled(settings)
     for key in ("database_path", "contract_directory"):
         require(
             isinstance(settings.get(key), str) and bool(settings[key]),

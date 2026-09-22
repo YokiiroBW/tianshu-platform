@@ -12,6 +12,7 @@ from aiohttp import web
 
 from . import diagnostics, diagnostics_config, runtime_health
 from .contracts import Fault, loads, require
+from . import model_origin_renewal
 from .service import registered_credentials
 from .web_console import CONSOLE_AUTH, WebConsole
 
@@ -46,6 +47,7 @@ NATIVE_ERRORS = {
 def create_app(platform, probe=None):
     console = WebConsole(platform)
     native_open = platform.native_config_http is True
+    renewal_open = model_origin_renewal.enabled(platform.settings)
     health = probe if probe is not None else runtime_health.Probe(platform.health)
     ready_token_env = diagnostics_config.resolve_ready_token_env(platform.settings)
     # Every variable another registered identity or peer reads. The names are static deployment
@@ -155,8 +157,13 @@ def create_app(platform, probe=None):
                 }.get(body.get("operation"))
             if native and native_open:
                 schema = "model-protocol#config_request"
-            require(request.method == "POST" and schema is not None, "not_found", 404)
-            platform.contracts.check(schema, body)
+            renewal = request.path == model_origin_renewal.PATH and renewal_open
+            require(request.method == "POST" and (schema is not None or renewal), "not_found", 404)
+            if renewal:
+                require(len(raw) <= 4096, "budget_exceeded", 413)
+                model_origin_renewal.validate_request(body)
+            else:
+                platform.contracts.check(schema, body)
             request_id = body.get("query", body.get("command", body))["request_id"]
             request[BODY] = body
             # From here the handler authenticates the presented credential itself; everything
@@ -295,6 +302,16 @@ def create_app(platform, probe=None):
             )
         )
 
+    async def renew_origin(request):
+        return web.json_response(
+            await platform.local_work.run(
+                model_origin_renewal.renew,
+                platform.origins,
+                request.headers["Authorization"],
+                request[BODY],
+            )
+        )
+
     async def source_access(request):
         return web.json_response(
             await platform.local_work.run(
@@ -314,6 +331,8 @@ def create_app(platform, probe=None):
     app[PLATFORM] = platform
     app.router.add_post("/internal/v1/origins/resolve", resolve)
     app.router.add_post("/internal/v1/model-config/snapshot", snapshot)
+    if renewal_open:
+        app.router.add_post(model_origin_renewal.PATH, renew_origin)
     if native_open:
         # Default closed; only an explicit deployment setting registers the native port.
         app.router.add_post(NATIVE_SNAPSHOT, native_snapshot)
