@@ -1,3 +1,4 @@
+import { requestId } from "../../app/requestId";
 import { useEffect, useRef, useState } from "react";
 import { MessageCircle } from "lucide-react";
 import { request, type Session } from "./api";
@@ -178,7 +179,7 @@ export function DialoguePanel({
       const result = await request<Submission>(
         "messages",
         controller.signal,
-        { conversation, actor, text, client_id: crypto.randomUUID() },
+        { conversation, actor, text, client_id: requestId() },
         session.csrf,
       );
       if (alive.current) {

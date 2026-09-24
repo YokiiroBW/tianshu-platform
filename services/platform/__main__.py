@@ -37,6 +37,8 @@ def build_sink(settings):
     return diagnostics.Diagnostics(
         diagnostics_config.resolve_log_directory(settings),
         directory_bytes=diagnostics_config.resolve_log_directory_bytes(settings),
+        admit_timeout=diagnostics_config.resolve_durability_timeout(settings),
+        terminal_timeout=diagnostics_config.resolve_durability_timeout(settings),
     )
 
 

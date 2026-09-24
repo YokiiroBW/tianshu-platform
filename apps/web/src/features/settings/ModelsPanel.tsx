@@ -1,3 +1,4 @@
+import { requestId } from "../../app/requestId";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LockKeyhole, RefreshCw, ShieldCheck } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
@@ -210,7 +211,7 @@ export function ModelsPanel() {
     const result = await submit("models/publish", {
       template_id: preview.template.template_id,
       expected_version: preview.expected_version,
-      client_id: crypto.randomUUID(),
+      client_id: requestId(),
     });
     if (!result) return;
     const publication = result as unknown as Publication;

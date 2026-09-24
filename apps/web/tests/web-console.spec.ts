@@ -55,6 +55,10 @@ async function plannedVersion(page: Page) {
 test("synthetic UI state fixture: receipt, collector, processing, segments, unknown and cancel", async ({
   page,
 }) => {
+  // Reproduce the LAN HTTP capability surface, without weakening any browser protection.
+  await page.addInitScript(() =>
+    Object.defineProperty(Crypto.prototype, "randomUUID", { value: undefined }),
+  );
   await page.goto("/#/companion");
   await page.getByLabel("管理员账号").fill("synthetic-admin");
   await page

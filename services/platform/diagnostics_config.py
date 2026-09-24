@@ -185,8 +185,12 @@ def parse_diagnostics_settings(settings):
         "log_directory",
         "log_directory_bytes",
         "ready_token_env",
+        "durability_timeout_ms",
     }
     if set(section) - allowed:
+        raise ContractProblem("diagnostics_settings_invalid")
+    timeout = section.get("durability_timeout_ms", 250)
+    if type(timeout) is not int or not 250 <= timeout <= 5000:
         raise ContractProblem("diagnostics_settings_invalid")
     for key in ("contract_directory", "log_directory"):
         value = section.get(key)
@@ -204,6 +208,10 @@ def parse_diagnostics_settings(settings):
     if digest is not None and (not isinstance(digest, str) or len(digest) != 64):
         raise ContractProblem("diagnostics_settings_invalid")
     return section
+
+
+def resolve_durability_timeout(settings):
+    return parse_diagnostics_settings(settings).get("durability_timeout_ms", 250) / 1000
 
 
 def verify_or_none(settings):

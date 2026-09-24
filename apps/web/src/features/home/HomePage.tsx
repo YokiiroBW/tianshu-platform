@@ -1,3 +1,4 @@
+import { requestId } from "../../app/requestId";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   LockKeyhole,
@@ -280,7 +281,7 @@ export default function HomePage() {
           {
             template_id: template.template_id,
             expected_revision: entity.revision,
-            client_id: crypto.randomUUID(),
+            client_id: requestId(),
           },
           session.csrf,
           controller.signal,
