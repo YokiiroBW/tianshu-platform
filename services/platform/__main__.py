@@ -17,6 +17,7 @@ from .assets import REQUEST_LIMIT
 from .auth import secret
 from .contracts import Fault, canonical, loads, require
 from .server import create_app
+from .web_console import WebConsole
 from .service import Platform, registered_credentials, validate_settings
 from .transport import server_tls
 
@@ -75,18 +76,32 @@ async def serve_forever(
     stops presenting it as current, record the terminal event, and only then make the log durable
     and close it. Nothing is killed to look like a clean stop, and every step is bounded.
     """
-    runner = web.AppRunner(create_app(platform), access_log=None)
-    await runner.setup()
-    site = web.TCPSite(runner, host, port, ssl_context=tls)
-    await site.start()
-    stop = asyncio.Event()
-    install_signals(stop)
-    diagnostics.event("runtime.started", "INFO", "succeeded")
+    console = WebConsole(platform)
+    runners = []
     try:
+        runner = web.AppRunner(create_app(platform, console=console), access_log=None)
+        runners.append(runner)
+        await runner.setup()
+        await web.TCPSite(runner, host, port, ssl_context=tls).start()
+        if console.access.current is not None:
+            access = console.access
+            require(access.config["port"] != port, "invalid_input", 400)
+            public = web.AppRunner(
+                create_app(platform, console=console, public=True), access_log=None
+            )
+            runners.append(public)
+            await public.setup()
+            await web.TCPSite(
+                public, access.config["host"], access.config["port"], ssl_context=access.tls
+            ).start()
+        stop = asyncio.Event()
+        install_signals(stop)
+        diagnostics.event("runtime.started", "INFO", "succeeded")
         await stop.wait()
     finally:
         diagnostics.event("runtime.stopping", "INFO", "started")
-        await runner.cleanup()
+        for runner in reversed(runners):
+            await runner.cleanup()
         platform.close()
         diagnostics.event("runtime.stopped", "INFO", "succeeded")
         sink.flush(SHUTDOWN_FLUSH_SECONDS)

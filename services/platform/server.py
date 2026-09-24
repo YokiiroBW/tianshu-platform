@@ -44,8 +44,9 @@ NATIVE_ERRORS = {
 }
 
 
-def create_app(platform, probe=None):
-    console = WebConsole(platform)
+def create_app(platform, probe=None, *, console=None, public=False):
+    console = console or WebConsole(platform)
+    require(not public or console.access.current is not None, "invalid_input", 400)
     native_open = platform.native_config_http is True
     renewal_open = model_origin_renewal.enabled(platform.settings)
     health = probe if probe is not None else runtime_health.Probe(platform.health)
@@ -126,6 +127,7 @@ def create_app(platform, probe=None):
         async def dispatch(request):
             nonlocal request_id, reached_handler
             if not request.path.startswith("/internal/"):
+                require(public or console.access.current is None, "not_found", 404)
                 reached_handler = True
                 return await console.handle(request)
             # Browser sessions never authorize service RPCs.
@@ -172,7 +174,15 @@ def create_app(platform, probe=None):
             return await handler(request)
 
         try:
-            if platform.auth.mode == "local_rehearsal":
+            if public:
+                require(
+                    not request.path.startswith("/internal/") and request.path not in PROBE_PATHS,
+                    "not_found",
+                    404,
+                )
+                if console.access.current["mode"] == "https":
+                    require(request.secure)
+            elif platform.auth.mode == "local_rehearsal":
                 require(request.remote and ipaddress.ip_address(request.remote).is_loopback)
             else:
                 require(request.secure)
@@ -329,19 +339,21 @@ def create_app(platform, probe=None):
 
     app = web.Application(middlewares=[boundary], client_max_size=1_048_576)
     app[PLATFORM] = platform
-    app.router.add_post("/internal/v1/origins/resolve", resolve)
-    app.router.add_post("/internal/v1/model-config/snapshot", snapshot)
-    if renewal_open:
-        app.router.add_post(model_origin_renewal.PATH, renew_origin)
-    if native_open:
-        # Default closed; only an explicit deployment setting registers the native port.
-        app.router.add_post(NATIVE_SNAPSHOT, native_snapshot)
-    app.router.add_post("/internal/v1/source-access/read", source_access)
-    app.router.add_post("/internal/v1/conversation/send", send)
+    if not public:
+        app.router.add_post("/internal/v1/origins/resolve", resolve)
+        app.router.add_post("/internal/v1/model-config/snapshot", snapshot)
+        if renewal_open:
+            app.router.add_post(model_origin_renewal.PATH, renew_origin)
+        if native_open:
+            # Default closed; only an explicit deployment setting registers the native port.
+            app.router.add_post(NATIVE_SNAPSHOT, native_snapshot)
+        app.router.add_post("/internal/v1/source-access/read", source_access)
+        app.router.add_post("/internal/v1/conversation/send", send)
     app.router.add_route("*", "/{path:.*}", console.handle)
 
     async def close_local_work(app):
         platform.local_work.close()
 
-    app.on_cleanup.append(close_local_work)
+    if not public:
+        app.on_cleanup.append(close_local_work)
     return app

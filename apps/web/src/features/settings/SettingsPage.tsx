@@ -4,6 +4,7 @@ import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
 import { ModelsPanel } from "./ModelsPanel";
 import { TasksPanel } from "./TasksPanel";
+import { AccessPanel } from "./AccessPanel";
 
 const prerequisites = [
   {
@@ -55,54 +56,57 @@ export default function SettingsPage({ section }: { section: number }) {
     `${item.name}${item.detail}`.includes(query.trim()),
   );
   return (
-    <section className="panel connections">
-      <div className="section-heading">
-        <h2>接入准备</h2>
-        <span className="badge">尚未接入服务</span>
-      </div>
-      <p>以下是各工作区需要的连接。配置入口将在服务接入后开放。</p>
-      <label className="search-label" htmlFor="connection-search">
-        筛选连接类型
-      </label>
-      <div className="search-field">
-        <Search aria-hidden="true" />
-        <input
-          id="connection-search"
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="按名称或用途查找"
-        />
-      </div>
-      <p className="sr-only" role="status">
-        找到 {filtered.length} 种连接类型
-      </p>
-      {filtered.length ? (
-        <ul className="connection-list">
-          {filtered.map((item) => (
-            <li key={item.name}>
-              <div>
-                <h3>{item.name}</h3>
-                <p>{item.detail}</p>
-                <p>{item.requirement}</p>
-              </div>
-              <StatusRail tone="gray" label="未配置" />
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <StatePanel
-          kind="empty"
-          title="没有匹配的连接类型"
-          action={
-            <button className="button" onClick={() => setQuery("")}>
-              清除筛选
-            </button>
-          }
-        >
-          <p>试试其他名称，或清除筛选查看全部。</p>
-        </StatePanel>
-      )}
-    </section>
+    <>
+      <AccessPanel />
+      <section className="panel connections">
+        <div className="section-heading">
+          <h2>接入准备</h2>
+          <span className="badge">尚未接入服务</span>
+        </div>
+        <p>以下是各工作区需要的连接。配置入口将在服务接入后开放。</p>
+        <label className="search-label" htmlFor="connection-search">
+          筛选连接类型
+        </label>
+        <div className="search-field">
+          <Search aria-hidden="true" />
+          <input
+            id="connection-search"
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="按名称或用途查找"
+          />
+        </div>
+        <p className="sr-only" role="status">
+          找到 {filtered.length} 种连接类型
+        </p>
+        {filtered.length ? (
+          <ul className="connection-list">
+            {filtered.map((item) => (
+              <li key={item.name}>
+                <div>
+                  <h3>{item.name}</h3>
+                  <p>{item.detail}</p>
+                  <p>{item.requirement}</p>
+                </div>
+                <StatusRail tone="gray" label="未配置" />
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <StatePanel
+            kind="empty"
+            title="没有匹配的连接类型"
+            action={
+              <button className="button" onClick={() => setQuery("")}>
+                清除筛选
+              </button>
+            }
+          >
+            <p>试试其他名称，或清除筛选查看全部。</p>
+          </StatePanel>
+        )}
+      </section>
+    </>
   );
 }

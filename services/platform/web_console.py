@@ -21,6 +21,8 @@ from .diagnostics import AUTH_SUCCEEDED
 from .home import Home
 from .tasks import Tasks
 from .transport import CoreFault
+from .web_access import WebAccess
+from .web_access_settings import WebAccessSettings
 from .web_assets import WebAssets
 from .web_dialogue import WebDialogue
 from .web_models import WebModels
@@ -56,9 +58,13 @@ def password_hash(password, salt=None):
 
 
 class WebConsole:
-    def __init__(self, platform):
+    def __init__(self, platform, access=None):
+        self.access = access or WebAccess(platform.settings)
+        self.access_settings = WebAccessSettings(self, self.access)
         self.platform = platform
         self.config = platform.settings.get("web")
+        if self.config is not None and self.access.current is not None:
+            self.config = {**self.config, "origin": self.access.current["origin"]}
         self.sessions = {}
         self.failures = []
         self.login_lock = asyncio.Lock()
@@ -85,7 +91,10 @@ class WebConsole:
         require(type(c.get("dialogue_enabled", False)) is bool, "invalid_input", 400)
         url = urlsplit(c["origin"])
         require(
-            url.scheme == ("http" if platform.auth.mode == "local_rehearsal" else "https")
+            (
+                self.access.current is not None
+                or url.scheme == ("http" if platform.auth.mode == "local_rehearsal" else "https")
+            )
             and url.hostname
             and not url.username
             and not url.password
@@ -279,7 +288,7 @@ class WebConsole:
             COOKIE,
             token,
             httponly=True,
-            secure=self.platform.auth.mode == "service_https",
+            secure=urlsplit(self.config["origin"]).scheme == "https",
             samesite="Strict",
             path="/",
             max_age=SESSION_TTL if authenticated else LOGIN_TTL,
@@ -429,7 +438,7 @@ class WebConsole:
                 COOKIE,
                 path="/",
                 samesite="Strict",
-                secure=self.platform.auth.mode == "service_https",
+                secure=urlsplit(self.config["origin"]).scheme == "https",
                 httponly=True,
             )
             return response
@@ -442,6 +451,15 @@ class WebConsole:
         # merely carried a cookie. A later refusal in this same request answers 401/403 and is
         # recorded as a refusal, which the boundary gives precedence to.
         request[CONSOLE_AUTH] = AUTH_SUCCEEDED
+        if request.path.startswith("/api/web/access/"):
+            result = await self.access_settings.route(request.path, body, session)
+            fingerprint, _ = await self.platform.local_work.run(self.authority)
+            require(
+                self.session_live(session) and session["fingerprint"] == fingerprint,
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
         if request.path.startswith(MODELS_PREFIX):
             # Management authority is server-side session state, never a browser claim.
             result = await self.models.route(request.path, body, session)

@@ -15,6 +15,7 @@ from .persona_page_config import connections as persona_connections
 from .persona_page_config import page_configuration
 from .projections import Projections
 from .storage import Store
+from .web_access import WebAccess
 from .sources import Sources
 
 
@@ -74,6 +75,7 @@ SETTINGS_KEYS = frozenset(
         "tls",
         "asset_connections",
         "web",
+        "web_access",
         "web_models",
         "web_assets",
         "native_config_http",
@@ -103,6 +105,7 @@ def validate_settings(settings):
     require(settings.get("storage") == "sqlite_local", "dependency_unavailable", 503)
     require(type(settings.get("native_config_http", False)) is bool, "invalid_input", 400)
     model_origin_renewal_enabled(settings)
+    WebAccess(settings)
     for key in ("database_path", "contract_directory"):
         require(
             isinstance(settings.get(key), str) and bool(settings[key]),
