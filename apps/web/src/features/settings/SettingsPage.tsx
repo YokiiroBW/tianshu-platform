@@ -61,9 +61,9 @@ export default function SettingsPage({ section }: { section: number }) {
       <section className="panel connections">
         <div className="section-heading">
           <h2>接入准备</h2>
-          <span className="badge">尚未接入服务</span>
+          <span className="badge">连接说明</span>
         </div>
-        <p>以下是各工作区需要的连接。配置入口将在服务接入后开放。</p>
+        <p>以下列出各工作区的接入条件；实际连接状态请查看对应页面。</p>
         <label className="search-label" htmlFor="connection-search">
           筛选连接类型
         </label>
@@ -89,7 +89,7 @@ export default function SettingsPage({ section }: { section: number }) {
                   <p>{item.detail}</p>
                   <p>{item.requirement}</p>
                 </div>
-                <StatusRail tone="gray" label="未配置" />
+                <StatusRail tone="gray" label="接入条件" />
               </li>
             ))}
           </ul>

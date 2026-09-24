@@ -197,8 +197,8 @@ export function AccessPanel() {
               )}
               {draft.mode === "proxy" && (
                 <p>
-                  反代上游使用本地 HTTP 端口 {view.listener_port}，保留原始
-                  Host；访问地址填写用户实际打开的地址。HTTPS
+                  反代上游填写部署时发布的 HTTP 地址，并保留原始 Host。
+                  上方访问地址填写用户实际打开的域名地址；HTTPS
                   证书由反向代理管理。
                 </p>
               )}
