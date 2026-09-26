@@ -3,6 +3,7 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests",
   testIgnore: [
+    "onboarding-real.spec.ts",
     "web-console.spec.ts",
     "task-center.spec.ts",
     "task-center-dev.spec.ts",

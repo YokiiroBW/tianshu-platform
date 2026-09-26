@@ -47,6 +47,7 @@ export function returnTarget() {
 }
 
 const messages: Record<string, string> = {
+  session_expired: "登录页面已过期，请刷新账号状态后重新输入密码。",
   unauthorized: "账号或密码不正确，请重试。",
   forbidden: "验证未通过，请重新连接后重试。",
   invalid_input: "请检查账号和密码是否符合要求。",

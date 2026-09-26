@@ -808,7 +808,8 @@ test("synthetic UI state fixture: read-only deployment and an expired login", as
     await route.fulfill({ json: { authenticated: false, csrf: "stub-csrf" } });
   });
   await page.getByRole("button", { name: "重新读取设备状态" }).click();
-  await expect(page.locator(".home-error")).toContainText("登录已过期");
+  await expect(page).toHaveURL(/#\/login\?next=/);
+  await expect(page.getByRole("heading", { name: "登录天枢" })).toBeVisible();
   await expect(page.getByLabel("管理员账号")).toBeVisible();
   await expect(page.locator("article.home-entity")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "锁定控制" })).toHaveCount(0);

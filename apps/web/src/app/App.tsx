@@ -256,8 +256,11 @@ function AppShell() {
                   </button>
                 </>
               ) : (
-                <a className="button" href={loginHref(hash)}>
-                  登录
+                <a
+                  className="button"
+                  href={setupNeeded ? "#/setup" : loginHref(hash)}
+                >
+                  {setupNeeded ? "首次设置" : "登录"}
                 </a>
               )}
             </div>
