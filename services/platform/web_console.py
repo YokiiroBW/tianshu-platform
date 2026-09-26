@@ -6,6 +6,7 @@ and uses the published Core snapshot and source protocols, never simulated chat.
 
 import asyncio
 import hmac
+import json
 import secrets
 import sqlite3
 import time
@@ -27,6 +28,7 @@ from .web_account import WebAccount, password_hash, validate_hash, verify_passwo
 from .web_assets import WebAssets
 from .web_dialogue import WebDialogue
 from .web_models import WebModels
+from .provider_management import ProviderManagement
 from .web_personas import WebPersonas
 from .web_sender import WebSender
 
@@ -42,6 +44,7 @@ AUTHENTICATED_SESSION_LIMIT = 128
 # those points and nowhere else, and the boundary writes `http.auth.succeeded` only when it is set.
 CONSOLE_AUTH = web.RequestKey("console_authenticated", str)
 MODELS_PREFIX = "/api/web/models/"
+PROVIDERS_PREFIX = "/api/web/providers/"
 HOME_PREFIX = "/api/web/home/"
 TASKS_PREFIX = "/api/web/tasks/"
 PERSONAS_PREFIX = "/api/web/personas/"
@@ -146,6 +149,7 @@ class WebConsole:
         self.dialogue = WebDialogue(platform)
         self.sender = WebSender(platform)
         self.models = WebModels(platform, self)
+        self.providers = ProviderManagement(platform, self)
         # Device control carries its own unlock; it is never derived from model management.
         self.home = Home(platform, self)
         # The task centre only reads the ledgers the two modules above already own.
@@ -388,6 +392,23 @@ class WebConsole:
             response = web.json_response({"code": "dependency_unavailable"}, status=503)
         except (ValueError, TypeError, KeyError):
             response = web.json_response({"code": "invalid_input"}, status=400)
+        if request.path.startswith(PROVIDERS_PREFIX) and response.status >= 400:
+            # The provider page has a frozen error envelope; other web APIs retain theirs.
+            try:
+                code = json.loads(response.body)["code"]
+            except (ValueError, KeyError, TypeError):
+                code = "dependency_unavailable"
+            unknown = code in {"timed_out", "connection_failed", "result_unknown"}
+            response = web.json_response(
+                {
+                    "schema_version": 1,
+                    "request_id": "request:" + secrets.token_hex(16),
+                    "code": code,
+                    "execution_state": "unknown" if unknown else "not_started",
+                    "retryable": response.status == 503 and not unknown,
+                },
+                status=response.status,
+            )
         response.headers.update(
             {
                 "Cache-Control": "no-store",
@@ -553,6 +574,11 @@ class WebConsole:
             fingerprint, _ = await self.platform.local_work.run(self.authority)
             require(self.session_live(session), "session_expired", 401)
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
+            return web.json_response(result)
+        if request.path.startswith(PROVIDERS_PREFIX):
+            result = await self.providers.route(request.path, body, session)
+            _, current = self.session(request)
+            require(current is session and self.session_live(session), "session_expired", 401)
             return web.json_response(result)
         operation = {
             "/api/web/messages": self.dialogue.send,

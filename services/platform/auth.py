@@ -23,6 +23,8 @@ ACTIONS = {
     "config.revoke",
     "config.snapshot",
     "config.view",
+    "config.select",
+    "provider.runtime",
     "capability.read",
     "task.read",
     "task.project",

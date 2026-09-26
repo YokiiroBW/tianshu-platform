@@ -160,6 +160,7 @@ def main():
     commands.add_parser(
         "preflight", help="validate configuration, contracts and existing data without writing"
     )
+    commands.add_parser("providers-init", help="one-time empty private provider catalog creation")
     # The container healthcheck needs no deployment settings: it asks the process that is already
     # running, and it must keep working when the settings file itself is the thing under suspicion.
     check = commands.add_parser("healthcheck", help="verify a running live listener over TLS")
@@ -227,6 +228,21 @@ def main():
         report = _preflight(settings)
         print(canonical(report))
         return 0 if report["status"] == "ready" else 1
+
+    if args.command == "providers-init":
+        try:
+            from .provider_catalog import ProviderCatalog
+            from .provider_management import validate_configuration
+
+            section = settings.get("provider_self_service")
+            require(section is not None, "invalid_input", 400)
+            validate_configuration(section, existing=False)
+            ProviderCatalog(section["directory"], create=True)
+            print(canonical({"initialized": True}))
+            return 0
+        except (Fault, OSError, ValueError, TypeError, KeyError):
+            print(canonical({"code": "provider_store_unavailable", "status": 503}))
+            return 1
 
     sink = build_sink(settings)
     diagnostics.activate(sink)

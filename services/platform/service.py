@@ -95,6 +95,7 @@ SETTINGS_KEYS = frozenset(
         "web_access",
         "web_account",
         "web_models",
+        "provider_self_service",
         "web_assets",
         "native_config_http",
         "model_origin_renewal_http",
@@ -136,6 +137,16 @@ def validate_settings(settings):
     # copy of it here: `Models` runs this same function while it is assembled, so a lifetime the
     # preflight accepts is one the real startup publishes with.
     validate_max_lifetime(settings)
+    from .provider_management import validate_configuration
+
+    validate_configuration(settings.get("provider_self_service"))
+    if settings.get("provider_self_service") is not None:
+        require(
+            settings["provider_self_service"]["gateway_token_env"]
+            not in registered_credentials(settings),
+            "invalid_input",
+            400,
+        )
     credentials = registered_credentials(settings, include_setup=False)
     account = WebAccount(settings)
     # Read-only validation also prevents a damaged/lost account store from becoming a fresh
@@ -191,6 +202,16 @@ class Platform:
         self.origins.input_entries = self.sources.entries
         self.settings = settings
         self.models = Models(self.store, self.auth, self.contracts, self.origins, settings, clock)
+        from .provider_catalog import ProviderCatalog
+
+        self.provider_catalog = (
+            ProviderCatalog(settings["provider_self_service"]["directory"])
+            if settings.get("provider_self_service") is not None
+            else None
+        )
+        from .provider_authority import ProviderAuthority
+
+        self.provider_authority = ProviderAuthority(self, clock)
         self.projections = Projections(self.store, self.auth, self.contracts, clock)
         self.assets = Assets(self.store, self.auth, settings)
         # A read-only page that could widen this identity's own bindings is refused at startup.

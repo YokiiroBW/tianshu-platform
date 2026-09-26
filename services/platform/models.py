@@ -47,6 +47,7 @@ class Models:
     def __init__(self, store, auth, contracts, origins, settings, clock):
         self.store, self.auth, self.contracts, self.origins = store, auth, contracts, origins
         self.registrations = copy.deepcopy(settings.get("providers", {}))
+        self.dynamic_enabled = settings.get("provider_self_service") is not None
         self.max_lifetime = validate_max_lifetime(settings)
         self.clock = clock
 
@@ -180,6 +181,8 @@ class Models:
         )
 
     def publish(self, header, document):
+        if self.dynamic_enabled:
+            require(document.get("config_version", 0) < 1_000_000_000, "invalid_input", 400)
         with self.store.connect(write=True) as db:
             identity, _ = self.auth.authenticate(header, db, "config.publish", operator=True)
             self.validate_publication(document)

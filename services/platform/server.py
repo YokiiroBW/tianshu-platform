@@ -19,6 +19,8 @@ from .web_console import CONSOLE_AUTH, WebConsole
 PLATFORM = web.AppKey("platform", object)
 BODY = web.RequestKey("body", dict)
 NATIVE_SNAPSHOT = "/internal/v1/model-config/native/snapshot"
+PROVIDER_SELECT = "/internal/v1/provider-self-service/select"
+PROVIDER_RUNTIME = "/internal/v1/provider-self-service/runtime"
 # The two probes are recognised here, inside the serving boundary and ahead of the static
 # dispatcher, so neither can ever fall through to the single-page application.
 LIVE_PATH = "/health/live"
@@ -111,6 +113,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
     async def boundary(request, handler):
         # A closed native port stays undiscoverable: it answers with the contract's own opaque 404.
         native = request.path == NATIVE_SNAPSHOT
+        web_error = request.path.startswith("/api/web/")
         internal = request.path.startswith("/internal/")
         request_id = "request:" + uuid.uuid4().hex
         correlation = None
@@ -160,13 +163,24 @@ def create_app(platform, probe=None, *, console=None, public=False):
             if native and native_open:
                 schema = "model-protocol#config_request"
             renewal = request.path == model_origin_renewal.PATH and renewal_open
-            require(request.method == "POST" and (schema is not None or renewal), "not_found", 404)
+            provider_call = platform.provider_catalog is not None and request.path in {
+                PROVIDER_SELECT,
+                PROVIDER_RUNTIME,
+            }
+            require(
+                request.method == "POST" and (schema is not None or renewal or provider_call),
+                "not_found",
+                404,
+            )
             if renewal:
                 require(len(raw) <= 4096, "budget_exceeded", 413)
                 model_origin_renewal.validate_request(body)
+            elif provider_call:
+                require(len(raw) <= 4096, "budget_exceeded", 413)
             else:
                 platform.contracts.check(schema, body)
-            request_id = body.get("query", body.get("command", body))["request_id"]
+            if not provider_call:
+                request_id = body.get("query", body.get("command", body))["request_id"]
             request[BODY] = body
             # From here the handler authenticates the presented credential itself; everything
             # before this line is a pre-authentication refusal that proves nothing about identity.
@@ -194,7 +208,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             if not diagnostics.admitted():
                 # New business is refused while the log cannot be written. Work already in flight
                 # keeps its own result; only the next request is turned away.
-                response = error("dependency_unavailable", 503, request_id, native)
+                response = error("dependency_unavailable", 503, request_id, native, web_error)
             else:
                 context = diagnostics.use_correlation(correlation)
                 # Admission waits for the accepting event's bytes without ever blocking the loop:
@@ -203,21 +217,21 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 if admitted:
                     response = await dispatch(request)
                 else:
-                    response = error("dependency_unavailable", 503, request_id, native)
+                    response = error("dependency_unavailable", 503, request_id, native, web_error)
         except web.HTTPRequestEntityTooLarge:
-            response = error("budget_exceeded", 413, request_id, native)
+            response = error("budget_exceeded", 413, request_id, native, web_error)
         except Fault as exc:
-            response = error(exc.code, exc.status, request_id, native)
+            response = error(exc.code, exc.status, request_id, native, web_error)
         except (sqlite3.Error, OSError):
-            response = error("dependency_unavailable", 503, request_id, native)
+            response = error("dependency_unavailable", 503, request_id, native, web_error)
         except (ValueError, TypeError, KeyError, RecursionError):
-            response = error("invalid_input", 400, request_id, native)
+            response = error("invalid_input", 400, request_id, native, web_error)
         except Exception:
             # An exception this product did not anticipate is still answered with a code the
             # published error contract allows, and recorded as the one fixed internal code: no
             # exception text, type or traceback reaches either the wire or the log.
             unexpected = True
-            response = error("dependency_unavailable", 503, request_id, native)
+            response = error("dependency_unavailable", 503, request_id, native, web_error)
         except asyncio.CancelledError:
             # Cancellation is this request's terminal state, so it is recorded here and only here:
             # one place owns request lifecycle, and a cancelled request never produces a response.
@@ -267,7 +281,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             response.headers[diagnostics.HEADER] = correlation
         return response
 
-    def error(code, status, request_id, native):
+    def error(code, status, request_id, native, web_error=False):
         if native:
             # The native contract fixes both the code set and one status per code.
             status, code = NATIVE_ERRORS.get(code, (503, "dependency_unavailable"))
@@ -285,10 +299,36 @@ def create_app(platform, probe=None, *, console=None, public=False):
             "schema_version": 1,
             "request_id": request_id,
             "code": code,
-            "execution_state": "not_started",
-            "retryable": status == 503,
+            "execution_state": (
+                "unknown"
+                if web_error and code in {"timed_out", "connection_failed", "result_unknown"}
+                else "not_started"
+            ),
+            "retryable": status == 503 and code not in {"result_unknown", "connection_failed"},
         }
-        platform.contracts.check("common#error", body)
+        if not web_error:
+            # Internal v1 remains the published closed code set. Browser management has its
+            # own typed catalog/upstream errors and cannot alter that immutable package.
+            if code not in {
+                "invalid_input",
+                "unauthorized",
+                "forbidden",
+                "not_found",
+                "version_conflict",
+                "scope_changed",
+                "budget_exceeded",
+                "queue_full",
+                "timeout",
+                "dependency_unavailable",
+                "result_unknown",
+                "idempotency_conflict",
+                "cursor_expired",
+                "unsupported_version",
+            }:
+                body["code"] = "dependency_unavailable"
+                status = 503
+                body["retryable"] = True
+            platform.contracts.check("common#error", body)
         return web.json_response(body, status=status)
 
     async def resolve(request):
@@ -302,6 +342,24 @@ def create_app(platform, probe=None, *, console=None, public=False):
         return web.json_response(
             await platform.local_work.run(
                 platform.models.snapshot, request.headers["Authorization"], request[BODY]
+            )
+        )
+
+    async def provider_select(request):
+        return web.json_response(
+            await platform.local_work.run(
+                platform.provider_authority.select,
+                request.headers.get("Authorization", ""),
+                request[BODY],
+            )
+        )
+
+    async def provider_runtime(request):
+        return web.json_response(
+            await platform.local_work.run(
+                platform.provider_authority.runtime,
+                request.headers.get("Authorization", ""),
+                request[BODY],
             )
         )
 
@@ -342,6 +400,9 @@ def create_app(platform, probe=None, *, console=None, public=False):
     if not public:
         app.router.add_post("/internal/v1/origins/resolve", resolve)
         app.router.add_post("/internal/v1/model-config/snapshot", snapshot)
+        if platform.provider_catalog is not None:
+            app.router.add_post(PROVIDER_SELECT, provider_select)
+            app.router.add_post(PROVIDER_RUNTIME, provider_runtime)
         if renewal_open:
             app.router.add_post(model_origin_renewal.PATH, renew_origin)
         if native_open:

@@ -44,3 +44,9 @@ ruff check及format --check只覆盖两个新增Python文件；未重跑无关�
 5. 真实接通G1执行后才能record_test成功；模型枚举不是生成成功。选择默认之后仍需平台版本发布、gateway精确授权、companion新turn固定及自动续期联合验收。
 
 本任务交付的是内部持久模块，供应商自助网页与真实对话闭环未完成、未部署。
+
+## 2026-09-26 后端接线续交
+
+在上述基线后，本工作树接入 `provider_management.py`、`provider_authority.py`、管理员 HTTP 和内部 select/runtime 路由；增加显式 `providers-init`、只读完整备份 preflight、测试请求持久占用与结果落账、动态精确版本/一小时租期、旧静态版本空间保护。`cryptography==50.0.1` 已加入 `pyproject.toml` 和完整 hash-locked runtime；原文“未改锁”和“未接 HTTP”只描述第一次 P1 交付，不再描述当前工作树。浏览器页面和部署配置未改。
+
+验证：目录 19 项、旧模型页 26 项、根联合套件 4 项通过；Windows 隔离 wheel 构建、锁定依赖安装、`pip check`、已安装 CLI 通过。最终证据与部署接线见根 `docs/handoffs/PROVIDER-BACKEND-2026-09-26.md`。Linux 镜像/NAS/真实供应商未运行。

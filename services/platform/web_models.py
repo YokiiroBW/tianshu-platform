@@ -205,7 +205,7 @@ class WebModels:
 
     def code(self, session=None):
         """One honest state word per request; never a success for a disabled capability."""
-        if not self.enabled:
+        if not self.enabled and self.p.provider_catalog is None:
             return "management_disabled"
         principal = self.p.auth.principals.get(self.console.config["principal"], {})
         if not MANAGEMENT_ACTIONS <= set(principal.get("actions", [])):

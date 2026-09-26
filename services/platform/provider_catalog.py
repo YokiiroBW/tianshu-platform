@@ -98,6 +98,58 @@ class ProviderCatalog:
     administrator/service-only ACL on the parent; chmod does not establish a Windows ACL.
     """
 
+    @staticmethod
+    def verify_existing(directory):
+        """Read-only preflight of the complete backup unit, including every ciphertext."""
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+            root = Path(directory).absolute()
+            database, key_file = root / "providers.sqlite", root / "providers.key"
+            require(
+                root.is_dir()
+                and not root.is_symlink()
+                and database.is_file()
+                and not database.is_symlink()
+                and key_file.is_file()
+                and not key_file.is_symlink(),
+                "provider_store_unavailable",
+                503,
+            )
+            cipher = AESGCM(key_file.read_bytes())
+            with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+                seal = db.execute("SELECT seal FROM metadata WHERE id=1").fetchone()
+                require(seal is not None, "provider_store_unavailable", 503)
+                value = seal[0]
+                require(
+                    cipher.decrypt(value[:12], value[12:], b"seal") == b"provider-catalog-v1",
+                    "provider_store_unavailable",
+                    503,
+                )
+                for identity, encrypted in db.execute("SELECT id,secret FROM providers"):
+                    if encrypted is not None:
+                        cipher.decrypt(encrypted[:12], encrypted[12:], identity.encode())
+                for table in (
+                    "receipts",
+                    "test_attempts",
+                    "provider_publications",
+                    "provider_turn_grants",
+                ):
+                    require(
+                        db.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                        ).fetchone()
+                        is not None,
+                        "provider_store_unavailable",
+                        503,
+                    )
+        except Fault:
+            raise
+        except ImportError:
+            raise Fault("provider_crypto_unavailable", 503) from None
+        except Exception:
+            raise Fault("provider_store_unavailable", 503) from None
+
     def __init__(self, directory, *, create=False, clock=time.time):
         self.directory = Path(directory).absolute()
         self.database = self.directory / "providers.sqlite"
@@ -128,6 +180,14 @@ class ProviderCatalog:
                           secret BLOB);
                         CREATE TABLE receipts (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
                           result TEXT NOT NULL);
+                        CREATE TABLE test_attempts (id TEXT PRIMARY KEY,
+                          fingerprint TEXT NOT NULL, state TEXT NOT NULL, result TEXT);
+                        CREATE TABLE provider_publications (version INTEGER PRIMARY KEY,
+                          provider_id TEXT NOT NULL, provider_revision INTEGER NOT NULL,
+                          usable_until REAL NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+                        CREATE TABLE provider_turn_grants (turn_id TEXT PRIMARY KEY,
+                          scope_digest TEXT NOT NULL, version INTEGER NOT NULL,
+                          caller_service TEXT NOT NULL, workload TEXT NOT NULL);
                     """)
                     db.execute(
                         "INSERT INTO metadata VALUES (1, ?, NULL, 0)",
@@ -162,6 +222,15 @@ class ProviderCatalog:
                     )
                     if row[2] is not None:
                         self._decrypt(row[2], row[0])
+                for table in ("test_attempts", "provider_publications", "provider_turn_grants"):
+                    require(
+                        db.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                        ).fetchone()
+                        is not None,
+                        "provider_store_unavailable",
+                        503,
+                    )
         except Fault:
             raise
         except Exception:
@@ -192,6 +261,7 @@ class ProviderCatalog:
             )
             # mode=rw forbids silently creating a replacement if the live DB disappears.
             db = sqlite3.connect(self.database.as_uri() + "?mode=rw", uri=True, timeout=5)
+            db.row_factory = sqlite3.Row
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")
             yield db
@@ -300,7 +370,7 @@ class ProviderCatalog:
         ]
 
         def action(db):
-            identity = provider_id or "provider_" + uuid.uuid4().hex
+            identity = provider_id or "provider-" + uuid.uuid4().hex
             previous, encrypted = (
                 self._row(db, identity, expected_revision) if provider_id else (None, None)
             )
@@ -374,6 +444,56 @@ class ProviderCatalog:
             return document
 
         return self._mutate(client_id, "test", [provider_id, expected_revision, outcome], action)
+
+    def claim_test(self, *, client_id, provider_id, expected_revision):
+        """Durably claim one paid test before network IO; an unknown retry never reexecutes."""
+        client_id = _text(client_id, 128)
+        fingerprint = hmac.new(
+            self._key, canonical([provider_id, expected_revision]).encode(), hashlib.sha256
+        ).hexdigest()
+        with self._transaction() as db:
+            existing = db.execute(
+                "SELECT fingerprint,state,result FROM test_attempts WHERE id=?", (client_id,)
+            ).fetchone()
+            if existing:
+                require(hmac.compare_digest(existing[0], fingerprint), "idempotency_conflict", 409)
+                return {
+                    "state": existing[1],
+                    "result": json.loads(existing[2]) if existing[2] else None,
+                }
+            document, _ = self._row(db, provider_id, expected_revision)
+            require(
+                document["enabled"] and document["has_key"] and document["model_id"],
+                "provider_unavailable",
+                409,
+            )
+            db.execute(
+                "INSERT INTO test_attempts VALUES (?,?,?,NULL)", (client_id, fingerprint, "pending")
+            )
+            return {"state": "new", "result": None}
+
+    def settle_test(self, *, client_id, result):
+        """Only fixed verdict/error metadata is stored; no upstream text is accepted."""
+        require(
+            isinstance(result, dict)
+            and set(result)
+            <= {"provider_id", "revision", "outcome", "tested_at", "error", "status"},
+            "invalid_input",
+            400,
+        )
+        with self._transaction() as db:
+            row = db.execute(
+                "SELECT state,result FROM test_attempts WHERE id=?", (client_id,)
+            ).fetchone()
+            require(row is not None, "invalid_input", 400)
+            if row[0] == "settled":
+                require(json.loads(row[1]) == result, "idempotency_conflict", 409)
+                return result
+            db.execute(
+                "UPDATE test_attempts SET state='settled',result=? WHERE id=?",
+                (canonical(result), client_id),
+            )
+            return result
 
     def set_default(self, *, client_id, provider_id, expected_revision, expected_default_revision):
         def action(db):

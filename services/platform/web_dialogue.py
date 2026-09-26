@@ -30,6 +30,11 @@ class WebDialogue:
         return bool(c.get("dialogue_enabled") and self.p.settings.get("core"))
 
     def model_configured(self):
+        if (
+            self.p.provider_catalog is not None
+            and self.p.provider_catalog.view()["default"]["configured"]
+        ):
+            return True
         with self.p.store.connect() as db:
             rows = db.execute("SELECT document FROM configs WHERE revoked=0").fetchall()
         now = self.p.origins.clock()
