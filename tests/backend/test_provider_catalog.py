@@ -342,6 +342,47 @@ class ProviderCatalogTests(unittest.TestCase):
             self.catalog.execution_context(provider["provider_id"], 1).api_key,
         )
 
+    def test_paid_test_verdict_and_replay_receipt_commit_atomically(self):
+        provider = self.create()
+        identity = provider["provider_id"]
+        self.assertEqual(
+            "new",
+            self.catalog.claim_test(client_id="paid-1", provider_id=identity, expected_revision=1)[
+                "state"
+            ],
+        )
+        with closing(sqlite3.connect(self.catalog.database)) as db, db:
+            db.execute(
+                "CREATE TRIGGER fail_settle BEFORE UPDATE ON test_attempts BEGIN "
+                "SELECT RAISE(ABORT, 'synthetic crash window'); END"
+            )
+        self.assert_fault(
+            "provider_store_unavailable",
+            lambda: self.catalog.finish_test(
+                client_id="paid-1", provider_id=identity, expected_revision=1, outcome="succeeded"
+            ),
+        )
+        self.assertIsNone(self.catalog.view()["providers"][0]["test"])
+        self.assertEqual(
+            "pending",
+            self.catalog.claim_test(client_id="paid-1", provider_id=identity, expected_revision=1)[
+                "state"
+            ],
+        )
+        with closing(sqlite3.connect(self.catalog.database)) as db, db:
+            db.execute("DROP TRIGGER fail_settle")
+        result = self.catalog.finish_test(
+            client_id="paid-1", provider_id=identity, expected_revision=1, outcome="succeeded"
+        )
+        restarted = ProviderCatalog(self.directory, clock=lambda: 1234567)
+        self.assertEqual(
+            result,
+            restarted.claim_test(client_id="paid-1", provider_id=identity, expected_revision=1)[
+                "result"
+            ],
+        )
+        self.assertEqual("succeeded", restarted.view()["providers"][0]["test"]["outcome"])
+
     def test_encryption_failure_has_no_partial_public_write(self):
         with patch.object(self.catalog, "_encrypt", side_effect=OSError("synthetic disk failure")):
             self.assert_fault("provider_store_unavailable", lambda: self.create())

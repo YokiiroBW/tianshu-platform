@@ -80,16 +80,24 @@ class ProviderManagement:
         self.config = platform.settings.get("provider_self_service")
 
     def _gate(self, session):
+        require(self.console.session_valid(session), "session_expired", 401)
+        self._quick_gate(session)
+
+    def _quick_gate(self, session):
         require(self.console.session_live(session), "session_expired", 401)
         self.console.models._gate(session)
 
+    def _view(self, session):
+        self._gate(session)
+        return self.catalog.view()
+
     async def route(self, path, body, session):
         require(self.catalog is not None, "management_disabled", 403)
-        self._gate(session)
+        self._quick_gate(session)
         operation = path.removeprefix("/api/web/providers/")
         if operation == "view":
             require(body == {}, "invalid_input", 400)
-            return await self.platform.local_work.run(self.catalog.view)
+            return await self.platform.local_work.run(self._view, session)
         if operation == "save":
             allowed = {
                 "client_id",
@@ -159,55 +167,31 @@ class ProviderManagement:
                         "authentication_failed": "authentication_failed",
                         "endpoint_failed": "endpoint_failed",
                         "model_not_found": "model_not_found",
-                        "timed_out": "timed_out",
-                        "connection_failed": "connection_failed",
                     }.get(fault.code, "unknown")
                     await self.platform.local_work.run(
-                        self._write,
-                        session,
-                        self.catalog.record_test,
-                        client_id="test-result:" + body["client_id"],
+                        self.catalog.finish_test,
+                        client_id=body["client_id"],
                         provider_id=context.provider_id,
                         expected_revision=context.revision,
                         outcome=outcome,
-                    )
-                    await self.platform.local_work.run(
-                        self._write,
-                        session,
-                        self.catalog.settle_test,
-                        client_id=body["client_id"],
-                        result={"error": fault.code, "status": fault.status},
+                        error=fault.code,
+                        status=fault.status,
                     )
                 raise
-            self._gate(session)
+            await self.platform.local_work.run(self._gate, session)
             if operation == "models":
                 return {
                     "provider_id": context.provider_id,
                     "revision": context.revision,
                     "models": result["models"],
                 }
-            recorded = await self.platform.local_work.run(
-                self._write,
-                session,
-                self.catalog.record_test,
-                client_id="test-result:" + body["client_id"],
+            return await self.platform.local_work.run(
+                self.catalog.finish_test,
+                client_id=body["client_id"],
                 provider_id=context.provider_id,
                 expected_revision=context.revision,
                 outcome="succeeded",
             )
-            response = {
-                "provider_id": context.provider_id,
-                "revision": context.revision,
-                **recorded["test"],
-            }
-            await self.platform.local_work.run(
-                self._write,
-                session,
-                self.catalog.settle_test,
-                client_id=body["client_id"],
-                result=response,
-            )
-            return response
         raise Fault("not_found", 404)
 
     def _write(self, session, method, **kwargs):
@@ -279,5 +263,9 @@ class ProviderManagement:
             raise
         except Fault:
             raise
-        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError):
-            raise Fault("dependency_unavailable", 503) from None
+        except TimeoutError:
+            raise Fault("timed_out", 504) from None
+        except aiohttp.ClientError:
+            raise Fault("connection_failed", 503) from None
+        except (ValueError, TypeError):
+            raise Fault("upstream_invalid", 502) from None

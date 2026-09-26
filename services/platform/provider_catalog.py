@@ -425,25 +425,26 @@ class ProviderCatalog:
         require(isinstance(outcome, str) and outcome in TEST_CODES, "invalid_input", 400)
 
         def action(db):
-            document, _ = self._row(db, provider_id, expected_revision)
-            require(
-                document["enabled"] and document["has_key"] and document["model_id"],
-                "provider_unavailable",
-                409,
-            )
-            document["test"] = {
-                "revision": expected_revision,
-                "outcome": outcome,
-                "tested_at": self.clock(),
-            }
-            db.execute(
-                "UPDATE providers SET document=? WHERE id=?", (canonical(document), provider_id)
-            )
-            if outcome != "succeeded":
-                self._clear_default(db, provider_id)
-            return document
+            return self._record_test(db, provider_id, expected_revision, outcome)
 
         return self._mutate(client_id, "test", [provider_id, expected_revision, outcome], action)
+
+    def _record_test(self, db, provider_id, expected_revision, outcome):
+        document, _ = self._row(db, provider_id, expected_revision)
+        require(
+            document["enabled"] and document["has_key"] and document["model_id"],
+            "provider_unavailable",
+            409,
+        )
+        document["test"] = {
+            "revision": expected_revision,
+            "outcome": outcome,
+            "tested_at": self.clock(),
+        }
+        db.execute("UPDATE providers SET document=? WHERE id=?", (canonical(document), provider_id))
+        if outcome != "succeeded":
+            self._clear_default(db, provider_id)
+        return document
 
     def claim_test(self, *, client_id, provider_id, expected_revision):
         """Durably claim one paid test before network IO; an unknown retry never reexecutes."""
@@ -472,23 +473,51 @@ class ProviderCatalog:
             )
             return {"state": "new", "result": None}
 
-    def settle_test(self, *, client_id, result):
-        """Only fixed verdict/error metadata is stored; no upstream text is accepted."""
+    def finish_test(
+        self, *, client_id, provider_id, expected_revision, outcome, error=None, status=None
+    ):
+        """Commit catalog verdict and replay receipt together after one claimed call."""
         require(
-            isinstance(result, dict)
-            and set(result)
-            <= {"provider_id", "revision", "outcome", "tested_at", "error", "status"},
+            outcome in TEST_CODES
+            and (
+                (error is None and status is None and outcome == "succeeded")
+                or (
+                    error
+                    in {
+                        "authentication_failed",
+                        "endpoint_failed",
+                        "model_not_found",
+                        "enumeration_unsupported",
+                        "connection_failed",
+                        "timed_out",
+                        "upstream_invalid",
+                        "upstream_rejected",
+                        "dependency_unavailable",
+                    }
+                    and type(status) is int
+                    and 400 <= status <= 504
+                )
+            ),
             "invalid_input",
             400,
         )
         with self._transaction() as db:
             row = db.execute(
-                "SELECT state,result FROM test_attempts WHERE id=?", (client_id,)
+                "SELECT fingerprint,state,result FROM test_attempts WHERE id=?", (client_id,)
             ).fetchone()
             require(row is not None, "invalid_input", 400)
-            if row[0] == "settled":
-                require(json.loads(row[1]) == result, "idempotency_conflict", 409)
-                return result
+            fingerprint = hmac.new(
+                self._key, canonical([provider_id, expected_revision]).encode(), hashlib.sha256
+            ).hexdigest()
+            require(hmac.compare_digest(row[0], fingerprint), "idempotency_conflict", 409)
+            if row[1] == "settled":
+                return json.loads(row[2])
+            document = self._record_test(db, provider_id, expected_revision, outcome)
+            result = (
+                {"provider_id": provider_id, "revision": expected_revision, **document["test"]}
+                if error is None
+                else {"error": error, "status": status}
+            )
             db.execute(
                 "UPDATE test_attempts SET state='settled',result=? WHERE id=?",
                 (canonical(result), client_id),

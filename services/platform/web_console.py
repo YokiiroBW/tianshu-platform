@@ -398,7 +398,10 @@ class WebConsole:
                 code = json.loads(response.body)["code"]
             except (ValueError, KeyError, TypeError):
                 code = "dependency_unavailable"
-            unknown = code in {"timed_out", "connection_failed", "result_unknown"}
+            unknown = code in {"timed_out", "connection_failed", "result_unknown"} or (
+                request.path == "/api/web/providers/test"
+                and code in {"upstream_invalid", "upstream_rejected", "dependency_unavailable"}
+            )
             response = web.json_response(
                 {
                     "schema_version": 1,
@@ -576,9 +579,14 @@ class WebConsole:
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith(PROVIDERS_PREFIX):
-            result = await self.providers.route(request.path, body, session)
+            try:
+                result = await self.providers.route(request.path, body, session)
+            except Fault:
+                await self.platform.local_work.run(self.providers._gate, session)
+                raise
             _, current = self.session(request)
             require(current is session and self.session_live(session), "session_expired", 401)
+            await self.platform.local_work.run(self.providers._gate, session)
             return web.json_response(result)
         operation = {
             "/api/web/messages": self.dialogue.send,

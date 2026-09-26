@@ -50,3 +50,7 @@ ruff check及format --check只覆盖两个新增Python文件；未重跑无关�
 在上述基线后，本工作树接入 `provider_management.py`、`provider_authority.py`、管理员 HTTP 和内部 select/runtime 路由；增加显式 `providers-init`、只读完整备份 preflight、测试请求持久占用与结果落账、动态精确版本/一小时租期、旧静态版本空间保护。`cryptography==50.0.1` 已加入 `pyproject.toml` 和完整 hash-locked runtime；原文“未改锁”和“未接 HTTP”只描述第一次 P1 交付，不再描述当前工作树。浏览器页面和部署配置未改。
 
 验证：目录 19 项、旧模型页 26 项、根联合套件 4 项通过；Windows 隔离 wheel 构建、锁定依赖安装、`pip check`、已安装 CLI 通过。最终证据与部署接线见根 `docs/handoffs/PROVIDER-BACKEND-2026-09-26.md`。Linux 镜像/NAS/真实供应商未运行。
+
+### 审查修复续交
+
+修正排队后管理授权：provider view 在 LocalWork 执行前和回包前重新核验真实登录 authority 与模型管理解锁；写工作者重新核验当前 principal，撤销后不继续提交。短回复测试的目录 verdict 与 `client_id` replay receipt 合并在一个 SQLite 事务，故障注入证明回执写失败时目录状态也回滚；重启后的成功重放不再遇到“成功已落库但 attempt 永久 pending”。连接中断、超时和无效响应保留固定原因码，但测试结果记 `unknown` 且错误 envelope 标明执行状态未知，避免自动重发暗示。当前专项目录 20 项、根联合 6 项通过；完整审查证据见根交接。
