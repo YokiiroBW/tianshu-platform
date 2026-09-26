@@ -16,6 +16,7 @@ from .persona_page_config import page_configuration
 from .projections import Projections
 from .storage import Store
 from .web_access import WebAccess
+from .web_account import WebAccount
 from .sources import Sources
 
 
@@ -31,7 +32,7 @@ def log_state():
     return sink.state, sink.error
 
 
-def registered_credentials(settings):
+def registered_credentials(settings, *, include_setup=True):
     """Every environment variable another registered identity or peer already reads.
 
     The persona page's credential is its own: reusing the browser operator's, a service principal's,
@@ -54,7 +55,23 @@ def registered_credentials(settings):
         if isinstance(items, dict):
             for item in items.values():
                 take(item)
+    if include_setup:
+        account = settings.get("web_account")
+        if isinstance(account, dict) and account.get("mode") == "create":
+            take(account, "setup_token_env")
     return tuple(sorted(names))
+
+
+def credential_present(settings, name):
+    """The one-use installation token may be removed after the account is committed."""
+    try:
+        account = WebAccount(settings)
+        if account.config is not None and account.config.get("setup_token_env") == name:
+            if account.read() is not None:
+                return True
+    except Fault:
+        return False
+    return secret(name) is not None
 
 
 # Every top-level setting this build understands. An unknown key is refused rather than ignored:
@@ -76,6 +93,7 @@ SETTINGS_KEYS = frozenset(
         "asset_connections",
         "web",
         "web_access",
+        "web_account",
         "web_models",
         "web_assets",
         "native_config_http",
@@ -96,9 +114,9 @@ def validate_settings(settings):
     ready" and "the entry point would assemble" have to be one statement, because a preflight that
     accepts a configuration the real startup refuses is worse than no preflight at all.
 
-    It reads the published contracts and validates identities, credentials and page narrowing. It
-    opens no database, creates no file, migrates nothing and binds no port; the returned contract
-    and identity objects are handed back to the caller so assembly does not load them twice.
+    It reads the published contracts and validates identities, credentials and page narrowing.
+    Account state is opened read-only; it creates no file, migrates nothing and binds no port.
+    The returned contract and identity objects go back to the caller so assembly does not load them twice.
     """
     require(isinstance(settings, dict), "invalid_input", 400)
     require(set(settings) <= SETTINGS_KEYS, "invalid_input", 400)
@@ -118,7 +136,18 @@ def validate_settings(settings):
     # copy of it here: `Models` runs this same function while it is assembled, so a lifetime the
     # preflight accepts is one the real startup publishes with.
     validate_max_lifetime(settings)
-    credentials = registered_credentials(settings)
+    credentials = registered_credentials(settings, include_setup=False)
+    account = WebAccount(settings)
+    # Read-only validation also prevents a damaged/lost account store from becoming a fresh
+    # registration page after restart. The deployment password is never a recovery fallback.
+    current_account = account.read()
+    if account.config is not None and account.config["mode"] == "create":
+        name = account.config["setup_token_env"]
+        require(name not in credentials, "invalid_input", 400)
+        if current_account is None:
+            value = account.setup_secret()
+            require(all(secret(other) != value for other in credentials), "invalid_input", 400)
+        credentials = (*credentials, name)
     # The readiness credential is its own identity. Reading it from a variable a business
     # principal, the browser operator or a peer already holds would let one identity answer
     # readiness as another, so the name half of that rule is refused before anything is built.
@@ -206,7 +235,7 @@ class Platform:
         self.health = runtime_health.health_inputs(
             settings,
             credential_names=self.other_credentials,
-            credential_present=lambda name: secret(name) is not None,
+            credential_present=lambda name: credential_present(settings, name),
             log_state=log_state,
             runtime_state=lambda: self._runtime_state,
             config_problem=self.contract_problem,

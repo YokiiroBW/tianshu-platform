@@ -14,11 +14,10 @@ from aiohttp import web
 
 from . import diagnostics, diagnostics_config, runtime_health
 from .assets import REQUEST_LIMIT
-from .auth import secret
 from .contracts import Fault, canonical, loads, require
 from .server import create_app
 from .web_console import WebConsole
-from .service import Platform, registered_credentials, validate_settings
+from .service import Platform, credential_present, registered_credentials, validate_settings
 from .transport import server_tls
 
 # How long shutdown may spend making accepted events durable. Bounded on purpose: a stuck sink
@@ -119,7 +118,7 @@ def _preflight(settings):
     return runtime_health.preflight(
         settings,
         credential_names=registered_credentials(settings),
-        credential_present=lambda name: secret(name) is not None,
+        credential_present=lambda name: credential_present(settings, name),
         validate=validate_settings,
     )
 

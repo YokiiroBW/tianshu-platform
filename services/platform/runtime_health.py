@@ -25,6 +25,7 @@ from urllib.parse import quote
 from . import diagnostics_config
 from .contracts import Fault
 from .diagnostics import SERVICE, safe_code
+from .web_account import inspect_account
 
 # A closed set of local checks. The readiness body is exactly this mapping, so a probe can never
 # grow a field that leaks a path, an address or a configured value.
@@ -84,6 +85,7 @@ class HealthInputs:
     log_directory_bytes: int | None = None
     log_state: object = None
     runtime_state: object = None
+    web_account_enabled: bool = False
 
 
 def _enabled_section(settings, name):
@@ -141,6 +143,7 @@ def health_inputs(
         log_directory_bytes=diagnostics_config.resolve_log_directory_bytes(settings),
         log_state=log_state,
         runtime_state=runtime_state,
+        web_account_enabled=settings.get("web_account") is not None,
     )
 
 
@@ -411,7 +414,18 @@ class Probe:
         for path, kind in self.inputs.sidecars:
             table = SIDECAR_TABLES.get(kind)
             states.append(inspect_sqlite(path, (table,) if table else (), (0, 1))[0])
+        if self.inputs.web_account_enabled and self._account_state() != "ok":
+            states.append("failed")
         return states
+
+    def _account_state(self):
+        # Only local account data is inspected. A genuinely fresh installation is an operable
+        # setup page; missing data after the seal exists is a failure, never fresh setup.
+        try:
+            inspect_account(self.inputs.database_path)
+        except (Fault, OSError, ValueError, TypeError):
+            return "failed"
+        return "ok"
 
     def _sidecars(self):
         if not self.inputs.sidecars:

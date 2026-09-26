@@ -5,7 +5,6 @@ and uses the published Core snapshot and source protocols, never simulated chat.
 """
 
 import asyncio
-import hashlib
 import hmac
 import secrets
 import sqlite3
@@ -15,6 +14,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
+from . import diagnostics_config
 from .auth import secret
 from .contracts import Fault, digest, loads, require
 from .diagnostics import AUTH_SUCCEEDED
@@ -23,6 +23,7 @@ from .tasks import Tasks
 from .transport import CoreFault
 from .web_access import WebAccess
 from .web_access_settings import WebAccessSettings
+from .web_account import WebAccount, password_hash, validate_hash, verify_password
 from .web_assets import WebAssets
 from .web_dialogue import WebDialogue
 from .web_models import WebModels
@@ -49,19 +50,12 @@ PERSONAS_PREFIX = "/api/web/personas/"
 ASSETS_PREFIX = "/api/web/assets/"
 
 
-def password_hash(password, salt=None):
-    """Fixed scrypt cost; salt and verifier only, never the password, are persisted."""
-    require(isinstance(password, str) and 12 <= len(password) <= 256, "invalid_input", 400)
-    salt = salt or secrets.token_bytes(16)
-    key = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
-    return "scrypt-v1$" + salt.hex() + "$" + key.hex()
-
-
 class WebConsole:
     def __init__(self, platform, access=None):
         self.access = access or WebAccess(platform.settings)
         self.access_settings = WebAccessSettings(self, self.access)
         self.platform = platform
+        self.account = WebAccount(platform.settings)
         self.config = platform.settings.get("web")
         if self.config is not None and self.access.current is not None:
             self.config = {**self.config, "origin": self.access.current["origin"]}
@@ -74,13 +68,14 @@ class WebConsole:
             # Model management lives behind the console; without one it has no entry at all.
             return
         c = self.config
+        account_create = self.account.config is not None and self.account.config["mode"] == "create"
+        credential_keys = set() if account_create else {"username", "password_hash"}
         require(
             isinstance(c, dict)
             and set(c) - {"dialogue_enabled"}
-            == {
+            == credential_keys
+            | {
                 "origin",
-                "username",
-                "password_hash",
                 "principal",
                 "input_entries",
                 "static_directory",
@@ -106,18 +101,13 @@ class WebConsole:
         )
         if platform.auth.mode == "local_rehearsal":
             require(url.hostname == "127.0.0.1", "invalid_input", 400)
-        require(
-            isinstance(c["username"], str) and 1 <= len(c["username"]) <= 128, "invalid_input", 400
-        )
-        version, salt, key = c["password_hash"].split("$")
-        require(
-            version == "scrypt-v1"
-            and len(bytes.fromhex(salt)) == 16
-            and len(bytes.fromhex(key)) == 32,
-            "invalid_input",
-            400,
-        )
-        self.salt = bytes.fromhex(salt)
+        if not account_create:
+            require(
+                isinstance(c["username"], str) and 1 <= len(c["username"]) <= 128,
+                "invalid_input",
+                400,
+            )
+            validate_hash(c["password_hash"])
         principal = platform.auth.principals.get(c["principal"])
         require(
             principal and principal["kind"] == "operator" and principal["service"] == "platform",
@@ -178,9 +168,34 @@ class WebConsole:
 
     def verify_password(self, password):
         """One fixed-cost verifier for the login form and the management unlock step."""
-        require(isinstance(password, str) and 12 <= len(password) <= 256, "unauthorized", 401)
-        candidate = password_hash(password, self.salt)
-        return hmac.compare_digest(candidate, self.config["password_hash"])
+        credential = self.credential()
+        require(credential is not None, "setup_required", 409)
+        return verify_password(password, credential["password_hash"])
+
+    def credential(self):
+        account = self.account.read()
+        if account is not None:
+            return {**account, "source": "account"}
+        if self.account.config is not None and self.account.config["mode"] == "create":
+            return None
+        return {
+            "username": self.config["username"],
+            "password_hash": self.config["password_hash"],
+            "version": 0,
+            "source": "deployment",
+        }
+
+    def onboarding(self, authenticated):
+        credential = self.credential()
+        source = credential["source"] if credential else "setup"
+        state = "create_admin" if credential is None else "sign_in"
+        if authenticated:
+            state = "claim_admin" if source == "deployment" else "ready"
+        return {
+            "state": state,
+            "credential_source": source,
+            "setup_token_required": credential is None,
+        }
 
     def authority(self):
         p = self.platform
@@ -194,6 +209,7 @@ class WebConsole:
                     "policy": p.auth.policy_digest,
                     "effective": p.auth.effective_digest(),
                     "web": self.config,
+                    "credential": self.credential(),
                 }
             )
             conversations = []
@@ -294,6 +310,68 @@ class WebConsole:
             max_age=SESSION_TTL if authenticated else LOGIN_TTL,
         )
 
+    async def configure_account(self, request, body, token, session):
+        require(self.account.config is not None, "setup_closed", 409)
+        claiming = request.path == "/api/web/account/claim"
+        expected = (
+            {"username", "password", "current_password"}
+            if claiming
+            else {"username", "password", "setup_token"}
+        )
+        require(
+            set(body) <= expected and {"username", "password"} <= set(body), "invalid_input", 400
+        )
+        if claiming:
+            require(set(body) == expected, "invalid_input", 400)
+            require(session["authenticated"], "unauthorized", 401)
+        async with self.login_lock:
+            self.failures = [t for t in self.failures if t > self.clock() - 60]
+            require(len(self.failures) < 5, "too_many_requests", 429)
+            self.authenticating = session
+            try:
+                credential = self.credential()
+                if claiming:
+                    require(
+                        credential is not None and credential["source"] == "deployment",
+                        "setup_closed",
+                        409,
+                    )
+                    valid = await asyncio.to_thread(self.verify_password, body["current_password"])
+                    if not valid:
+                        self.failures.append(self.clock())
+                        raise Fault("unauthorized", 401)
+                else:
+                    try:
+                        self.account.check_setup_token(
+                            body.get("setup_token"),
+                            (
+                                *self.platform.other_credentials,
+                                diagnostics_config.resolve_ready_token_env(self.platform.settings),
+                            ),
+                        )
+                    except Fault as exc:
+                        if exc.status == 401:
+                            self.failures.append(self.clock())
+                        raise
+                verifier = await asyncio.to_thread(password_hash, body["password"])
+                fingerprint, _ = await self.platform.local_work.run(self.authority)
+                require(self.session_live(session), "session_expired", 401)
+                require(credential == self.credential(), "session_expired", 401)
+                if claiming:
+                    require(session["fingerprint"] == fingerprint, "session_expired", 401)
+                await asyncio.to_thread(self.account.create, body["username"], verifier)
+                # The transaction committed. Never revive the deployment password even if the
+                # connection is lost now; a retry signs in with the newly chosen credentials.
+                fingerprint, _ = await self.platform.local_work.run(self.authority)
+                self.sessions.clear()
+                token, session = self.issue(True, fingerprint)
+            finally:
+                self.authenticating = None
+        request[CONSOLE_AUTH] = AUTH_SUCCEEDED
+        response = web.json_response({"authenticated": True, "csrf": session["csrf"]})
+        self.set_cookie(response, token, True)
+        return response
+
     async def handle(self, request):
         try:
             response = await self.route(request)
@@ -341,6 +419,8 @@ class WebConsole:
             if session is None:
                 token, session = self.issue()
             result = {"authenticated": False, "csrf": session["csrf"]}
+            if self.account.config is not None:
+                result["onboarding"] = self.onboarding(session["authenticated"])
             if session["authenticated"]:
                 fingerprint, conversations = await self.platform.local_work.run(self.authority)
                 require(self.session_live(session), "session_expired", 401)
@@ -351,7 +431,7 @@ class WebConsole:
                 request[CONSOLE_AUTH] = AUTH_SUCCEEDED
                 result.update(
                     authenticated=True,
-                    username=self.config["username"],
+                    username=self.credential()["username"],
                     conversations=conversations,
                     dialogue={
                         "available": self.dialogue.available(),
@@ -386,6 +466,8 @@ class WebConsole:
             raise Fault("timeout", 408) from None
         body = loads(bytes(data))
         require(isinstance(body, dict), "invalid_input", 400)
+        if request.path in {"/api/web/setup", "/api/web/account/claim"}:
+            return await self.configure_account(request, body, token, session)
         if request.path == "/api/web/login":
             require(set(body) == {"username", "password"}, "invalid_input", 400)
             require(
@@ -401,14 +483,17 @@ class WebConsole:
                 require(len(self.failures) < 5, "too_many_requests", 429)
                 self.authenticating = session
                 try:
+                    credential = self.credential()
+                    require(credential is not None, "setup_required", 409)
                     valid = await asyncio.to_thread(self.verify_password, body["password"])
                     valid &= hmac.compare_digest(
-                        body["username"].encode(), self.config["username"].encode()
+                        body["username"].encode(), credential["username"].encode()
                     )
                     if not valid:
                         self.failures.append(self.clock())
                         raise Fault("unauthorized", 401)
                     fingerprint, _ = await self.platform.local_work.run(self.authority)
+                    require(credential == self.credential(), "session_expired", 401)
                     require(self.session_live(session), "session_expired", 401)
                     require(
                         self.sessions.get(digest(token)) is session
