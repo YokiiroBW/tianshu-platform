@@ -130,7 +130,7 @@ export default function ResourcesPage() {
         <StatePanel kind="unconfigured" title="需要先登录">
           <p>登录后才能读取资产库；这里不会显示任何未经授权的条目。</p>
           <p>
-            <a className="button" href="#/settings/1">
+            <a className="button" href="#/login?next=%23%2Fresources%2F1">
               前往登录入口
             </a>
           </p>

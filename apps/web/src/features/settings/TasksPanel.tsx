@@ -1,5 +1,6 @@
+import { LoginLink, useSessionGuard } from "../../app/Auth";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ListFilter, LockKeyhole, RefreshCw } from "lucide-react";
+import { ListFilter, RefreshCw } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
 import {
@@ -267,6 +268,7 @@ type Ticket = { controller: AbortController; filter: string; session: number };
 
 export function TasksPanel() {
   const [session, setSession] = useState<SessionState | null>(null);
+  useSessionGuard(session);
   const [items, setItems] = useState<TaskItem[]>([]);
   const [page, setPage] = useState<TasksPage | null>(null);
   const [sources, setSources] = useState<TaskSource[]>([]);
@@ -294,7 +296,6 @@ export function TasksPanel() {
   const list = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const host = useRef<HTMLElement>(null);
-  const password = useRef<HTMLInputElement>(null);
 
   const filters = `${status}|${source}`;
 
@@ -654,34 +655,6 @@ export function TasksPanel() {
     }
   }
 
-  async function authenticate(form: HTMLFormElement) {
-    if (!session) return;
-    const data = new FormData(form);
-    setBusy(true);
-    setError("");
-    const ticket = begin("view", question.current);
-    try {
-      // The login POST needs the CSRF token of the session cookie it already carries.
-      await call(
-        "login",
-        {
-          username: String(data.get("username")),
-          password: String(data.get("password")),
-        },
-        session.csrf,
-        ticket.controller.signal,
-      );
-    } catch (cause) {
-      if (live("view", ticket)) setError(reason(cause));
-      return;
-    } finally {
-      if (password.current) password.current.value = "";
-      if (live("view", ticket)) setBusy(false);
-    }
-    const after = begin("view", question.current);
-    await first(question.current, after);
-  }
-
   const connected = useMemo(
     () => sources.filter((item) => item.connected),
     [sources],
@@ -743,45 +716,7 @@ export function TasksPanel() {
           <p>稍候。</p>
         </StatePanel>
       ) : !session.authenticated ? (
-        <div className="tasks-login">
-          <LockKeyhole aria-hidden="true" />
-          <p className="muted">
-            任务中心沿用真实登录会话与撤权：退出、过期或凭据轮换后，这里不再显示任何记录。
-          </p>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void authenticate(event.currentTarget);
-            }}
-          >
-            <label>
-              管理员账号
-              <input
-                name="username"
-                autoComplete="username"
-                maxLength={128}
-                required
-                disabled={busy}
-              />
-            </label>
-            <label>
-              密码
-              <input
-                ref={password}
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                minLength={12}
-                maxLength={256}
-                required
-                disabled={busy}
-              />
-            </label>
-            <button className="button primary" type="submit" disabled={busy}>
-              登录
-            </button>
-          </form>
-        </div>
+        <LoginLink />
       ) : (
         <>
           <div className="tasks-actions">

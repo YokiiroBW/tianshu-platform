@@ -35,8 +35,10 @@ export function AccessPanel() {
     void (async () => {
       try {
         const login = await session(current.signal);
+        if (current.signal.aborted) return;
         if (!login.authenticated) {
-          setError("请先在陪伴页面登录，再管理访问设置。");
+          window.dispatchEvent(new Event("tianshu:session-lost"));
+          setError("请先通过页面右上角的统一入口登录，再管理访问设置。");
           return;
         }
         const value = await call<View>(
@@ -48,8 +50,14 @@ export function AccessPanel() {
         setView(value);
         if (value.available) setDraft(value.saved);
       } catch (e) {
-        if (!current.signal.aborted)
+        if (!current.signal.aborted) {
+          if (
+            e instanceof WebError &&
+            ["unauthorized", "session_expired"].includes(e.code)
+          )
+            window.dispatchEvent(new Event("tianshu:session-lost"));
           setError(e instanceof Error ? e.message : "无法读取访问设置。");
+        }
       }
     })();
     return () => current.abort();
@@ -64,6 +72,11 @@ export function AccessPanel() {
     setNotice("");
     try {
       const login = await session(signal);
+      if (signal.aborted) return;
+      if (!login.authenticated) {
+        window.dispatchEvent(new Event("tianshu:session-lost"));
+        return;
+      }
       const updated = await call<View>(
         "access/save",
         {
@@ -84,6 +97,11 @@ export function AccessPanel() {
       }
     } catch (e) {
       if (!signal.aborted) {
+        if (
+          e instanceof WebError &&
+          ["unauthorized", "session_expired"].includes(e.code)
+        )
+          window.dispatchEvent(new Event("tianshu:session-lost"));
         setError(
           e instanceof WebError && e.code === "version_conflict"
             ? "访问设置已被其他操作更新，请刷新页面后重试。"

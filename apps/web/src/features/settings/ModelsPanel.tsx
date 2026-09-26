@@ -1,6 +1,7 @@
+import { LoginLink, useSessionGuard } from "../../app/Auth";
 import { requestId } from "../../app/requestId";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LockKeyhole, RefreshCw, ShieldCheck } from "lucide-react";
+import { RefreshCw, ShieldCheck } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
 import {
@@ -50,6 +51,7 @@ function reason(cause: unknown) {
 
 export function ModelsPanel() {
   const [session, setSession] = useState<SessionState | null>(null);
+  useSessionGuard(session);
   const [view, setView] = useState<ModelsView | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
@@ -169,16 +171,6 @@ export function ModelsPanel() {
     },
     [refresh, session, start],
   );
-
-  async function authenticate(form: HTMLFormElement) {
-    const data = new FormData(form);
-    const result = await submit("login", {
-      username: String(data.get("username")),
-      password: String(data.get("password")),
-    });
-    if (password.current) password.current.value = "";
-    if (result) await refresh();
-  }
 
   async function unlock(form: HTMLFormElement) {
     const data = new FormData(form);
@@ -364,45 +356,7 @@ export function ModelsPanel() {
           <p>稍候。</p>
         </StatePanel>
       ) : !session.authenticated ? (
-        <div className="models-login">
-          <LockKeyhole aria-hidden="true" />
-          <p className="muted">
-            模型配置管理沿用真实登录会话，普通聊天登录不包含管理权限。
-          </p>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void authenticate(event.currentTarget);
-            }}
-          >
-            <label>
-              管理员账号
-              <input
-                name="username"
-                autoComplete="username"
-                maxLength={128}
-                required
-                disabled={busy}
-              />
-            </label>
-            <label>
-              密码
-              <input
-                ref={password}
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                minLength={12}
-                maxLength={256}
-                required
-                disabled={busy}
-              />
-            </label>
-            <button className="button primary" type="submit" disabled={busy}>
-              登录
-            </button>
-          </form>
-        </div>
+        <LoginLink />
       ) : (
         <>
           <div className="models-actions">
@@ -478,6 +432,9 @@ export function ModelsPanel() {
           )}
           {management?.unlocked && (
             <>
+              <p className="muted">
+                此处发布安装者已登记的模型模板，暂不支持直接填写服务提供商地址和密钥。若没有可用模板，请联系安装者补充配置。
+              </p>
               <div className="models-toolbar">
                 <label>
                   配置模板

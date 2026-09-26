@@ -1,5 +1,6 @@
+import { LoginLink, useSessionGuard } from "../../app/Auth";
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw, LogOut, LockKeyhole } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import "./companion.css";
 
 import { request, type Session } from "./api";
@@ -7,12 +8,12 @@ import { DialoguePanel } from "./DialoguePanel";
 
 export default function CompanionPage() {
   const [session, setSession] = useState<Session | null>(null);
+  useSessionGuard(session);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [conversationId, setConversationId] = useState("");
   const [actorId, setActorId] = useState("");
   const active = useRef<AbortController | null>(null);
-  const password = useRef<HTMLInputElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const conversations = session?.conversations ?? [];
   const conversation =
@@ -56,55 +57,6 @@ export default function CompanionPage() {
     };
   }, []);
 
-  async function authenticate(form: HTMLFormElement) {
-    if (!session) return;
-    const data = new FormData(form);
-    const controller = new AbortController();
-    active.current?.abort();
-    active.current = controller;
-    setBusy(true);
-    setError("");
-    const credentials = {
-      username: String(data.get("username")),
-      password: String(data.get("password")),
-    };
-    if (password.current) password.current.value = "";
-    try {
-      await request("login", controller.signal, credentials, session.csrf);
-      await connect();
-      heading.current?.focus();
-    } catch (cause) {
-      if (!controller.signal.aborted) {
-        setError(cause instanceof Error ? cause.message : "登录失败，请重试。");
-        setBusy(false);
-        password.current?.focus();
-      }
-    }
-  }
-
-  async function logout() {
-    if (!session) return;
-    const controller = new AbortController();
-    active.current?.abort();
-    active.current = controller;
-    setBusy(true);
-    setError("");
-    try {
-      await request("logout", controller.signal, {}, session.csrf);
-      setSession(null);
-      await connect();
-    } catch (cause) {
-      if (!controller.signal.aborted) {
-        setError(
-          cause instanceof Error
-            ? `退出未确认：${cause.message}`
-            : "退出未确认，请重新连接后重试。",
-        );
-        setBusy(false);
-      }
-    }
-  }
-
   return (
     <section
       className="chat-console glass"
@@ -127,16 +79,6 @@ export default function CompanionPage() {
             <RefreshCw aria-hidden="true" />
             重新连接
           </button>
-          {session?.authenticated && (
-            <button
-              className="button"
-              onClick={() => void logout()}
-              disabled={busy}
-            >
-              <LogOut aria-hidden="true" />
-              退出登录
-            </button>
-          )}
         </div>
       </div>
       <div role="status" className="chat-status">
@@ -152,51 +94,7 @@ export default function CompanionPage() {
         </p>
       )}
       {!session?.authenticated ? (
-        <div className="chat-login">
-          <LockKeyhole aria-hidden="true" />
-          <h3>从自己的账号开始</h3>
-          <p className="muted">登录后仅显示已授权的角色与会话。</p>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void authenticate(event.currentTarget);
-            }}
-          >
-            <label>
-              管理员账号
-              <input
-                name="username"
-                autoComplete="username"
-                maxLength={128}
-                required
-                disabled={!session || busy}
-              />
-            </label>
-            <label>
-              密码
-              <input
-                ref={password}
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                minLength={12}
-                maxLength={256}
-                required
-                disabled={!session || busy}
-              />
-            </label>
-            <button
-              className="button primary"
-              type="submit"
-              disabled={!session || busy}
-            >
-              登录
-            </button>
-          </form>
-          <p className="muted">
-            没有默认账号。仅保存本次浏览器会话，退出后清除。
-          </p>
-        </div>
+        <LoginLink />
       ) : (
         <>
           <div className="chat-selectors">

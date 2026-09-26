@@ -1,17 +1,10 @@
+import { LoginLink, useSessionGuard } from "../../app/Auth";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  ChevronLeft,
-  ChevronRight,
-  LockKeyhole,
-  LogOut,
-  RefreshCw,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
 import {
   conflictCodes,
-  login as submitLogin,
-  logout as submitLogout,
   read,
   reason,
   session as readSession,
@@ -70,15 +63,9 @@ function sessionKey(state: SessionState | null) {
 
 export default function PersonaPanel() {
   const [session, setSession] = useState<SessionState | null>(null);
+  useSessionGuard(session);
   const [unreachable, setUnreachable] = useState("");
   const [busy, setBusy] = useState(true);
-  /**
-   * A logout this page has already submitted.
-   *
-   * Only this - never `busy` - disables the exit button: reading is something the operator may walk
-   * away from at any moment, and the page must not hold them here until a read it started answers.
-   */
-  const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState("");
   const [stale, setStale] = useState<{ code: string; from: Read } | null>(null);
   const [notice, setNotice] = useState("");
@@ -104,8 +91,6 @@ export default function PersonaPanel() {
   const active = useRef<AbortController | null>(null);
   /** The scope's own history read, cancelled when the scope changes and by nothing else. */
   const scoped = useRef<AbortController | null>(null);
-  /** The same logout guard as `loggingOut`, read in the click's own turn so one click means one. */
-  const leaving = useRef(false);
   const live = useRef<SessionState | null>(null);
   /**
    * The scope every read is stamped with, and its generation.
@@ -116,7 +101,6 @@ export default function PersonaPanel() {
    */
   const scopeRef = useRef<Scope>({ subject: "", kind: "revisions" });
   const generation = useRef(0);
-  const password = useRef<HTMLInputElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -270,7 +254,7 @@ export default function PersonaPanel() {
           // re-read that comes back after this page has moved on says nothing about it either.
           const fresh = await readSession(signal).catch(() => null);
           if (!stillMine(signal, started)) return { answer: null, failure: "" };
-          applySession(fresh?.authenticated ? fresh : null);
+          applySession(fresh ?? null);
           forget();
           setError(cause.message);
           return { answer: null, failure: cause.message };
@@ -466,84 +450,6 @@ export default function PersonaPanel() {
     setBusy(false);
   }
 
-  async function authenticate(form: HTMLFormElement) {
-    const state = live.current;
-    if (!state) return;
-    const data = new FormData(form);
-    const controller = start();
-    setBusy(true);
-    setError("");
-    const username = String(data.get("username"));
-    const secret = String(data.get("password"));
-    if (password.current) password.current.value = "";
-    try {
-      await submitLogin(username, secret, state.csrf, controller.signal);
-      await connect();
-      heading.current?.focus();
-    } catch (cause) {
-      if (!controller.signal.aborted) {
-        setError(reason(cause));
-        setBusy(false);
-        password.current?.focus();
-      }
-    }
-  }
-
-  /**
-   * Log out: this page stops holding anything readable first, and tells the server afterwards.
-   *
-   * The session, the directory, the history, the body, the comparison and the baseline are cleared
-   * in the same turn as the click, and every read still waiting - the scope's own history read
-   * included - is cancelled rather than awaited: the operator asked to stop, so nothing that was in
-   * flight may come back and refill a page that is being cleared. The server's answer is then
-   * reported as what it was: a confirmed logout, or a logout this page could not confirm - and a
-   * logout the server refused leaves a session that really is still live, which the page then shows
-   * again rather than pretending the operator is out.
-   *
-   * A read in progress is not a reason to keep the operator here: the button stays usable while the
-   * page is reading, and only a logout already submitted disables it, so one click cannot become
-   * two logouts.
-   */
-  async function exit() {
-    const state = live.current;
-    if (!state || leaving.current) return;
-    leaving.current = true;
-    setLoggingOut(true);
-    active.current?.abort();
-    scoped.current?.abort();
-    const controller = start();
-    generation.current += 1;
-    applySession(null);
-    forget();
-    // The permission word belonged to the session that is ending, not to whatever comes next.
-    setAbsent("");
-    setBusy(true);
-    setError("");
-    setNotice("已退出登录：本页已经清空，正在通知服务器注销这个会话。");
-    let unconfirmed = "";
-    try {
-      await submitLogout(state.csrf, controller.signal);
-      setNotice("已退出登录：服务器已注销这个会话。");
-    } catch (cause) {
-      if (!controller.signal.aborted) {
-        // The session was already unusable: the logout reached the same end.
-        unconfirmed =
-          cause instanceof PersonaError && sessionCodes.includes(cause.code)
-            ? ""
-            : `退出未确认：${reason(cause)}`;
-      }
-    }
-    try {
-      // The session the server actually holds, as the server states it: anonymous after a confirmed
-      // logout, and still this operator's session when the logout was refused.
-      await connect();
-    } finally {
-      leaving.current = false;
-      setLoggingOut(false);
-    }
-    if (unconfirmed) setError(unconfirmed);
-  }
-
   /** A stale position is reopened where it was raised: the directory or the history. */
   function reopen() {
     const controller = start();
@@ -596,18 +502,6 @@ export default function PersonaPanel() {
             <RefreshCw aria-hidden="true" />
             重新读取
           </button>
-          {session?.authenticated && (
-            <button
-              type="button"
-              className="button"
-              // Cancelling your own read is always allowed: only a logout already submitted waits.
-              disabled={loggingOut}
-              onClick={() => void exit()}
-            >
-              <LogOut aria-hidden="true" />
-              退出登录
-            </button>
-          )}
         </div>
       </div>
 
@@ -647,50 +541,7 @@ export default function PersonaPanel() {
       )}
 
       {!session?.authenticated ? (
-        <div className="persona-login">
-          <LockKeyhole aria-hidden="true" />
-          <h3>从自己的账号开始</h3>
-          <p className="muted">
-            登录后只读取本部署允许的角色；这里不会显示任何服务凭据或地址。
-          </p>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void authenticate(event.currentTarget);
-            }}
-          >
-            <label>
-              管理员账号
-              <input
-                name="username"
-                autoComplete="username"
-                maxLength={128}
-                required
-                disabled={!session || busy}
-              />
-            </label>
-            <label>
-              密码
-              <input
-                ref={password}
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                minLength={12}
-                maxLength={256}
-                required
-                disabled={!session || busy}
-              />
-            </label>
-            <button
-              type="submit"
-              className="button primary"
-              disabled={!session || busy}
-            >
-              登录
-            </button>
-          </form>
-        </div>
+        <LoginLink />
       ) : absent ? (
         <StatePanel
           kind="unconfigured"

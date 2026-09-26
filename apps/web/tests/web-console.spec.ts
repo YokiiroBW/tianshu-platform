@@ -259,8 +259,11 @@ test("wrong password and network interruption never show a conversation", async 
   await expect(page.getByRole("alert")).toContainText("账号或密码不正确");
   await expect(page.getByLabel("密码", { exact: true })).toHaveValue("");
   await page.context().setOffline(true);
-  await page.getByRole("button", { name: "重新连接" }).click();
-  await expect(page.getByLabel("管理员账号")).toBeDisabled();
+  await page.getByRole("button", { name: "刷新账号状态" }).click();
+  await expect(
+    page.getByRole("heading", { name: "暂时无法连接天枢" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("管理员账号")).toHaveCount(0);
   await page.context().setOffline(false);
   await expect(page.getByLabel("管理员账号")).toBeEnabled();
   await expect(page.getByRole("button", { name: "退出登录" })).toHaveCount(0);

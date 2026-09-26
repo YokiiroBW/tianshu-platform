@@ -1,12 +1,7 @@
+import { LoginLink, useSessionGuard } from "../../app/Auth";
 import { requestId } from "../../app/requestId";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  LockKeyhole,
-  LogOut,
-  RefreshCw,
-  ShieldCheck,
-  Unlock,
-} from "lucide-react";
+import { RefreshCw, ShieldCheck, Unlock } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
 import {
@@ -57,6 +52,7 @@ function reason(cause: unknown) {
 
 export default function HomePage() {
   const [session, setSession] = useState<SessionState | null>(null);
+  useSessionGuard(session);
   const [view, setView] = useState<HomeView | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
@@ -65,7 +61,6 @@ export default function HomePage() {
   const [absent, setAbsent] = useState("");
   const active = useRef<AbortController | null>(null);
   const controlling = useRef<AbortController | null>(null);
-  const password = useRef<HTMLInputElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
 
   const start = useCallback(() => {
@@ -174,51 +169,6 @@ export default function HomePage() {
       setError(reason(cause));
     }
   }, [session]);
-
-  const authenticate = useCallback(
-    async (form: HTMLFormElement) => {
-      if (!session) return;
-      const data = new FormData(form);
-      const controller = start();
-      setBusy(true);
-      setError("");
-      const credentials = {
-        username: String(data.get("username")),
-        password: String(data.get("password")),
-      };
-      if (password.current) password.current.value = "";
-      try {
-        await call("login", credentials, session.csrf, controller.signal);
-        await load(controller.signal, true, false);
-        heading.current?.focus();
-      } catch (cause) {
-        if (!controller.signal.aborted) {
-          setError(reason(cause));
-          setBusy(false);
-          password.current?.focus();
-        }
-      }
-    },
-    [load, session, start],
-  );
-
-  const logout = useCallback(async () => {
-    if (!session) return;
-    const controller = start();
-    setBusy(true);
-    setError("");
-    try {
-      await call("logout", {}, session.csrf, controller.signal);
-      setSession(null);
-      setView(null);
-      await load(controller.signal, false, false);
-    } catch (cause) {
-      if (!controller.signal.aborted) {
-        setError(`退出未确认：${reason(cause)}`);
-        setBusy(false);
-      }
-    }
-  }, [load, session, start]);
 
   const unlock = useCallback(
     async (form: HTMLFormElement) => {
@@ -353,16 +303,6 @@ export default function HomePage() {
               取消等待
             </button>
           )}
-          {session?.authenticated && (
-            <button
-              className="button"
-              onClick={() => void logout()}
-              disabled={busy}
-            >
-              <LogOut aria-hidden="true" />
-              退出登录
-            </button>
-          )}
         </div>
       </div>
       <div role="status" className="home-status">
@@ -393,53 +333,7 @@ export default function HomePage() {
           </p>
         </StatePanel>
       ) : !session?.authenticated ? (
-        <div className="home-login">
-          <LockKeyhole aria-hidden="true" />
-          <h3>先登录，再看设备</h3>
-          <p className="muted">
-            登录后显示已登记实体的状态；控制需要再验证一次密码。
-          </p>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void authenticate(event.currentTarget);
-            }}
-          >
-            <label>
-              管理员账号
-              <input
-                name="username"
-                autoComplete="username"
-                maxLength={128}
-                required
-                disabled={!session || busy}
-              />
-            </label>
-            <label>
-              密码
-              <input
-                ref={password}
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                minLength={12}
-                maxLength={256}
-                required
-                disabled={!session || busy}
-              />
-            </label>
-            <button
-              className="button primary"
-              type="submit"
-              disabled={!session || busy}
-            >
-              登录
-            </button>
-          </form>
-          <p className="muted">
-            没有默认账号。仅保存本次浏览器会话，退出后清除。
-          </p>
-        </div>
+        <LoginLink />
       ) : (
         <>
           {connector && (

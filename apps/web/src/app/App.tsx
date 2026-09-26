@@ -1,6 +1,15 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { Menu, Palette, Sparkles, WifiOff } from "lucide-react";
 import { modules, pages, resolveRoute } from "./modules";
+import {
+  AuthProvider,
+  AccountPage,
+  SessionStatus,
+  authRoute,
+  loginHref,
+  returnTarget,
+  useAuth,
+} from "./Auth";
 import { Drawer } from "../components/Drawer";
 import { PageBoundary } from "../components/PageBoundary";
 import { StatePanel } from "../components/StatePanel";
@@ -34,6 +43,15 @@ function readPreferences(): Preferences {
 }
 
 export function App() {
+  return (
+    <AuthProvider>
+      <AppShell />
+    </AuthProvider>
+  );
+}
+
+function AppShell() {
+  const auth = useAuth();
   const [hash, setHash] = useState(window.location.hash);
   const [drawer, setDrawer] = useState<"navigation" | "appearance" | null>(
     null,
@@ -45,6 +63,31 @@ export function App() {
   const route = resolveRoute(hash);
   const current = route?.module;
   const section = route?.section ?? 0;
+  const account = authRoute(hash);
+  const accountTitle = hash.startsWith("#/setup") ? "首次设置" : "登录";
+  const protectedPage =
+    !!current &&
+    ["companion", "home", "resources", "settings"].includes(current.id);
+  const setupNeeded =
+    auth.session?.onboarding?.state === "create_admin" ||
+    (auth.session?.authenticated &&
+      auth.session.onboarding?.state === "claim_admin");
+  useEffect(() => {
+    if (auth.loading || auth.error || !auth.session) return;
+    if (setupNeeded && current?.id !== "room" && !hash.startsWith("#/setup")) {
+      window.location.hash = `#/setup?next=${encodeURIComponent(account ? returnTarget() : hash || "#/workbench")}`;
+    } else if (protectedPage && !auth.session.authenticated)
+      window.location.hash = loginHref(hash);
+  }, [
+    auth.loading,
+    auth.error,
+    auth.session,
+    setupNeeded,
+    protectedPage,
+    current,
+    hash,
+    account,
+  ]);
 
   useEffect(() => {
     const change = () => {
@@ -62,7 +105,7 @@ export function App() {
     };
   }, []);
   useEffect(() => {
-    document.title = `${current?.sections[section] ?? current?.label ?? "页面不存在"} · 天枢`;
+    document.title = `${account ? accountTitle : (current?.sections[section] ?? current?.label ?? "页面不存在")} · 天枢`;
     const frame = requestAnimationFrame(() =>
       main.current?.focus({ preventScroll: true }),
     );
@@ -119,7 +162,17 @@ export function App() {
     </nav>
   );
   let page;
-  if (!current)
+  if (account) page = <AccountPage />;
+  else if (
+    (protectedPage || setupNeeded) &&
+    (auth.loading ||
+      auth.error ||
+      !auth.session?.authenticated ||
+      setupNeeded) &&
+    current?.id !== "room"
+  )
+    page = <SessionStatus />;
+  else if (!current)
     page = (
       <StatePanel
         kind="empty"
@@ -190,9 +243,24 @@ export function App() {
             <p className="breadcrumb">
               <span>天枢</span>
               <span aria-hidden="true">/</span>
-              <strong>{current?.label ?? "页面不存在"}</strong>
+              <strong>
+                {account ? accountTitle : (current?.label ?? "页面不存在")}
+              </strong>
             </p>
-            <span className="environment-label">本地网页</span>
+            <div className="account-control">
+              {auth.session?.authenticated ? (
+                <>
+                  <span>{auth.session.username}</span>
+                  <button className="button" onClick={() => void auth.logout()}>
+                    退出登录
+                  </button>
+                </>
+              ) : (
+                <a className="button" href={loginHref(hash)}>
+                  登录
+                </a>
+              )}
+            </div>
             <button
               className="icon-button"
               aria-label="外观设置"
@@ -212,9 +280,13 @@ export function App() {
             <div className="page-heading">
               <div>
                 <p className="eyebrow">
-                  {current?.description ?? "检查页面地址"}
+                  {account
+                    ? "账号与首次使用"
+                    : (current?.description ?? "检查页面地址")}
                 </p>
-                <h1>{current?.label ?? "页面不存在"}</h1>
+                <h1>
+                  {account ? accountTitle : (current?.label ?? "页面不存在")}
+                </h1>
               </div>
             </div>
             {current && current.sections.length > 0 && (

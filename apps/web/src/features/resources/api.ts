@@ -1,3 +1,4 @@
+import { webFetch } from "../../app/sessionTransport";
 /** Same-origin calls for the read-only asset page.
  *
  * This module owns one thing: the wire shapes the page reads, and the honest words for the
@@ -171,7 +172,7 @@ export async function call<T>(
   csrf: string,
   signal: AbortSignal,
 ): Promise<T> {
-  const response = await fetch(`/api/web/${path}`, {
+  const response = await webFetch(`/api/web/${path}`, {
     method: "POST",
     credentials: "same-origin",
     cache: "no-store",
@@ -187,7 +188,7 @@ export async function call<T>(
 }
 
 export async function session(signal: AbortSignal): Promise<SessionState> {
-  const response = await fetch("/api/web/session", {
+  const response = await webFetch("/api/web/session", {
     credentials: "same-origin",
     cache: "no-store",
     signal,

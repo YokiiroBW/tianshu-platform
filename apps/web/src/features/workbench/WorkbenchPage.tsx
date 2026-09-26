@@ -1,21 +1,10 @@
-import { ArrowUpRight, CalendarDays, CircleAlert } from "lucide-react";
+import { GettingStarted } from "../../app/Auth";
+import { ArrowUpRight, CalendarDays } from "lucide-react";
 
 export default function WorkbenchPage() {
   return (
     <div className="workbench">
-      <section className="panel attention">
-        <div className="section-heading">
-          <h2>
-            <CircleAlert aria-hidden="true" />
-            接入前的准备
-          </h2>
-          <span className="badge">未配置</span>
-        </div>
-        <p>先连接服务，再让近况、事项与家庭状态汇集到这里。</p>
-        <a className="text-link" href="#/settings/1">
-          查看连接与准备事项 <ArrowUpRight aria-hidden="true" />
-        </a>
-      </section>
+      <GettingStarted />
       <div className="workspace-columns">
         <section className="panel">
           <div className="section-heading">
@@ -26,7 +15,7 @@ export default function WorkbenchPage() {
           </div>
           <div className="quiet-content">
             <p className="empty-title">还没有可读取的角色近况</p>
-            <p>陪伴服务尚未接入。此刻的活动、心情和安排将在连接后显示。</p>
+            <p>此处尚未读取角色近况。对话是否可用，请以上方准备状态为准。</p>
             <a className="text-link" href="#/room">
               查看小屋入口 <ArrowUpRight aria-hidden="true" />
             </a>
@@ -39,7 +28,7 @@ export default function WorkbenchPage() {
           </div>
           <div className="quiet-content">
             <p className="empty-title">尚未取得设备观测</p>
-            <p>设备和容器未配置连接，当前无法判断在线或健康状态。</p>
+            <p>此处尚未取得设备和容器读数，请前往家庭与服务查看实际状态。</p>
             <a className="text-link" href="#/home">
               查看家庭与服务 <ArrowUpRight aria-hidden="true" />
             </a>

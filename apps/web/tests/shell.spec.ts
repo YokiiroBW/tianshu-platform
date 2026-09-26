@@ -2,6 +2,25 @@ import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { resolveRoute } from "../src/app/modules";
 
+// The static shell suite explicitly supplies a synthetic session; no production preview bypass.
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/web/session", (route) =>
+    route.fulfill({
+      json: {
+        authenticated: true,
+        csrf: "synthetic-shell",
+        username: "preview",
+        conversations: [],
+        dialogue: {
+          available: false,
+          model: "not_configured",
+          code: "model_not_configured",
+        },
+      },
+    }),
+  );
+});
+
 test("route boundaries reject unknown and malformed addresses", () => {
   expect(resolveRoute("")?.module.id).toBe("workbench");
   expect(resolveRoute("#/settings/1")?.section).toBe(1);
@@ -16,14 +35,19 @@ test("route boundaries reject unknown and malformed addresses", () => {
     expect(resolveRoute(hash)).toBeNull();
 });
 
-test("unconfigured shell, lazy room, no business requests or media", async ({
+test("unconfigured shell, lazy room, only session discovery and no business media", async ({
   page,
 }) => {
+  await page.route("**/api/web/session", (route) =>
+    route.fulfill({
+      json: { authenticated: false, csrf: "synthetic-anonymous" },
+    }),
+  );
   const requests: string[] = [];
   page.on("request", (request) => requests.push(request.url()));
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: "接入前的准备" }),
+    page.getByRole("heading", { name: "开始使用天枢" }),
   ).toBeVisible();
   expect(requests.some((url) => /RoomPage-/.test(url))).toBe(false);
   await expect(page.locator("canvas, video, audio")).toHaveCount(0);
@@ -32,11 +56,13 @@ test("unconfigured shell, lazy room, no business requests or media", async ({
     page.getByRole("heading", { name: "小屋环境预览" }),
   ).toBeVisible();
   expect(requests.some((url) => /RoomPage-/.test(url))).toBe(true);
-  expect(requests.filter((url) => /\/api\/|^https:/.test(url))).toEqual([]);
+  expect(
+    requests.filter(
+      (url) => /\/api\/|^https:/.test(url) && !url.endsWith("/api/web/session"),
+    ),
+  ).toEqual([]);
   await page.getByRole("link", { name: "前往陪伴" }).click();
-  await expect(
-    page.getByRole("heading", { name: "从自己的账号开始" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "登录天枢" })).toBeVisible();
   await expect(
     page.getByRole("link", { name: /实时语音|共同观影/ }),
   ).toHaveCount(0);
@@ -157,7 +183,7 @@ test("unknown route, offline notice and blocked preference storage", async ({
   ).toBeVisible();
   await page.getByRole("link", { name: "返回工作台", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "接入前的准备" }),
+    page.getByRole("heading", { name: "开始使用天枢" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "外观设置", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("浏览器未允许保存偏好");
@@ -175,7 +201,7 @@ test("representative light/dark layout, 200% text and accessibility", async ({
 }, testInfo) => {
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: "接入前的准备" }),
+    page.getByRole("heading", { name: "开始使用天枢" }),
   ).toBeVisible();
   for (const theme of ["light", "dark"]) {
     await page.getByRole("button", { name: "外观设置", exact: true }).click();

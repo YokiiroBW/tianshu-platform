@@ -85,6 +85,11 @@ test("room curve stays continuous and manual overrides survive clock changes", (
 test("room keyboard controls hold per object, restore and never persist or request business state", async ({
   page,
 }) => {
+  await page.route("**/api/web/session", (route) =>
+    route.fulfill({
+      json: { authenticated: false, csrf: "synthetic-room-preview" },
+    }),
+  );
   const requests: string[] = [];
   page.on("request", (request) => requests.push(request.url()));
   await openRoom(page);
@@ -126,7 +131,11 @@ test("room keyboard controls hold per object, restore and never persist or reque
     page.getByRole("group", { name: "窗户", exact: true }),
   ).toContainText("本地自动");
   expect(
-    requests.filter((url) => /\/api\/|^https:|websocket/i.test(url)),
+    requests.filter(
+      (url) =>
+        /\/api\/|^https:|websocket/i.test(url) &&
+        !url.endsWith("/api/web/session"),
+    ),
   ).toEqual([]);
   expect(
     await page.evaluate(() =>

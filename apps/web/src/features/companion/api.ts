@@ -1,3 +1,4 @@
+import { webFetch } from "../../app/sessionTransport";
 export type Session = {
   authenticated: boolean;
   csrf: string;
@@ -26,7 +27,7 @@ export async function request<T = Session>(
   body?: object,
   csrf?: string,
 ) {
-  const response = await fetch(`/api/web/${path}`, {
+  const response = await webFetch(`/api/web/${path}`, {
     method: body ? "POST" : "GET",
     credentials: "same-origin",
     cache: "no-store",
