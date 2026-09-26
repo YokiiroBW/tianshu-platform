@@ -147,6 +147,20 @@ const messages: Record<string, string> = {
     "这次发布的结果与权威配置不一致，请人工核对后再操作。",
   dependency_unavailable: "后台服务暂时不可用，请稍后重试。",
   invalid_input: "请求内容不符合当前接口要求。",
+  authentication_failed: "服务拒绝了密钥。请检查 API Key，保存后再手动测试。",
+  endpoint_failed: "服务地址未提供所需接口。请检查 API 基础地址与兼容协议。",
+  enumeration_unsupported: "该服务不支持获取模型列表。请手动填写模型 ID。",
+  model_not_found: "服务找不到该模型。请检查模型 ID，或重新读取模型列表。",
+  timed_out:
+    "连接或测试超时。结果可能未知；请检查服务状态，再决定是否手动重试。",
+  connection_failed: "无法连接模型服务。请检查服务地址和网络连通性。",
+  upstream_invalid:
+    "模型服务返回了无法识别的内容。请确认其兼容 Chat Completions。",
+  upstream_rejected: "模型服务拒绝了请求。请检查账号权限和模型 ID。",
+  provider_unavailable:
+    "供应商已停用、缺少密钥或配置已变化。请重新读取并检查。",
+  provider_not_tested: "当前配置尚未通过短回复测试，不能设为默认。",
+  default_revision_conflict: "默认模型已被其他页面更改。请重新读取后再选择。",
 };
 
 export class WebError extends Error {

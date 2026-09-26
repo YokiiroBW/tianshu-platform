@@ -114,6 +114,111 @@
   display: block;
   margin-top: var(--space-1);
 }
+.providers {
+  display: grid;
+  gap: var(--space-5);
+}
+.providers .section-heading {
+  align-items: start;
+}
+.models-transport,
+.models-empty,
+.provider-confirm {
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-input);
+  padding: var(--space-4);
+}
+.models-transport {
+  font-size: var(--text-small);
+}
+.models-empty {
+  display: grid;
+  gap: var(--space-2);
+}
+.providers-grid {
+  display: grid;
+  gap: var(--space-4);
+}
+.provider-card {
+  display: grid;
+  gap: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-input);
+  padding: var(--space-5);
+  min-width: 0;
+}
+.provider-card h3 {
+  margin: 0;
+}
+.provider-card p {
+  overflow-wrap: anywhere;
+}
+.provider-badges {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.models-test-disclosure {
+  font-size: var(--text-small);
+}
+.provider-models {
+  display: grid;
+  gap: var(--space-2);
+}
+.provider-models ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.provider-confirm {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.provider-confirm p {
+  width: 100%;
+}
+.provider-editor {
+  display: grid;
+  gap: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  padding: var(--space-5);
+}
+.provider-editor form {
+  display: grid;
+  gap: var(--space-4);
+}
+.provider-editor label {
+  display: grid;
+  gap: var(--space-2);
+}
+.provider-editor input,
+.provider-editor select {
+  min-width: 0;
+  min-height: var(--control-height);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-input);
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+}
+.provider-start {
+  justify-self: start;
+}
+.models-wait {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
 @media (max-width: 640px) {
   .models-toolbar,
   .models-actions {

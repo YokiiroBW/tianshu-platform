@@ -383,6 +383,11 @@ export function DialoguePanel({
           )}
         </>
       )}
+      {session.dialogue?.model === "not_configured" && (
+        <a className="button primary" href="#/settings/2">
+          前往配置模型供应商
+        </a>
+      )}
       <p role="status">{notice}</p>
       <form
         className="chat-composer"
