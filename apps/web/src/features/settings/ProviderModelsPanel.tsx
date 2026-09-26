@@ -87,6 +87,7 @@ export function ProviderModelsPanel() {
     } catch (cause) {
       if (!signal.aborted) {
         setProviderView(null);
+        setManagement(null);
         setError(errorMessage(cause));
         if (
           cause instanceof WebError &&
@@ -292,21 +293,30 @@ export function ProviderModelsPanel() {
   function handleProviderError(cause: unknown) {
     const message = errorMessage(cause);
     setError(message);
+    const authorityLost =
+      cause instanceof WebError &&
+      [
+        "session_expired",
+        "unauthorized",
+        "forbidden",
+        "management_required",
+        "management_disabled",
+        "operator_not_authorized",
+      ].includes(cause.code);
+    if (authorityLost) {
+      setProviderView(null);
+      setManagement(null);
+    }
     const controller = start();
     void (async () => {
       try {
-        if (
-          cause instanceof WebError &&
-          ["session_expired", "unauthorized", "management_required"].includes(
-            cause.code,
-          )
-        ) {
+        if (authorityLost) {
           await load(controller.signal);
         } else {
           await reloadProviders(controller.signal);
         }
       } catch {
-        // Keep the original action error. The explicit refresh button remains available.
+        if (!controller.signal.aborted) setProviderView(null);
       } finally {
         if (!controller.signal.aborted) setError(message);
       }

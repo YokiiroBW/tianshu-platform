@@ -13,7 +13,7 @@ export type Provider = {
   hasKey: boolean;
   isDefault: boolean;
   test: {
-    state: "passed" | "failed" | "untested";
+    state: "passed" | "failed" | "unknown" | "untested";
     code: string | null;
     revision: number | null;
     at: string | null;
@@ -78,6 +78,11 @@ function tested(provider: Provider) {
 function testLabel(provider: Provider) {
   if (tested(provider)) return "测试通过";
   if (
+    provider.test.state === "unknown" &&
+    provider.test.revision === provider.revision
+  )
+    return "结果未知";
+  if (
     provider.test.state === "failed" &&
     provider.test.revision === provider.revision
   )
@@ -92,7 +97,8 @@ const testHelp: Record<string, string> = {
   timed_out: "测试超时，结果可能未知；请检查服务状态后再决定是否手动重试。",
   connection_failed: "请检查模型服务是否可连接。",
   cancelled: "已取消等待；如果服务已收到请求，仍可能继续执行。",
-  unknown: "结果尚未确认。请先重新读取状态，不会自动重试。",
+  unknown:
+    "本次测试结果未知，可能已调用模型；请人工核对后台状态，避免重复计费。页面不会自动重试。",
 };
 
 /** The UI is independent of HTTP paths until the platform contract is published. */

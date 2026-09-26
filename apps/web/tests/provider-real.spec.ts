@@ -219,3 +219,78 @@ test("contract error fixture keeps unknown paid-test result explicit and does no
   await page.waitForTimeout(300);
   expect(attempts).toBe(1);
 });
+
+test("real invalid upstream response stays unknown in the provider card", async ({
+  page,
+}) => {
+  await page.goto("/#/settings/2");
+  await page.getByLabel("管理员账号").fill("synthetic-admin");
+  await page
+    .getByLabel("密码", { exact: true })
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByLabel("管理员密码").fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "解锁模型管理" }).click();
+  await page.getByRole("button", { name: "添加供应商" }).click();
+  await page.getByLabel("名称").fill("未知测试状态服务");
+  await page.getByLabel("API 基础地址").fill(info.upstream_url);
+  await page.getByLabel("模型 ID（可稍后选择）").fill("fixture-text-model");
+  await page.getByLabel("API Key").fill("synthetic-unknown-outcome-key");
+  await page.getByRole("button", { name: "保存供应商" }).click();
+  const card = page
+    .locator(".provider-card")
+    .filter({ hasText: "未知测试状态服务" });
+  writeFileSync(modePath, "invalid");
+  try {
+    await card.getByRole("button", { name: "测试回复" }).click();
+    await expect(page.getByRole("alert")).toContainText(
+      "模型服务返回了无法识别的内容",
+    );
+    await expect(card).toContainText("结果未知");
+    await expect(card).not.toContainText("测试失败");
+    await expect(card.getByRole("button", { name: "设为默认" })).toBeDisabled();
+  } finally {
+    writeFileSync(modePath, "normal");
+  }
+});
+
+test("real management lock removes stale provider addresses", async ({
+  page,
+}) => {
+  await page.goto("/#/settings/2");
+  await page.getByLabel("管理员账号").fill("synthetic-admin");
+  await page
+    .getByLabel("密码", { exact: true })
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByLabel("管理员密码").fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "解锁模型管理" }).click();
+  const card = page
+    .locator(".provider-card")
+    .filter({ hasText: "未知测试状态服务" });
+  await expect(card).toBeVisible();
+  const locked = await page.evaluate(async () => {
+    const session = await (
+      await fetch("/api/web/session", { credentials: "same-origin" })
+    ).json();
+    const response = await fetch("/api/web/models/lock", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": session.csrf,
+      },
+      body: "{}",
+    });
+    return response.status;
+  });
+  expect(locked).toBe(200);
+  await card.getByRole("button", { name: "获取模型" }).click();
+  await expect(
+    page.getByRole("heading", { name: "验证管理员密码后管理供应商" }),
+  ).toBeVisible();
+  await expect(page.locator(".provider-card")).toHaveCount(0);
+  expect(await page.locator("body").innerText()).not.toContain(
+    info.upstream_url,
+  );
+});

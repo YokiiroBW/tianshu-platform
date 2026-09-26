@@ -86,7 +86,14 @@ export function mapProviderView(wire: WireView): {
             state:
               item.test.outcome === "succeeded"
                 ? ("passed" as const)
-                : ("failed" as const),
+                : [
+                      "unknown",
+                      "cancelled",
+                      "timed_out",
+                      "connection_failed",
+                    ].includes(item.test.outcome)
+                  ? ("unknown" as const)
+                  : ("failed" as const),
             code: item.test.outcome === "succeeded" ? null : item.test.outcome,
             revision: item.test.revision,
             at: new Date(item.test.tested_at * 1000).toISOString(),

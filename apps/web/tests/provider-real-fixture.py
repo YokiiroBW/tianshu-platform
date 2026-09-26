@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import ssl
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -14,6 +15,15 @@ from aiohttp import web
 workspace = Path(os.environ["TIANSHU_WORKSPACE"])
 product = Path(__file__).resolve().parents[3]
 products = Path(os.environ["TIANSHU_PRODUCT_WORKSPACE"]) / "worktrees"
+fixed_revisions = {
+    "PROVIDER-P1/tianshu-platform": "5ead3759a44744a15f50f095870c4e34f40eb7b5",
+    "PROVIDER-G1/tianshu-model-gateway": "f93b08a6ce2d31774d2f1b27dc00fd4d5f3ee26d",
+    "PROVIDER-C1/tianshu-companion": "74dfdaefbd8c38a77d52ebbfb69a942d5c2b2963",
+}
+for relative, expected in fixed_revisions.items():
+    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=products / relative, text=True).strip()
+    if actual != expected:
+        raise RuntimeError(f"fixed provider fixture revision changed: {relative}")
 sys.path[:0] = [
     str(products / "PROVIDER-P1/tianshu-platform"),
     str(products / "PROVIDER-P1/tianshu-platform/tests/backend"),
@@ -66,6 +76,8 @@ async def main():
 
             async def completion(request):
                 record("completion")
+                if mode_path.read_text(encoding="utf-8") == "invalid":
+                    return web.json_response({"unexpected": "response"})
                 if mode_path.read_text(encoding="utf-8") == "wrong-key":
                     return web.json_response({"error": {"message": "synthetic-secret-must-not-appear"}}, status=401)
                 return web.json_response(services.response)
@@ -114,7 +126,7 @@ async def main():
             runner = web.AppRunner(platform_app(platform), handler_cancellation=True, access_log=None)
             await runner.setup()
             await web.TCPSite(runner, "127.0.0.1", 4814).start()
-            info_path.write_text(json.dumps({"upstream_url": upstream_url + "/v1"}), encoding="utf-8")
+            info_path.write_text(json.dumps({"upstream_url": upstream_url + "/v1", "fixed_revisions": fixed_revisions}), encoding="utf-8")
             record("ready")
             print("PROVIDER_U1_READY", flush=True)
             try:

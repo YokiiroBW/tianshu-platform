@@ -166,6 +166,9 @@ const messages: Record<string, string> = {
   budget_exceeded: "请求内容过长。请缩短名称或模型 ID。",
   result_unknown:
     "短回复测试的回执无法确认。模型可能已被调用；请人工核对后台状态，避免重复计费。",
+  timeout: "平台请求超时。请重新读取状态，再决定是否手动操作。",
+  provider_store_unavailable:
+    "供应商配置暂时无法读取。请稍后重新连接或联系管理员。",
 };
 
 export class WebError extends Error {
