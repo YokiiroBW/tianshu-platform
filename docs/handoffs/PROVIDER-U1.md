@@ -19,12 +19,12 @@
 - `node node_modules/typescript/bin/tsc -p apps/web/tsconfig.json --noEmit`：通过。
 - `node node_modules/vite/bin/vite.js build --config apps/web/vite.config.ts`：通过；现有 RoomPage 大包提示与本改动无关。
 - `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.providers.config.ts`：独立合成组件 **2/2**；包含保存/枚举/测试/默认分离、修订失效、密钥留空、axe 与移动宽度。此套不调用后端。
-- 隔离真实 HTTP 夹具：使用产品已有 Python 3.12 测试环境运行 `apps/web/tests/provider-real-fixture.py`，提供 `TIANSHU_WORKSPACE=C:/Users/Administrator/.codex/worktrees/6bd8/tianshu-peiban-bot` 与 `TIANSHU_PRODUCT_WORKSPACE=C:/YOKI/Codex/tianshu-peiban-bot`，再运行 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.providers-real.config.ts --workers=1`：**4/4**。夹具用真正的平台与网关 HTTP、隔离录制 TLS 上游和生产构建的前端静态资源；关闭旧 `web_models` 模板功能。真实浏览器走登录→解锁→空配置→保存（零 completion）→枚举→留空密钥编辑→短回复测试（恰一 completion）→设默认→开始对话跳转。另验手填模型、切换默认、清密钥/停用/删除、枚举不支持与错误密钥的可理解错误、上游错误正文不泄漏、浏览器请求同源、密钥不在 localStorage。
+- 隔离真实 HTTP 夹具：使用产品已有 Python 3.12 测试环境运行 `apps/web/tests/provider-real-fixture.py`，提供 `TIANSHU_WORKSPACE=C:/Users/Administrator/.codex/worktrees/6bd8/tianshu-peiban-bot` 与 `TIANSHU_PRODUCT_WORKSPACE=C:/YOKI/Codex/tianshu-peiban-bot`，再运行 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.providers-real.config.ts --workers=1`：**5/5**。夹具用真正的平台与网关 HTTP、隔离录制 TLS 上游和生产构建的前端静态资源；关闭旧 `web_models` 模板功能。真实浏览器走登录→解锁→空配置→保存（零 completion）→枚举→留空密钥编辑→短回复测试（恰一 completion）→设默认→开始对话跳转。另验手填模型、切换默认、清密钥/停用/删除、枚举不支持与错误密钥的可理解错误、上游错误正文不泄漏、浏览器请求同源、密钥不在 localStorage。第五项对候选后端的 `409 result_unknown` 注入固定错误响应，验证页面明确“可能已调用/人工核对”且不会自动重发；此项是前端错误处理夹具，非后端故障注入实证。
 - 真实浏览器截图：`apps/web/test-results/providers-real/provider-real-real-same-or-ef3fe-y-and-recorded-TLS-upstream/provider-real-same-origin.png`；组件截图：`apps/web/test-results/providers/provider-manager-synthetic-136c8-n-test-and-default-distinct/provider-manager-synthetic.png`。均为忽略的本地测试产物，无真实密钥。
 
 ## 限制与下一步
 
-真实浏览器验证仅在隔离本地平台、网关与录制上游执行；无公网供应商、付费请求、NAS 或实际用户数据。浏览器“开始对话”已到陪伴页，网页夹具并未装配完整 Companion 服务，因此不声称浏览器收到真实聊天回复；后端根联合测试另有 Companion Core 新回合贯通证据。生产服务身份、证书、部署网络、快照续期与实机聊天仍由协调集成/部署验收。根 `v1` 为本地候选合同，需协调者按单一负责人审查合入后才算发布。
+真实浏览器验证仅在隔离本地平台、网关与录制上游执行；无公网供应商、付费请求、NAS 或实际用户数据。浏览器“开始对话”已到陪伴页，网页夹具并未装配完整 Companion 服务，因此不声称浏览器收到真实聊天回复；后端根联合测试另有 Companion Core 新回合贯通证据。生产服务身份、证书、部署网络、快照续期与实机聊天仍由协调集成/部署验收。根 `v1` 为本地候选合同，需协调者按单一负责人审查合入后才算发布。后端候选还会返回未列入 v1 README 固定码表的 `result_unknown`；前端已特判为人工核对且不自动重试，合同/后端回执非原子问题需协调者登记和修复。
 
 ## 参考
 

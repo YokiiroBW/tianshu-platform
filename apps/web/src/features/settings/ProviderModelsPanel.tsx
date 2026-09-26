@@ -30,6 +30,8 @@ type ProviderView = { providers: Provider[]; defaultRevision: number };
 
 function errorMessage(cause: unknown) {
   if (cause instanceof WebError) {
+    if (cause.code === "result_unknown")
+      return `${cause.message} 页面不会自动重试。`;
     return cause.executionState === "unknown"
       ? `${cause.message} 本次执行结果未知；请重新读取状态，不会自动重试。`
       : cause.message;

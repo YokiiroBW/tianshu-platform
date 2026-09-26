@@ -177,3 +177,45 @@ test("real browser explains unsupported enumeration and failed key without leaki
   );
   writeFileSync(modePath, "normal");
 });
+
+test("contract error fixture keeps unknown paid-test result explicit and does not resend", async ({
+  page,
+}) => {
+  await page.goto("/#/settings/2");
+  await page.getByLabel("管理员账号").fill("synthetic-admin");
+  await page
+    .getByLabel("密码", { exact: true })
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByLabel("管理员密码").fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "解锁模型管理" }).click();
+  await page.getByRole("button", { name: "添加供应商" }).click();
+  await page.getByLabel("名称").fill("未知回执服务");
+  await page.getByLabel("API 基础地址").fill(info.upstream_url);
+  await page.getByLabel("模型 ID（可稍后选择）").fill("fixture-text-model");
+  await page.getByLabel("API Key").fill("synthetic-unknown-test-key");
+  await page.getByRole("button", { name: "保存供应商" }).click();
+  let attempts = 0;
+  await page.route("**/api/web/providers/test", async (route) => {
+    attempts += 1;
+    await route.fulfill({
+      status: 409,
+      json: {
+        schema_version: 1,
+        request_id: "request:fixture",
+        code: "result_unknown",
+        execution_state: "unknown",
+        retryable: false,
+      },
+    });
+  });
+  const card = page
+    .locator(".provider-card")
+    .filter({ hasText: "未知回执服务" });
+  await card.getByRole("button", { name: "测试回复" }).click();
+  await expect(page.getByRole("alert")).toContainText("模型可能已被调用");
+  await expect(page.getByRole("alert")).toContainText("人工核对后台状态");
+  await expect(card.getByRole("button", { name: "设为默认" })).toBeDisabled();
+  await page.waitForTimeout(300);
+  expect(attempts).toBe(1);
+});

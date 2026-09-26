@@ -164,6 +164,8 @@ const messages: Record<string, string> = {
   revision_conflict: "供应商已在其他页面更改。请重新读取后再操作。",
   provider_not_found: "供应商已不存在。请重新读取列表。",
   budget_exceeded: "请求内容过长。请缩短名称或模型 ID。",
+  result_unknown:
+    "短回复测试的回执无法确认。模型可能已被调用；请人工核对后台状态，避免重复计费。",
 };
 
 export class WebError extends Error {
