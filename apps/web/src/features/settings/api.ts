@@ -161,12 +161,16 @@ const messages: Record<string, string> = {
     "供应商已停用、缺少密钥或配置已变化。请重新读取并检查。",
   provider_not_tested: "当前配置尚未通过短回复测试，不能设为默认。",
   default_revision_conflict: "默认模型已被其他页面更改。请重新读取后再选择。",
+  revision_conflict: "供应商已在其他页面更改。请重新读取后再操作。",
+  provider_not_found: "供应商已不存在。请重新读取列表。",
+  budget_exceeded: "请求内容过长。请缩短名称或模型 ID。",
 };
 
 export class WebError extends Error {
   constructor(
     readonly code: string,
     readonly status: number,
+    readonly executionState: "not_started" | "unknown" = "not_started",
   ) {
     super(`${messages[code] ?? "请求失败，请重新连接。"}（${code}）`);
   }
@@ -189,7 +193,12 @@ export async function call<T>(
   if (!response.headers.get("content-type")?.includes("application/json"))
     throw new WebError("web_not_configured", response.status);
   const result = await response.json();
-  if (!response.ok) throw new WebError(String(result.code), response.status);
+  if (!response.ok)
+    throw new WebError(
+      String(result.code),
+      response.status,
+      result.execution_state === "unknown" ? "unknown" : "not_started",
+    );
   return result as T;
 }
 

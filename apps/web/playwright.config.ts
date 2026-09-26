@@ -7,6 +7,8 @@ export default defineConfig({
     "web-console.spec.ts",
     "task-center.spec.ts",
     "task-center-dev.spec.ts",
+    "provider-manager.spec.ts",
+    "provider-real.spec.ts",
   ],
   outputDir: "./test-results",
   fullyParallel: true,

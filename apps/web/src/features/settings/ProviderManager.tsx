@@ -120,6 +120,7 @@ export function ProviderManager({
   const [message, setMessage] = useState("");
   const [formError, setFormError] = useState("");
   const active = useRef<AbortController | null>(null);
+  const inFlight = useRef(false);
   const keyInput = useRef<HTMLInputElement>(null);
   const original =
     providers.find((item) => item.providerId === editingId) ?? null;
@@ -153,7 +154,8 @@ export function ProviderManager({
     task: (signal: AbortSignal) => Promise<void>,
     success: string,
   ) {
-    active.current?.abort();
+    if (inFlight.current) return false;
+    inFlight.current = true;
     const controller = new AbortController();
     active.current = controller;
     setOperation(name);
@@ -166,6 +168,7 @@ export function ProviderManager({
       if (!controller.signal.aborted) onError(cause);
       return false;
     } finally {
+      if (active.current === controller) inFlight.current = false;
       if (!controller.signal.aborted) setOperation("");
     }
   }
@@ -182,6 +185,10 @@ export function ProviderManager({
     try {
       const url = new URL(submitted.baseUrl);
       if (url.protocol !== "https:") throw new Error();
+      if (url.username || url.password || url.search || url.hash) {
+        setFormError("API 基础地址不能包含账号、密码、查询参数或片段。");
+        return;
+      }
     } catch {
       setFormError(
         "当前模型供应商接入要求 HTTPS 服务地址；天枢网页仍可从局域网 HTTP 入口打开。",
@@ -260,6 +267,7 @@ export function ProviderManager({
             type="button"
             onClick={() => {
               active.current?.abort();
+              inFlight.current = false;
               setOperation("");
               setMessage(
                 "已取消等待；如果请求已到达服务端，结果可能仍在执行。不会自动重试，请重新读取状态。",
