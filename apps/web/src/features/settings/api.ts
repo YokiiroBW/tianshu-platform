@@ -147,12 +147,35 @@ const messages: Record<string, string> = {
     "这次发布的结果与权威配置不一致，请人工核对后再操作。",
   dependency_unavailable: "后台服务暂时不可用，请稍后重试。",
   invalid_input: "请求内容不符合当前接口要求。",
+  authentication_failed: "服务拒绝了密钥。请检查 API Key，保存后再手动测试。",
+  endpoint_failed: "服务地址未提供所需接口。请检查 API 基础地址与兼容协议。",
+  enumeration_unsupported: "该服务不支持获取模型列表。请手动填写模型 ID。",
+  model_not_found: "服务找不到该模型。请检查模型 ID，或重新读取模型列表。",
+  timed_out:
+    "连接或测试超时。结果可能未知；请检查服务状态，再决定是否手动重试。",
+  connection_failed: "无法连接模型服务。请检查服务地址和网络连通性。",
+  upstream_invalid:
+    "模型服务返回了无法识别的内容。请确认其兼容 Chat Completions。",
+  upstream_rejected: "模型服务拒绝了请求。请检查账号权限和模型 ID。",
+  provider_unavailable:
+    "供应商已停用、缺少密钥或配置已变化。请重新读取并检查。",
+  provider_not_tested: "当前配置尚未通过短回复测试，不能设为默认。",
+  default_revision_conflict: "默认模型已被其他页面更改。请重新读取后再选择。",
+  revision_conflict: "供应商已在其他页面更改。请重新读取后再操作。",
+  provider_not_found: "供应商已不存在。请重新读取列表。",
+  budget_exceeded: "请求内容过长。请缩短名称或模型 ID。",
+  result_unknown:
+    "短回复测试的回执无法确认。模型可能已被调用；请人工核对后台状态，避免重复计费。",
+  timeout: "平台请求超时。请重新读取状态，再决定是否手动操作。",
+  provider_store_unavailable:
+    "供应商配置暂时无法读取。请稍后重新连接或联系管理员。",
 };
 
 export class WebError extends Error {
   constructor(
     readonly code: string,
     readonly status: number,
+    readonly executionState: "not_started" | "unknown" = "not_started",
   ) {
     super(`${messages[code] ?? "请求失败，请重新连接。"}（${code}）`);
   }
@@ -175,7 +198,12 @@ export async function call<T>(
   if (!response.headers.get("content-type")?.includes("application/json"))
     throw new WebError("web_not_configured", response.status);
   const result = await response.json();
-  if (!response.ok) throw new WebError(String(result.code), response.status);
+  if (!response.ok)
+    throw new WebError(
+      String(result.code),
+      response.status,
+      result.execution_state === "unknown" ? "unknown" : "not_started",
+    );
   return result as T;
 }
 
