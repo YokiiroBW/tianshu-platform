@@ -288,7 +288,7 @@ test("memory separates overview, shared subjects and own records", async ({
         verified_at: "2026-09-27T00:00:00Z",
         scope_version: 2,
         memory_group_count: 4,
-        subject_count: 1,
+        counts_truncated: false,
       });
     if (path.endsWith("/subjects"))
       return answer(route, {
@@ -300,6 +300,7 @@ test("memory separates overview, shared subjects and own records", async ({
             subject: { kind: "person", person_id: "person-a" },
             categories: ["偏好"],
             group_count: 1,
+            group_count_truncated: false,
           },
         ],
         next_cursor: null,
@@ -386,4 +387,151 @@ test("missing deployment and forbidden reader are not shown as empty content", a
   await expect(
     page.getByRole("heading", { name: "还没有已发布日记" }),
   ).toHaveCount(0);
+});
+
+test("external HA setup saves a scoped target then performs one read-only check", async ({
+  page,
+}) => {
+  await session(page);
+  let unlocked = false;
+  let revision = 4;
+  let configured = false;
+  let lastTest: {
+    state: string;
+    code: string;
+    checked_at: string;
+    revision: number;
+  } | null = null;
+  const saves: Record<string, unknown>[] = [];
+  let tests = 0;
+  await page.route("**/api/web/access/view", (route) =>
+    answer(route, {
+      available: false,
+      active: { mode: "http", origin: "", certificate: null },
+      saved: { mode: "http", origin: "", certificate: null },
+      revision: 1,
+      restart_required: false,
+      certificates: [],
+      listener_port: 80,
+    }),
+  );
+  await page.route("**/api/web/connections/view", (route) =>
+    answer(route, { connections: [] }),
+  );
+  await page.route("**/api/web/external/*", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    if (path.endsWith("/view"))
+      return answer(route, {
+        revision,
+        unlocked,
+        assets: {
+          configured: false,
+          enabled: false,
+          url: null,
+          credential_configured: false,
+          ca_configured: false,
+          last_test: null,
+        },
+        home: {
+          configured,
+          enabled: configured,
+          url: configured ? "http://192.168.1.15:8123" : null,
+          allow_private_http: configured,
+          entities: configured
+            ? [
+                {
+                  entity_id: "sensor.living_room_temperature",
+                  label: "客厅温度",
+                  kind: "sensor",
+                },
+              ]
+            : [],
+          credential_configured: configured,
+          ca_configured: false,
+          last_test: lastTest,
+        },
+      });
+    if (path.endsWith("/unlock")) {
+      unlocked = true;
+      return answer(route, { unlocked: true, expires_in: 900 });
+    }
+    if (path.endsWith("/save")) {
+      saves.push(body);
+      revision++;
+      configured = true;
+      lastTest = null;
+      return answer(route, {
+        revision,
+        state: "saved_unverified",
+        applied: true,
+        kind: "home",
+      });
+    }
+    if (path.endsWith("/test")) {
+      tests++;
+      lastTest = {
+        state: "connected",
+        code: "ok",
+        checked_at: "2026-09-27T00:00:00Z",
+        revision,
+      };
+      return answer(route, { kind: "home", ...lastTest });
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  await page.goto("/#/settings/1");
+  await page.getByLabel("管理员密码（二次验证）").fill("fixture-password");
+  await page.getByRole("button", { name: "解锁连接管理" }).click();
+  await page.getByRole("button", { name: "Home Assistant 家庭" }).click();
+  await page.getByLabel("启用此连接").check();
+  await page
+    .getByLabel("Home Assistant 基础地址")
+    .fill("http://192.168.1.15:8123");
+  await page.getByLabel("明确允许经部署审查的局域网 HTTP").check();
+  await page.getByRole("button", { name: "添加实体" }).click();
+  await page.getByLabel("实体 ID").fill("sensor.living_room_temperature");
+  await page.getByLabel("显示名称").fill("客厅温度");
+  await page.getByRole("radio", { name: "替换凭据" }).check();
+  await page.getByLabel("新凭据").fill("fixture-ha-key-0123456789-example");
+  await page.getByRole("button", { name: "保存设置" }).click();
+  await expect(
+    page.getByText("连接设置已保存并生效，尚未验证业务读取。", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("尚未检测", { exact: true })).toBeVisible();
+  expect(saves).toHaveLength(1);
+  expect(saves[0]).toMatchObject({
+    kind: "home",
+    expected_revision: 4,
+    value: {
+      base_url: "http://192.168.1.15:8123",
+      allow_private_http: true,
+      entities: [
+        {
+          entity_id: "sensor.living_room_temperature",
+          label: "客厅温度",
+          kind: "sensor",
+        },
+      ],
+    },
+    credential: {
+      action: "replace",
+      value: "fixture-ha-key-0123456789-example",
+    },
+    ca: { action: "keep" },
+  });
+  expect(JSON.stringify(saves[0])).not.toContain("token_env");
+  await page.getByRole("button", { name: "检测连接（只读一次）" }).click();
+  await expect(
+    page.getByText("一次真实只读检测已通过。", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByText("已真实读取", { exact: true })).toBeVisible();
+  expect(tests).toBe(1);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
 });

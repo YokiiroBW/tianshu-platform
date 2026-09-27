@@ -1,6 +1,6 @@
 import { webFetch } from "./sessionTransport";
 
-// CONNECT-B-API.md: every integration read is a same-origin, session-bound POST.
+// CONNECT-B-API.md: integration calls are same-origin, session-bound POSTs.
 // The browser never chooses an upstream address, service token or reader identity.
 const descriptions: Record<string, string> = {
   web_not_configured: "网页登录尚未启用。",
@@ -16,6 +16,11 @@ const descriptions: Record<string, string> = {
   memory_credential_missing: "记忆服务凭据缺失，请由部署管理员检查。",
   memory_identity_not_ready:
     "当前账号的记忆身份映射尚未就绪，请由部署管理员核对。",
+  external_manage_required: "当前账号没有外部连接管理权限。",
+  external_not_configured: "此部署尚未开放外部连接管理。",
+  external_locked: "请先用管理员密码解锁连接管理。",
+  revision_conflict: "连接设置已在其它页面改变，请刷新后重新检查。",
+  invalid_input: "输入不符合服务端规则，请检查地址、实体与凭据。",
   upstream_forbidden: "上游服务拒绝了读取授权，请由部署管理员检查。",
   unauthorized: "登录已失效，请重新登录。",
   session_expired: "登录已过期，请重新登录。",
@@ -31,6 +36,9 @@ const descriptions: Record<string, string> = {
   cursor_stale: "资料在分页期间发生变化，请从第一页重新读取。",
   scope_changed: "读取范围已经变化，请从第一页重新读取。",
   too_many_requests: "同时读取过多，请稍后重试。",
+  upstream_busy: "记忆服务当前繁忙，请稍后重试。",
+  response_too_large: "结果超出本次读取上限，请缩小范围。",
+  log_unavailable: "记忆服务暂时无法确认读取记录，请稍后重试。",
   project_uninitialized: "项目尚未建立资料目录。",
   budget_too_small: "本次读取预算无法容纳一个完整结果。",
   budget_exceeded: "结果超出服务端读取预算。",

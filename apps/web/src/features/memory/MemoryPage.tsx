@@ -20,7 +20,7 @@ type Connection = {
 };
 type Overview = {
   memory_group_count: number;
-  subject_count: number;
+  counts_truncated: boolean;
   verified_at: string;
   scope_version: number;
 };
@@ -28,6 +28,7 @@ type Subject = {
   subject: SubjectKey;
   categories: string[];
   group_count: number;
+  group_count_truncated: boolean;
 };
 type Subjects = {
   items: Subject[];
@@ -373,17 +374,19 @@ export default function MemoryPage({ section }: { section: number }) {
               <>
                 <dl className="memory-counts">
                   <div>
-                    <dt>有效记忆组</dt>
-                    <dd>{overview.memory_group_count}</dd>
-                  </div>
-                  <div>
-                    <dt>可见人物与群</dt>
-                    <dd>{overview.subject_count}</dd>
+                    <dt>本人有效记忆组</dt>
+                    <dd>
+                      {overview.counts_truncated
+                        ? `至少 ${overview.memory_group_count}`
+                        : overview.memory_group_count}
+                    </dd>
                   </div>
                 </dl>
                 <p className="muted">
                   读取于 {overview.verified_at} · 范围版本{" "}
-                  {overview.scope_version}。计数只覆盖当前账号获准的范围。
+                  {overview.scope_version}。计数只覆盖本人当前有效的记忆组
+                  {overview.counts_truncated ? "，已达到本次计数上限" : ""}
+                  ；人物与群请打开目录分页查看。
                 </p>
                 <div className="memory-actions">
                   <a className="button" href="#/memory/1">
@@ -403,8 +406,17 @@ export default function MemoryPage({ section }: { section: number }) {
           <section className="panel">
             <h2>人物与群</h2>
             {subjects.length === 0 && !busy && !error ? (
-              <StatePanel kind="empty" title="没有可见人物或群">
-                <p>这次读取成功，但当前授权范围没有可浏览条目。</p>
+              <StatePanel
+                kind="empty"
+                title={
+                  subjectsCursor ? "本页没有可见人物或群" : "没有可见人物或群"
+                }
+              >
+                <p>
+                  {subjectsCursor
+                    ? "本页扫描没有返回可见条目，仍有后续页可读取。"
+                    : "这次读取成功，且当前授权范围没有更多可浏览条目。"}
+                </p>
               </StatePanel>
             ) : (
               <ul className="memory-list">
@@ -421,8 +433,10 @@ export default function MemoryPage({ section }: { section: number }) {
                     >
                       <strong>{subjectText(row.subject)}</strong>
                       <small>
-                        {row.group_count} 个有效组 ·{" "}
-                        {row.categories.join("、") || "未分类"}
+                        {row.group_count_truncated
+                          ? `至少 ${row.group_count}`
+                          : row.group_count}{" "}
+                        个有效组 · {row.categories.join("、") || "未分类"}
                       </small>
                     </button>
                   </li>
@@ -496,7 +510,7 @@ function RecordList({
         <p>请稍候。</p>
       </StatePanel>
     );
-  if (!busy && !error && records.length === 0)
+  if (!busy && !error && records.length === 0 && !cursor)
     return (
       <StatePanel kind="empty" title="这个范围没有有效记忆">
         <p>{scope}成功返回空列表。其它范围可能有不同内容。</p>
@@ -504,6 +518,9 @@ function RecordList({
     );
   return (
     <>
+      {records.length === 0 && cursor && (
+        <p className="muted">本页没有可见记忆，仍有后续页可读取。</p>
+      )}
       <ul className="memory-records">
         {records.map((group) => (
           <li key={group.semantic_group_id}>
