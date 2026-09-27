@@ -68,20 +68,61 @@ test("unconfigured shell, lazy room, only session discovery and no business medi
   ).toHaveCount(0);
 });
 
-test("connection search exposes real empty result and reset", async ({
+test("connection summary distinguishes configured, failed and absent capabilities", async ({
   page,
 }) => {
+  await page.route("**/api/web/connections/view", (route) =>
+    route.fulfill({
+      json: {
+        connections: [
+          {
+            id: "knowledge",
+            state: "unverified",
+            code: "read_not_observed",
+            detail: null,
+            checked_at: null,
+          },
+          {
+            id: "life",
+            state: "unavailable",
+            code: "timeout",
+            detail: null,
+            checked_at: "2026-09-27T00:00:00Z",
+          },
+          {
+            id: "memory_profiles",
+            state: "not_configured",
+            code: "memory_not_configured",
+            detail: null,
+            checked_at: null,
+          },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/web/access/view", (route) =>
+    route.fulfill({
+      json: {
+        available: false,
+        active: { mode: "http", origin: "", certificate: null },
+        saved: { mode: "http", origin: "", certificate: null },
+        revision: 1,
+        restart_required: false,
+        certificates: [],
+        listener_port: 80,
+      },
+    }),
+  );
   await page.goto("/#/settings/1");
-  await expect(page.locator(".connection-list li")).toHaveCount(5);
-  await page.getByRole("searchbox").fill("不存在的连接类型".repeat(12));
-  await expect(
-    page.getByRole("heading", { name: "没有匹配的连接类型" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "清除筛选" }).click();
-  await expect(page.locator(".connection-list li")).toHaveCount(5);
+  await expect(page.locator(".connection-list li")).toHaveCount(3);
+  await expect(page.locator(".connection-list")).toContainText("尚未验证");
+  await expect(page.locator(".connection-list")).toContainText("暂时不可用");
+  await expect(page.locator(".connection-list")).toContainText("未配置");
   await page.goto("/#/home/1");
   await expect(
-    page.getByText("容器运行、健康检查和观测时间将分别展示；当前状态未知。"),
+    page.getByText("容器清单与实时健康观测的浏览器接口尚未提供。", {
+      exact: false,
+    }),
   ).toBeVisible();
 });
 
@@ -132,7 +173,7 @@ test("mobile menu closes after keyboard navigation and route focus moves", async
   await expect(dialog).not.toBeVisible();
   await expect(page.locator("main")).toBeFocused();
   await expect(
-    page.getByRole("heading", { name: "记忆星图尚未接入" }),
+    page.getByRole("heading", { name: "记忆", exact: true }),
   ).toBeVisible();
 });
 

@@ -67,7 +67,14 @@ function AppShell() {
   const accountTitle = hash.startsWith("#/setup") ? "首次设置" : "登录";
   const protectedPage =
     !!current &&
-    ["companion", "home", "resources", "settings"].includes(current.id);
+    [
+      "companion",
+      "home",
+      "resources",
+      "settings",
+      "memory",
+      "projects",
+    ].includes(current.id);
   const setupNeeded =
     auth.session?.onboarding?.state === "create_admin" ||
     (auth.session?.authenticated &&
@@ -192,9 +199,18 @@ function AppShell() {
     page = <pages.companion />;
   else if (current.id === "companion" && section === 2)
     page = <pages.personas />;
+  else if (current.id === "companion" && section === 1) page = <pages.life />;
   else if (current.id === "home" && section === 0) page = <pages.home />;
+  else if (current.id === "memory" && section !== 2)
+    page = <pages.memory section={section} />;
+  else if (current.id === "resources" && section === 0)
+    page = <pages.knowledge />;
   else if (current.id === "resources" && section === 1)
     page = <pages.resources />;
+  else if (current.id === "projects" && section === 0)
+    page = <pages.knowledge />;
+  else if (current.id === "projects" && section === 1)
+    page = <pages.experience />;
   else if (current.id === "settings")
     page = <pages.settings section={section} />;
   else page = <UnavailablePage module={current} section={section} />;

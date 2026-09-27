@@ -46,8 +46,8 @@ export default function WorkbenchPage() {
           </a>
         </div>
         <div className="agenda-empty">
-          <p className="empty-title">暂无可显示的事项</p>
-          <p>任务来源尚未接入；这里不会将未知进展显示为已完成。</p>
+          <p className="empty-title">工作台尚未读取任务</p>
+          <p>任务中心会显示平台已记录的操作、各来源状态和实际失败原因。</p>
         </div>
       </section>
     </div>

@@ -8,20 +8,27 @@ export function UnavailablePage({
   module: Module;
   section: number;
 }) {
+  const info: Record<string, string> = {
+    "memory/2": "账号关联目前没有面向浏览器的读取或修改流程。",
+    "resources/2":
+      "订阅与下载业务引擎及网页流程尚未提供；无需在连接设置中寻找地址或令牌。",
+    "home/1":
+      "容器清单与实时健康观测的浏览器接口尚未提供。连接摘要只报告已登记业务能力的读取状态。",
+    "home/2": "节点与游戏服管理的浏览器流程尚未提供。",
+    "home/3": "身体与活动数据的浏览器流程尚未提供。",
+  };
+  const key = `${module.id}/${section}`;
   return (
     <StatePanel
       kind="unconfigured"
-      title={`${module.sections[section] ?? module.label}尚未接入`}
+      title={`${module.sections[section] ?? module.label}尚未提供网页功能`}
       action={
-        <a className="button" href="#/settings/1">
-          查看接入准备
+        <a className="button" href="#/workbench">
+          返回工作台
         </a>
       }
     >
-      <p>当前没有可读取的服务数据。接入后，这里将显示实际内容与来源。</p>
-      {module.id === "home" && section === 1 && (
-        <p>容器运行、健康检查和观测时间将分别展示；当前状态未知。</p>
-      )}
+      <p>{info[key] ?? "当前没有这项功能的网页接口。"}</p>
     </StatePanel>
   );
 }
