@@ -135,6 +135,8 @@ test("project knowledge browses, pages, reads, searches and distinguishes an emp
   await page.goto("/#/resources/0");
   await expect(page.getByRole("heading", { name: "资料目录" })).toBeVisible();
   await expect(page.locator(".knowledge-list li")).toHaveCount(1);
+  await expect(page.getByText("本页本次读取成功")).toBeVisible();
+  await expect(page.getByText("尚无真实读取记录。")).toHaveCount(0);
   await page.getByRole("button", { name: "继续读取目录" }).click();
   await expect(page.locator(".knowledge-list li")).toHaveCount(2);
   await page.locator(".knowledge-list button").first().click();
@@ -258,6 +260,8 @@ test("life reads last persisted state and only opens a published diary", async (
   });
   await page.goto("/#/companion/1");
   await expect(page.getByText("尚无持久化记录").first()).toBeVisible();
+  await expect(page.getByText("本页本次读取成功")).toBeVisible();
+  await expect(page.getByText("尚无真实读取记录。")).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "已发布日记", exact: true }),
   ).toBeVisible();

@@ -89,6 +89,7 @@ export default function LifePage() {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
   const [state, setState] = useState<Connection | null>(null);
+  const [observedHere, setObservedHere] = useState(false);
   const [actors, setActors] = useState<Actor[]>([]);
   const [actorCursor, setActorCursor] = useState<string | null>(null);
   const [actor, setActor] = useState("");
@@ -117,6 +118,7 @@ export default function LifePage() {
     const controller = start();
     generation.current++;
     setState(null);
+    setObservedHere(false);
     setStateError("");
     setActors([]);
     setActorCursor(null);
@@ -169,6 +171,7 @@ export default function LifePage() {
         controller.signal,
       );
       if (controller.signal.aborted || generation.current !== mark) return;
+      setObservedHere(true);
       setActors((before) =>
         after_actor_id ? [...before, ...answer.items] : answer.items,
       );
@@ -216,6 +219,7 @@ export default function LifePage() {
         ),
       ]);
       if (controller.signal.aborted || generation.current !== mark) return;
+      setObservedHere(true);
       setSnapshot(life);
       setDiaries(list.items);
       setDiaryCursor(list.next_after);
@@ -249,6 +253,7 @@ export default function LifePage() {
     setRevision(null);
     setError("");
     setBusy(false);
+    setObservedHere(false);
     setActor(next);
   }
 
@@ -264,6 +269,7 @@ export default function LifePage() {
         controller.signal,
       );
       if (controller.signal.aborted || generation.current !== mark) return;
+      setObservedHere(true);
       setDiaries((before) => [...before, ...answer.items]);
       setDiaryCursor(answer.next_after);
     } catch (cause) {
@@ -292,8 +298,10 @@ export default function LifePage() {
         csrf,
         controller.signal,
       );
-      if (!controller.signal.aborted && generation.current === mark)
+      if (!controller.signal.aborted && generation.current === mark) {
+        setObservedHere(true);
         setRevision(answer);
+      }
     } catch (cause) {
       if (!controller.signal.aborted && generation.current === mark)
         setError(readFailure(cause));
@@ -362,25 +370,29 @@ export default function LifePage() {
         </div>
         <StatusRail
           tone={
-            state.peer.code === "unverified"
-              ? "yellow"
-              : state.peer.code === "ok"
-                ? "blue"
+            observedHere || state.peer.code === "ok"
+              ? "blue"
+              : state.peer.code === "unverified"
+                ? "yellow"
                 : "red"
           }
           label={
-            state.peer.code === "unverified"
-              ? "已配置，尚未验证"
-              : state.peer.code === "ok"
-                ? "最近有真实读取"
-                : "最近读取失败"
+            observedHere
+              ? "本页本次读取成功"
+              : state.peer.code === "unverified"
+                ? "已配置，尚未验证"
+                : state.peer.code === "ok"
+                  ? "最近有真实读取"
+                  : "最近读取失败"
           }
         >
           <p>
             这里展示角色最后一次持久化的虚构生活状态，不会触发生活时钟。
-            {state.peer.code === "unverified"
-              ? "尚无真实读取记录。"
-              : `最近一次读取状态：${state.peer.code}${state.peer.verified_at ? `，成功于 ${state.peer.verified_at}` : ""}。`}
+            {observedHere
+              ? "本页已从角色生活服务实际读取。"
+              : state.peer.code === "unverified"
+                ? "尚无真实读取记录。"
+                : `最近一次读取状态：${state.peer.code}${state.peer.verified_at ? `，成功于 ${state.peer.verified_at}` : ""}。`}
           </p>
         </StatusRail>
         {actors.length > 0 && (
