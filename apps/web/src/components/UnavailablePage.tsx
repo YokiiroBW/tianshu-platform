@@ -16,8 +16,6 @@ export function UnavailablePage({
       "容器清单与实时健康观测的浏览器接口尚未提供。连接摘要只报告已登记业务能力的读取状态。",
     "home/2": "节点与游戏服管理的浏览器流程尚未提供。",
     "home/3": "身体与活动数据的浏览器流程尚未提供。",
-    "projects/1":
-      "经验与交接的浏览器读取流程尚未提供。项目资料可在项目工作区检索。",
   };
   const key = `${module.id}/${section}`;
   return (

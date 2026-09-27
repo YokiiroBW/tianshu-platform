@@ -84,7 +84,7 @@ function connectionLabel(state: Connection) {
   if (!state.available) return { tone: "gray" as const, label: "未配置" };
   if (state.peer.code === "ok" && state.peer.verified_at)
     return { tone: "blue" as const, label: "最近有真实读取" };
-  if (state.peer.verified_at)
+  if (state.peer.code !== "unverified")
     return { tone: "red" as const, label: "最近读取失败" };
   return { tone: "yellow" as const, label: "已配置，尚未验证" };
 }
@@ -395,9 +395,9 @@ export default function KnowledgePage() {
         <StatusRail tone={status.tone} label={status.label}>
           <p>
             资料来自 Memory 项目知识服务；读取仅覆盖部署端授权的项目。
-            {state.peer.verified_at
-              ? `最近一次读取：${state.peer.verified_at}（${state.peer.code}）`
-              : "尚无真实读取记录。"}
+            {state.peer.code === "unverified"
+              ? "尚无真实读取记录。"
+              : `最近一次读取状态：${state.peer.code}${state.peer.verified_at ? `，成功于 ${state.peer.verified_at}` : ""}。`}
           </p>
         </StatusRail>
         {state.projects.length > 0 && (

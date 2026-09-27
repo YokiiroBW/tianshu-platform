@@ -91,6 +91,7 @@ export const pages = {
   home: lazy(() => import("../features/home/HomePage")),
   resources: lazy(() => import("../features/resources/ResourcesPage")),
   knowledge: lazy(() => import("../features/knowledge/KnowledgePage")),
+  experience: lazy(() => import("../features/projects/ExperiencePage")),
   life: lazy(() => import("../features/life/LifePage")),
   memory: lazy(() => import("../features/memory/MemoryPage")),
 };

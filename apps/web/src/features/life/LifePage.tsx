@@ -362,25 +362,25 @@ export default function LifePage() {
         </div>
         <StatusRail
           tone={
-            state.peer.verified_at
-              ? state.peer.code === "ok"
+            state.peer.code === "unverified"
+              ? "yellow"
+              : state.peer.code === "ok"
                 ? "blue"
                 : "red"
-              : "yellow"
           }
           label={
-            state.peer.verified_at
-              ? state.peer.code === "ok"
+            state.peer.code === "unverified"
+              ? "已配置，尚未验证"
+              : state.peer.code === "ok"
                 ? "最近有真实读取"
                 : "最近读取失败"
-              : "已配置，尚未验证"
           }
         >
           <p>
             这里展示角色最后一次持久化的虚构生活状态，不会触发生活时钟。
-            {state.peer.verified_at
-              ? `最近一次读取：${state.peer.verified_at}（${state.peer.code}）`
-              : "尚无真实读取记录。"}
+            {state.peer.code === "unverified"
+              ? "尚无真实读取记录。"
+              : `最近一次读取状态：${state.peer.code}${state.peer.verified_at ? `，成功于 ${state.peer.verified_at}` : ""}。`}
           </p>
         </StatusRail>
         {actors.length > 0 && (

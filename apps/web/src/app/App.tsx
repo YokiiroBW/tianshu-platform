@@ -209,6 +209,8 @@ function AppShell() {
     page = <pages.resources />;
   else if (current.id === "projects" && section === 0)
     page = <pages.knowledge />;
+  else if (current.id === "projects" && section === 1)
+    page = <pages.experience />;
   else if (current.id === "settings")
     page = <pages.settings section={section} />;
   else page = <UnavailablePage module={current} section={section} />;

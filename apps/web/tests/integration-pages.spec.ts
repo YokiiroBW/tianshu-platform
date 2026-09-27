@@ -535,3 +535,212 @@ test("external HA setup saves a scoped target then performs one read-only check"
     ),
   ).toBe(true);
 });
+
+test("project lessons, reviewed experience and explicit continuation stay scoped", async ({
+  page,
+}, testInfo) => {
+  await session(page);
+  const calls: { path: string; body: Record<string, unknown> }[] = [];
+  let checks = 0;
+  await page.route("**/api/web/knowledge/*", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    calls.push({ path, body });
+    if (path.endsWith("/state"))
+      return answer(route, {
+        available: true,
+        code: "ready",
+        projects: [
+          {
+            project_id: "project-a",
+            label: "测试项目",
+            checkouts: [{ id: "checkout-a", label: "主任务检出" }],
+          },
+        ],
+        peer: { configured: true, verified_at: null, code: "unverified" },
+      });
+    if (path.endsWith("/lessons"))
+      return answer(route, {
+        project_id: "project-a",
+        operation: "lessons",
+        result: {
+          lessons: [
+            {
+              lesson_id: "lesson-a",
+              version: 2,
+              trigger: "重复回执",
+              symptom: "重复执行",
+              cause: "未核请求号",
+              correction: "先核请求号",
+              verification: "夹具复核通过",
+              scope: { platform: "平台", language: "Python", framework: "无" },
+              evidence: [{ block_id: "b1" }],
+            },
+          ],
+          omissions: [],
+          retrieval: "lexical",
+          trust: "operator_statement_with_source_evidence",
+        },
+      });
+    if (path.endsWith("/experiences"))
+      return answer(route, {
+        project_id: "project-a",
+        operation: "experiences",
+        result: {
+          entries: [
+            {
+              entry_id: "entry-a",
+              version: 1,
+              title: "回执处理准则",
+              rule: "先检查请求号",
+              applicability: ["重复提交"],
+              excludes: [],
+              counterexamples: [],
+              recheck_after: null,
+              evidence: "protected",
+            },
+          ],
+          omissions: [],
+          retrieval: "lexical",
+          trust: "approved_operator_rule_with_protected_citations",
+        },
+      });
+    if (path.endsWith("/continuation"))
+      return answer(route, {
+        project_id: "project-a",
+        operation: "continuation",
+        result: {
+          handle: "opaque-session-handle",
+          expires_in: 900,
+          status: "recovered",
+          checkout: {
+            id: "checkout-a",
+            branch: "codex/test",
+            head: "a".repeat(40),
+            dirty: false,
+            collected_at: "2026-09-27T00:00:00Z",
+          },
+          index: { total: 3, listed: 3, truncated: false },
+          state: {
+            version: 2,
+            current: true,
+            stale_evidence: [],
+            goal: "完成只读接入",
+            constraints: ["使用登记检出"],
+            unfinished: ["现场核对"],
+          },
+          omissions: [],
+          budget: { limit_bytes: 16384, used_bytes: 1000, over_budget: false },
+          revision: 5,
+        },
+      });
+    if (path.endsWith("/continuation-check")) {
+      checks++;
+      if (checks === 2)
+        return answer(route, { code: "continuation_handle_expired" }, 409);
+      return answer(route, {
+        project_id: "project-a",
+        operation: "continuation-check",
+        result: {
+          valid: false,
+          reason: "worktree_changed",
+          differences: ["worktree_changed"],
+          observed: true,
+          checkout_id: "checkout-a",
+          checked_at: "2026-09-27T00:01:00Z",
+        },
+      });
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  await page.goto("/#/projects/1");
+  await expect(
+    page.getByRole("heading", { name: "检索项目错题" }),
+  ).toBeVisible();
+  expect(calls.map((call) => call.path)).toEqual(["/api/web/knowledge/state"]);
+  await page.getByLabel("检索关键词").fill("回执");
+  await page.getByRole("button", { name: "搜索" }).click();
+  await expect(page.getByRole("heading", { name: "重复回执" })).toBeVisible();
+  await page.getByRole("button", { name: "已审阅经验" }).click();
+  await page.getByRole("button", { name: "搜索" }).click();
+  await expect(
+    page.getByRole("heading", { name: "回执处理准则" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "交接快照" }).click();
+  expect(
+    calls.filter((call) => call.path.includes("continuation")),
+  ).toHaveLength(0);
+  await page.getByLabel("已登记 checkout").selectOption("checkout-a");
+  await page.getByLabel("交接线索关键词").fill("回执");
+  await page.getByRole("button", { name: "读取此 checkout 的交接" }).click();
+  await expect(page.getByText("完成只读接入")).toBeVisible();
+  expect(calls.at(-1)).toMatchObject({
+    path: "/api/web/knowledge/continuation",
+    body: {
+      project_id: "project-a",
+      checkout_id: "checkout-a",
+      text: "回执",
+      budget_bytes: 16384,
+    },
+  });
+  expect(await page.locator("body").innerText()).not.toContain(
+    "opaque-session-handle",
+  );
+  await page.getByRole("button", { name: "核对当前状态（只读一次）" }).click();
+  await expect(page.getByText("当前状态有差异或无法确认")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("experience.png"),
+    fullPage: true,
+  });
+  expect(calls.at(-1)).toMatchObject({
+    path: "/api/web/knowledge/continuation-check",
+    body: { project_id: "project-a", handle: "opaque-session-handle" },
+  });
+  await page.getByRole("button", { name: "核对当前状态（只读一次）" }).click();
+  await expect(
+    page.getByText("交接快照的核对时限已过", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "交接快照 · checkout-a" }),
+  ).toHaveCount(0);
+  expect(JSON.stringify(calls)).not.toContain("C:\\");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});
+
+test("project experience distinguishes a disabled read from empty results and no checkout", async ({
+  page,
+}) => {
+  await session(page);
+  await page.route("**/api/web/knowledge/*", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/state"))
+      return answer(route, {
+        available: true,
+        code: "ready",
+        projects: [
+          { project_id: "project-a", label: "测试项目", checkouts: [] },
+        ],
+        peer: { configured: true, verified_at: null, code: "unverified" },
+      });
+    if (path.endsWith("/lessons"))
+      return answer(route, { code: "knowledge_operation_not_enabled" }, 503);
+    throw new Error(`unexpected ${path}`);
+  });
+  await page.goto("/#/projects/1");
+  await page.getByLabel("检索关键词").fill("回执");
+  await page.getByRole("button", { name: "搜索" }).click();
+  await expect(
+    page.getByText("此项项目知识读取尚未由部署端单独启用", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "本次关键词没有匹配条目" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "交接快照" }).click();
+  await expect(
+    page.getByRole("heading", { name: "此项目未登记可读取的 checkout" }),
+  ).toBeVisible();
+});
