@@ -16,7 +16,10 @@ from .persona_page_config import page_configuration
 from .projections import Projections
 from .storage import Store
 from .web_access import WebAccess
+from .external_catalog import validate_configuration as validate_external_configuration
 from .web_account import WebAccount
+from .web_readers import validate_readers
+from .web_memory import validate_memory_binding
 from .sources import Sources
 
 
@@ -55,6 +58,9 @@ def registered_credentials(settings, *, include_setup=True):
         if isinstance(items, dict):
             for item in items.values():
                 take(item)
+    take(settings.get("web_knowledge"))
+    take(settings.get("web_life"))
+    take(settings.get("web_memory"))
     if include_setup:
         account = settings.get("web_account")
         if isinstance(account, dict) and account.get("mode") == "create":
@@ -102,6 +108,10 @@ SETTINGS_KEYS = frozenset(
         "home",
         "persona_connections",
         "web_personas",
+        "web_knowledge",
+        "web_life",
+        "web_memory",
+        "web_external",
         "diagnostics",
     }
 )
@@ -175,6 +185,27 @@ def validate_settings(settings):
             other = secret(name)
             if other and hmac.compare_digest(candidate, other.encode("utf-8")):
                 raise Fault("invalid_input", 400)
+    # The new readers use their own identities, never a web operator or another peer token.
+    existing = registered_credentials(
+        {
+            key: value
+            for key, value in settings.items()
+            if key not in {"web_knowledge", "web_life", "web_memory"}
+        }
+    )
+    persona_table = settings.get("persona_connections")
+    if isinstance(persona_table, dict):
+        existing = (
+            *existing,
+            *(
+                entry["token_env"]
+                for entry in persona_table.values()
+                if isinstance(entry, dict) and isinstance(entry.get("token_env"), str)
+            ),
+        )
+    validate_readers(settings, existing)
+    validate_memory_binding(settings, auth)
+    validate_external_configuration(settings.get("web_external"), settings)
     connections = persona_connections(
         settings.get("persona_connections"), contracts.check, credentials
     )

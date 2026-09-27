@@ -64,6 +64,24 @@ CANDIDATE_SCHEMAS = {"request.schema.json": "request", "response.schema.json": "
 # The four read operations this consumer profile may forward. Nothing else is ever sent.
 CANDIDATE_OPERATIONS = ("get", "history_page", "revision", "compare")
 MANIFEST_FILE = "manifest.json"
+# The coordinator publishes this digest only after actual producer/consumer HTTPS and browser
+# acceptance. Until it is pinned, a production page cannot load any locally edited package.
+PUBLISHED_MANIFEST_SHA256 = None
+PUBLISHED_PRODUCER_COMMIT = "31677983798ba27b24d57925feab4774c2eec30f"
+PUBLISHED_SAMPLE_PRODUCER_COMMIT = CANDIDATE_PRODUCER_COMMIT
+PUBLISHED_MANIFEST_KEYS = {
+    "package",
+    "version",
+    "status",
+    "producer_commit",
+    "operations",
+    "production_publish_authorized",
+    "joint_runtime_acceptance",
+    "sample_count",
+    "sample_producer_commit",
+    "hash_basis",
+    "sha256",
+}
 
 # ------------------------------------------------------------------- shape limits
 
@@ -77,6 +95,7 @@ PAGE_SETTING_KEYS = {
     "allowed_subjects",
     "candidate_directory",
     "allow_candidate",
+    "published_directory",
 }
 SUBJECT_LIMIT = 64
 CURSOR_LIMIT = 2048
@@ -97,16 +116,17 @@ CURSOR_FIELDS = ("kind", "authority", "connection", "subjects", "page", "positio
 class Candidate:
     """One verified candidate package: hashes proven, schemas compiled, nothing else."""
 
-    def __init__(self, directory, manifest, request_validator, response_validator):
+    def __init__(self, directory, manifest, request_validator, response_validator, manifest_sha256):
         self.directory = directory
         self.manifest = manifest
         self.request_validator = request_validator
         self.response_validator = response_validator
+        self.manifest_sha256 = manifest_sha256
 
     @property
     def word(self):
         """One short, non-secret word for exactly this verified package."""
-        return digest({"manifest": CANDIDATE_MANIFEST_SHA256, "sha256": self.manifest["sha256"]})
+        return digest({"manifest": self.manifest_sha256, "sha256": self.manifest["sha256"]})
 
 
 def _read_checked(path, expected=None):
@@ -166,6 +186,72 @@ def load_candidate(directory):
         manifest,
         Draft202012Validator(schemas["request"]),
         Draft202012Validator(schemas["response"]),
+        CANDIDATE_MANIFEST_SHA256,
+    )
+
+
+def load_published(directory):
+    """Load only the coordinator's pinned, fully accepted publication, byte for byte."""
+    require(
+        isinstance(PUBLISHED_MANIFEST_SHA256, str)
+        and re.fullmatch(r"[0-9a-f]{64}", PUBLISHED_MANIFEST_SHA256) is not None,
+        "dependency_unavailable",
+        503,
+    )
+    root = Path(directory)
+    require(root.is_absolute() and root.is_dir(), "dependency_unavailable", 503)
+    try:
+        raw = (root / MANIFEST_FILE).read_bytes()
+        require(b"\r" not in raw, "dependency_unavailable", 503)
+        require(
+            hashlib.sha256(raw).hexdigest() == PUBLISHED_MANIFEST_SHA256,
+            "dependency_unavailable",
+            503,
+        )
+        manifest = loads(raw)
+        require(set(manifest) == PUBLISHED_MANIFEST_KEYS, "dependency_unavailable", 503)
+        require(
+            manifest["package"] == "persona-management/v1"
+            and manifest["version"] == "1.0.0"
+            and manifest["status"] == "published"
+            and manifest["production_publish_authorized"] is True
+            and manifest["joint_runtime_acceptance"] == "passed"
+            and manifest["producer_commit"] == PUBLISHED_PRODUCER_COMMIT
+            and manifest["sample_producer_commit"] == PUBLISHED_SAMPLE_PRODUCER_COMMIT
+            and tuple(manifest["operations"]) == CANDIDATE_OPERATIONS
+            and type(manifest["sample_count"]) is int
+            and manifest["sample_count"] >= 29
+            and manifest["hash_basis"] == "exact UTF-8 LF file bytes; manifest excluded",
+            "dependency_unavailable",
+            503,
+        )
+        hashes = manifest["sha256"]
+        require(
+            isinstance(hashes, dict) and set(hashes) == set(CANDIDATE_FILES),
+            "dependency_unavailable",
+            503,
+        )
+        schemas = {}
+        for name in CANDIDATE_FILES:
+            data = (root / name).read_bytes()
+            require(b"\r" not in data, "dependency_unavailable", 503)
+            require(
+                isinstance(hashes[name], str) and hashlib.sha256(data).hexdigest() == hashes[name],
+                "dependency_unavailable",
+                503,
+            )
+            if name in CANDIDATE_SCHEMAS:
+                schemas[CANDIDATE_SCHEMAS[name]] = loads(data)
+    except Fault:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        raise Fault("dependency_unavailable", 503) from None
+    return Candidate(
+        root,
+        manifest,
+        Draft202012Validator(schemas["request"]),
+        Draft202012Validator(schemas["response"]),
+        PUBLISHED_MANIFEST_SHA256,
     )
 
 
@@ -272,9 +358,16 @@ def page_configuration(section, connection_table, mode, check):
     enabled = section.get("enabled", False)
     allow_candidate = section.get("allow_candidate", False)
     directory = section.get("candidate_directory")
+    published_directory = section.get("published_directory")
     require(directory is None or isinstance(directory, str), "invalid_input", 400)
     if directory is not None:
         require(Path(directory).is_absolute(), "invalid_input", 400)
+    require(
+        published_directory is None
+        or (isinstance(published_directory, str) and Path(published_directory).is_absolute()),
+        "invalid_input",
+        400,
+    )
     connection_id = _text(section["connection_id"], 128)
     require(connection_id in connection_table, "invalid_input", 400)
     subjects = section["allowed_subjects"]
@@ -297,12 +390,18 @@ def page_configuration(section, connection_table, mode, check):
     if not enabled:
         # Not a persona deployment; the section is still validated so a typo cannot look ready.
         return rule
-    require(allow_candidate, "invalid_input", 400)
-    require(directory is not None, "invalid_input", 400)
-    # A candidate is a rehearsal read of an unpublished contract; a production TLS deployment
-    # must never load it, whatever the section asks for.
-    require(mode == "local_rehearsal", "invalid_input", 400)
-    rule["candidate"] = load_candidate(directory)
+    if published_directory is not None:
+        require(
+            mode == "service_https" and directory is None and not allow_candidate,
+            "invalid_input",
+            400,
+        )
+        rule["candidate"] = load_published(published_directory)
+    else:
+        require(allow_candidate and directory is not None, "invalid_input", 400)
+        # A candidate is a rehearsal read of an unpublished contract.
+        require(mode == "local_rehearsal", "invalid_input", 400)
+        rule["candidate"] = load_candidate(directory)
     return rule
 
 

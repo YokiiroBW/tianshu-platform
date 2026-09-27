@@ -25,6 +25,7 @@ import ipaddress
 import math
 import re
 import sqlite3
+import ssl
 import uuid
 from contextlib import closing
 from urllib.parse import urlsplit
@@ -35,6 +36,7 @@ from . import diagnostics
 from .auth import secret
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
 from .storage import is_ledger_key
+from .web_external_net import PinnedResolver
 
 KINDS = {"light", "switch", "sensor"}
 CONTROLLABLE = {"light", "switch"}
@@ -147,7 +149,12 @@ class Home:
     def __init__(self, platform, console):
         self.p = platform
         self.console = console
-        self.config = platform.settings.get("home")
+        candidate = getattr(console, "external", None)
+        self.external = candidate if candidate is not None and candidate.catalog is not None else None
+        self.external_revision = self.external.home_generation() if self.external else None
+        self.config = (
+            self.external.home_value() if self.external is not None else platform.settings.get("home")
+        )
         self.enabled = False
         self.entities = {}
         self.templates = {}
@@ -158,7 +165,10 @@ class Home:
         self.base_url = None
         self.token_env = None
         self.clock = platform.models.clock
-        self.ledger_path = platform.store.path + ".home-controls.sqlite"
+        self.ledger_path = platform.store.path + (
+            f".home-controls.external.{self.external_revision}.sqlite"
+            if self.external else ".home-controls.sqlite"
+        )
         if self.config is not None:
             self._configure()
 
@@ -167,7 +177,7 @@ class Home:
         require(
             isinstance(c, dict)
             and set(c) <= SETTING_KEYS
-            and {"base_url", "token_env", "entities"} <= set(c),
+            and ({"base_url", "entities"} if self.external else {"base_url", "token_env", "entities"}) <= set(c),
             "invalid_input",
             400,
         )
@@ -176,13 +186,14 @@ class Home:
         reviewed = c.get("reviewed_addresses", [])
         require(isinstance(reviewed, list) and 1 <= len(reviewed) <= 8, "invalid_input", 400)
         self._address(c["base_url"], reviewed, c.get("allow_private_http", False))
-        require(
-            isinstance(c["token_env"], str)
-            and re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", c["token_env"]) is not None,
-            "invalid_input",
-            400,
-        )
-        self.token_env = c["token_env"]
+        if not self.external:
+            require(
+                isinstance(c["token_env"], str)
+                and re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", c["token_env"]) is not None,
+                "invalid_input",
+                400,
+            )
+            self.token_env = c["token_env"]
         ttl = c.get("unlock_ttl_seconds", 900)
         require(type(ttl) is int and 60 <= ttl <= 3600, "invalid_input", 400)
         timeout = c.get("timeout_seconds", 4)
@@ -266,7 +277,8 @@ class Home:
                     400,
                 )
                 # This local-only platform cannot approve a new cleartext production boundary.
-                require(all(a.is_loopback for a in addresses), "invalid_input", 400)
+                if not self.external:
+                    require(all(a.is_loopback for a in addresses), "invalid_input", 400)
             try:
                 literal = ipaddress.ip_address(url.hostname)
             except ValueError:
@@ -331,6 +343,13 @@ class Home:
 
     @property
     def token(self):
+        if self.external:
+            connection = self.external.home_connection()
+            return (
+                connection["credential"]
+                if connection and connection["managed_revision"] == self.external_revision
+                else None
+            )
         return secret(self.token_env) if self.token_env else None
 
     def code(self, session=None):
@@ -392,6 +411,25 @@ class Home:
     # ---------------------------------------------------------------- reading
 
     def _client(self):
+        if self.external:
+            connection = self.external.home_connection()
+            require(
+                connection is not None and connection["managed_revision"] == self.external_revision,
+                "external_revision_changed",
+                409,
+            )
+            context = (
+                ssl.create_default_context(cadata=connection["ca_pem"])
+                if connection["ca_pem"]
+                else ssl.create_default_context()
+            )
+            return aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+                trust_env=False,
+                connector=aiohttp.TCPConnector(
+                    resolver=PinnedResolver(connection["pins"]), ssl=context
+                ),
+            )
         return aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=False
         )
@@ -509,6 +547,7 @@ class Home:
             reading["unit"] = unit
         # The registered unit is the reviewed one; HA may only confirm it.
         reading["unit"] = entity["unit"] or reading["unit"]
+        require(self.console.home is self, "external_revision_changed", 409)
         await self.p.local_work.run(self._store_reading, entity_id, reading)
         return reading
 

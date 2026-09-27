@@ -109,10 +109,11 @@ class WebAssets:
                 "label": connection_id,
                 # Whether the deployment holds a credential is not a secret; whether it works is
                 # not claimed here, because only a real read can establish that.
-                "credential_registered": secret(
-                    self.p.assets.connections[connection_id]["token_env"]
-                )
-                is not None,
+                "credential_registered": (
+                    self.console.external.asset_credential_present()
+                    if self.p.assets.connections[connection_id] == {"managed_external": True}
+                    else secret(self.p.assets.connections[connection_id]["token_env"]) is not None
+                ),
             }
             for connection_id in self.allowed
         ]
