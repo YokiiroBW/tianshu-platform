@@ -105,8 +105,8 @@ export function ExternalConnectionsPanel() {
     return controller;
   }
 
-  async function load() {
-    if (!csrf) return;
+  async function load(): Promise<View | null> {
+    if (!csrf) return null;
     const controller = start();
     try {
       const next = await integrationPost<View>(
@@ -115,12 +115,13 @@ export function ExternalConnectionsPanel() {
         csrf,
         controller.signal,
       );
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) return null;
       setUnavailable(false);
       setView(next);
       setDrafts({ assets: draftOf(next.assets), home: draftOf(next.home) });
+      return next;
     } catch (cause) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) return null;
       setView(null);
       setDrafts(null);
       setUnavailable(
@@ -132,6 +133,7 @@ export function ExternalConnectionsPanel() {
           ].includes(cause.code),
       );
       setError(readFailure(cause));
+      return null;
     } finally {
       if (!controller.signal.aborted) setBusy(false);
     }
@@ -164,8 +166,9 @@ export function ExternalConnectionsPanel() {
       );
       if (!controller.signal.aborted) {
         setPassword("");
-        await load();
-        setNotice("管理操作已解锁。仅当前登录窗口可用。");
+        const refreshed = await load();
+        if (refreshed?.unlocked)
+          setNotice("管理操作已解锁。仅当前登录窗口可用。");
       }
     } catch (cause) {
       if (!controller.signal.aborted) setError(readFailure(cause));
@@ -181,8 +184,8 @@ export function ExternalConnectionsPanel() {
     try {
       await integrationPost("external/lock", {}, csrf, controller.signal);
       if (!controller.signal.aborted) {
-        await load();
-        setNotice("管理操作已锁定。");
+        const refreshed = await load();
+        if (refreshed && !refreshed.unlocked) setNotice("管理操作已锁定。");
       }
     } catch (cause) {
       if (!controller.signal.aborted) setError(readFailure(cause));
@@ -256,7 +259,14 @@ export function ExternalConnectionsPanel() {
             }
           : before,
       );
-      await load();
+      const refreshed = await load();
+      if (!refreshed) return;
+      if (refreshed.revision !== result.revision) {
+        setNotice(
+          "本次保存已提交，但当前配置修订又发生变化。请重新检查后检测。",
+        );
+        return;
+      }
       setNotice(
         result.applied
           ? "连接设置已保存并生效，尚未验证业务读取。请点击“检测连接”。"
@@ -292,14 +302,34 @@ export function ExternalConnectionsPanel() {
     const controller = start();
     setNotice("");
     try {
+      const kind = selected;
       const result = await integrationPost<TestResult>(
         "external/test",
-        { kind: selected },
+        { kind },
         csrf,
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      await load();
+      const refreshing = load();
+      const refreshedController = active.current;
+      const refreshed = await refreshing;
+      if (
+        !refreshed ||
+        active.current !== refreshedController ||
+        refreshedController?.signal.aborted
+      )
+        return;
+      const receipt = refreshed[kind].last_test;
+      if (
+        result.revision !== refreshed.revision ||
+        receipt?.revision !== refreshed.revision ||
+        receipt.state !== result.state
+      ) {
+        setNotice(
+          "检测结果对应旧配置，或当前配置的检测回执已变化。请重新检测。",
+        );
+        return;
+      }
       setNotice(
         result.state === "connected"
           ? "一次真实只读检测已通过。仍须在业务页面核对授权范围与内容。"
@@ -353,6 +383,7 @@ export function ExternalConnectionsPanel() {
             <button
               type="button"
               aria-pressed={selected === "assets"}
+              disabled={busy}
               onClick={() => {
                 setSelected("assets");
                 setError("");
@@ -364,6 +395,7 @@ export function ExternalConnectionsPanel() {
             <button
               type="button"
               aria-pressed={selected === "home"}
+              disabled={busy}
               onClick={() => {
                 setSelected("home");
                 setError("");

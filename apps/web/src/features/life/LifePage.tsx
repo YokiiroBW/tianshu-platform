@@ -238,6 +238,20 @@ export default function LifePage() {
     if (actor) void readActor(actor);
   }, [actor, csrf]);
 
+  function changeActor(next: string) {
+    if (next === actor) return;
+    generation.current++;
+    active.current?.abort();
+    setSnapshot(null);
+    setDiaries([]);
+    setDiaryCursor(null);
+    setSelected(null);
+    setRevision(null);
+    setError("");
+    setBusy(false);
+    setActor(next);
+  }
+
   async function moreDiaries() {
     if (!csrf || !actor || !diaryCursor) return;
     const controller = start();
@@ -374,7 +388,7 @@ export default function LifePage() {
             选择角色{" "}
             <select
               value={actor}
-              onChange={(event) => setActor(event.target.value)}
+              onChange={(event) => changeActor(event.target.value)}
             >
               {actors.map((row) => (
                 <option key={row.actor_id} value={row.actor_id}>

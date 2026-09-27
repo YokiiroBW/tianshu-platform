@@ -211,6 +211,24 @@ export default function KnowledgePage() {
     if (project && tab === "documents") void listDocuments(project);
   }, [project, csrf]);
 
+  function changeProject(next: string) {
+    if (next === project) return;
+    scope.current++;
+    current.current?.abort();
+    setDocs(null);
+    setItems([]);
+    setSelected(null);
+    setDetail(null);
+    setBlocks([]);
+    setQuery(null);
+    setNotes(null);
+    setTerm("");
+    setInput("");
+    setError("");
+    setBusy(false);
+    setProject(next);
+  }
+
   async function readDocument(
     row: Document,
     cursor: string | null = null,
@@ -387,7 +405,7 @@ export default function KnowledgePage() {
             选择项目{" "}
             <select
               value={project}
-              onChange={(event) => setProject(event.target.value)}
+              onChange={(event) => changeProject(event.target.value)}
             >
               {state.projects.map((row) => (
                 <option key={row.project_id} value={row.project_id}>
