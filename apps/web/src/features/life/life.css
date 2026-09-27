@@ -1,0 +1,89 @@
+.life-page {
+  display: grid;
+  gap: var(--space-4);
+}
+.life-page .status-rail {
+  margin-bottom: var(--space-4);
+}
+.life-actor {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 24rem;
+}
+.life-actor select {
+  min-height: var(--control-height);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+}
+.life-columns {
+  display: grid;
+  grid-template-columns: minmax(15rem, 0.8fr) minmax(0, 1.2fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+.life-columns .panel {
+  min-width: 0;
+}
+.life-list {
+  display: grid;
+  gap: var(--space-2);
+  list-style: none;
+  margin: var(--space-4) 0;
+  padding: 0;
+}
+.life-list button {
+  width: 100%;
+  display: grid;
+  gap: var(--space-1);
+  text-align: left;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
+  background: var(--color-surface);
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+.life-list button[data-selected] {
+  border-color: var(--color-accent);
+  background: var(--color-selection);
+}
+.life-list small,
+.life-revision small {
+  color: var(--color-muted);
+}
+.life-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-4) 0 0;
+}
+.life-facts div {
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  overflow-wrap: anywhere;
+}
+.life-facts dt {
+  color: var(--color-muted);
+  font-size: var(--text-small);
+}
+.life-facts dd {
+  margin: var(--space-1) 0 0;
+}
+.life-revision {
+  display: grid;
+  gap: var(--space-3);
+}
+.life-revision > p:nth-child(2) {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .life-columns,
+  .life-facts {
+    grid-template-columns: 1fr;
+  }
+}

@@ -26,14 +26,14 @@ export const modules = [
     icon: MessageCircle,
     group: "个人空间",
     description: "文字对话与角色近况",
-    sections: ["文字对话", "角色概览", "人格与世界"],
+    sections: ["文字对话", "生活与日记", "人格与世界"],
   },
   {
     id: "room",
     label: "小屋",
     icon: House,
     group: "个人空间",
-    description: "角色生活与日记",
+    description: "小屋环境预览",
     sections: [],
   },
   {
@@ -42,7 +42,7 @@ export const modules = [
     icon: Network,
     group: "个人空间",
     description: "人物与共同经历",
-    sections: ["记忆星图", "人物与群画像", "账号关联", "召回检视"],
+    sections: ["记忆概览", "人物与群画像", "账号关联", "本人记忆"],
   },
   {
     id: "resources",
@@ -90,6 +90,9 @@ export const pages = {
   settings: lazy(() => import("../features/settings/SettingsPage")),
   home: lazy(() => import("../features/home/HomePage")),
   resources: lazy(() => import("../features/resources/ResourcesPage")),
+  knowledge: lazy(() => import("../features/knowledge/KnowledgePage")),
+  life: lazy(() => import("../features/life/LifePage")),
+  memory: lazy(() => import("../features/memory/MemoryPage")),
 };
 
 export function resolveRoute(hash: string) {
