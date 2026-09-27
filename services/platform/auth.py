@@ -34,6 +34,9 @@ ACTIONS = {
     "source.dispatch",
     "device.control",
     "persona.read",
+    "knowledge.read",
+    "life.read",
+    "memory.read",
 }
 PURPOSES = {"dialogue", "config.snapshot"}
 
@@ -57,7 +60,13 @@ class Auth:
         # Both persona sections are part of the authority a browser session is pinned to, so
         # re-pointing the character service or narrowing the subject allowlist expires the
         # sessions that were opened against the previous deployment.
-        for key in ("persona_connections", "web_personas"):
+        for key in (
+            "persona_connections",
+            "web_personas",
+            "web_knowledge",
+            "web_life",
+            "web_memory",
+        ):
             if key in settings:
                 policy[key] = settings[key]
         self.policy_digest = digest(policy)
@@ -71,6 +80,17 @@ class Auth:
             sorted(
                 entry["token_env"]
                 for entry in (table.values() if isinstance(table, dict) else ())
+                if isinstance(entry, dict) and isinstance(entry.get("token_env"), str)
+            )
+        )
+        self.browser_reader_envs = tuple(
+            sorted(
+                entry["token_env"]
+                for entry in (
+                    settings.get("web_knowledge"),
+                    settings.get("web_life"),
+                    settings.get("web_memory"),
+                )
                 if isinstance(entry, dict) and isinstance(entry.get("token_env"), str)
             )
         )
@@ -199,6 +219,9 @@ class Auth:
                     k: digest(secret(p["token_env"])) for k, p in self.principals.items()
                 },
                 "persona": {name: digest(secret(name)) for name in self.persona_envs},
+                "browser_readers": {
+                    name: digest(secret(name)) for name in self.browser_reader_envs
+                },
                 "expired": sorted(
                     k
                     for k, e in self.entries.items()

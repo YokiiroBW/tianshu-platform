@@ -30,6 +30,9 @@ from .web_dialogue import WebDialogue
 from .web_models import WebModels
 from .provider_management import ProviderManagement
 from .web_personas import WebPersonas
+from .web_readers import WebReader
+from .web_memory import WebMemory
+from .web_connections import view as connections_view
 from .web_sender import WebSender
 
 COOKIE = "tianshu_session"
@@ -51,6 +54,9 @@ PERSONAS_PREFIX = "/api/web/personas/"
 # The asset page is assembled here as one route; its scope, rules and read record belong to
 # `services.platform.web_assets`.
 ASSETS_PREFIX = "/api/web/assets/"
+KNOWLEDGE_PREFIX = "/api/web/knowledge/"
+LIFE_PREFIX = "/api/web/life/"
+MEMORY_PREFIX = "/api/web/memory/"
 
 
 class WebConsole:
@@ -169,6 +175,9 @@ class WebConsole:
             authority=lambda: self.authority()[0],
             run_local=platform.local_work.run,
         )
+        self.knowledge = WebReader("knowledge", platform, self)
+        self.life = WebReader("life", platform, self)
+        self.memory = WebMemory(platform, self)
 
     def verify_password(self, password):
         """One fixed-cost verifier for the login form and the management unlock step."""
@@ -645,6 +654,31 @@ class WebConsole:
                 401,
             )
             require(self.persona_read_authorised(), "persona_read_required", 403)
+            return web.json_response(result)
+        if request.path.startswith(KNOWLEDGE_PREFIX) or request.path.startswith(LIFE_PREFIX):
+            reader = self.knowledge if request.path.startswith(KNOWLEDGE_PREFIX) else self.life
+            result = await reader.route(request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
+        if request.path.startswith(MEMORY_PREFIX):
+            result = await self.memory.route(request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
+        if request.path == "/api/web/connections/view":
+            result = connections_view(self, body)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
             return web.json_response(result)
         raise Fault("not_found", 404)
 

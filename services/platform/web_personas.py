@@ -33,6 +33,7 @@ from .persona_page_config import (
     PageCursor,
     request_document,
 )
+from datetime import datetime, timezone
 
 PREFIX = "/api/web/personas/"
 ROUTES = ("catalog", "history", "revision", "compare")
@@ -135,6 +136,7 @@ class WebPersonas:
         self.run_local = run_local
         self.cursor = PageCursor()
         self.active = 0
+        self.last_success = None
 
     # ------------------------------------------------------------------- state
 
@@ -170,6 +172,7 @@ class WebPersonas:
         # The same proofs again after every `await`: a session, a read action or an authority
         # that stopped holding while the peer was answering does not get a body.
         await self._prove(session)
+        self.last_success = datetime.now(timezone.utc).isoformat()
         return result
 
     async def _serve(self, name, body, session):
