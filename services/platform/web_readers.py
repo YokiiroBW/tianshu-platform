@@ -7,6 +7,7 @@ credential, reader identity or upstream operation. The peers retain their own au
 import asyncio
 import hmac
 import re
+import secrets
 import ssl
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +24,10 @@ TOKEN_ENV = re.compile(r"[A-Z][A-Z0-9_]{0,127}\Z")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 READ_ROUTES = {
-    "knowledge": frozenset({"query", "documents", "document", "notes"}),
+    "knowledge": frozenset({
+        "query", "documents", "document", "notes", "lessons", "experiences",
+        "continuation", "continuation-check",
+    }),
     "life": frozenset({"actors", "snapshot", "diaries", "revision"}),
 }
 
@@ -92,7 +96,7 @@ def validate_readers(settings, reserved):
             for item in projects:
                 require(
                     isinstance(item, dict)
-                    and set(item) == {"project_id", "label"}
+                    and set(item) in ({"project_id", "label"}, {"project_id", "label", "checkouts"})
                     and isinstance(item["project_id"], str)
                     and PROJECT_ID.fullmatch(item["project_id"]) is not None
                     and isinstance(item["label"], str)
@@ -101,6 +105,21 @@ def validate_readers(settings, reserved):
                     400,
                 )
                 ids.append(item["project_id"])
+                checkouts = item.get("checkouts", [])
+                require(isinstance(checkouts, list) and len(checkouts) <= 32, "invalid_input", 400)
+                checkout_ids = []
+                for checkout in checkouts:
+                    require(
+                        isinstance(checkout, dict)
+                        and set(checkout) == {"id", "label"}
+                        and isinstance(checkout["id"], str)
+                        and IDENTIFIER.fullmatch(checkout["id"]) is not None
+                        and isinstance(checkout["label"], str)
+                        and 1 <= len(checkout["label"]) <= 128,
+                        "invalid_input", 400,
+                    )
+                    checkout_ids.append(checkout["id"])
+                require(len(checkout_ids) == len(set(checkout_ids)), "invalid_input", 400)
             require(len(set(ids)) == len(ids), "invalid_input", 400)
         if name == "memory":
             require(
@@ -145,6 +164,49 @@ class WebReader:
         self.last = None
         self.slots = asyncio.Semaphore(4)
         self.active = 0
+        self.packages = {}
+
+    def forget_session(self, session):
+        self.packages = {
+            handle: item for handle, item in self.packages.items()
+            if item["owner"] is not session
+        }
+
+    def _prune_packages(self):
+        now = self.console.clock()
+        self.packages = {
+            handle: item for handle, item in self.packages.items()
+            if item["expires"] > now and self.console.session_valid(item["owner"])
+        }
+
+    def _package(self, session, project_id, handle):
+        require(isinstance(handle, str) and 1 <= len(handle) <= 128, "invalid_input", 400)
+        self._prune_packages()
+        item = self.packages.get(handle)
+        require(
+            item is not None and item["owner"] is session and item["project_id"] == project_id,
+            "continuation_handle_expired", 409,
+        )
+        return item["package"]
+
+    def _hold_package(self, session, project_id, checkout_id, package):
+        from .contracts import canonical
+
+        self._prune_packages()
+        owned = sum(item["owner"] is session for item in self.packages.values())
+        require(owned < 4 and len(self.packages) < 16, "too_many_requests", 429)
+        size = len(canonical(package).encode())
+        require(
+            size <= RESPONSE_LIMIT
+            and sum(item["bytes"] for item in self.packages.values()) + size <= 4 * 1024 * 1024,
+            "budget_exceeded", 413,
+        )
+        handle = secrets.token_urlsafe(32)
+        self.packages[handle] = {
+            "owner": session, "project_id": project_id, "checkout_id": checkout_id,
+            "package": package, "bytes": size, "expires": self.console.clock() + 900,
+        }
+        return handle
 
     def _authorized(self):
         principal = self.platform.auth.principals.get(self.console.config["principal"], {})
@@ -172,7 +234,11 @@ class WebReader:
         }
         if self.name == "knowledge":
             answer["projects"] = (
-                self.config["projects"] if self.config and self._authorized() else []
+                [
+                    {**project, "checkouts": project.get("checkouts", [])}
+                    for project in self.config["projects"]
+                ]
+                if self.config and self._authorized() else []
             )
         return answer
 
@@ -200,7 +266,7 @@ class WebReader:
             require(body == {}, "invalid_input", 400)
             return self.state()
         self._prove(session)
-        payload = self._request(name, body)
+        payload = self._request(name, body, session)
         require(self.active < 4, "too_many_requests", 429)
         self.active += 1
         try:
@@ -216,18 +282,38 @@ class WebReader:
         self._prove(session)
         self.last = {"at": datetime.now(timezone.utc).isoformat(), "code": "ok"}
         if self.name == "knowledge":
+            if name == "continuation":
+                handle = self._hold_package(session, body["project_id"], body["checkout_id"], result)
+                return {
+                    "project_id": body["project_id"], "operation": name,
+                    "result": self._continuation_view(result, handle),
+                }
+            if name == "continuation-check":
+                return {
+                    "project_id": body["project_id"], "operation": name,
+                    "result": {
+                        "valid": result["valid"], "reason": result["reason"],
+                        "differences": result["differences"], "observed": result["observed"],
+                        "checkout_id": result["worktree"]["id"],
+                        "checked_at": result.get("checked_at"),
+                    },
+                }
             return {"project_id": body["project_id"], "operation": name, "result": result}
         return result
 
-    def _request(self, name, body):
+    def _request(self, name, body, session):
         if self.name == "knowledge":
-            return self._knowledge(name, body)
+            return self._knowledge(name, body, session)
         return self._life(name, body)
 
-    def _knowledge(self, name, body):
+    def _knowledge(self, name, body, session):
         shapes = {
             "query": {"project_id", "text", "budget_bytes"},
             "notes": {"project_id", "text", "budget_bytes"},
+            "lessons": {"project_id", "text", "budget_bytes"},
+            "experiences": {"project_id", "text", "budget_bytes"},
+            "continuation": {"project_id", "checkout_id", "text", "budget_bytes"},
+            "continuation-check": {"project_id", "handle"},
             "documents": {"project_id", "limit", "cursor"},
             "document": {
                 "project_id",
@@ -246,12 +332,31 @@ class WebReader:
             "documents": "document_list",
             "document": "document_read",
             "notes": "note_query",
+            "lessons": "lesson_query",
+            "experiences": "experience_query",
+            "continuation": "continuation_recover",
+            "continuation-check": "continuation_check",
         }.get(name, name)
-        if name in {"query", "notes"}:
+        if name in {"query", "notes", "lessons", "experiences", "continuation"}:
+            budget = _budget(body["budget_bytes"])
+            if name == "continuation":
+                require(budget >= 4096, "invalid_input", 400)
             arguments = {
                 "text": _text(body["text"], 1024),
-                "budget_bytes": _budget(body["budget_bytes"]),
+                "budget_bytes": budget,
             }
+            if name == "experiences":
+                arguments["project_id"] = project_id
+            if name == "continuation":
+                checkout_id = _text(body["checkout_id"], 128)
+                project = next(p for p in self.config["projects"] if p["project_id"] == project_id)
+                require(
+                    checkout_id in {entry["id"] for entry in project.get("checkouts", [])},
+                    "checkout_not_allowed", 403,
+                )
+                arguments["worktree"] = checkout_id
+        elif name == "continuation-check":
+            arguments = {"package": self._package(session, project_id, body["handle"])}
         else:
             arguments = {
                 "limit": _limit(body["limit"]),
@@ -274,6 +379,33 @@ class WebReader:
                     400,
                 )
         return {"operation": operation, "project_id": project_id, "arguments": arguments}
+
+    @staticmethod
+    def _continuation_view(package, handle):
+        tree = package["worktree"]
+        state = package.get("state")
+        safe_state = None
+        if isinstance(state, dict):
+            safe_state = {
+                "version": state.get("version"),
+                "current": state.get("current"),
+                "stale_evidence": state.get("stale_evidence"),
+                "goal": state.get("goal"),
+                "constraints": state.get("constraints"),
+                "unfinished": state.get("unfinished"),
+            }
+        return {
+            "handle": handle, "expires_in": 900, "status": package["status"],
+            "checkout": {
+                "id": tree["id"], "branch": tree["branch"], "head": tree["head"],
+                "dirty": tree["dirty"], "collected_at": tree["collected_at"],
+            },
+            "index": {key: package["index"][key] for key in ("total", "listed", "truncated")},
+            "state": safe_state,
+            "omissions": package["omissions"],
+            "budget": {key: package["budget"][key] for key in ("limit_bytes", "used_bytes", "over_budget")},
+            "revision": package["revision"],
+        }
 
     def _life(self, name, body):
         shapes = {
@@ -364,6 +496,8 @@ class WebReader:
             "project_unregistered",
         }:
             raise Fault("upstream_forbidden", 403)
+        if status == 415 and code == "unsupported":
+            raise Fault("knowledge_operation_not_enabled", 503)
         if status in {404, 422} and code == "not_found":
             raise Fault("not_found", 404)
         if code in {"version_conflict", "stale_evidence", "cursor_stale", "invalid_cursor"}:
@@ -374,14 +508,44 @@ class WebReader:
 
     def _answer(self, name, payload, answer):
         if self.name == "knowledge":
-            require(answer.get("project_id") == payload["project_id"], "invalid_upstream", 502)
+            require(
+                ("project_id" not in answer or answer["project_id"] == payload["project_id"])
+                if name == "experiences"
+                else answer.get("project_id") == payload["project_id"],
+                "invalid_upstream", 502,
+            )
             field = {
                 "query": "blocks",
                 "documents": "items",
                 "document": "blocks",
                 "notes": "notes",
+                "lessons": "lessons",
+                "experiences": "entries",
+                "continuation": "units",
+                "continuation-check": "differences",
             }[name]
             require(isinstance(answer.get(field), list), "invalid_upstream", 502)
+            if name == "continuation":
+                require(
+                    answer.get("status") == "recovered"
+                    and isinstance(answer.get("seal"), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", answer["seal"]) is not None
+                    and isinstance(answer.get("worktree"), dict)
+                    and answer["worktree"].get("id") == payload["arguments"]["worktree"]
+                    and isinstance(answer.get("index"), dict)
+                    and isinstance(answer.get("budget"), dict)
+                    and isinstance(answer.get("omissions"), list),
+                    "invalid_upstream", 502,
+                )
+            if name == "continuation-check":
+                require(
+                    type(answer.get("valid")) is bool
+                    and isinstance(answer.get("reason"), str)
+                    and type(answer.get("observed")) is bool
+                    and isinstance(answer.get("worktree"), dict)
+                    and answer["worktree"].get("id") == payload["arguments"]["package"]["worktree"]["id"],
+                    "invalid_upstream", 502,
+                )
             if name in {"documents", "document"}:
                 require(
                     answer.get("next_cursor") is None or isinstance(answer["next_cursor"], str),

@@ -68,7 +68,7 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
                 "base_url": f"https://127.0.0.1:{self.port}",
                 "token_env": "TEST_KNOWLEDGE_READER",
                 "ca_file": self.cert,
-                "projects": [{"project_id": "alpha", "label": "Alpha"}],
+                "projects": [{"project_id": "alpha", "label": "Alpha", "checkouts": [{"id": "agent-a", "label": "Agent A"}]}],
             },
             "web_life": {
                 "enabled": True,
@@ -83,7 +83,10 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
             auth=SimpleNamespace(principals={"admin": self.principal}),
             other_credentials=("OTHER_READER", "TEST_KNOWLEDGE_READER", "TEST_LIFE_READER"),
         )
-        self.console = SimpleNamespace(config={"principal": "admin"}, session_valid=lambda _: True)
+        self.now = 1000
+        self.console = SimpleNamespace(
+            config={"principal": "admin"}, session_valid=lambda _: True, clock=lambda: self.now
+        )
         self.knowledge_reader = WebReader("knowledge", self.platform, self.console)
         self.life_reader = WebReader("life", self.platform, self.console)
 
@@ -101,6 +104,31 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
                     "trust": "source_material_not_instructions",
                 }
             )
+        if body["operation"] == "lesson_query":
+            return web.json_response({"project_id": "alpha", "lessons": [{"lesson_id": "lesson:a"}], "omissions": [], "retrieval": "lexical", "trust": "operator_statement_with_source_evidence"})
+        if body["operation"] == "experience_query":
+            return web.json_response({"project_id": "alpha", "entries": [{"entry_id": "experience:a"}], "omissions": [], "retrieval": "lexical", "trust": "approved_operator_rule_with_protected_citations"})
+        if body["operation"] == "continuation_recover":
+            return web.json_response({
+                "project_id": "alpha", "status": "recovered", "seal": "a" * 64,
+                "worktree": {"id": "agent-a", "branch": "main", "head": "b" * 40,
+                             "dirty": False, "collected_at": "2026-09-27T00:00:00Z",
+                             "files": [{"locator": "private/path"}]},
+                "index": {"total": 1, "listed": 1, "truncated": False,
+                          "documents": [{"locator": "private/path"}]},
+                "state": {"version": 1, "current": True, "stale_evidence": False,
+                          "goal": "Test", "constraints": [], "unfinished": []},
+                "units": [], "omissions": [],
+                "budget": {"limit_bytes": 16384, "used_bytes": 1200, "over_budget": False},
+                "revision": 1,
+            })
+        if body["operation"] == "continuation_check":
+            return web.json_response({
+                "project_id": "alpha", "valid": True, "reason": "current",
+                "differences": [], "observed": True,
+                "worktree": {"id": body["arguments"]["package"]["worktree"]["id"]},
+                "checked_at": "2026-09-27T00:00:01Z",
+            })
         return web.json_response(
             {
                 "project_id": "alpha",
@@ -164,6 +192,47 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
                 )
             self.assertEqual(error.exception.code, "forbidden")
         self.assertEqual(self.calls, [])
+
+    async def test_lesson_experience_and_session_bound_continuation(self):
+        session = {}
+        self.assertEqual(self.knowledge_reader.state()["projects"][0]["checkouts"][0]["id"], "agent-a")
+        for name, operation, field in (
+            ("lessons", "lesson_query", "lessons"),
+            ("experiences", "experience_query", "entries"),
+        ):
+            answer = await self.knowledge_reader.route(
+                "/api/web/knowledge/" + name,
+                {"project_id": "alpha", "text": "receipt", "budget_bytes": 8192}, session,
+            )
+            self.assertTrue(answer["result"][field])
+            self.assertEqual(self.calls[-1][1]["operation"], operation)
+        recovered = await self.knowledge_reader.route(
+            "/api/web/knowledge/continuation",
+            {"project_id": "alpha", "checkout_id": "agent-a", "text": "receipt", "budget_bytes": 16384},
+            session,
+        )
+        self.assertNotIn("seal", str(recovered))
+        self.assertNotIn("private/path", str(recovered))
+        handle = recovered["result"]["handle"]
+        checked = await self.knowledge_reader.route(
+            "/api/web/knowledge/continuation-check",
+            {"project_id": "alpha", "handle": handle}, session,
+        )
+        self.assertTrue(checked["result"]["valid"])
+        self.assertEqual(self.calls[-1][1]["arguments"]["package"]["seal"], "a" * 64)
+        with self.assertRaises(Fault) as error:
+            await self.knowledge_reader.route(
+                "/api/web/knowledge/continuation-check",
+                {"project_id": "alpha", "handle": handle}, {},
+            )
+        self.assertEqual(error.exception.code, "continuation_handle_expired")
+        self.now += 901
+        with self.assertRaises(Fault) as error:
+            await self.knowledge_reader.route(
+                "/api/web/knowledge/continuation-check",
+                {"project_id": "alpha", "handle": handle}, session,
+            )
+        self.assertEqual(error.exception.code, "continuation_handle_expired")
 
     async def test_configuration_rejects_widened_targets(self):
         bad = dict(self.config)

@@ -551,6 +551,7 @@ class WebConsole:
                 # unauthenticated visitor logging out has proved nothing about identity.
                 request[CONSOLE_AUTH] = AUTH_SUCCEEDED
             self.sessions.pop(digest(token), None)
+            self.knowledge.forget_session(session)
             response = web.json_response({"authenticated": False})
             response.del_cookie(
                 COOKIE,
