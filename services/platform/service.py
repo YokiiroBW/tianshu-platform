@@ -16,6 +16,7 @@ from .persona_page_config import page_configuration
 from .projections import Projections
 from .storage import Store
 from .web_access import WebAccess
+from .external_catalog import validate_configuration as validate_external_configuration
 from .web_account import WebAccount
 from .web_readers import validate_readers
 from .web_memory import validate_memory_binding
@@ -110,6 +111,7 @@ SETTINGS_KEYS = frozenset(
         "web_knowledge",
         "web_life",
         "web_memory",
+        "web_external",
         "diagnostics",
     }
 )
@@ -203,6 +205,7 @@ def validate_settings(settings):
         )
     validate_readers(settings, existing)
     validate_memory_binding(settings, auth)
+    validate_external_configuration(settings.get("web_external"), settings)
     connections = persona_connections(
         settings.get("persona_connections"), contracts.check, credentials
     )

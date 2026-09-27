@@ -37,6 +37,7 @@ ACTIONS = {
     "knowledge.read",
     "life.read",
     "memory.read",
+    "external.manage",
 }
 PURPOSES = {"dialogue", "config.snapshot"}
 

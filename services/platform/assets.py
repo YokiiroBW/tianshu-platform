@@ -16,6 +16,7 @@ from . import diagnostics
 from .asset_page_config import page_configuration
 from .auth import secret
 from .contracts import Fault, canonical, loads, require
+from .web_external_net import PinnedResolver
 
 OPERATIONS = {"libraries.list", "libraries.get", "entries.browse", "entries.get", "assets.search"}
 REQUEST_LIMIT = 65_536
@@ -36,6 +37,8 @@ def validate_connections(settings, principals):
     if settings.get("core"):
         envs.append(settings["core"]["token_env"])
     for connection in connections.values():
+        if connection == {"managed_external": True}:
+            continue
         require(
             isinstance(connection, dict)
             and set(connection) == {"endpoint", "ca_file", "token_env"},
@@ -84,6 +87,7 @@ class Assets:
     def __init__(self, store, auth, settings):
         self.store, self.auth = store, auth
         self.connections = validate_connections(settings, auth.principals)
+        self.external = None
         # The variables that belong to *other* identities: this client never sends one of their
         # values, whichever name it was pointed at. A connection's own credential is deliberately
         # not in this list - it is the one value that connection is supposed to send - and the
@@ -107,7 +111,11 @@ class Assets:
             _, principal = self.auth.authenticate(header, db, "asset.read")
             require(connection_id in principal.get("asset_connections", []))
         require(connection_id in self.connections)
-        return self.connections[connection_id]
+        connection = self.connections[connection_id]
+        if connection == {"managed_external": True}:
+            require(self.external is not None, "external_not_configured", 503)
+            return self.external.asset_connection()
+        return connection
 
     async def read(self, header, data):
         """Return only this call's result; cancellation propagates without a late result.
@@ -153,7 +161,8 @@ class Assets:
                 }
             ).encode("utf-8")
             require(len(payload) <= REQUEST_LIMIT, "budget_exceeded", 413)
-            token = secret(connection["token_env"])
+            managed = "managed_revision" in connection
+            token = connection["credential"] if managed else secret(connection["token_env"])
             require(token is not None, "dependency_unavailable", 503)
             # Distinct environment names alone do not prevent accidental shared values.
             require(
@@ -163,14 +172,27 @@ class Assets:
             )
             require(
                 all(
-                    key == connection_id or token != secret(other["token_env"])
+                    key == connection_id
+                    or other == {"managed_external": True}
+                    or token != secret(other["token_env"])
                     for key, other in self.connections.items()
                 ),
                 "dependency_unavailable",
                 503,
             )
-            tls = ssl.create_default_context(cafile=connection["ca_file"])
+            tls = (
+                ssl.create_default_context(cadata=connection["ca_pem"])
+                if managed and connection["ca_pem"]
+                else ssl.create_default_context()
+                if managed
+                else ssl.create_default_context(cafile=connection["ca_file"])
+            )
             tls.minimum_version = ssl.TLSVersion.TLSv1_2
+            connector = (
+                aiohttp.TCPConnector(resolver=PinnedResolver(connection["pins"]), ssl=tls)
+                if managed
+                else None
+            )
             remaining = DEADLINE - (time.monotonic() - started)
             require(remaining > 0, "deadline_exceeded", 504)
             attempted = True
@@ -181,6 +203,7 @@ class Assets:
                     trust_env=False,
                     cookie_jar=aiohttp.DummyCookieJar(),
                     auto_decompress=False,
+                    connector=connector,
                 ) as session:
                     async with session.post(
                         connection["endpoint"],
@@ -219,8 +242,14 @@ class Assets:
                         upstream_id = result.get("request_id")
                         require(upstream_id in (request_id, "unknown"), "invalid_upstream", 502)
                         # Recheck local revocation and credential rotation before delivery.
-                        await self.store.run_local(self.authorize, header, connection_id)
-                        require(secret(connection["token_env"]) == token, "unauthorized", 401)
+                        current = await self.store.run_local(self.authorize, header, connection_id)
+                        require(
+                            (current["managed_revision"] == connection["managed_revision"]
+                             and current["credential"] == token)
+                            if managed else secret(connection["token_env"]) == token,
+                            "unauthorized",
+                            401,
+                        )
                         await asyncio.sleep(0)
                         require(time.monotonic() - started < DEADLINE, "deadline_exceeded", 504)
                         if response.status != 200:

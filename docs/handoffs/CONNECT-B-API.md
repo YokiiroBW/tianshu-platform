@@ -19,7 +19,27 @@
 
 ## 新增只读端点的目标形状
 
+### 管理员外部连接（后端候选实现）
+
+同源 `/api/web/external/*` 仅管理员显式 `external.manage` 动作；沿用 Cookie/CSRF/Origin，保存与检测前调用 `/unlock` 以当前账号密码二次解锁，窗口 15 分钟。页面不填内部 principal/token_env。配置只对 **HA** 与 **AssetLink** 两种固定连接生效，部署仅限定可选种类、目标 CIDR 与是否允许私有 HTTP，不预登记用户要填的具体 URL/实体。
+
+| 端点 | 请求 | 响应 |
+| --- | --- | --- |
+| `POST /api/web/external/view` | `{}` | `{revision,unlocked,assets,home}`；每项含 `configured,enabled,url,credential_configured,ca_configured,last_test`，home 另含登记 `entities`；绝不回显凭据/CA 私有内容 |
+| `POST /api/web/external/unlock` | `{password}` | `{unlocked:true,expires_in:900}`，复用网页登录限流 |
+| `POST /api/web/external/lock` | `{}` | `{unlocked:false}` |
+| `POST /api/web/external/save` | `{kind:"assets"|"home",expected_revision,client_id,value,credential:{action:"keep"|"replace"|"clear",value?},ca:{action:"keep"|"replace"|"clear",value?}}` | `{revision,state:"saved_unverified",applied:true,kind}`；CAS 冲突 409，凭据与 CA 分别 keep/replace/clear |
+| `POST /api/web/external/test` | `{kind}` | `{kind,state:"connected"|"unavailable"|"unauthorized",code,checked_at,revision}`；只对已经保存的固定目标执行一次真实只读请求，不接受 URL、path、method 或请求体 |
+
+`assets.value={enabled,endpoint}`，endpoint 必须 HTTPS、精确 `/assetlink/v1/control`；实际浏览仍使用既有 AssetLink 五项读与对端 ACL。`home.value={enabled,base_url,allow_private_http,entities:[{entity_id,label,kind,unit?}]}`，kind 只允许 `sensor/light/switch` 的现有固定读数类型、实体数与字符串有界；读配置不自动生成控制模板。`credential` 对两类都是对应上游 Bearer；`ca` 仅接受最多 16 KiB 的有效 PEM X.509 证书链，拒私钥。HTTP 只在管理员显式选择、目标地址在部署允许的私有范围且地址快照已 pin 时可用。保存成功会更新服务端连接快照、令所有旧资产/设备页面作用域失效；当前保存会话保留原解锁截止时间可立即检测，不延长 15 分钟，其它会话解锁失效。保存仅代表 `saved_unverified`，检测成功后才称 connected，`last_test` 只属于所测 `revision`。新凭据不出日志/响应，独立加密库、key 与 seal 必须一致备份。
+
+`web_external` 部署只指定私有目录、允许的 CIDR 与固定 AssetLink connection ID；该 ID 在 `asset_connections` 以 `{managed_external:true}` 占位并由固定 `asset.read` 服务主体及 `web_assets` 页面绑定。网页自填目标 URL/实体，不需运维预登记其具体值。私有目录必须在停服安装阶段显式执行 `python -m services.platform.external_catalog init <绝对目录>` 并设置仅服务账号/管理员可读写 ACL；运行与只读预检只执行 `... check <绝对目录>`，缺任一目录/库/key/seal 即拒启，不自动重建。部署允许 CIDR 变化后每次使用已保存 pin 都重新按当前白名单核验，DNS 仅在保存时解析并固定。HA 私有配置不与旧静态 `home` 并用。
+
 `/api/web/knowledge/state {}` → `{available,code,projects:[{project_id,label}],peer:{configured,verified_at,code}}`。`available` 仅表示本平台连接配置完整；`verified_at:null` 表示从未实际读取。项目列表是部署端显式允许的闭集，不从浏览器传 URL/凭据。`/query {project_id,text,budget_bytes}`、`/documents {project_id,limit,cursor}`、`/document {project_id,document_id,expected_version,expected_hash,limit,cursor}`、`/notes {project_id,text,budget_bytes}` 分别只调用 Memory 的 `query/document_list/document_read/note_query`。成功体为 `{project_id,operation,result}`，其中 `result` 是 Memory 对应只读操作的有界原生结果；请求不得指定 `operation` 或 `arguments`。分页光标只由上页返回，`cursor` 首屏为 `null`。研究笔记的新增/修订/撤回没有网页写入口。
+
+**错题、经验、交接（本轮新增，候选实现中）**：`knowledge/state.projects` 每项另有 `checkouts:[{id,label}]`，由 Platform 部署明确登记并由 Memory 逐请求独立核验；无 checkout 时为 `[]`。`POST /api/web/knowledge/lessons {project_id,text,budget_bytes}`、`/experiences {project_id,text,budget_bytes}`，预算 256..32768、文本 1..1024；成功均沿用 `{project_id,operation,result}`，其中 `operation` 分别为 `lessons`/`experiences`，`result` 是对端有界的 `lessons` 或 `entries` 检索结果及 `omissions/retrieval/trust`。它们是关键词检索，不代表全量目录。Memory 的 `experience_query` 另有 `review` 权限，缺权限 403 `upstream_forbidden`，未显式开启新增 HTTP 读 503 `knowledge_operation_not_enabled`。
+
+`POST /api/web/knowledge/continuation {project_id,checkout_id,text,budget_bytes}`：预算 4096..32768，仅在用户主动点击时发出；`checkout_id` 必须在本项目 `checkouts` 闭集。Platform 调 Memory `continuation_recover`，完整封装包只保存在本网页登录会话内 15 分钟，最多 4 个，登出/权限撤销即失效。成功返回 `{project_id,operation:"continuation",result:{handle,expires_in:900,status,checkout:{id,branch,head,dirty,collected_at},index:{total,listed,truncated},state:{version,current,stale_evidence,goal,constraints,unfinished}|null,omissions,budget:{limit_bytes,used_bytes,over_budget},revision}}`；仅这些白名单字段，没有 seal、源路径、文件 locator、Git 命令、凭据或完整包。`POST /api/web/knowledge/continuation-check {project_id,handle}` 将会话内原包交给 Memory `continuation_check`，返回 `{project_id,operation:"continuation-check",result:{valid,reason,differences,observed,checkout_id,checked_at}}`。handle 只在同一会话/项目有效，失效为 409 `continuation_handle_expired`，服务端每次仍做当前项目授权；校验结果 `valid:false` 必须显示为过期/差异，不能当服务故障或当前有效。两个端点不接受路径、原包、seal 或自选 operation。Memory 只读观察实际 Git/文件，可能耗时，不做后台轮询，也不运行导入/扫描/写入。
 
 `/api/web/life/state {}` → `{available,code,peer:{configured,verified_at,code}}`。`/actors {limit,after_actor_id}`、`/snapshot {actor_id}`、`/diaries {actor_id,limit,after}`、`/revision {actor_id,diary_id,revision_id,expected_diary_version}`。成功体为对端相应只读端口的 JSON 答案，保留 `state_basis=last_persisted` 与已发布指针；日记列表不含正文，只有 `/revision` 在对端核对发布版本后返回正文。浏览器不能传 reader_id、上游 URL 或 token。
 
@@ -31,7 +51,7 @@
 
 `/api/web/memory/state {}` → `{available,code,peer:{configured,verified_at,code},actor_id}`；`actor_id` 是部署登记的固定本人 actor，未授权时为 `null`，`verified_at` 只有成功真实读取后才非空。
 
-`/api/web/memory/overview {}` → `{schema_version:1,verified_at,scope_version,memory_group_count,subject_count}`。`/subjects {limit,cursor}` → 公共字段加 `items:[{subject,categories,group_count}],next_cursor`。`/records {subject,limit,cursor}` → 公共字段加 `items:[{semantic_group_id,category,field_key,item_key,units:[{record_id,record_version,statement,conditions,negations,valid_time,uncertainty,reality}]}],next_cursor`。`subject` 只能是 `null`（本人记忆）、`{kind:"person",person_id}` 或 `{kind:"group",conversation_id}`；首页 `cursor:null`，`limit` 1..50。成功体保留 Memory 的 `verified_at`/`scope_version`，平台核验后移除上游 `scope` 与 `request_id`；`origin` 从不出浏览器。
+`/api/web/memory/overview {}` → `{schema_version:1,verified_at,scope_version,memory_group_count,counts_truncated}`；截断时计数只是下界，人物数不在 overview 中估计。`/subjects {limit,cursor}` → 公共字段加 `items:[{subject,categories,group_count,group_count_truncated}],next_cursor`。`/records {subject,limit,cursor}` → 公共字段加 `items:[{semantic_group_id,category,field_key,item_key,units:[{record_id,record_version,statement,conditions,negations,valid_time,uncertainty,reality}]}],next_cursor`。`subject` 只能是 `null`（本人记忆）、`{kind:"person",person_id}` 或 `{kind:"group",conversation_id}`；首页 `cursor:null`，`limit` 1..50。空 items 但 next_cursor 非空时仍须翻页。成功体保留 Memory 的 `verified_at`/`scope_version`，平台核验后移除上游 `scope` 与 `request_id`；`origin` 从不出浏览器。
 
 同源端不接受浏览器 account、actor、scope、origin、Bearer 或上游 URL。服务器配置 `web_memory` 固定 HTTPS endpoint、独立 `token_env`、`entry_id` 与 CA；该 entry 必须属于网页登录 operator 同一稳定账号，是 `local_operator/self_private`，并有 `{caller:platform,receiver:memory,purpose:dialogue}` 精确 route。每次浏览读取先由真实 Platform `Origins.issue` 签新 assertion，再发给 Memory；Memory 用自己的发行方凭据正式 resolve，要求其 `browser_readers` 固定账号/actor/scope 与当次解析结果一致。缺身份映射为 `memory_identity_not_ready`，撤权/失效不是空集合。服务 Bearer 只获 Memory `browse`，不能调用生成上下文或写入端口。用户批准/遗忘写流程仍需完整用户确认，本路由不提供写按钮。
 

@@ -33,6 +33,7 @@ from .web_personas import WebPersonas
 from .web_readers import WebReader
 from .web_memory import WebMemory
 from .web_connections import view as connections_view
+from .web_external import WebExternal
 from .web_sender import WebSender
 
 COOKIE = "tianshu_session"
@@ -57,6 +58,7 @@ ASSETS_PREFIX = "/api/web/assets/"
 KNOWLEDGE_PREFIX = "/api/web/knowledge/"
 LIFE_PREFIX = "/api/web/life/"
 MEMORY_PREFIX = "/api/web/memory/"
+EXTERNAL_PREFIX = "/api/web/external/"
 
 
 class WebConsole:
@@ -156,6 +158,7 @@ class WebConsole:
         self.sender = WebSender(platform)
         self.models = WebModels(platform, self)
         self.providers = ProviderManagement(platform, self)
+        self.external = WebExternal(platform, self)
         # Device control carries its own unlock; it is never derived from model management.
         self.home = Home(platform, self)
         # The task centre only reads the ledgers the two modules above already own.
@@ -163,6 +166,7 @@ class WebConsole:
         # The asset page is a read-only window: it owns its own scope, rules and read record, and
         # this console only assembles its route below.
         self.assets = WebAssets(platform, self)
+        platform.assets.external = self.external if self.external.catalog else None
         # The persona page is the same shape with a different peer: one registered read-only
         # window, one route prefix, and the session protection is the one above. It is given the
         # finished reader, the frozen rule and three narrow callbacks - never this console.
@@ -598,6 +602,10 @@ class WebConsole:
             require(current is session and self.session_live(session), "session_expired", 401)
             await self.platform.local_work.run(self.providers._gate, session)
             return web.json_response(result)
+        if request.path.startswith(EXTERNAL_PREFIX):
+            result = await self.external.route(request.path, body, session)
+            require(await self.platform.local_work.run(self.session_valid, session), "session_expired", 401)
+            return web.json_response(result)
         operation = {
             "/api/web/messages": self.dialogue.send,
             "/api/web/snapshot": self.dialogue.snapshot,
@@ -614,13 +622,17 @@ class WebConsole:
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith(HOME_PREFIX):
+            self.external.sync()
+            external_revision = self.external.revision
             result = await self.home.route(request.path, body, session)
+            self.external.sync()
             # The same re-check: a session revoked while HA was being asked gets no reading.
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
             fingerprint, _ = await self.platform.local_work.run(self.authority)
             require(self.session_live(session), "session_expired", 401)
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
+            require(self.external.revision == external_revision, "external_revision_changed", 409)
             return web.json_response(result)
         if request.path.startswith(TASKS_PREFIX):
             result = await self.platform.local_work.run(
@@ -634,14 +646,18 @@ class WebConsole:
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith(ASSETS_PREFIX):
+            self.external.sync()
+            external_revision = self.external.revision
             # The asset page reads through the registered asset identity; the browser session is
             # only the local operator asking, and it is re-checked once the peer has answered.
             result = await self.assets.route(request.path, body, session)
+            self.external.sync()
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
             fingerprint, _ = await self.platform.local_work.run(self.authority)
             require(self.session_live(session), "session_expired", 401)
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
+            require(self.external.revision == external_revision, "external_revision_changed", 409)
             return web.json_response(result)
         if request.path.startswith(PERSONAS_PREFIX):
             # The persona page reads through its own registered character-service credential and
@@ -674,6 +690,7 @@ class WebConsole:
             )
             return web.json_response(result)
         if request.path == "/api/web/connections/view":
+            self.external.sync()
             result = connections_view(self, body)
             require(
                 await self.platform.local_work.run(self.session_valid, session),

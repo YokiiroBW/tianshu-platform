@@ -116,7 +116,7 @@ def view(console, body):
             (
                 item
                 for item in home["entities"]
-                if item["observed_at"] is not None and item["availability"] == "available"
+                if item["observed_at"] is not None and item["availability"] == "current"
             ),
             None,
         )
