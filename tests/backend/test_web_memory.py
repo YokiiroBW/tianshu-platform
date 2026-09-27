@@ -123,7 +123,7 @@ class MemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
         }
         name = request.match_info["name"]
         if name == "overview":
-            common.update(memory_group_count=0, subject_count=0)
+            common.update(memory_group_count=0, counts_truncated=False)
         else:
             common.update(items=[], next_cursor=None)
         return web.json_response(common)

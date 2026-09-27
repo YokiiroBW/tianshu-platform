@@ -85,6 +85,13 @@ class WebMemory(WebReader):
         require(current == scope, "scope_changed", 409)
         return origin["assertion_ref"], scope
 
+    def _still_issued(self, reference, scope):
+        with self.platform.store.connect() as db:
+            _, _, context = self.platform.origins.context(
+                db, reference, "platform", "memory", "dialogue"
+            )
+            require(context["allowed_scope"] == scope, "scope_changed", 409)
+
     async def route(self, path, body, session):
         name = path[len(PREFIX) :] if path.startswith(PREFIX) else ""
         require(name == "state" or name in ROUTES, "not_found", 404)
@@ -110,6 +117,7 @@ class WebMemory(WebReader):
             self._prove(session)
             _, current = await self.platform.local_work.run(self._scope)
             require(current == scope, "scope_changed", 409)
+            await self.platform.local_work.run(self._still_issued, reference, scope)
             self.last = {"at": datetime.now(timezone.utc).isoformat(), "code": "ok"}
             # The verified scope and assertion remain server-side. The browser receives only the
             # read projection needed for a page; the peer's own response is proved before this point.
@@ -150,7 +158,8 @@ class WebMemory(WebReader):
                     }
                 else:
                     raise Fault("invalid_input", 400)
-            result["subject"] = subject
+            if subject is not None:
+                result["subject"] = subject
         return result
 
     async def _read(self, name, request):
@@ -176,6 +185,11 @@ class WebMemory(WebReader):
                             raise Fault("invalid_upstream", 502) from None
                         require(isinstance(answer, dict), "invalid_upstream", 502)
                         if response.status != 200:
+                            require(
+                                answer.get("request_id") == request["request_id"],
+                                "invalid_upstream",
+                                502,
+                            )
                             self._error(response.status, answer)
                         require(
                             answer.get("schema_version") == 1
@@ -189,7 +203,7 @@ class WebMemory(WebReader):
                         if name == "overview":
                             require(
                                 type(answer.get("memory_group_count")) is int
-                                and type(answer.get("subject_count")) is int,
+                                and type(answer.get("counts_truncated")) is bool,
                                 "invalid_upstream",
                                 502,
                             )
@@ -203,6 +217,16 @@ class WebMemory(WebReader):
                                 "invalid_upstream",
                                 502,
                             )
+                            if name == "subjects":
+                                require(
+                                    all(
+                                        isinstance(item, dict)
+                                        and type(item.get("group_count_truncated")) is bool
+                                        for item in answer["items"]
+                                    ),
+                                    "invalid_upstream",
+                                    502,
+                                )
                         return answer
         except (aiohttp.ClientError, OSError, ssl.SSLError):
             raise Fault("dependency_unavailable", 503) from None
