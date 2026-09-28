@@ -63,6 +63,8 @@ class BotAdapters:
         self.admission_lock = threading.RLock()
         if self.catalog:
             for row in self.catalog.all():
+                if row.get("kind") == "observation":
+                    continue
                 self._attach(row)
                 # A crash may have followed intent persistence but preceded local Bots.disable.
                 # Seal every dynamic row, including disabled and unknown rows, on every restart.
@@ -197,6 +199,8 @@ class BotAdapters:
             available = self.catalog is not None and code != "operator_not_authorized"
             if available:
                 for row in self.catalog.all():
+                    if row.get("kind") == "observation":
+                        continue
                     if row["state"] == "unknown":
                         async with self._row_lock(row["id"]):
                             current = self.catalog.get(row["id"])
@@ -206,7 +210,11 @@ class BotAdapters:
                 "available": available,
                 "unlocked": available and code == "ready",
                 "actors": self.config["actors"] if available else [],
-                "connections": [self._project(row) for row in self.catalog.all()]
+                "connections": [
+                    self._project(row)
+                    for row in self.catalog.all()
+                    if row.get("kind") != "observation"
+                ]
                 if available
                 else [],
             }
@@ -648,6 +656,8 @@ class BotAdapters:
         if not self.catalog:
             return
         for row in self.catalog.all():
+            if row.get("kind") == "observation":
+                continue
             if row["state"] == "unknown":
                 async with self._row_lock(row["id"]):
                     current = self.catalog.get(row["id"])

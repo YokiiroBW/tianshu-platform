@@ -281,6 +281,9 @@ class Platform:
         from .bot_adapters import BotAdapters
 
         self.bot_adapters = BotAdapters(self)
+        from .bot_observation import BotObservation
+
+        self.bot_observation = BotObservation(self)
         # Everything the read-only probes are allowed to know about this deployment, assembled
         # once as a frozen description. The health module never receives this object, a store or a
         # console, and nothing here can write.

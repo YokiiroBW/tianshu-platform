@@ -13,6 +13,7 @@ import {
   type AdapterView,
 } from "./botAdapterApi";
 import { BotConnectionsPanel as LegacyBotConnectionsPanel } from "./BotConnectionsPanel";
+import { BotObservationPanel } from "./BotObservationPanel";
 import "./bots.css";
 
 const protocol = "tianshu.bot-adapter/v1";
@@ -600,7 +601,7 @@ export function BotAdapterPanel() {
           </button>
         </div>
         <p className="muted">
-          安装对应宿主插件并取得连接密钥后，在这里添加适配器。检测只读取实际机器人账号；不会发送测试消息。
+          安装宿主插件并取得连接密钥后，默认按机器人账号接入观察。检测只读取真实在线账号，不发送测试消息。
         </p>
         {busy === "refresh" && !view && (
           <p role="status">正在读取适配器状态…</p>
@@ -639,343 +640,358 @@ export function BotAdapterPanel() {
             </button>
           </form>
         )}
-        {view?.available && view.unlocked && (
-          <>
-            <div className="bot-adapter-actions">
-              <p className="muted">
-                管理已解锁。密钥由后台安全保存供后续连接使用；页面提交后清除且不回显。
-              </p>
-              {!open && (
-                <button
-                  className="button"
-                  type="button"
-                  disabled={Boolean(busy)}
-                  onClick={() => {
-                    setOpen(true);
-                    setError("");
-                    setNotice("");
-                  }}
-                >
-                  添加适配器
-                </button>
-              )}
-            </div>
-            {open && (
-              <div className="bot-wizard">
-                <div className="bot-wizard-heading">
-                  <h3>添加适配器</h3>
-                  <button className="button" type="button" onClick={cancel}>
-                    取消
+        <BotObservationPanel
+          csrf={csrf}
+          unlocked={Boolean(view?.unlocked)}
+          actors={view?.actors ?? []}
+        />
+        <details className="panel bot-legacy">
+          <summary>高级兼容：精确范围适配器</summary>
+          <p className="muted">
+            仅在需要按会话、作者和角色逐项绑定时使用。新增观察账号请使用上方主入口。
+          </p>
+          {view?.available && view.unlocked && (
+            <>
+              <div className="bot-adapter-actions">
+                <p className="muted">
+                  管理已解锁。密钥由后台安全保存供后续连接使用；页面提交后清除且不回显。
+                </p>
+                {!open && (
+                  <button
+                    className="button"
+                    type="button"
+                    disabled={Boolean(busy)}
+                    onClick={() => {
+                      setOpen(true);
+                      setError("");
+                      setNotice("");
+                    }}
+                  >
+                    添加适配器
                   </button>
-                </div>
-                <ol className="bot-wizard-steps" aria-label="添加步骤">
-                  <li>选择平台并检测</li>
-                  <li>选择账号与范围</li>
-                  <li>保存后启用</li>
-                </ol>
-                <form
-                  className="bot-form"
-                  onSubmit={(event) => void detect(event)}
-                >
-                  <label>
-                    机器人平台
-                    <select
-                      value={adapter}
-                      disabled={Boolean(busy)}
-                      onChange={(event) => {
-                        setAdapter(event.target.value as AdapterKind);
-                        invalidateProbe();
-                      }}
-                    >
-                      <option value="astrbot">AstrBot</option>
-                      <option value="nonebot">NoneBot</option>
-                    </select>
-                  </label>
-                  <label>
-                    插件地址
-                    <input
-                      type="url"
-                      required
-                      placeholder="https://bot.example.com:8080"
-                      value={address}
-                      disabled={Boolean(busy)}
-                      onChange={(event) => {
-                        setAddress(event.target.value);
-                        invalidateProbe();
-                      }}
-                    />
-                  </label>
-                  <p className="muted">
-                    填写插件监听地址即可，协议路径会自动补全。
-                  </p>
-                  <label>
-                    插件连接密钥
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      required
-                      value={accessKey}
-                      disabled={Boolean(busy)}
-                      onChange={(event) => {
-                        setAccessKey(event.target.value);
-                        invalidateProbe();
-                      }}
-                    />
-                  </label>
-                  <label className="bot-check">
-                    <input
-                      type="checkbox"
-                      checked={privateHttp}
-                      disabled={Boolean(busy)}
-                      onChange={(event) => {
-                        setPrivateHttp(event.target.checked);
-                        invalidateProbe();
-                      }}
-                    />
-                    允许局域网 HTTP（仅私有或本机地址）
-                  </label>
-                  <details className="bot-advanced">
-                    <summary>高级连接选项</summary>
-                    <p>
-                      协议路径由天枢自动处理。HTTPS
-                      始终验证证书；仅自签发证书需要填写可信 CA。
-                    </p>
+                )}
+              </div>
+              {open && (
+                <div className="bot-wizard">
+                  <div className="bot-wizard-heading">
+                    <h3>添加适配器</h3>
+                    <button className="button" type="button" onClick={cancel}>
+                      取消
+                    </button>
+                  </div>
+                  <ol className="bot-wizard-steps" aria-label="添加步骤">
+                    <li>选择平台并检测</li>
+                    <li>选择账号与范围</li>
+                    <li>保存后启用</li>
+                  </ol>
+                  <form
+                    className="bot-form"
+                    onSubmit={(event) => void detect(event)}
+                  >
                     <label>
-                      可信 CA 证书（可选，PEM）
-                      <textarea
-                        rows={5}
-                        value={caPem}
+                      机器人平台
+                      <select
+                        value={adapter}
                         disabled={Boolean(busy)}
                         onChange={(event) => {
-                          setCaPem(event.target.value);
+                          setAdapter(event.target.value as AdapterKind);
+                          invalidateProbe();
+                        }}
+                      >
+                        <option value="astrbot">AstrBot</option>
+                        <option value="nonebot">NoneBot</option>
+                      </select>
+                    </label>
+                    <label>
+                      插件地址
+                      <input
+                        type="url"
+                        required
+                        placeholder="https://bot.example.com:8080"
+                        value={address}
+                        disabled={Boolean(busy)}
+                        onChange={(event) => {
+                          setAddress(event.target.value);
                           invalidateProbe();
                         }}
                       />
                     </label>
-                  </details>
-                  <button className="button" disabled={Boolean(busy)}>
-                    检测连接并读取账号
-                  </button>
-                </form>
-                {probe && (
-                  <div className="bot-probe-result">
-                    <h4>检测结果</h4>
-                    <p>
-                      {label(adapter)} 插件已响应。检测草稿有效至{" "}
-                      {formatTime(probe.expires_at)}。
+                    <p className="muted">
+                      填写插件监听地址即可，协议路径会自动补全。
                     </p>
-                    {expired ? (
-                      <p className="bot-error" role="alert">
-                        草稿已过期，请重新填写密钥并检测。
+                    <label>
+                      插件连接密钥
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        required
+                        value={accessKey}
+                        disabled={Boolean(busy)}
+                        onChange={(event) => {
+                          setAccessKey(event.target.value);
+                          invalidateProbe();
+                        }}
+                      />
+                    </label>
+                    <label className="bot-check">
+                      <input
+                        type="checkbox"
+                        checked={privateHttp}
+                        disabled={Boolean(busy)}
+                        onChange={(event) => {
+                          setPrivateHttp(event.target.checked);
+                          invalidateProbe();
+                        }}
+                      />
+                      允许局域网 HTTP（仅私有或本机地址）
+                    </label>
+                    <details className="bot-advanced">
+                      <summary>高级连接选项</summary>
+                      <p>
+                        协议路径由天枢自动处理。HTTPS
+                        始终验证证书；仅自签发证书需要填写可信 CA。
                       </p>
-                    ) : probe.accounts.length === 0 ? (
-                      <p role="status">
-                        SDK 当前没有在线 QQ
-                        机器人账号。请先登录机器人，再重新检测。
+                      <label>
+                        可信 CA 证书（可选，PEM）
+                        <textarea
+                          rows={5}
+                          value={caPem}
+                          disabled={Boolean(busy)}
+                          onChange={(event) => {
+                            setCaPem(event.target.value);
+                            invalidateProbe();
+                          }}
+                        />
+                      </label>
+                    </details>
+                    <button className="button" disabled={Boolean(busy)}>
+                      检测连接并读取账号
+                    </button>
+                  </form>
+                  {probe && (
+                    <div className="bot-probe-result">
+                      <h4>检测结果</h4>
+                      <p>
+                        {label(adapter)} 插件已响应。检测草稿有效至{" "}
+                        {formatTime(probe.expires_at)}。
                       </p>
-                    ) : view.actors.length === 0 ? (
-                      <p role="status">
-                        当前没有可选角色，请先准备角色后刷新状态。
-                      </p>
-                    ) : (
-                      <form
-                        className="bot-form"
-                        onSubmit={(event) => void create(event)}
-                      >
-                        <label>
-                          连接名称
-                          <input
-                            required
-                            maxLength={64}
-                            value={name}
-                            disabled={Boolean(busy)}
-                            onChange={(event) => setName(event.target.value)}
-                          />
-                        </label>
-                        <label>
-                          在线机器人账号
-                          <select
-                            value={accountId}
-                            disabled={Boolean(busy)}
-                            onChange={(event) =>
-                              setAccountId(event.target.value)
-                            }
-                          >
-                            {probe.accounts.map((account) => (
-                              <option key={account.id} value={account.id}>
-                                {account.label || account.id} · {account.id} ·{" "}
-                                {account.platform}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          回复角色
-                          <select
-                            value={actorId}
-                            required
-                            disabled={Boolean(busy)}
-                            onChange={(event) => setActorId(event.target.value)}
-                          >
-                            <option value="">请选择角色</option>
-                            {view.actors.map((actor) => (
-                              <option key={actor.id} value={actor.id}>
-                                {actor.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          会话类型
-                          <select
-                            value={conversationKind}
-                            disabled={Boolean(busy)}
-                            onChange={(event) =>
-                              setConversationKind(
-                                event.target.value as "group" | "private",
-                              )
-                            }
-                          >
-                            <option value="group">QQ群</option>
-                            <option value="private">QQ私聊</option>
-                          </select>
-                        </label>
-                        <label>
-                          {conversationKind === "group" ? "群 ID" : "联系人 ID"}
-                          <input
-                            required
-                            value={conversationId}
-                            disabled={Boolean(busy)}
-                            onChange={(event) =>
-                              setConversationId(event.target.value)
-                            }
-                          />
-                        </label>
-                        {conversationKind === "group" ? (
+                      {expired ? (
+                        <p className="bot-error" role="alert">
+                          草稿已过期，请重新填写密钥并检测。
+                        </p>
+                      ) : probe.accounts.length === 0 ? (
+                        <p role="status">
+                          SDK 当前没有在线 QQ
+                          机器人账号。请先登录机器人，再重新检测。
+                        </p>
+                      ) : view.actors.length === 0 ? (
+                        <p role="status">
+                          当前没有可选角色，请先准备角色后刷新状态。
+                        </p>
+                      ) : (
+                        <form
+                          className="bot-form"
+                          onSubmit={(event) => void create(event)}
+                        >
                           <label>
-                            明确允许的作者 ID
-                            <textarea
+                            连接名称
+                            <input
                               required
-                              rows={3}
-                              value={authors}
+                              maxLength={64}
+                              value={name}
+                              disabled={Boolean(busy)}
+                              onChange={(event) => setName(event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            在线机器人账号
+                            <select
+                              value={accountId}
                               disabled={Boolean(busy)}
                               onChange={(event) =>
-                                setAuthors(event.target.value)
+                                setAccountId(event.target.value)
                               }
-                              aria-describedby="bot-authors-help"
-                            />
+                            >
+                              {probe.accounts.map((account) => (
+                                <option key={account.id} value={account.id}>
+                                  {account.label || account.id} · {account.id} ·{" "}
+                                  {account.platform}
+                                </option>
+                              ))}
+                            </select>
                           </label>
-                        ) : (
                           <label>
-                            私聊允许作者（由联系人 ID 确定）
+                            回复角色
+                            <select
+                              value={actorId}
+                              required
+                              disabled={Boolean(busy)}
+                              onChange={(event) =>
+                                setActorId(event.target.value)
+                              }
+                            >
+                              <option value="">请选择角色</option>
+                              {view.actors.map((actor) => (
+                                <option key={actor.id} value={actor.id}>
+                                  {actor.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            会话类型
+                            <select
+                              value={conversationKind}
+                              disabled={Boolean(busy)}
+                              onChange={(event) =>
+                                setConversationKind(
+                                  event.target.value as "group" | "private",
+                                )
+                              }
+                            >
+                              <option value="group">QQ群</option>
+                              <option value="private">QQ私聊</option>
+                            </select>
+                          </label>
+                          <label>
+                            {conversationKind === "group"
+                              ? "群 ID"
+                              : "联系人 ID"}
                             <input
-                              readOnly
-                              value={conversationId.trim()}
-                              aria-describedby="bot-authors-help"
+                              required
+                              value={conversationId}
+                              disabled={Boolean(busy)}
+                              onChange={(event) =>
+                                setConversationId(event.target.value)
+                              }
                             />
                           </label>
-                        )}
-                        <p id="bot-authors-help" className="muted">
-                          {conversationKind === "group"
-                            ? "用逗号或换行分隔，逐个填写允许的群成员 ID。未列出的作者不会触发回复。"
-                            : "私聊只允许上方联系人触发回复，作者 ID 与联系人 ID 保持一致。"}
-                        </p>
-                        <button className="button" disabled={Boolean(busy)}>
-                          保存为停用
-                        </button>
-                      </form>
-                    )}
-                  </div>
-                )}
+                          {conversationKind === "group" ? (
+                            <label>
+                              明确允许的作者 ID
+                              <textarea
+                                required
+                                rows={3}
+                                value={authors}
+                                disabled={Boolean(busy)}
+                                onChange={(event) =>
+                                  setAuthors(event.target.value)
+                                }
+                                aria-describedby="bot-authors-help"
+                              />
+                            </label>
+                          ) : (
+                            <label>
+                              私聊允许作者（由联系人 ID 确定）
+                              <input
+                                readOnly
+                                value={conversationId.trim()}
+                                aria-describedby="bot-authors-help"
+                              />
+                            </label>
+                          )}
+                          <p id="bot-authors-help" className="muted">
+                            {conversationKind === "group"
+                              ? "用逗号或换行分隔，逐个填写允许的群成员 ID。未列出的作者不会触发回复。"
+                              : "私聊只允许上方联系人触发回复，作者 ID 与联系人 ID 保持一致。"}
+                          </p>
+                          <button className="button" disabled={Boolean(busy)}>
+                            保存为停用
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="bot-adapter-list-heading">
+                <h3>已添加的适配器</h3>
+                <p className="muted">
+                  启用前请核对账号、会话与作者。检测连接不会发送消息。
+                </p>
               </div>
-            )}
-            <div className="bot-adapter-list-heading">
-              <h3>已添加的适配器</h3>
-              <p className="muted">
-                启用前请核对账号、会话与作者。检测连接不会发送消息。
-              </p>
-            </div>
-            {view.connections.length === 0 ? (
-              <p>尚无适配器连接。</p>
-            ) : (
-              <ul className="bot-list bot-adapter-list">
-                {view.connections.map((connection) => {
-                  const pending = unverifiedIds.has(connection.id);
-                  const status = rail(connection, pending);
-                  return (
-                    <li key={connection.id}>
-                      <div>
-                        <strong>{connection.name}</strong>
-                        <p>
-                          {label(connection.adapter)} · 机器人{" "}
-                          {connection.account_id} ·{" "}
-                          {connection.conversation.kind === "group"
-                            ? "群"
-                            : "私聊"}{" "}
-                          {connection.conversation.id}
-                        </p>
-                        <p>
-                          角色：
-                          {view.actors.find(
-                            (actor) => actor.id === connection.actor_id,
-                          )?.label ?? connection.actor_id}{" "}
-                          · 允许作者：{connection.allowed_authors.join("、")}
-                        </p>
-                        <small>
-                          最近检查：{formatTime(connection.last_checked_at)}
-                          {connection.last_error
-                            ? ` · ${adapterErrorMessage(connection.last_error)}`
-                            : ""}
-                        </small>
-                        {connection.state === "unknown" && (
-                          <p className="muted">
-                            上一次配置操作尚未确认。“核对并恢复”会继续完成上一次操作；若上次是启用，恢复成功后将恢复正常消息处理。此操作不会发送测试消息。
+              {view.connections.length === 0 ? (
+                <p>尚无适配器连接。</p>
+              ) : (
+                <ul className="bot-list bot-adapter-list">
+                  {view.connections.map((connection) => {
+                    const pending = unverifiedIds.has(connection.id);
+                    const status = rail(connection, pending);
+                    return (
+                      <li key={connection.id}>
+                        <div>
+                          <strong>{connection.name}</strong>
+                          <p>
+                            {label(connection.adapter)} · 机器人{" "}
+                            {connection.account_id} ·{" "}
+                            {connection.conversation.kind === "group"
+                              ? "群"
+                              : "私聊"}{" "}
+                            {connection.conversation.id}
                           </p>
-                        )}
-                        {pending && connection.state !== "unknown" && (
-                          <p className="muted">
-                            页面结果待核对，请先刷新状态。
+                          <p>
+                            角色：
+                            {view.actors.find(
+                              (actor) => actor.id === connection.actor_id,
+                            )?.label ?? connection.actor_id}{" "}
+                            · 允许作者：{connection.allowed_authors.join("、")}
                           </p>
-                        )}
-                      </div>
-                      <StatusRail tone={status.tone} label={status.label} />
-                      <div className="bot-actions">
-                        <button
-                          className="button"
-                          type="button"
-                          disabled={
-                            Boolean(busy) ||
-                            pending ||
-                            connection.state === "unknown" ||
-                            connection.state === "draft"
-                          }
-                          onClick={() =>
-                            void change(
-                              connection,
-                              connection.enabled ? "disable" : "enable",
-                            )
-                          }
-                        >
-                          {connection.enabled ? "停用" : "启用"}
-                        </button>
-                        {connection.state === "unknown" && (
+                          <small>
+                            最近检查：{formatTime(connection.last_checked_at)}
+                            {connection.last_error
+                              ? ` · ${adapterErrorMessage(connection.last_error)}`
+                              : ""}
+                          </small>
+                          {connection.state === "unknown" && (
+                            <p className="muted">
+                              上一次配置操作尚未确认。“核对并恢复”会继续完成上一次操作；若上次是启用，恢复成功后将恢复正常消息处理。此操作不会发送测试消息。
+                            </p>
+                          )}
+                          {pending && connection.state !== "unknown" && (
+                            <p className="muted">
+                              页面结果待核对，请先刷新状态。
+                            </p>
+                          )}
+                        </div>
+                        <StatusRail tone={status.tone} label={status.label} />
+                        <div className="bot-actions">
                           <button
                             className="button"
                             type="button"
-                            disabled={Boolean(busy) || pending}
-                            onClick={() => void reconcile(connection)}
+                            disabled={
+                              Boolean(busy) ||
+                              pending ||
+                              connection.state === "unknown" ||
+                              connection.state === "draft"
+                            }
+                            onClick={() =>
+                              void change(
+                                connection,
+                                connection.enabled ? "disable" : "enable",
+                              )
+                            }
                           >
-                            核对并恢复
+                            {connection.enabled ? "停用" : "启用"}
                           </button>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </>
-        )}
+                          {connection.state === "unknown" && (
+                            <button
+                              className="button"
+                              type="button"
+                              disabled={Boolean(busy) || pending}
+                              onClick={() => void reconcile(connection)}
+                            >
+                              核对并恢复
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </>
+          )}
+        </details>
       </section>
       <details className="panel bot-legacy">
         <summary>旧连接管理（已配置的连接）</summary>

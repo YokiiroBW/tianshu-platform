@@ -32,6 +32,9 @@ BOT_PATHS = frozenset(
     }
 )
 REPLY_STATUS = "/internal/v1/conversation/reply-status"
+OBSERVATION_VERIFY = "/internal/v2/observation-source/verify"
+OBSERVATION_ADMIN_STATUS = "/internal/v2/observation-admin/status"
+OBSERVATION_ADMIN_ENROLL = "/internal/v2/observation-admin/enroll-default"
 # The two probes are recognised here, inside the serving boundary and ahead of the static
 # dispatcher, so neither can ever fall through to the single-page application.
 LIVE_PATH = "/health/live"
@@ -180,9 +183,16 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 PROVIDER_RUNTIME,
             }
             bot_call = platform.bots.config is not None and request.path in BOT_PATHS
+            observation_call = platform.bot_observation.catalog is not None and request.path in {
+                OBSERVATION_VERIFY,
+                OBSERVATION_ADMIN_STATUS,
+                OBSERVATION_ADMIN_ENROLL,
+            }
             require(
                 request.method == "POST"
-                and (schema is not None or renewal or provider_call or bot_call),
+                and (
+                    schema is not None or renewal or provider_call or bot_call or observation_call
+                ),
                 "not_found",
                 404,
             )
@@ -192,6 +202,12 @@ def create_app(platform, probe=None, *, console=None, public=False):
             elif bot_call:
                 require(
                     len(raw) <= (65536 if request.path == "/internal/v1/bot/events" else 4096),
+                    "budget_exceeded",
+                    413,
+                )
+            elif observation_call:
+                require(
+                    len(raw) <= (32768 if request.path == OBSERVATION_ADMIN_ENROLL else 4096),
                     "budget_exceeded",
                     413,
                 )
@@ -409,6 +425,30 @@ def create_app(platform, probe=None, *, console=None, public=False):
             )
         )
 
+    async def observation_verify(request):
+        return web.json_response(
+            await platform.local_work.run(
+                platform.bot_observation.verify,
+                request.headers["Authorization"],
+                request[BODY],
+            )
+        )
+
+    async def observation_admin_status(request):
+        require(request[BODY] == {}, "invalid_input", 400)
+        return web.json_response(
+            await platform.local_work.run(
+                platform.bot_observation.local_status, request.headers["Authorization"]
+            )
+        )
+
+    async def observation_admin_enroll(request):
+        return web.json_response(
+            await platform.bot_observation.local_enroll_default(
+                request.headers["Authorization"], request[BODY]
+            )
+        )
+
     async def send(request):
         body = request[BODY]
         if body["destination"]["namespace"] != "web":
@@ -456,6 +496,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 while True:
                     try:
                         await platform.bot_adapters.pump_once()
+                        await platform.bot_observation.pump_once()
                     except (Fault, OSError, sqlite3.Error):
                         pass
                     await asyncio.sleep(2)
@@ -480,6 +521,10 @@ def create_app(platform, probe=None, *, console=None, public=False):
             # Default closed; only an explicit deployment setting registers the native port.
             app.router.add_post(NATIVE_SNAPSHOT, native_snapshot)
         app.router.add_post("/internal/v1/source-access/read", source_access)
+        if platform.bot_observation.catalog is not None:
+            app.router.add_post(OBSERVATION_VERIFY, observation_verify)
+            app.router.add_post(OBSERVATION_ADMIN_STATUS, observation_admin_status)
+            app.router.add_post(OBSERVATION_ADMIN_ENROLL, observation_admin_enroll)
         app.router.add_post("/internal/v1/conversation/send", send)
         if platform.bots.config is not None:
             app.router.add_post(REPLY_STATUS, reply_status)

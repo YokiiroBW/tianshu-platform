@@ -205,6 +205,9 @@ class Bots:
         return manager.admission_lock if manager is not None else nullcontext()
 
     def _managed_active(self, row):
+        if row["slot_id"].startswith("observation:"):
+            manager = getattr(self.p, "bot_observation", None)
+            return manager is not None and manager.reply_connection_active(row["id"])
         manager = getattr(self.p, "bot_adapters", None)
         if manager is None or manager.catalog is None or not row["slot_id"].startswith("adapter:"):
             return True

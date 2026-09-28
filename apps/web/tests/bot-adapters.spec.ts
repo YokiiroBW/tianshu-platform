@@ -77,6 +77,105 @@ function probePayload() {
   };
 }
 
+test("account observation is the default entry without conversation, author or actor", async ({
+  page,
+}) => {
+  await signedIn(page);
+  let unlocked = false;
+  let saved: Record<string, unknown> | null = null;
+  let createBody: Record<string, unknown> | null = null;
+  await page.route("**/api/web/bots/unlock", (route) => {
+    unlocked = true;
+    return json(route, { unlocked: true });
+  });
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const operation = new URL(route.request().url()).pathname.split("/").pop();
+    if (operation === "view")
+      return json(route, {
+        available: true,
+        unlocked,
+        actors: [],
+        connections: [],
+      });
+    if (operation === "probe") return json(route, probePayload());
+    throw new Error(`Unexpected adapter request: ${operation}`);
+  });
+  await page.route("**/api/web/bot-observation/*", (route) => {
+    const operation = new URL(route.request().url()).pathname.split("/").pop();
+    if (operation === "view")
+      return json(route, {
+        available: true,
+        unlocked,
+        connections: saved ? [saved] : [],
+      });
+    if (operation === "create") {
+      createBody = route.request().postDataJSON() as Record<string, unknown>;
+      saved = {
+        id: "obs:fixture",
+        name: "默认观察",
+        adapter: "astrbot",
+        account_id: account.id,
+        instance_id: "host:fixture",
+        enabled: true,
+        revision: 1,
+        host_revision: 1,
+        state: "ready",
+        last_error: null,
+        last_checked_at: null,
+        read_enabled: true,
+        host_pending: 0,
+        host_dropped: 0,
+        group_policy: {
+          observe: true,
+          mode: "observe_only",
+          list: [],
+          actor_id: null,
+        },
+        private_policy: {
+          observe: true,
+          mode: "observe_only",
+          list: [],
+          actor_id: null,
+        },
+      };
+      return json(route, { connection: saved });
+    }
+    throw new Error(`Unexpected observation request: ${operation}`);
+  });
+  await page.goto("/#/settings/3");
+  const legacy = page.locator("details.bot-legacy").first();
+  await expect(legacy).not.toHaveAttribute("open", "");
+  await expect(
+    page.getByRole("region", { name: "账号级观察与回复策略" }),
+  ).toBeVisible();
+  await page
+    .getByLabel("管理员密码（二次验证）")
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "解锁连接管理" }).click();
+  const observation = page.getByRole("region", {
+    name: "账号级观察与回复策略",
+  });
+  await observation
+    .getByLabel("观察服务 URL")
+    .fill("https://bot.example.test:8443");
+  await observation
+    .getByLabel("观察服务密钥")
+    .fill("synthetic-plugin-key-1234567890");
+  await observation.getByRole("button", { name: "检测在线账号" }).click();
+  await observation.getByLabel("账号观察名称").fill("默认观察");
+  await observation.getByRole("button", { name: "保存并默认仅观察" }).click();
+  await expect(
+    observation.getByText("账号观察已启用", { exact: false }),
+  ).toBeVisible();
+  expect(createBody).toMatchObject({
+    account_id: account.id,
+    name: "默认观察",
+  });
+  expect(createBody).not.toHaveProperty("conversation");
+  expect(createBody).not.toHaveProperty("allowed_authors");
+  expect(createBody).not.toHaveProperty("actor_id");
+});
+
 async function fillWizard(page: Page) {
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "添加适配器" }).click();
@@ -163,6 +262,7 @@ test("adapter wizard detects a real returned account, saves disabled, then expli
   });
 
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel
     .getByLabel("管理员密码（二次验证）")
@@ -249,6 +349,7 @@ test("adapter errors, empty SDK accounts, expired draft and cancellation never s
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "添加适配器" }).click();
   await panel.getByLabel("插件地址").fill("http://192.168.1.10:8080");
@@ -283,6 +384,7 @@ test("adapter errors, empty SDK accounts, expired draft and cancellation never s
   await expect(panel.getByLabel("插件地址")).toHaveCount(0);
   await page.goto("/#/settings/4");
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   await panel.getByRole("button", { name: "添加适配器" }).click();
   await expect(panel.getByLabel("插件连接密钥")).toHaveValue("");
   expect(createCount).toBe(0);
@@ -313,6 +415,7 @@ test("unknown write result is not reported as enabled or automatically retried",
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "启用", exact: true }).click();
   await expect(
@@ -351,6 +454,7 @@ test("unreachable address and incompatible protocol explain why a draft was not 
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "添加适配器" }).click();
   await panel.getByLabel("插件地址").fill("https://bot.example.test:8443");
@@ -398,6 +502,7 @@ test("missing or incompatible installed plugin reports the backend fault instead
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "添加适配器" }).click();
   await panel.getByLabel("插件地址").fill("https://bot.example.test:8443");
@@ -444,6 +549,7 @@ for (const [receiptState, readState] of [
       throw new Error(`Unexpected request: ${path}`);
     });
     await page.goto("/#/settings/3");
+    await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
     const panel = await fillWizard(page);
     await panel.getByRole("button", { name: "保存为停用" }).click();
     await expect(
@@ -492,6 +598,7 @@ for (const operation of ["enable", "disable"] as const) {
       throw new Error(`Unexpected request: ${path}`);
     });
     await page.goto("/#/settings/3");
+    await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
     const panel = page.getByRole("region", { name: "机器人适配器管理" });
     await panel
       .getByRole("button", {
@@ -537,6 +644,7 @@ test("management expiry during probe restores unlock and clears sensitive draft"
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "添加适配器" }).click();
   await panel.getByLabel("插件地址").fill("https://bot.example.test:8443");
@@ -587,6 +695,7 @@ test("management expiry after create preserves unknown warning and requires a fr
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = await fillWizard(page);
   await panel.getByRole("button", { name: "保存为停用" }).click();
   await expect(
@@ -634,6 +743,7 @@ test("management expiry during enable reopens unlock without a second write", as
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "启用", exact: true }).click();
   await expect(
@@ -673,6 +783,7 @@ test("private conversation explicitly uses the chosen contact as the allowed aut
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "添加适配器" }).click();
   await panel.getByLabel("插件地址").fill("https://bot.example.test:8443");
@@ -743,6 +854,7 @@ test("unknown backend phase requires one explicit reconcile and confirms the ori
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await expect(
     panel.getByText("若上次是启用，恢复成功后将恢复正常消息处理", {
@@ -789,6 +901,7 @@ test("reconcile can confirm a pending disable without choosing a new target", as
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await expect(
     panel.getByRole("button", { name: "停用", exact: true }),
@@ -821,6 +934,7 @@ test("reconcile receipt and readback must agree on revision, enabled and settled
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "核对并恢复" }).click();
   await expect(
@@ -855,6 +969,7 @@ test("reconcile returning unknown stays pending and never retries itself", async
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "核对并恢复" }).click();
   await expect(
@@ -892,6 +1007,7 @@ test("409 result_unknown on ordinary enable only exposes recovery after readback
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "启用", exact: true }).click();
   await expect(
@@ -940,6 +1056,7 @@ test("reconcile version conflict asks for refresh and management expiry asks for
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "核对并恢复" }).click();
   await expect(
@@ -972,6 +1089,7 @@ test("draft connection has no recovery action", async ({ page }) => {
     }),
   );
   await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await expect(panel.getByRole("button", { name: "核对并恢复" })).toHaveCount(
     0,

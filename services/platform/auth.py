@@ -32,6 +32,7 @@ ACTIONS = {
     "source.register",
     "source.input",
     "source.current",
+    "observation.verify",
     "source.dispatch",
     "device.control",
     "persona.read",

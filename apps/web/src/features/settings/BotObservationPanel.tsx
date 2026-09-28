@@ -1,0 +1,698 @@
+import { useEffect, useState, type FormEvent } from "react";
+import { webFetch } from "../../app/sessionTransport";
+import { requestId } from "../../app/requestId";
+import {
+  adapterPost,
+  type AdapterKind,
+  type AdapterProbe,
+} from "./botAdapterApi";
+
+type Policy = {
+  observe: boolean;
+  mode: "observe_only" | "whitelist" | "blacklist";
+  list: string[];
+  actor_id: string | null;
+};
+type Connection = {
+  id: string;
+  name: string;
+  adapter: AdapterKind;
+  account_id: string;
+  instance_id: string;
+  enabled: boolean;
+  revision: number;
+  host_revision: number;
+  state: string;
+  last_error: string | null;
+  last_checked_at: string | null;
+  read_enabled: boolean;
+  host_pending: number;
+  host_dropped: number;
+  group_policy: Policy;
+  private_policy: Policy;
+};
+type View = {
+  available: boolean;
+  unlocked: boolean;
+  connections: Connection[];
+};
+type Found = {
+  conversation: string;
+  author: string;
+  count: number;
+  last_at: number;
+  decision: {
+    observe: boolean;
+    reply_permitted: boolean;
+    reply_triggered: boolean;
+  };
+};
+type FoundPage = {
+  items: Found[];
+  next_cursor: { conversation: string; author: string } | null;
+};
+type Archive = {
+  memory_state: string;
+  backlog: Record<string, number>;
+  archive_next_cursor: string | null;
+  items: {
+    source_ref: string;
+    author: string;
+    archive_state: string;
+    error_code: string | null;
+  }[];
+  archive_items: {
+    source_ref: string;
+    author: string;
+    content_state: string;
+    text: string;
+    sent_at: string;
+  }[];
+};
+
+async function post<T>(
+  operation: string,
+  body: object,
+  csrf: string,
+): Promise<T> {
+  const response = await webFetch(`/api/web/bot-observation/${operation}`, {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(String(result?.code ?? "后台未确认"));
+  return result as T;
+}
+
+function ids(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(/[\s,，;；]+/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function modeText(mode: Policy["mode"], list: string[]) {
+  if (mode === "observe_only") return "只观察，任何消息都不生成回复";
+  if (mode === "whitelist")
+    return list.length
+      ? `仅 ${list.length} 个会话可触发回复`
+      : "白名单为空：所有会话都不回复";
+  return list.length
+    ? `除 ${list.length} 个会话外均可触发回复`
+    : "黑名单为空：所有会话均可触发回复";
+}
+
+function PolicyEditor({
+  title,
+  kind,
+  value,
+  actors,
+  disabled,
+  onChange,
+}: {
+  title: string;
+  kind: "group" | "private";
+  value: Policy;
+  actors: { id: string; label: string }[];
+  disabled: boolean;
+  onChange: (value: Policy) => void;
+}) {
+  return (
+    <fieldset className="bot-form" disabled={disabled}>
+      <legend>{title}</legend>
+      <label className="bot-check">
+        <input
+          type="checkbox"
+          checked={value.observe}
+          onChange={(event) =>
+            onChange({ ...value, observe: event.target.checked })
+          }
+        />
+        观察新收到的{title}消息
+      </label>
+      <label>
+        回复模式
+        <select
+          value={value.mode}
+          onChange={(event) =>
+            onChange({
+              ...value,
+              mode: event.target.value as Policy["mode"],
+              list: [],
+            })
+          }
+        >
+          <option value="observe_only">仅观察（默认）</option>
+          <option value="whitelist">白名单</option>
+          <option value="blacklist">黑名单</option>
+        </select>
+      </label>
+      <label>
+        {kind === "group" ? "群号名单" : "私聊对方账号名单"}
+        <textarea
+          rows={2}
+          value={value.list.join("\n")}
+          onChange={(event) =>
+            onChange({ ...value, list: ids(event.target.value) })
+          }
+          placeholder="每行一个 QQ 号"
+        />
+      </label>
+      <label>
+        默认回复角色
+        <select
+          value={value.actor_id ?? ""}
+          onChange={(event) =>
+            onChange({ ...value, actor_id: event.target.value || null })
+          }
+        >
+          <option value="">不指定（仅观察可用）</option>
+          {actors.map((actor) => (
+            <option key={actor.id} value={actor.id}>
+              {actor.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="muted">
+        {modeText(value.mode, value.list)}。
+        {kind === "group" ? "群聊还须直接 @机器人。" : "私聊允许时正常触发。"}
+        切换回复模式会清空原模式名单。允许回复不会追补旧观察。停止观察只停止新增消息，既有档案仍可按当前读取授权查看。
+      </p>
+    </fieldset>
+  );
+}
+
+export function BotObservationPanel({
+  csrf,
+  unlocked,
+  actors,
+}: {
+  csrf: string;
+  unlocked: boolean;
+  actors: { id: string; label: string }[];
+}) {
+  const [view, setView] = useState<View | null>(null);
+  const [selected, setSelected] = useState("");
+  const [group, setGroup] = useState<Policy | null>(null);
+  const [privatePolicy, setPrivate] = useState<Policy | null>(null);
+  const [probe, setProbe] = useState<AdapterProbe | null>(null);
+  const [adapter, setAdapter] = useState<AdapterKind>("astrbot");
+  const [address, setAddress] = useState("");
+  const [key, setKey] = useState("");
+  const [privateHttp, setPrivateHttp] = useState(false);
+  const [caPem, setCaPem] = useState("");
+  const [account, setAccount] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [found, setFound] = useState<Found[]>([]);
+  const [cursor, setCursor] = useState<FoundPage["next_cursor"]>(null);
+  const [archive, setArchive] = useState<Archive | null>(null);
+  const [archiveConversation, setArchiveConversation] = useState("");
+
+  const current = view?.connections.find((item) => item.id === selected);
+
+  async function refresh() {
+    if (!csrf) return;
+    const value = await post<View>("view", {}, csrf);
+    setView(value);
+    const row =
+      value.connections.find((item) => item.id === selected) ??
+      value.connections[0];
+    if (row) {
+      setSelected(row.id);
+      setGroup(row.group_policy);
+      setPrivate(row.private_policy);
+    }
+  }
+
+  useEffect(() => {
+    void refresh().catch((cause) => setError(String(cause)));
+  }, [csrf, unlocked]);
+
+  async function run(action: () => Promise<void>) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await action();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "连接中断，结果待核对，请刷新状态。",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function detect(event: FormEvent) {
+    event.preventDefault();
+    await run(async () => {
+      const result = await adapterPost<AdapterProbe>(
+        "probe",
+        {
+          adapter,
+          address: address.trim(),
+          access_key: key,
+          allow_private_http: privateHttp,
+          ca_pem: caPem.trim() || null,
+        },
+        csrf,
+        new AbortController().signal,
+      );
+      setKey("");
+      setProbe(result);
+      setAccount(result.accounts[0]?.id ?? "");
+      setNotice("已检测在线账号。保存后默认观察群聊和私聊，不主动回复。");
+    });
+  }
+
+  async function create(event: FormEvent) {
+    event.preventDefault();
+    if (!probe || !account) return;
+    await run(async () => {
+      const receipt = await post<{ connection: Connection }>(
+        "create",
+        {
+          draft_id: probe.draft_id,
+          account_id: account,
+          name: name.trim(),
+          client_id: requestId(),
+        },
+        csrf,
+      );
+      await refresh();
+      setSelected(receipt.connection.id);
+      setGroup(receipt.connection.group_policy);
+      setPrivate(receipt.connection.private_policy);
+      setProbe(null);
+      setNotice(
+        receipt.connection.state === "ready"
+          ? "账号观察已启用，群聊和私聊均为仅观察。"
+          : "保存已提交，但插件状态待核对；请刷新后检查积压。",
+      );
+    });
+  }
+
+  async function savePolicy() {
+    if (!current || !group || !privatePolicy) return;
+    await run(async () => {
+      const receipt = await post<{ connection: Connection }>(
+        "policy",
+        {
+          id: current.id,
+          expected_revision: current.revision,
+          group_policy: group,
+          private_policy: privatePolicy,
+          client_id: requestId(),
+        },
+        csrf,
+      );
+      await refresh();
+      setNotice(
+        receipt.connection.state === "ready"
+          ? "群聊与私聊策略已保存并从服务端读回。"
+          : "策略保存结果待插件确认，请刷新核对；在此之前不会放宽回复。",
+      );
+    });
+  }
+
+  async function loadFound(next: FoundPage["next_cursor"] = null) {
+    if (!current) return;
+    await run(async () => {
+      const page = await post<FoundPage>(
+        "discovered",
+        { id: current.id, limit: 20, cursor: next },
+        csrf,
+      );
+      setFound(next ? [...found, ...page.items] : page.items);
+      setCursor(page.next_cursor);
+    });
+  }
+
+  async function loadArchive(conversation: string, next: string | null = null) {
+    if (!current) return;
+    await run(async () => {
+      const result = await post<Archive>(
+        "archive",
+        {
+          id: current.id,
+          conversation_id: conversation,
+          limit: 50,
+          cursor: next,
+        },
+        csrf,
+      );
+      setArchiveConversation(conversation);
+      setArchive(
+        next && archive
+          ? {
+              ...result,
+              items: [...archive.items, ...result.items],
+              archive_items: [
+                ...archive.archive_items,
+                ...result.archive_items,
+              ],
+            }
+          : result,
+      );
+    });
+  }
+
+  function addToList(conversation: string) {
+    const [kind, id] = conversation.split(":");
+    const value = kind === "group" ? group : privatePolicy;
+    if (!value) return;
+    const updated = {
+      ...value,
+      mode: "whitelist" as const,
+      list: [
+        ...new Set([...(value.mode === "whitelist" ? value.list : []), id]),
+      ],
+    };
+    if (kind === "group") setGroup(updated);
+    else setPrivate(updated);
+    setNotice(
+      "已加入待保存白名单。选择默认回复角色后点击“保存群聊与私聊策略”。",
+    );
+  }
+
+  async function setHistory(readEnabled: boolean) {
+    if (!current) return;
+    await run(async () => {
+      const receipt = await post<{ connection: Connection }>(
+        "history",
+        {
+          id: current.id,
+          expected_revision: current.revision,
+          read_enabled: readEnabled,
+          client_id: requestId(),
+        },
+        csrf,
+      );
+      await refresh();
+      setFound([]);
+      setCursor(null);
+      setArchive(null);
+      setNotice(
+        receipt.connection.read_enabled
+          ? "历史读取已恢复，仅能查看当前授权版本的新档案。"
+          : "历史读取已撤销，旧档案和发现列表立即不可见，新增观察暂停。",
+      );
+    });
+  }
+
+  if (!view?.available) return null;
+  return (
+    <section className="panel bot-adapter" aria-label="账号级观察与回复策略">
+      <div className="section-heading">
+        <h2>观察与回复策略</h2>
+        <button
+          className="button"
+          type="button"
+          disabled={busy}
+          onClick={() => void refresh()}
+        >
+          刷新
+        </button>
+      </div>
+      <p className="muted">
+        新连接默认观察已接入账号收到的群聊和私聊并自动建档，默认不搭话。
+        天枢仅控制自己的回复，宿主中的其他插件仍可能独立回复。旧精确范围连接不会自动升级。
+      </p>
+      {error && (
+        <p role="alert" className="bot-error">
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p role="status" className="bot-notice">
+          {notice}
+        </p>
+      )}
+      {unlocked && (
+        <form className="bot-form" onSubmit={(event) => void detect(event)}>
+          <h3>连接与账号</h3>
+          <label>
+            宿主
+            <select
+              value={adapter}
+              onChange={(event) =>
+                setAdapter(event.target.value as AdapterKind)
+              }
+            >
+              <option value="astrbot">AstrBot</option>
+              <option value="nonebot">NoneBot</option>
+            </select>
+          </label>
+          <label>
+            观察服务 URL
+            <input
+              type="url"
+              required
+              value={address}
+              onChange={(event) => setAddress(event.target.value)}
+            />
+          </label>
+          <label>
+            观察服务密钥
+            <input
+              type="password"
+              required
+              autoComplete="off"
+              value={key}
+              onChange={(event) => setKey(event.target.value)}
+            />
+          </label>
+          <label className="bot-check">
+            <input
+              type="checkbox"
+              checked={privateHttp}
+              onChange={(event) => setPrivateHttp(event.target.checked)}
+            />
+            允许已审查的局域网 HTTP
+          </label>
+          <label>
+            插件 TLS CA（如需）
+            <textarea
+              rows={3}
+              value={caPem}
+              onChange={(event) => setCaPem(event.target.value)}
+            />
+          </label>
+          <button className="button" disabled={busy}>
+            检测在线账号
+          </button>
+        </form>
+      )}
+      {unlocked && probe && (
+        <form className="bot-form" onSubmit={(event) => void create(event)}>
+          <label>
+            账号观察名称
+            <input
+              required
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <label>
+            真实在线机器人账号
+            <select
+              value={account}
+              onChange={(event) => setAccount(event.target.value)}
+            >
+              {probe.accounts.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}（{item.id}）
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="button" disabled={busy || !account}>
+            保存并默认仅观察
+          </button>
+        </form>
+      )}
+      {view.connections.length > 0 && (
+        <label>
+          已接入账号
+          <select
+            value={selected}
+            onChange={(event) => {
+              const row = view.connections.find(
+                (item) => item.id === event.target.value,
+              );
+              if (!row) return;
+              setSelected(row.id);
+              setGroup(row.group_policy);
+              setPrivate(row.private_policy);
+              setFound([]);
+              setCursor(null);
+              setArchive(null);
+            }}
+          >
+            {view.connections.map((row) => (
+              <option key={row.id} value={row.id}>
+                {row.name} · {row.account_id} · {row.state}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {current && group && privatePolicy && (
+        <>
+          <p role="status">
+            插件状态：{current.state}；观察账号：{current.account_id}
+            ；宿主待转交：{current.host_pending}；宿主容量拒收：
+            {current.host_dropped}；历史读取：
+            {current.read_enabled ? "允许" : "已撤销"}。
+          </p>
+          {current.last_error && (
+            <p role="alert">
+              最近失败：{current.last_error}。积压可能尚未归档。
+            </p>
+          )}
+          <button
+            className="button"
+            type="button"
+            disabled={!unlocked || busy}
+            onClick={() => void setHistory(!current.read_enabled)}
+          >
+            {current.read_enabled
+              ? "撤销历史读取并暂停新增观察"
+              : "恢复历史读取与新增观察"}
+          </button>
+          <PolicyEditor
+            title="群聊"
+            kind="group"
+            value={group}
+            actors={actors}
+            disabled={!unlocked || busy}
+            onChange={setGroup}
+          />
+          <PolicyEditor
+            title="私聊"
+            kind="private"
+            value={privatePolicy}
+            actors={actors}
+            disabled={!unlocked || busy}
+            onChange={setPrivate}
+          />
+          <button
+            className="button"
+            type="button"
+            disabled={!unlocked || busy || current.state === "unknown"}
+            onClick={() => void savePolicy()}
+          >
+            保存群聊与私聊策略
+          </button>
+          <h3>已发现会话</h3>
+          <button
+            className="button"
+            type="button"
+            disabled={busy || !current.read_enabled}
+            onClick={() => void loadFound()}
+          >
+            读取发现列表
+          </button>
+          <ul>
+            {found.map((item) => (
+              <li key={`${item.conversation}:${item.author}`}>
+                {item.conversation} · 发言人 {item.author} · 已收到 {item.count}{" "}
+                条 · 最近{" "}
+                {new Date(item.last_at * 1000).toLocaleString("zh-CN")} ·
+                {item.decision.reply_permitted ? "可触发回复" : "只观察"}
+                <button
+                  className="button"
+                  type="button"
+                  disabled={busy || !unlocked}
+                  onClick={() => addToList(item.conversation)}
+                >
+                  加入回复白名单
+                </button>
+                <button
+                  className="button"
+                  type="button"
+                  disabled={busy || !current.read_enabled}
+                  onClick={() => void loadArchive(item.conversation)}
+                >
+                  查看归档状态
+                </button>
+              </li>
+            ))}
+          </ul>
+          {cursor && (
+            <button
+              className="button"
+              type="button"
+              disabled={busy}
+              onClick={() => void loadFound(cursor)}
+            >
+              加载更多
+            </button>
+          )}
+          {archive && (
+            <div role="status">
+              <h4>{archiveConversation} 的归档</h4>
+              <p>
+                Memory：
+                {archive.memory_state === "available" ? "可读取" : "暂不可读取"}
+                ；已确认归档 {archive.archive_items.length} 条；待归档{" "}
+                {archive.backlog.pending_memory ?? 0}；失败{" "}
+                {archive.backlog.failed ?? 0}；撤销{" "}
+                {archive.backlog.revoked ?? 0}。
+              </p>
+              <ul>
+                {archive.items.map((item) => (
+                  <li key={item.source_ref}>
+                    来源 {item.source_ref} · 发言人 {item.author} ·{" "}
+                    {item.archive_state}
+                    {item.error_code ? ` · ${item.error_code}` : ""}
+                  </li>
+                ))}
+              </ul>
+              <h5>授权可读正文</h5>
+              <ul>
+                {archive.archive_items.map((item) => (
+                  <li key={item.source_ref}>
+                    {item.sent_at} · 发言人 {item.author} ·{" "}
+                    {item.content_state === "text"
+                      ? item.text
+                      : "非文本内容，仅存元数据"}
+                  </li>
+                ))}
+              </ul>
+              {archive.archive_next_cursor && (
+                <button
+                  className="button"
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    void loadArchive(
+                      archiveConversation,
+                      archive.archive_next_cursor,
+                    )
+                  }
+                >
+                  加载更多归档
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}

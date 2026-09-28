@@ -126,6 +126,104 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.platform.bot_adapters._core = core_peer
 
+    async def test_observation_reply_scope_auto_registers_author_and_tightening_closes_it(self):
+        manager = self.platform.bot_observation
+        row = {
+            "kind": "observation",
+            "id": "obs:synthetic",
+            "name": "synthetic",
+            "adapter": "nonebot",
+            "address": self.address,
+            "access_key": "synthetic-plugin-key-123456789",
+            "allow_private_http": True,
+            "ca_pem": None,
+            "pins": ["127.0.0.1"],
+            "instance_id": "sdk:one",
+            "account_id": "42",
+            "enabled": True,
+            "revision": 1,
+            "host_revision": 1,
+            "observation_epoch": 1,
+            "archive_epoch": 1,
+            "read_enabled": True,
+            "state": "ready",
+            "pending": None,
+            "last_error": None,
+            "last_checked_at": None,
+            "group_policy": {
+                "observe": True,
+                "mode": "blacklist",
+                "list": [],
+                "actor_id": "actor:a",
+            },
+            "private_policy": {
+                "observe": True,
+                "mode": "observe_only",
+                "list": [],
+                "actor_id": None,
+            },
+        }
+        manager.catalog.put(row)
+        conn, token = await manager._ensure_reply_scope(row, "group:999", "7", "actor:a")
+        self.assertTrue(conn.startswith("bot:"))
+        self.assertIn(
+            "7",
+            [
+                self.platform.sources.entries[item]["account"]["immutable_account_id"]
+                for item in self.platform.bots.slots["observation:" + conn]["input_entry_ids"]
+            ],
+        )
+        self.assertEqual(self.core_state[conn]["enabled"], True)
+        with closing_db(self.platform.bots._db()) as db:
+            self.assertEqual(
+                db.execute("SELECT enabled FROM connections WHERE id=?", (conn,)).fetchone()[0], 1
+            )
+        with (
+            patch.object(
+                self.platform.sources,
+                "register_input",
+                return_value={"assertion_ref": "synthetic-origin"},
+            ),
+            patch.object(
+                self.platform.sources,
+                "dispatch",
+                new_callable=AsyncMock,
+                return_value={"outcomes": [{"actor_id": "actor:a", "state": "accepted"}]},
+            ) as dispatch,
+        ):
+            event = {
+                "schema_version": 1,
+                "connection_id": conn,
+                "platform_id": "sdk:one",
+                "self_id": "42",
+                "event_id": "44",
+                "revision": 1,
+                "namespace": "qq",
+                "conversation_id": "group:999",
+                "thread_id": None,
+                "account_id": "7",
+                "sent_at": "2026-09-29T01:00:00Z",
+                "text": "hello",
+            }
+            self.assertEqual(
+                (await self.platform.bots.event("Bearer " + token, event))["state"], "accepted"
+            )
+            self.assertEqual(dispatch.await_count, 1)
+        tightened = {
+            **row,
+            "revision": 2,
+            "host_revision": 2,
+            "group_policy": {"observe": True, "mode": "observe_only", "list": [], "actor_id": None},
+        }
+        manager.catalog.put(tightened)
+        manager._disable_invalid_replies(tightened)
+        with closing_db(self.platform.bots._db()) as db:
+            self.assertEqual(
+                db.execute("SELECT enabled FROM connections WHERE id=?", (conn,)).fetchone()[0], 0
+            )
+        with self.assertRaises(Fault):
+            await self.platform.bots.event("Bearer " + token, {**event, "event_id": "45"})
+
     async def _close(self):
         self.platform.close()
 

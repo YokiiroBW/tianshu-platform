@@ -61,6 +61,7 @@ MEMORY_PREFIX = "/api/web/memory/"
 EXTERNAL_PREFIX = "/api/web/external/"
 BOTS_PREFIX = "/api/web/bots/"
 BOT_ADAPTERS_PREFIX = "/api/web/bot-adapters/"
+BOT_OBSERVATION_PREFIX = "/api/web/bot-observation/"
 
 
 class WebConsole:
@@ -614,6 +615,14 @@ class WebConsole:
             return web.json_response(result)
         if request.path.startswith(BOT_ADAPTERS_PREFIX):
             result = await self.platform.bot_adapters.route(self, request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
+        if request.path.startswith(BOT_OBSERVATION_PREFIX):
+            result = await self.platform.bot_observation.route(self, request.path, body, session)
             require(
                 await self.platform.local_work.run(self.session_valid, session),
                 "session_expired",
