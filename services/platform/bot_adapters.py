@@ -4,6 +4,7 @@ import asyncio
 import json
 import secrets
 import ssl
+import threading
 import time
 import uuid
 from contextlib import closing
@@ -48,19 +49,37 @@ class BotAdapters:
         self.catalog = BotAdapterCatalog(self.config["directory"]) if self.config else None
         self.drafts = {}
         self.lock = asyncio.Lock()
+        self.row_locks = {}
+        self.admission_lock = threading.RLock()
         if self.catalog:
             for row in self.catalog.all():
                 self._attach(row)
-                # Persisted intent alone cannot prove all three participants' current state.
-                # Every restart begins closed and a status reconciliation must confirm it.
+                # A crash may have followed intent persistence but preceded local Bots.disable.
+                # Seal every dynamic row, including disabled and unknown rows, on every restart.
+                with closing(self.p.bots._db()) as db:
+                    db.execute("UPDATE connections SET enabled=0 WHERE id=?", (row["id"],))
+                    db.commit()
+                # Persisted readiness alone cannot prove either remote participant still agrees.
                 if row["enabled"]:
-                    with closing(self.p.bots._db()) as db:
-                        db.execute("UPDATE connections SET enabled=0 WHERE id=?", (row["id"],))
-                        db.commit()
                     row["state"] = "unknown"
                     row["enabled"] = False
                     row["pending"] = {"desired": True, "request_id": row["last_request_id"]}
                     self.catalog.put(row)
+
+    def _row_lock(self, row_id):
+        _id(row_id)
+        require(self.catalog.get(row_id) is not None, "not_found", 404)
+        return self.row_locks.setdefault(row_id, asyncio.Lock())
+
+    def _live(self, row):
+        current = self.catalog.get(row["id"])
+        return (
+            current is not None
+            and current["revision"] == row["revision"]
+            and current["enabled"]
+            and not current["pending"]
+            and current["state"] in {"ready", "degraded"}
+        )
 
     def _attach(self, row):
         bots, auth, sources = self.p.bots, self.p.auth, self.p.sources
@@ -167,10 +186,12 @@ class BotAdapters:
             code = self.p.bots._web_code(console, session)
             available = self.catalog is not None and code != "operator_not_authorized"
             if available:
-                async with self.lock:
-                    for row in self.catalog.all():
-                        if row["state"] == "unknown":
-                            await self._reconcile(row)
+                for row in self.catalog.all():
+                    if row["state"] == "unknown":
+                        async with self._row_lock(row["id"]):
+                            current = self.catalog.get(row["id"])
+                            if current["state"] == "unknown":
+                                await self._reconcile(current)
             return {
                 "available": available,
                 "unlocked": available and code == "ready",
@@ -206,12 +227,12 @@ class BotAdapters:
                 return {"connection": self._project(await self.create(body, session))}
         if path == PREFIX + "reconcile":
             require(set(body) == {"id", "expected_revision", "client_id"}, "invalid_input", 400)
-            async with self.lock:
+            async with self._row_lock(body["id"]):
                 return {"connection": self._project(await self.reconcile(body))}
         operation = path.removeprefix(PREFIX)
         require(operation in {"enable", "disable"}, "not_found", 404)
         require(set(body) == {"id", "expected_revision", "client_id"}, "invalid_input", 400)
-        async with self.lock:
+        async with self._row_lock(body["id"]):
             return {"connection": self._project(await self.change(operation, body))}
 
     async def _call(self, address, key, pins, ca_pem, path, payload, *, core=False, ca_file=None):
@@ -279,6 +300,9 @@ class BotAdapters:
         current = await reviewed_pins(row["address"], self.config["allowed_cidrs"])
         require(current == row["pins"], "external_target_changed", 503)
         assert_pins(row["address"], row["pins"], self.config["allowed_cidrs"])
+        if path == "/messages/send":
+            # This is the final synchronous admission point before starting the SDK RPC.
+            require(self._live(row), "connection_disabled", 409)
         return await self._call(
             row["address"], row["access_key"], row["pins"], row["ca_pem"], RPC + path, payload
         )
@@ -544,13 +568,15 @@ class BotAdapters:
             pending={"desired": False, "request_id": client_id},
             bot_token=secrets.token_urlsafe(48),
         )
-        self.catalog.put(row)
-        self._attach(row)
-        self.p.bots.create(
-            "adapter:" + row_id, [actor_id], connection_id=row_id, token=row["bot_token"]
-        )
-        row = await self._apply(row)
-        self.catalog.record(client_id, fingerprint, {"id": row_id})
+        prior = self.catalog.begin(row, client_id, fingerprint)
+        if prior:
+            return self.catalog.get(prior["id"])
+        async with self._row_lock(row_id):
+            self._attach(row)
+            self.p.bots.create(
+                "adapter:" + row_id, [actor_id], connection_id=row_id, token=row["bot_token"]
+            )
+            row = await self._apply(row)
         self.drafts.pop(body["draft_id"], None)
         return row
 
@@ -567,16 +593,18 @@ class BotAdapters:
         desired = operation == "enable"
         require(not row["pending"], "result_unknown", 409)
         require(row["enabled"] != desired, "version_conflict", 409)
-        if not desired:
-            self.p.bots.change(row["id"], "disable")
         row["revision"] += 1
         row["state"] = "unknown"
         row["enabled"] = False
         row["last_request_id"] = body["client_id"]
         row["pending"] = {"desired": desired, "request_id": body["client_id"]}
-        self.catalog.put(row)
+        with self.admission_lock:
+            prior = self.catalog.begin(row, body["client_id"], fingerprint)
+            if prior:
+                return self.catalog.get(prior["id"])
+            if not desired:
+                self.p.bots.change(row["id"], "disable")
         row = await self._apply(row)
-        self.catalog.record(body["client_id"], fingerprint, {"id": row["id"]})
         return row
 
     async def reconcile(self, body):
@@ -590,115 +618,125 @@ class BotAdapters:
         require(type(body["expected_revision"]) is int, "invalid_input", 400)
         require(body["expected_revision"] == row["revision"], "version_conflict", 409)
         require(row["state"] == "unknown" and row["pending"], "version_conflict", 409)
+        prior = self.catalog.begin(row, body["client_id"], fingerprint)
+        if prior:
+            return self.catalog.get(prior["id"])
         row = await self._reconcile(row)
         if row["pending"]:
             # The operator requested recovery of exactly the persisted write. Reuse its
             # original request_id/revision/desired; peers guarantee semantic idempotency.
             row = await self._apply(row)
-        self.catalog.record(body["client_id"], fingerprint, {"id": row["id"]})
         return row
 
     async def pump_once(self):
         if not self.catalog:
             return
-        async with self.lock:
-            for row in self.catalog.all():
-                if row["state"] == "unknown":
-                    await self._reconcile(row)
-                    continue
-                if row["state"] not in {"ready", "degraded"} or not row["enabled"]:
-                    continue
-                try:
-                    events = await self._plugin(
-                        row, "/events/poll", {"connection_id": row["id"], "limit": 20}
-                    )
-                    require(
-                        isinstance(events.get("events"), list) and len(events["events"]) <= 20,
-                        "adapter_incompatible",
-                        502,
-                    )
-                    acknowledged = []
-                    for item in events["events"]:
-                        event = item["event"]
-                        outcome = await self.p.bots.event("Bearer " + row["bot_token"], event)
-                        if outcome["state"] == "accepted":
-                            acknowledged.append(item["id"])
-                        elif outcome["state"] == "unknown":
-                            status = await self.p.local_work.run(
-                                self.p.bots.event_status,
-                                "Bearer " + row["bot_token"],
-                                {
-                                    "connection_id": row["id"],
-                                    "event_id": event["event_id"],
-                                    "account_id": event["account_id"],
-                                },
-                            )
-                            if status["state"] == "accepted":
-                                acknowledged.append(item["id"])
-                    if acknowledged:
-                        await self._plugin(
-                            row,
-                            "/events/ack",
-                            {"connection_id": row["id"], "event_ids": acknowledged},
-                        )
-                    claimed = await self.p.local_work.run(
-                        self.p.bots.claim,
-                        "Bearer " + row["bot_token"],
-                        {"connection_id": row["id"], "instance_id": "platform-pump", "limit": 20},
-                    )
-                    for delivery in claimed["deliveries"]:
-                        receipt = None
-                        try:
-                            receipt = await self._plugin(
-                                row,
-                                "/messages/send",
-                                {"connection_id": row["id"], "delivery": delivery},
-                            )
-                        except Fault:
-                            try:
-                                status = await self._plugin(
-                                    row,
-                                    "/messages/status",
-                                    {
-                                        "connection_id": row["id"],
-                                        "reply_id": delivery["reply_id"],
-                                        "attempt_id": delivery["attempt_id"],
-                                    },
-                                )
-                                receipt = status.get("receipt") if status.get("found") else None
-                            except Fault:
-                                pass
-                        if not receipt:
-                            receipt = {
-                                "reply_id": delivery["reply_id"],
-                                "attempt_id": delivery["attempt_id"],
-                                "state": "unknown",
-                                "channel_message_ids": [],
-                            }
-                        require(
-                            receipt.get("reply_id") == delivery["reply_id"]
-                            and receipt.get("attempt_id") == delivery["attempt_id"]
-                            and receipt.get("state") in {"sent", "failed", "unknown"},
-                            "adapter_incompatible",
-                            502,
-                        )
-                        await self.p.local_work.run(
-                            self.p.bots.ack,
+        for row in self.catalog.all():
+            if row["state"] == "unknown":
+                async with self._row_lock(row["id"]):
+                    current = self.catalog.get(row["id"])
+                    if current["state"] == "unknown":
+                        await self._reconcile(current)
+                continue
+            if not self._live(row):
+                continue
+            try:
+                events = await self._plugin(
+                    row, "/events/poll", {"connection_id": row["id"], "limit": 20}
+                )
+                require(
+                    isinstance(events.get("events"), list) and len(events["events"]) <= 20,
+                    "adapter_incompatible",
+                    502,
+                )
+                acknowledged = []
+                for item in events["events"]:
+                    if not self._live(row):
+                        break
+                    event = item["event"]
+                    outcome = await self.p.bots.event("Bearer " + row["bot_token"], event)
+                    if outcome["state"] == "accepted":
+                        acknowledged.append(item["id"])
+                    elif outcome["state"] == "unknown":
+                        status = await self.p.local_work.run(
+                            self.p.bots.event_status,
                             "Bearer " + row["bot_token"],
                             {
                                 "connection_id": row["id"],
-                                "reply_id": delivery["reply_id"],
-                                "attempt_id": delivery["attempt_id"],
-                                "state": receipt["state"],
-                                "channel_message_ids": receipt.get("channel_message_ids", []),
+                                "event_id": event["event_id"],
+                                "account_id": event["account_id"],
                             },
                         )
-                    row["last_checked_at"] = datetime.now(timezone.utc).isoformat()
-                    row["last_error"] = None
-                    row["state"] = "ready"
-                except (Fault, KeyError, TypeError) as exc:
-                    row["last_error"] = (
-                        exc.code if isinstance(exc, Fault) else "adapter_incompatible"
+                        if status["state"] == "accepted":
+                            acknowledged.append(item["id"])
+                if acknowledged:
+                    await self._plugin(
+                        row,
+                        "/events/ack",
+                        {"connection_id": row["id"], "event_ids": acknowledged},
                     )
-                    row["state"] = "degraded"
-                self.catalog.put(row)
+                if not self._live(row):
+                    continue
+                claimed = await self.p.local_work.run(
+                    self.p.bots.claim,
+                    "Bearer " + row["bot_token"],
+                    {"connection_id": row["id"], "instance_id": "platform-pump", "limit": 20},
+                )
+                for delivery in claimed["deliveries"]:
+                    if not self._live(row):
+                        break
+                    receipt = None
+                    try:
+                        receipt = await self._plugin(
+                            row,
+                            "/messages/send",
+                            {"connection_id": row["id"], "delivery": delivery},
+                        )
+                    except Fault as exc:
+                        if exc.code == "connection_disabled":
+                            break
+                        try:
+                            status = await self._plugin(
+                                row,
+                                "/messages/status",
+                                {
+                                    "connection_id": row["id"],
+                                    "reply_id": delivery["reply_id"],
+                                    "attempt_id": delivery["attempt_id"],
+                                },
+                            )
+                            receipt = status.get("receipt") if status.get("found") else None
+                        except Fault:
+                            pass
+                    if not receipt:
+                        receipt = {
+                            "reply_id": delivery["reply_id"],
+                            "attempt_id": delivery["attempt_id"],
+                            "state": "unknown",
+                            "channel_message_ids": [],
+                        }
+                    require(
+                        receipt.get("reply_id") == delivery["reply_id"]
+                        and receipt.get("attempt_id") == delivery["attempt_id"]
+                        and receipt.get("state") in {"sent", "failed", "unknown"},
+                        "adapter_incompatible",
+                        502,
+                    )
+                    await self.p.local_work.run(
+                        self.p.bots.ack,
+                        "Bearer " + row["bot_token"],
+                        {
+                            "connection_id": row["id"],
+                            "reply_id": delivery["reply_id"],
+                            "attempt_id": delivery["attempt_id"],
+                            "state": receipt["state"],
+                            "channel_message_ids": receipt.get("channel_message_ids", []),
+                        },
+                    )
+                row["last_checked_at"] = datetime.now(timezone.utc).isoformat()
+                row["last_error"] = None
+                row["state"] = "ready"
+            except (Fault, KeyError, TypeError) as exc:
+                row["last_error"] = exc.code if isinstance(exc, Fault) else "adapter_incompatible"
+                row["state"] = "degraded"
+            self.catalog.observe(row)

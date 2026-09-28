@@ -17,7 +17,7 @@ import aiohttp
 from aiohttp import web
 
 from fixtures import ENV, bearer, start_http
-from services.platform.contracts import Fault, canonical, utc
+from services.platform.contracts import Fault, canonical, digest, utc
 from services.platform.server import create_app
 from services.platform.service import Platform
 from test_bots import bot_settings
@@ -129,7 +129,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
     async def _close(self):
         self.platform.close()
 
-    async def _created(self):
+    async def _draft(self, conversation_id="group:999"):
         manager = self.platform.bot_adapters
         session = {}
         probe = await manager.probe(
@@ -146,12 +146,16 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             "draft_id": probe["draft_id"],
             "name": "合成插件",
             "account_id": "bot:9",
-            "conversation": {"kind": "group", "id": "group:999"},
+            "conversation": {"kind": "group", "id": conversation_id},
             "allowed_authors": ["user:1"],
             "actor_id": "actor:a",
             "client_id": str(uuid.uuid4()),
         }
-        return await manager.create(body, session), body
+        return body, session
+
+    async def _created(self, conversation_id="group:999"):
+        body, session = await self._draft(conversation_id)
+        return await self.platform.bot_adapters.create(body, session), body
 
     async def test_probe_persist_enable_unknown_reconcile_restart_disable(self):
         manager = self.platform.bot_adapters
@@ -428,6 +432,261 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             self.platform.bots.reply_status(bearer("COMPANION"), send_request)["receipt"]["state"],
             "unknown",
         )
+        with patch.object(self.platform.bots, "change", side_effect=RuntimeError("power loss")):
+            with self.assertRaisesRegex(RuntimeError, "power loss"):
+                await self.platform.bot_adapters.change(
+                    "disable",
+                    {"id": row["id"], "expected_revision": 2, "client_id": str(uuid.uuid4())},
+                )
+        later = {
+            **send_request,
+            "reply_id": "reply:blocked-after-intent",
+            "command": {
+                **send_request["command"],
+                "request_id": "request:blocked-after-intent",
+                "idempotency_key": "command:blocked-after-intent",
+            },
+        }
+        with self.assertRaises(Fault) as error:
+            self.platform.bots.send(bearer("COMPANION"), later)
+        self.assertEqual(error.exception.code, "forbidden")
+
+    async def test_disable_intent_survives_crash_before_local_seal(self):
+        manager = self.platform.bot_adapters
+        row, _ = await self._created()
+        ready = await manager.change(
+            "enable", {"id": row["id"], "expected_revision": 1, "client_id": str(uuid.uuid4())}
+        )
+        self.assertEqual(ready["state"], "ready")
+        with patch.object(self.platform.bots, "change", side_effect=RuntimeError("power loss")):
+            with self.assertRaisesRegex(RuntimeError, "power loss"):
+                await manager.change(
+                    "disable",
+                    {"id": row["id"], "expected_revision": 2, "client_id": str(uuid.uuid4())},
+                )
+        intent = manager.catalog.get(row["id"])
+        self.assertEqual((intent["revision"], intent["pending"]["desired"]), (3, False))
+        with closing_db(self.platform.bots._db()) as db:
+            self.assertEqual(db.execute("SELECT enabled FROM connections").fetchone()[0], 1)
+            with self.assertRaises(Fault):
+                self.platform.bots._connection(db, row["id"])
+        with self.assertRaises(Fault) as error:
+            self.platform.bots.claim(
+                "Bearer " + intent["bot_token"],
+                {"connection_id": row["id"], "instance_id": "restart-test", "limit": 1},
+            )
+        self.assertEqual(error.exception.code, "forbidden")
+        self.platform.close()
+        self.platform = Platform(self.settings)
+        self._install_core_peer()
+        manager = self.platform.bot_adapters
+        with closing_db(self.platform.bots._db()) as db:
+            self.assertEqual(db.execute("SELECT enabled FROM connections").fetchone()[0], 0)
+        uncertain = await manager._reconcile(manager.catalog.get(row["id"]))
+        self.assertEqual(uncertain["state"], "unknown")
+        stopped = await manager.reconcile(
+            {"id": row["id"], "expected_revision": 3, "client_id": str(uuid.uuid4())}
+        )
+        self.assertEqual(stopped["state"], "disabled")
+        self.assertFalse(stopped["enabled"])
+
+    async def test_create_intent_receipt_survives_failure_and_replay_is_read_only(self):
+        manager = self.platform.bot_adapters
+        body, session = await self._draft()
+        with patch.object(manager, "_attach", side_effect=RuntimeError("power loss")):
+            with self.assertRaisesRegex(RuntimeError, "power loss"):
+                await manager.create(body, session)
+        row = manager.catalog.all()[0]
+        self.assertEqual(manager.catalog.receipt(body["client_id"], digest(body))["id"], row["id"])
+        self.assertEqual((await manager.create(body, {}))["id"], row["id"])
+        self.assertEqual(len(manager.catalog.all()), 1)
+        self.platform.close()
+        self.platform = Platform(self.settings)
+        self._install_core_peer()
+        restored = await self.platform.bot_adapters.reconcile(
+            {"id": row["id"], "expected_revision": 1, "client_id": str(uuid.uuid4())}
+        )
+        self.assertEqual(restored["state"], "disabled")
+        with closing_db(self.platform.bots._db()) as db:
+            self.assertIsNotNone(
+                db.execute("SELECT id FROM connections WHERE id=?", (row["id"],)).fetchone()
+            )
+
+    async def test_receipt_and_intent_roll_back_together(self):
+        manager = self.platform.bot_adapters
+        body, session = await self._draft()
+        original = manager.catalog._seal
+
+        def fail_receipt(value, scope):
+            if scope.startswith("receipt:"):
+                raise RuntimeError("interrupted transaction")
+            return original(value, scope)
+
+        with patch.object(manager.catalog, "_seal", side_effect=fail_receipt):
+            with self.assertRaisesRegex(RuntimeError, "interrupted transaction"):
+                await manager.create(body, session)
+        self.assertEqual(manager.catalog.all(), [])
+        self.assertIsNone(manager.catalog.receipt(body["client_id"], digest(body)))
+        self.assertEqual((await manager.create(body, session))["state"], "disabled")
+
+    async def test_post_apply_cancellation_does_not_lose_change_receipt(self):
+        manager = self.platform.bot_adapters
+        row, _ = await self._created()
+        body = {"id": row["id"], "expected_revision": 1, "client_id": str(uuid.uuid4())}
+        original = manager._apply
+
+        async def cancel_after_apply(item):
+            await original(item)
+            raise asyncio.CancelledError()
+
+        with patch.object(manager, "_apply", side_effect=cancel_after_apply):
+            with self.assertRaises(asyncio.CancelledError):
+                await manager.change("enable", body)
+        before = self.apply_calls
+        self.assertEqual((await manager.change("enable", body))["state"], "ready")
+        self.assertEqual(self.apply_calls, before)
+        self.assertEqual(len(manager.catalog.all()), 1)
+
+    async def test_post_apply_cancellation_does_not_duplicate_create(self):
+        manager = self.platform.bot_adapters
+        body, session = await self._draft()
+        original = manager._apply
+
+        async def cancel_after_apply(item):
+            await original(item)
+            raise asyncio.CancelledError()
+
+        with patch.object(manager, "_apply", side_effect=cancel_after_apply):
+            with self.assertRaises(asyncio.CancelledError):
+                await manager.create(body, session)
+        before = self.apply_calls
+        created = await manager.create(body, {})
+        self.assertEqual(created["state"], "disabled")
+        self.assertEqual(self.apply_calls, before)
+        self.assertEqual(len(manager.catalog.all()), 1)
+
+    async def test_slow_send_does_not_block_stop_or_other_connection(self):
+        manager = self.platform.bot_adapters
+        first, _ = await self._created()
+        first = await manager.change(
+            "enable", {"id": first["id"], "expected_revision": 1, "client_id": str(uuid.uuid4())}
+        )
+        second, _ = await self._created("group:other")
+        started, release = asyncio.Event(), asyncio.Event()
+        sends = []
+        original = manager._plugin
+
+        async def slow_plugin(row, path, payload):
+            if path == "/messages/send":
+                sends.append(payload["delivery"]["reply_id"])
+                if len(sends) == 1:
+                    started.set()
+                    await release.wait()
+                delivery = payload["delivery"]
+                return {
+                    "reply_id": delivery["reply_id"],
+                    "attempt_id": delivery["attempt_id"],
+                    "state": "unknown",
+                    "channel_message_ids": [],
+                }
+            return await original(row, path, payload)
+
+        def claim(_header, body):
+            if body["connection_id"] != first["id"]:
+                return {"deliveries": []}
+            return {
+                "deliveries": [
+                    {"reply_id": "reply:one", "attempt_id": "attempt:one"},
+                    {"reply_id": "reply:two", "attempt_id": "attempt:two"},
+                ]
+            }
+
+        with (
+            patch.object(manager, "_plugin", side_effect=slow_plugin),
+            patch.object(self.platform.bots, "claim", side_effect=claim),
+            patch.object(self.platform.bots, "ack", return_value={}),
+            patch.object(manager, "_gate", return_value=None),
+        ):
+            pumping = asyncio.create_task(manager.pump_once())
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                stopped = await asyncio.wait_for(
+                    manager.route(
+                        None,
+                        "/api/web/bot-adapters/disable",
+                        {"id": first["id"], "expected_revision": 2, "client_id": str(uuid.uuid4())},
+                        {},
+                    ),
+                    2,
+                )
+                self.assertEqual(stopped["connection"]["state"], "disabled")
+                enabled = await asyncio.wait_for(
+                    manager.route(
+                        None,
+                        "/api/web/bot-adapters/enable",
+                        {
+                            "id": second["id"],
+                            "expected_revision": 1,
+                            "client_id": str(uuid.uuid4()),
+                        },
+                        {},
+                    ),
+                    2,
+                )
+                self.assertEqual(enabled["connection"]["state"], "ready")
+                self.assertFalse(pumping.done())
+            finally:
+                release.set()
+                await pumping
+        self.assertEqual(sends, ["reply:one"])
+        self.assertEqual(manager.catalog.get(first["id"])["state"], "disabled")
+
+    async def test_disable_during_dns_review_prevents_new_send(self):
+        from services.platform.web_external_net import reviewed_pins as real_reviewed_pins
+
+        manager = self.platform.bot_adapters
+        row, _ = await self._created()
+        row = await manager.change(
+            "enable", {"id": row["id"], "expected_revision": 1, "client_id": str(uuid.uuid4())}
+        )
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def slow_review(address, ranges):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+            return await real_reviewed_pins(address, ranges)
+
+        with patch("services.platform.bot_adapters.reviewed_pins", side_effect=slow_review):
+            sending = asyncio.create_task(
+                manager._plugin(
+                    row,
+                    "/messages/send",
+                    {
+                        "connection_id": row["id"],
+                        "delivery": {"reply_id": "reply:blocked", "attempt_id": "attempt:blocked"},
+                    },
+                )
+            )
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                stopped = await asyncio.wait_for(
+                    manager.change(
+                        "disable",
+                        {"id": row["id"], "expected_revision": 2, "client_id": str(uuid.uuid4())},
+                    ),
+                    2,
+                )
+                self.assertEqual(stopped["state"], "disabled")
+            finally:
+                release.set()
+            with self.assertRaises(Fault) as error:
+                await sending
+        self.assertEqual(error.exception.code, "connection_disabled")
+        self.assertEqual(self.sends, [])
 
     async def test_optional_actual_platform_core_tls_and_plugin_joint(self):
         if not os.environ.get("TS_ADAPTER_JOINT_CORE"):

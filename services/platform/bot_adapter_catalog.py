@@ -171,14 +171,48 @@ class BotAdapterCatalog:
                 return self._open(row[1], "receipt:" + client_id)
             return None
 
-    def record(self, client_id, fingerprint, result):
-        with closing(self._db()) as db, db:
+    def begin(self, item, client_id, fingerprint):
+        """Commit an operation's intent and idempotency receipt before any side effect."""
+        key = item["id"]
+        with closing(self._db()) as db:
             db.execute("BEGIN IMMEDIATE")
             previous = db.execute(
-                "SELECT fingerprint FROM receipts WHERE id=?", (client_id,)
+                "SELECT fingerprint,document FROM receipts WHERE id=?", (client_id,)
             ).fetchone()
-            require(previous is None or previous[0] == fingerprint, "idempotency_conflict", 409)
+            if previous:
+                require(previous[0] == fingerprint, "idempotency_conflict", 409)
+                return self._open(previous[1], "receipt:" + client_id)
             db.execute(
-                "INSERT OR IGNORE INTO receipts VALUES(?,?,?)",
-                (client_id, fingerprint, self._seal(result, "receipt:" + client_id)),
+                "INSERT INTO rows VALUES(?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document",
+                (key, self._seal(item, "row:" + key)),
             )
+            db.execute(
+                "INSERT INTO receipts VALUES(?,?,?)",
+                (client_id, fingerprint, self._seal({"id": key}, "receipt:" + client_id)),
+            )
+            db.commit()
+        return None
+
+    def observe(self, item):
+        """Do not let an older pump result replace a newer management intent."""
+        key = item["id"]
+        with closing(self._db()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            stored = db.execute("SELECT document FROM rows WHERE id=?", (key,)).fetchone()
+            if stored is None:
+                return False
+            current = self._open(stored[0], "row:" + key)
+            if (
+                current["revision"] != item["revision"]
+                or current["pending"]
+                or not current["enabled"]
+            ):
+                return False
+            for field in ("state", "last_error", "last_checked_at"):
+                current[field] = item[field]
+            db.execute(
+                "UPDATE rows SET document=? WHERE id=?",
+                (self._seal(current, "row:" + key), key),
+            )
+            db.commit()
+            return True

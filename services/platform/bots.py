@@ -6,7 +6,7 @@ import hmac
 import secrets
 import sqlite3
 import uuid
-from contextlib import closing
+from contextlib import closing, nullcontext
 
 from .auth import secret
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
@@ -171,6 +171,8 @@ class Bots:
         row = db.execute("SELECT * FROM connections WHERE id=?", (connection_id,)).fetchone()
         require(row is not None, "not_found", 404)
         require(not enabled or row["enabled"], "forbidden", 403)
+        if enabled:
+            require(self._managed_active(row), "forbidden", 403)
         if row["enabled"]:
             self._require_unique_owner(db, row)
         slot, entries = self._slot(row)
@@ -197,6 +199,22 @@ class Bots:
         else:
             check(authority)
         return row, slot, entries
+
+    def _managed_guard(self):
+        manager = getattr(self.p, "bot_adapters", None)
+        return manager.admission_lock if manager is not None else nullcontext()
+
+    def _managed_active(self, row):
+        manager = getattr(self.p, "bot_adapters", None)
+        if manager is None or manager.catalog is None or not row["slot_id"].startswith("adapter:"):
+            return True
+        item = manager.catalog.get(row["id"])
+        return (
+            item is not None
+            and item["enabled"]
+            and not item["pending"]
+            and item["state"] in {"ready", "degraded"}
+        )
 
     def _authenticate(self, db, header, connection_id, *, settlement=False):
         row = db.execute("SELECT * FROM connections WHERE id=?", (connection_id,)).fetchone()
@@ -533,6 +551,10 @@ class Bots:
         }
 
     def _admit_event(self, header, body, semantic):
+        with self._managed_guard():
+            return self._admit_event_guarded(header, body, semantic)
+
+    def _admit_event_guarded(self, header, body, semantic):
         with closing(self._db()) as db:
             db.execute("BEGIN IMMEDIATE")
             row, slot, entries = self._authenticate(db, header, body["connection_id"])
@@ -638,6 +660,10 @@ class Bots:
         return receipt
 
     def send(self, header, request):
+        with self._managed_guard():
+            return self._send_guarded(header, request)
+
+    def _send_guarded(self, header, request):
         p = self.p
         p.contracts.check("conversation#send_request", request)
         require(len(canonical(request).encode()) <= 65536, "budget_exceeded", 413)
@@ -674,11 +700,15 @@ class Bots:
             candidates = []
             for row in db.execute("SELECT * FROM connections WHERE enabled=1"):
                 slot, input_entries = self._slot(row)
-                if any(
-                    input_entry["channel"] == actor["channel"]
-                    and actor_entry_id in input_entry["actor_entries"]
-                    for input_entry in input_entries
-                ) and request["actor_id"] in loads(row["actor_ids"]):
+                if (
+                    any(
+                        input_entry["channel"] == actor["channel"]
+                        and actor_entry_id in input_entry["actor_entries"]
+                        for input_entry in input_entries
+                    )
+                    and request["actor_id"] in loads(row["actor_ids"])
+                    and self._managed_active(row)
+                ):
                     candidates.append(row)
             require(len(candidates) == 1, "forbidden", 403)
             connection = candidates[0]
@@ -785,6 +815,10 @@ class Bots:
             }
 
     def claim(self, header, body):
+        with self._managed_guard():
+            return self._claim_guarded(header, body)
+
+    def _claim_guarded(self, header, body):
         require(set(body) == {"connection_id", "instance_id", "limit"}, "invalid_input", 400)
         require(
             isinstance(body["instance_id"], str)
