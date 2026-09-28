@@ -60,6 +60,7 @@ LIFE_PREFIX = "/api/web/life/"
 MEMORY_PREFIX = "/api/web/memory/"
 EXTERNAL_PREFIX = "/api/web/external/"
 BOTS_PREFIX = "/api/web/bots/"
+BOT_ADAPTERS_PREFIX = "/api/web/bot-adapters/"
 
 
 class WebConsole:
@@ -605,6 +606,14 @@ class WebConsole:
             return web.json_response(result)
         if request.path.startswith(EXTERNAL_PREFIX):
             result = await self.external.route(request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
+        if request.path.startswith(BOT_ADAPTERS_PREFIX):
+            result = await self.platform.bot_adapters.route(self, request.path, body, session)
             require(
                 await self.platform.local_work.run(self.session_valid, session),
                 "session_expired",

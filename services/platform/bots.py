@@ -1,6 +1,7 @@
 """Narrow bot connections and durable delivery inbox around published dialogue ports."""
 
 import asyncio
+import copy
 import hmac
 import secrets
 import sqlite3
@@ -86,8 +87,10 @@ class Bots:
         self.p = platform
         config = platform.settings.get("bot_connections")
         self.config = config
-        self.slots = validate_bot_settings(
-            platform.settings, platform.auth, platform.sources, platform.contracts
+        self.slots = copy.deepcopy(
+            validate_bot_settings(
+                platform.settings, platform.auth, platform.sources, platform.contracts
+            )
         )
         self.path = platform.store.path + ".bots.sqlite"
         if config is None:
@@ -250,10 +253,19 @@ class Bots:
         require(self._web_code(console, session) == "ready", "management_required", 403)
         if path == "/api/web/bots/create":
             require(set(body) == {"slot_id", "actor_ids"}, "invalid_input", 400)
+            require(body["slot_id"] in self.config["slots"], "not_found", 404)
             return await self.p.local_work.run(self.create, body["slot_id"], body["actor_ids"])
         operation = path.rsplit("/", 1)[-1]
         require(operation in {"enable", "disable", "rotate"}, "not_found", 404)
         require(set(body) == {"connection_id"}, "invalid_input", 400)
+        managed = getattr(self.p, "bot_adapters", None)
+        require(
+            managed is None
+            or managed.catalog is None
+            or managed.catalog.get(body["connection_id"]) is None,
+            "not_found",
+            404,
+        )
         return await self.p.local_work.run(self.change, body["connection_id"], operation)
 
     def view(self):
@@ -264,6 +276,8 @@ class Bots:
             slots = []
             connections = []
             for slot_id, slot in self.slots.items():
+                if slot_id not in self.config["slots"]:
+                    continue
                 entries = [self.p.sources.entries[item] for item in slot["input_entry_ids"]]
                 entry = entries[0]
                 slots.append(
@@ -332,7 +346,7 @@ class Bots:
                     )
         return {"available": True, "slots": slots, "connections": connections}
 
-    def create(self, slot_id, actor_ids):
+    def create(self, slot_id, actor_ids, *, connection_id=None, token=None):
         require(slot_id in self.slots, "not_found", 404)
         require(
             isinstance(actor_ids, list)
@@ -348,8 +362,8 @@ class Bots:
             entry = self.p.sources.entries[entry_id]
             allowed &= {self.p.auth.entries[item]["actor_id"] for item in entry["actor_entries"]}
         require(set(actor_ids) <= allowed, "forbidden", 403)
-        token = secrets.token_urlsafe(48)
-        connection_id = "bot:" + uuid.uuid4().hex
+        token = token or secrets.token_urlsafe(48)
+        connection_id = connection_id or "bot:" + uuid.uuid4().hex
         with closing(self._db()) as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute(

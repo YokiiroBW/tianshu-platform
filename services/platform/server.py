@@ -448,6 +448,26 @@ def create_app(platform, probe=None, *, console=None, public=False):
 
     app = web.Application(middlewares=[boundary], client_max_size=1_048_576)
     app[PLATFORM] = platform
+
+    if not public and platform.bot_adapters.catalog is not None:
+
+        async def bot_pump_context(app):
+            async def pump():
+                while True:
+                    try:
+                        await platform.bot_adapters.pump_once()
+                    except (Fault, OSError, sqlite3.Error):
+                        pass
+                    await asyncio.sleep(2)
+
+            task = asyncio.create_task(pump())
+            try:
+                yield
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        app.cleanup_ctx.append(bot_pump_context)
     if not public:
         app.router.add_post("/internal/v1/origins/resolve", resolve)
         app.router.add_post("/internal/v1/model-config/snapshot", snapshot)

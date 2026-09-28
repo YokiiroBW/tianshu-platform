@@ -22,6 +22,7 @@ from .web_readers import validate_readers
 from .web_memory import validate_memory_binding
 from .sources import Sources
 from .bots import Bots, validate_bot_settings
+from .bot_adapter_catalog import validate_configuration as validate_bot_adapter_configuration
 
 
 def log_state():
@@ -115,6 +116,7 @@ SETTINGS_KEYS = frozenset(
         "web_external",
         "diagnostics",
         "bot_connections",
+        "bot_adapter_self_service",
     }
 )
 
@@ -211,6 +213,7 @@ def validate_settings(settings):
     validate_readers(settings, existing)
     validate_memory_binding(settings, auth)
     validate_external_configuration(settings.get("web_external"), settings)
+    validate_bot_adapter_configuration(settings.get("bot_adapter_self_service"), settings)
     connections = persona_connections(
         settings.get("persona_connections"), contracts.check, credentials
     )
@@ -275,6 +278,9 @@ class Platform:
             else None
         )
         self.auth.activate(self.store, clock)
+        from .bot_adapters import BotAdapters
+
+        self.bot_adapters = BotAdapters(self)
         # Everything the read-only probes are allowed to know about this deployment, assembled
         # once as a frozen description. The health module never receives this object, a store or a
         # console, and nothing here can write.
