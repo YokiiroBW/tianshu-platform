@@ -21,6 +21,17 @@ BODY = web.RequestKey("body", dict)
 NATIVE_SNAPSHOT = "/internal/v1/model-config/native/snapshot"
 PROVIDER_SELECT = "/internal/v1/provider-self-service/select"
 PROVIDER_RUNTIME = "/internal/v1/provider-self-service/runtime"
+BOT_PATHS = frozenset(
+    {
+        "/internal/v1/bot/events",
+        "/internal/v1/bot/events/status",
+        "/internal/v1/bot/heartbeat",
+        "/internal/v1/bot/replies/claim",
+        "/internal/v1/bot/replies/status",
+        "/internal/v1/bot/replies/ack",
+    }
+)
+REPLY_STATUS = "/internal/v1/conversation/reply-status"
 # The two probes are recognised here, inside the serving boundary and ahead of the static
 # dispatcher, so neither can ever fall through to the single-page application.
 LIVE_PATH = "/health/live"
@@ -154,6 +165,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 "/internal/v1/origins/resolve": "common#origin_resolve_request",
                 "/internal/v1/model-config/snapshot": "model#config_request",
                 "/internal/v1/conversation/send": "conversation#send_request",
+                REPLY_STATUS: "conversation#send_request",
             }.get(request.path)
             if request.path == "/internal/v1/source-access/read":
                 schema = {
@@ -167,20 +179,30 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 PROVIDER_SELECT,
                 PROVIDER_RUNTIME,
             }
+            bot_call = platform.bots.config is not None and request.path in BOT_PATHS
             require(
-                request.method == "POST" and (schema is not None or renewal or provider_call),
+                request.method == "POST"
+                and (schema is not None or renewal or provider_call or bot_call),
                 "not_found",
                 404,
             )
             if renewal:
                 require(len(raw) <= 4096, "budget_exceeded", 413)
                 model_origin_renewal.validate_request(body)
+            elif bot_call:
+                require(
+                    len(raw) <= (65536 if request.path == "/internal/v1/bot/events" else 4096),
+                    "budget_exceeded",
+                    413,
+                )
             elif provider_call:
                 require(len(raw) <= 4096, "budget_exceeded", 413)
             else:
                 platform.contracts.check(schema, body)
-            if not provider_call:
-                request_id = body.get("query", body.get("command", body))["request_id"]
+            if not provider_call and not bot_call:
+                request_id = body.get("query", body.get("command", body)).get(
+                    "request_id", request_id
+                )
             request[BODY] = body
             # From here the handler authenticates the presented credential itself; everything
             # before this line is a pre-authentication refusal that proves nothing about identity.
@@ -388,12 +410,41 @@ def create_app(platform, probe=None, *, console=None, public=False):
         )
 
     async def send(request):
+        body = request[BODY]
+        if body["destination"]["namespace"] != "web":
+            return web.json_response(
+                await platform.local_work.run(
+                    platform.bots.send, request.headers["Authorization"], body
+                )
+            )
         require(console.config is not None, "dependency_unavailable", 503)
         return web.json_response(
             await platform.local_work.run(
-                console.sender.send, request.headers["Authorization"], request[BODY]
+                console.sender.send, request.headers["Authorization"], body
             )
         )
+
+    async def reply_status(request):
+        return web.json_response(
+            await platform.local_work.run(
+                platform.bots.reply_status, request.headers["Authorization"], request[BODY]
+            )
+        )
+
+    async def bot_route(request):
+        path = request.path
+        body = request[BODY]
+        header = request.headers["Authorization"]
+        if path == "/internal/v1/bot/events":
+            return web.json_response(await platform.bots.event(header, body))
+        operation = {
+            "/internal/v1/bot/events/status": platform.bots.event_status,
+            "/internal/v1/bot/heartbeat": platform.bots.heartbeat,
+            "/internal/v1/bot/replies/claim": platform.bots.claim,
+            "/internal/v1/bot/replies/status": platform.bots.claim_status,
+            "/internal/v1/bot/replies/ack": platform.bots.ack,
+        }[path]
+        return web.json_response(await platform.local_work.run(operation, header, body))
 
     app = web.Application(middlewares=[boundary], client_max_size=1_048_576)
     app[PLATFORM] = platform
@@ -410,6 +461,10 @@ def create_app(platform, probe=None, *, console=None, public=False):
             app.router.add_post(NATIVE_SNAPSHOT, native_snapshot)
         app.router.add_post("/internal/v1/source-access/read", source_access)
         app.router.add_post("/internal/v1/conversation/send", send)
+        if platform.bots.config is not None:
+            app.router.add_post(REPLY_STATUS, reply_status)
+            for path in BOT_PATHS:
+                app.router.add_post(path, bot_route)
     app.router.add_route("*", "/{path:.*}", console.handle)
 
     async def close_local_work(app):

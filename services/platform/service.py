@@ -21,6 +21,7 @@ from .web_account import WebAccount
 from .web_readers import validate_readers
 from .web_memory import validate_memory_binding
 from .sources import Sources
+from .bots import Bots, validate_bot_settings
 
 
 def log_state():
@@ -113,6 +114,7 @@ SETTINGS_KEYS = frozenset(
         "web_memory",
         "web_external",
         "diagnostics",
+        "bot_connections",
     }
 )
 
@@ -143,6 +145,9 @@ def validate_settings(settings):
         )
     contracts = Contracts(settings["contract_directory"], settings.get("source_contract_directory"))
     auth = Auth(settings, contracts)
+    if settings.get("bot_connections") is not None:
+        candidate_sources = Sources(None, auth, contracts, None, settings, time.time)
+        validate_bot_settings(settings, auth, candidate_sources, contracts)
     # The publication lifetime is validated by the model owner's own rule rather than by a second
     # copy of it here: `Models` runs this same function while it is assembled, so a lifetime the
     # preflight accepts is one the real startup publishes with.
@@ -232,6 +237,7 @@ class Platform:
         self.sources = Sources(self.store, self.auth, self.contracts, self.origins, settings, clock)
         self.origins.input_entries = self.sources.entries
         self.settings = settings
+        self.bots = Bots(self)
         self.models = Models(self.store, self.auth, self.contracts, self.origins, settings, clock)
         from .provider_catalog import ProviderCatalog
 

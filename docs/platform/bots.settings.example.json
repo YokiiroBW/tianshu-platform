@@ -1,0 +1,82 @@
+{
+  "note": "SYNTHETIC FRAGMENT ONLY. Merge into an existing Platform deployment; replace every example identifier before use.",
+  "principals": {
+    "bot-gateway": {
+      "kind": "service",
+      "service": "platform",
+      "token_env": "TIANSHU_BOT_GATEWAY_PRIVATE_TOKEN",
+      "actions": ["source.register", "source.dispatch", "mapping.prepare"]
+    }
+  },
+  "bot_connections": {
+    "principal": "bot-gateway",
+    "slots": {
+      "example-nonebot-group": {
+        "adapter": "nonebot",
+        "platform_id": "replace-nonebot-host-instance",
+        "self_id": "replace-qq-bot-self-id",
+        "input_entry_ids": ["example-nonebot-group-author-1"],
+        "label": "NoneBot 测试群（占位）"
+      },
+      "example-astrbot-private": {
+        "adapter": "astrbot",
+        "platform_id": "replace-astrbot-platform-id",
+        "self_id": "replace-qq-bot-self-id",
+        "input_entry_ids": ["example-astrbot-private-author-1"],
+        "label": "AstrBot 测试私聊（占位）"
+      }
+    }
+  },
+  "input_entries": {
+    "example-nonebot-group-author-1": {
+      "owner": "bot-gateway",
+      "account": {
+        "namespace": "qq",
+        "immutable_account_id": "replace-approved-group-author-id"
+      },
+      "channel": {
+        "namespace": "qq",
+        "binding_id": "replace-core-nonebot-binding",
+        "channel_conversation_id": "group:replace-approved-group-id",
+        "thread_id": null
+      },
+      "audience": "group",
+      "ttl_seconds": 60,
+      "actor_entries": ["example-nonebot-group-actor-1"],
+      "default_actor_ids": ["replace-published-actor-id"],
+      "routing_version": 1
+    },
+    "example-astrbot-private-author-1": {
+      "owner": "bot-gateway",
+      "account": {
+        "namespace": "qq",
+        "immutable_account_id": "replace-approved-private-peer-id"
+      },
+      "channel": {
+        "namespace": "qq",
+        "binding_id": "replace-core-astrbot-binding",
+        "channel_conversation_id": "private:replace-approved-peer-id",
+        "thread_id": null
+      },
+      "audience": "self_private",
+      "ttl_seconds": 60,
+      "actor_entries": ["example-astrbot-private-actor-1"],
+      "default_actor_ids": ["replace-published-actor-id"],
+      "routing_version": 1
+    }
+  },
+  "actor_entry_template": {
+    "kind": "trusted_application",
+    "owner": "bot-gateway",
+    "account": "copy the corresponding input entry account",
+    "channel": "copy the corresponding input entry channel",
+    "actor_id": "replace-published-actor-id",
+    "audience": "copy the corresponding input entry audience",
+    "ttl_seconds": 60,
+    "routes": [
+      { "caller": "platform", "receiver": "companion", "purpose": "dialogue" },
+      { "caller": "companion", "receiver": "memory", "purpose": "dialogue" },
+      { "caller": "companion", "receiver": "platform", "purpose": "dialogue" }
+    ]
+  }
+}

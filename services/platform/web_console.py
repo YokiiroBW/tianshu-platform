@@ -59,6 +59,7 @@ KNOWLEDGE_PREFIX = "/api/web/knowledge/"
 LIFE_PREFIX = "/api/web/life/"
 MEMORY_PREFIX = "/api/web/memory/"
 EXTERNAL_PREFIX = "/api/web/external/"
+BOTS_PREFIX = "/api/web/bots/"
 
 
 class WebConsole:
@@ -604,7 +605,19 @@ class WebConsole:
             return web.json_response(result)
         if request.path.startswith(EXTERNAL_PREFIX):
             result = await self.external.route(request.path, body, session)
-            require(await self.platform.local_work.run(self.session_valid, session), "session_expired", 401)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
+        if request.path.startswith(BOTS_PREFIX):
+            result = await self.platform.bots.web_route(self, request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
             return web.json_response(result)
         operation = {
             "/api/web/messages": self.dialogue.send,

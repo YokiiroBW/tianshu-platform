@@ -29,6 +29,8 @@ const descriptions: Record<string, string> = {
   session_expired: "登录已过期，请重新登录。",
   forbidden: "当前账号或服务身份没有读取权限。",
   operator_not_authorized: "当前账号没有读取权限。",
+  management_required: "请先用管理员密码解锁机器人连接管理。",
+  idempotency_conflict: "该连接或回复已被另一个配置占用，请刷新后核对。",
   dependency_unavailable: "上游暂时无法读取，请稍后重试。",
   timeout: "读取超时；本次没有取得数据。",
   invalid_upstream: "上游返回了无法使用的数据。",

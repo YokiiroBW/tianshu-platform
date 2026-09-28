@@ -1319,7 +1319,7 @@ class ProbeUnitTests(unittest.TestCase):
         self.assertIn("authority_head", runtime_health.STORE_TABLES)
         self.assertEqual(
             set(runtime_health.SIDECAR_TABLES),
-            {"web-inputs", "web-replies", "web-models", "home-controls"},
+            {"web-inputs", "web-replies", "web-models", "home-controls", "bots"},
         )
 
     def test_the_probe_budget_is_bounded(self):

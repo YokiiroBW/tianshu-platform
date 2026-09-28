@@ -58,6 +58,7 @@ SIDECAR_TABLES = {
     "web-replies": "replies",
     "web-models": "publication_intents",
     "home-controls": "control_intents",
+    "bots": "connections",
 }
 ASSET_REFERENCE = re.compile(r'(?:src|href)="(/[^"]+\.(?:js|css))"')
 CERTIFICATE_TIME = "%b %d %H:%M:%S %Y %Z"
@@ -112,19 +113,22 @@ def health_inputs(
     web = web if isinstance(web, dict) else None
     static = web.get("static_directory") if web else None
     sidecars = ()
-    if web is not None and database_path:
+    if database_path:
         # Only the ledgers this deployment actually owns are asked about. The console's own two
         # exist wherever the console does; the other two belong to optional capabilities, so a
         # deployment without a registered household or without model management simply has none -
         # that is a configuration choice, and demanding one would report a fault that is not there.
-        owned = [
-            (".web-inputs.sqlite", "web-inputs"),
-            (".web-replies.sqlite", "web-replies"),
-        ]
-        if _enabled_section(settings, "web_models"):
-            owned.append((".web-models.sqlite", "web-models"))
-        if _enabled_section(settings, "home"):
-            owned.append((".home-controls.sqlite", "home-controls"))
+        owned = []
+        if web is not None:
+            owned.extend(
+                [(".web-inputs.sqlite", "web-inputs"), (".web-replies.sqlite", "web-replies")]
+            )
+            if _enabled_section(settings, "web_models"):
+                owned.append((".web-models.sqlite", "web-models"))
+            if _enabled_section(settings, "home"):
+                owned.append((".home-controls.sqlite", "home-controls"))
+        if settings.get("bot_connections") is not None:
+            owned.append((".bots.sqlite", "bots"))
         sidecars = tuple((database_path + suffix, kind) for suffix, kind in owned)
     tls = settings.get("tls")
     tls = tls if isinstance(tls, dict) else None

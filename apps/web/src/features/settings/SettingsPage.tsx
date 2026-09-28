@@ -4,6 +4,7 @@ import { TasksPanel } from "./TasksPanel";
 import { AccessPanel } from "./AccessPanel";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { ExternalConnectionsPanel } from "./ExternalConnectionsPanel";
+import { BotConnectionsPanel } from "./BotConnectionsPanel";
 
 export default function SettingsPage({ section }: { section: number }) {
   if (section === 0) return <TasksPanel />;
@@ -27,6 +28,7 @@ export default function SettingsPage({ section }: { section: number }) {
       <AccessPanel />
       <ConnectionsPanel />
       <ExternalConnectionsPanel />
+      <BotConnectionsPanel />
     </>
   );
 }

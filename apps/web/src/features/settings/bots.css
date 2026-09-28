@@ -1,0 +1,74 @@
+.bot-connections {
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+.bot-form {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 44rem;
+}
+.bot-form label {
+  display: grid;
+  gap: var(--space-1);
+}
+.bot-form input:not([type="checkbox"]),
+.bot-form select {
+  min-height: var(--control-height);
+  padding: var(--space-2);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+.bot-form fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+}
+.bot-form fieldset label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.bot-list {
+  display: grid;
+  gap: var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+.bot-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+}
+.bot-list li > div:first-child {
+  flex: 1 1 15rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.bot-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.bot-secret {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  overflow-wrap: anywhere;
+}
+.bot-secret code {
+  white-space: normal;
+  user-select: all;
+}
+.bot-error {
+  color: var(--color-danger, #b42318);
+}
