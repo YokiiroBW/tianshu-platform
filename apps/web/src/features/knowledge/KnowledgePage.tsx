@@ -105,6 +105,7 @@ export default function KnowledgePage() {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
   const [state, setState] = useState<Connection | null>(null);
+  const [observedHere, setObservedHere] = useState(false);
   const [project, setProject] = useState("");
   const [tab, setTab] = useState<Tab>("documents");
   const [input, setInput] = useState("");
@@ -137,6 +138,7 @@ export default function KnowledgePage() {
     scope.current++;
     setStateError("");
     setState(null);
+    setObservedHere(false);
     setProject("");
     setDocs(null);
     setItems([]);
@@ -183,6 +185,7 @@ export default function KnowledgePage() {
         controller.signal,
       );
       if (controller.signal.aborted || mark !== scope.current) return;
+      setObservedHere(true);
       setDocs(answer.result);
       setItems((before) =>
         cursor ? [...before, ...answer.result.items] : answer.result.items,
@@ -226,6 +229,7 @@ export default function KnowledgePage() {
     setInput("");
     setError("");
     setBusy(false);
+    setObservedHere(false);
     setProject(next);
   }
 
@@ -257,6 +261,7 @@ export default function KnowledgePage() {
         controller.signal,
       );
       if (controller.signal.aborted || mark !== scope.current) return;
+      setObservedHere(true);
       setDetail(answer.result);
       setBlocks((before) =>
         cursor ? [...before, ...answer.result.blocks] : answer.result.blocks,
@@ -296,8 +301,10 @@ export default function KnowledgePage() {
           csrf,
           controller.signal,
         );
-        if (!controller.signal.aborted && mark === scope.current)
+        if (!controller.signal.aborted && mark === scope.current) {
+          setObservedHere(true);
           setNotes(answer.result);
+        }
       } else {
         const answer = await integrationPost<Answer<Query>>(
           "knowledge/query",
@@ -305,8 +312,10 @@ export default function KnowledgePage() {
           csrf,
           controller.signal,
         );
-        if (!controller.signal.aborted && mark === scope.current)
+        if (!controller.signal.aborted && mark === scope.current) {
+          setObservedHere(true);
           setQuery(answer.result);
+        }
       }
     } catch (cause) {
       if (!controller.signal.aborted && mark === scope.current)
@@ -377,7 +386,9 @@ export default function KnowledgePage() {
       </StatePanel>
     );
 
-  const status = connectionLabel(state);
+  const status = observedHere
+    ? { tone: "blue" as const, label: "本页本次读取成功" }
+    : connectionLabel(state);
   return (
     <div className="knowledge-page">
       <section className="panel">
@@ -395,9 +406,11 @@ export default function KnowledgePage() {
         <StatusRail tone={status.tone} label={status.label}>
           <p>
             资料来自 Memory 项目知识服务；读取仅覆盖部署端授权的项目。
-            {state.peer.code === "unverified"
-              ? "尚无真实读取记录。"
-              : `最近一次读取状态：${state.peer.code}${state.peer.verified_at ? `，成功于 ${state.peer.verified_at}` : ""}。`}
+            {observedHere
+              ? "本页已从项目知识服务实际读取。"
+              : state.peer.code === "unverified"
+                ? "尚无真实读取记录。"
+                : `最近一次读取状态：${state.peer.code}${state.peer.verified_at ? `，成功于 ${state.peer.verified_at}` : ""}。`}
           </p>
         </StatusRail>
         {state.projects.length > 0 && (

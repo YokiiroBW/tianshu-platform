@@ -39,14 +39,22 @@
 - 项目经验页合成同源浏览器用例覆盖错题/经验非空、交接只在点击后读取、同会话句柄核对差异、句柄失效、HTTP 读未启用及无 checkout；桌面/移动 **4 通过**。完整 `integration-pages.spec.ts` 桌面/移动 **14 通过**，页面截图在忽略的 `apps/web/test-results/**/experience.png` 经桌面/移动视觉核对、手机无横向溢出。TypeScript 检查及 Vite 构建通过，既有 RoomPage 大于 500 KiB 提示仍在。
 - `git diff --check` 通过。最终经验页提交 SHA 在本记录所在 Git 提交中确定。
 
+## 组合环境真实浏览器验收（2026-09-27）
+
+- 使用固定组合 Platform `948f71960b2750682d1dfc9cc3acf3ac2806a6d4`（B `9551871796f57d3369396023caf2b013a239c3a0` + U `faa5c6ba530b8a529e4c1e6e3e3d3ed42e414a8a`），真实 Platform 同源 HTTP、生产构建和 Chromium 管理员登录；没有拦截浏览器 `/api/web/*` 响应。组合检出源码保持干净，仅在其忽略的 `.runtime/connect-u-browser/` 留验收脚本、每页请求摘要 JSON 与截图。
+- 真实 Memory HTTPS 进程（固定 `02df5ba8c041a7a6eb8b705c5f264e10543032ec`）：浏览器概览、本人记忆、人物与群读取通过；真实 Memory Knowledge CLI HTTPS 进程：资料目录与版本正文、搜索与研究笔记、项目错题与已审阅经验、checkout 交接与当前状态核对四条通过。知识笔记夹具未开放目录操作，首个目录请求如实返回 403，搜索和笔记仍成功。数据、checkout、账号和密钥均为隔离合成夹具。
+- 真实 Companion HTTPS 进程（固定 `31677983798ba27b24d57925feab4774c2eec30f`）：授权角色、最后持久化状态、已发布日记列表与版本正文通过；隔离虚构数据库在读取前后相同。AssetLink HTTPS 和 Home Assistant 局域网 HTTP 使用隔离合成对端：页面分别保存并执行一次只读检测，两次均从真实 Platform 返回 `connected/read_observed`；未连接真实 NAS、家庭设备或资产数据。
+- 实际 Chromium 路径为 `#/memory/0,3,1`、`#/projects/0`（目录/正文、搜索、笔记）、`#/projects/1`（错题、经验、交接）、`#/companion/1`、`#/settings/1`。七组同名 `*.json` 与 `*.png` 分别记录 Platform 同源 API 状态和页面截图；真实进程联调用桌面 1440 px 浏览器，手机仅由上述合成同源 Playwright 回归覆盖。
+- 共 7 条浏览器场景通过，截图与请求记录在 `C:/YOKI/Codex/tianshu-peiban-bot/worktrees/CONNECT-INTEGRATION/tianshu-platform/.runtime/connect-u-browser/output/`。视觉核查发现知识与生活页在本次成功读取后仍显示进入页面时的“尚未验证”，本提交将其改为“本页本次读取成功”，并且只在当前范围有效且响应成功后更新；切换范围或刷新连接时清除。修正后的 U 生产构建再次搭配同一 B 组合服务与真实 Memory/Companion 对端运行 5 条知识/生活场景，全部通过，截图与请求记录在相邻的 `output-fixed/`。定向桌面/手机 Playwright 4 条、TypeScript 检查及 Vite 构建通过，`git diff --check` 通过。组合检出尚不含此 U 修正，需要协调者按审查顺序集成。
+
 ## 待集成与风险
 
-- CONNECT-B / CONNECT-M 的同源与上游服务还在分别验收；生产必须配置 Memory 专用浏览身份、知识服务独立进程、Companion 生活读者与正式授权，执行真实业务读取后才能把状态标“已实际读取”。
+- 隔离组合环境已证明真实进程与页面读路径；正式部署仍需配置 Memory 专用浏览身份、知识服务独立进程、Companion 生活读者与正式授权，并对正式数据做实际业务读取。
 - 人格候选合同仍受正式发布门槛，既有人格页不可把本地 rehearsal 称为生产可用。
-- 项目经验/交接 B 代码已固定并用真实 Platform→Memory HTTPS 知识进程验证；本页仍仅用合成同源响应验证浏览器交互。生产需另登记独立 Knowledge client 的新 HTTP 读权限、逐项目权限、已审阅经验 `review`、checkout 别名与实际部署读数；未登记时页面如实显示未启用。
-- HA 与 AssetLink 自助连接前端已按 B 当前管理接口实现；待 B 固定提交与隔离服务端验证后才能确认联通。合成浏览器响应不证明外部服务实测，保存不等于业务连接通过。
+- 项目经验/交接页已通过真实 Platform→Memory HTTPS 知识进程的浏览器读取；正式部署需登记独立 Knowledge client 的 HTTP 读权限、逐项目权限、已审阅经验 `review`、checkout 别名与实际部署读数；未登记时页面如实显示未启用。
+- HA 与 AssetLink 管理页已通过真实 Platform→隔离 HTTP 对端的浏览器保存和只读检测；此结果只证明协议与页面接线，不证明真实设备、NAS 或外部账户联通。保存仍不等于业务连接通过。
 - 不涉及真实账号、真实设备、真实资产、真实记忆资料、付费模型或 NAS 操作；这些必须由协调者在受控环境联合验收。
 
 ## 下一步
 
-总控审查各固定提交并串行集成；A 复核最终项目页及竞态修正。实际账号、Memory 知识进程、外部 HA/AssetLink 与 NAS 在受控部署联合验收后，才能将页面状态称为真实已连接。
+总控审查并串行集成 U 状态提示修正；A 继续独立复核最终项目页、竞态修正和组合联调证据。正式账号、设备、资产与 NAS 仍需在受控部署单独验收。
