@@ -1,0 +1,28 @@
+# ADAPTER-U · 网页机器人适配器向导交接
+
+## 目标与基线
+
+- 基线：`88fb778974f7050f3b4aa3c84a47b847d997e349`；实现提交：`2924ec358b3c99959bd8ab21fa4454062850aa0c`，分支 `codex/bot-adapter-ui-20260928`。
+- 按协调合同 `docs/development/bot-adapter-self-service-2026-09-28.md` 的 `/api/web/bot-adapters/{view,probe,create,enable,disable}` 字段实现；管理员解锁复用 `/api/web/bots/unlock`。本任务只改机器人设置页及浏览器测试。
+
+## 变更
+
+- 设置第 3 页以“添加适配器”为主入口。选 AstrBot/NoneBot，输入插件监听地址和一次性连接密钥，真实 `probe` 成功后仅显示返回的 QQ 账号；选择角色、群/私聊 ID 与明确作者白名单，`create` 保存为停用，再通过独立按钮 `enable`。普通流程不要求输入内部协议、槽位或服务地址；高级项只提供可信 CA。局域网 HTTP 需显式勾选，HTTPS 证书验证由后台负责。
+- 写入后重新读取 `view` 核对连接 ID、修订与启停状态；启用只有 `ready` 才显示已确认。结果不明只提示刷新核对，不自动重试。草稿到期、切页与取消会清理表单；插件密钥与 CA 提交后立即从表单清除，不回显。
+- 原有预登记槽位连接管理收在“旧连接管理”折叠区，原创建、启停与轮换功能保留；新适配器不在前端伪装为旧连接。新后台未启用时显示明确提示，不出现可提交的新表单。
+- 新增同源 API 类型与错误提示；浏览器测试覆盖完整创建/启停、错误密钥、不可达地址、版本不兼容、空 SDK 账号、局域网 HTTP 确认、过期草稿、取消、切页、未知写入与旧管理回归。
+
+## 实际验证
+
+- `pnpm exec tsc -p apps/web/tsconfig.json --noEmit`：通过。
+- `pnpm exec vite build --config apps/web/vite.config.ts`：通过；既有 RoomPage 大包提示仍在。
+- `pnpm exec playwright test --config apps/web/playwright.config.ts bot-adapters.spec.ts settings-subpages.spec.ts --workers=1`：桌面/手机 14 项通过；同源 API 使用明确合成响应。
+- `TS012_CONTRACT_DIR=.../contracts/text-dialogue/v1 pnpm exec playwright test --config apps/web/playwright.bots.config.ts`：原旧连接管理 1 项通过，使用隔离的真实本地 Platform/Cookie/CSRF 夹具；不是新适配器后台联验。
+- `git diff --cached --check`：通过。目视检查桌面/手机向导与保存后状态，手机无横向溢出。截图是忽略的本地运行产物：`apps/web/test-results/bot-adapters-adapter-wizar-8e634-icitly-enables-and-disables-{desktop,mobile}/bot-adapter-{wizard,saved}.png`。
+- 本机无 `npm` 命令；用已配置的 pnpm 11.19.0 从根 `package.json` 固定版本安装依赖，没有改锁文件。
+
+## 未完成与集成注意
+
+- ADAPTER-P 后台与 ADAPTER-H 插件尚未合到本检出；本向导的新 API 通过浏览器合成响应验证。总控需按上述固定草案核对 P/U 请求与回执，跑真实 Platform/Core/插件联测和重启恢复；本交接不声称真实 SDK、消息收发、NAS 或生产部署完成。
+- `probe` 必须只在真实插件响应且账号来自实际 SDK 时返回草稿；CA/HTTPS、私网 HTTP、凭据持久化、权限和启停一致性均为后台权威边界。新 API 缺失时页面明确不可用。
+- 不操作真实机器人账号、联系人或群，未发送测试消息。
