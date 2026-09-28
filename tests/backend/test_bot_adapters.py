@@ -65,7 +65,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                         "protocol": "tianshu.bot-adapter/v1",
                         "adapter": "nonebot",
                         "instance_id": "sdk:one",
-                        "accounts": [{"id": "bot:9", "platform": "qq", "label": "Synthetic QQ"}],
+                        "accounts": [{"id": "42", "platform": "qq", "label": "Synthetic QQ"}],
                         "capabilities": ["text"],
                         "max_outbound_utf8_bytes": 32768,
                     }
@@ -129,7 +129,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
     async def _close(self):
         self.platform.close()
 
-    async def _draft(self, conversation_id="group:999"):
+    async def _draft(self, conversation_id="999"):
         manager = self.platform.bot_adapters
         session = {}
         probe = await manager.probe(
@@ -145,15 +145,15 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         body = {
             "draft_id": probe["draft_id"],
             "name": "合成插件",
-            "account_id": "bot:9",
+            "account_id": "42",
             "conversation": {"kind": "group", "id": conversation_id},
-            "allowed_authors": ["user:1"],
+            "allowed_authors": ["7"],
             "actor_id": "actor:a",
             "client_id": str(uuid.uuid4()),
         }
         return body, session
 
-    async def _created(self, conversation_id="group:999"):
+    async def _created(self, conversation_id="999"):
         body, session = await self._draft(conversation_id)
         return await self.platform.bot_adapters.create(body, session), body
 
@@ -204,6 +204,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 ],
                 0,
             )
+
         recovered = await manager._reconcile(enabled)
         self.assertEqual(recovered["state"], "ready")
         self.platform.close()
@@ -223,6 +224,28 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 ],
                 0,
             )
+
+    async def test_qq_identifiers_are_validated_before_persisting(self):
+        manager = self.platform.bot_adapters
+        body, session = await self._draft()
+        for field, invalid in (
+            ("account_id", "bot:42"),
+            ("conversation", {"kind": "group", "id": "group:999"}),
+            ("allowed_authors", ["user:7"]),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaises(Fault) as error:
+                    await manager.create({**body, field: invalid}, session)
+                self.assertEqual(error.exception.code, "invalid_input")
+                self.assertEqual(manager.catalog.all(), [])
+        self.assertEqual((await manager.create(body, session))["state"], "disabled")
+        row = manager.catalog.all()[0]
+        self.assertEqual(
+            self.platform.sources.entries[f"{row['id']}:author:0"]["channel"][
+                "channel_conversation_id"
+            ],
+            "group:999",
+        )
 
     async def test_browser_login_unlock_and_probe_route(self):
         app = create_app(self.platform)
@@ -274,16 +297,16 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             ) as response:
                 self.assertEqual(response.status, 200)
                 result = await response.json()
-                self.assertEqual(result["accounts"][0]["id"], "bot:9")
+                self.assertEqual(result["accounts"][0]["id"], "42")
                 self.assertNotIn("access_key", str(result))
             async with client.post(
                 url + "/api/web/bot-adapters/create",
                 json={
                     "draft_id": result["draft_id"],
                     "name": "合成网页插件",
-                    "account_id": "bot:9",
-                    "conversation": {"kind": "group", "id": "group:web"},
-                    "allowed_authors": ["user:web"],
+                    "account_id": "42",
+                    "conversation": {"kind": "group", "id": "999"},
+                    "allowed_authors": ["7"],
                     "actor_id": "actor:a",
                     "client_id": str(uuid.uuid4()),
                 },
@@ -374,13 +397,13 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             "schema_version": 1,
             "connection_id": row["id"],
             "platform_id": "sdk:one",
-            "self_id": "bot:9",
+            "self_id": "42",
             "event_id": "sdk:event:1",
             "revision": 1,
             "namespace": "qq",
             "conversation_id": "group:999",
             "thread_id": None,
-            "account_id": "user:1",
+            "account_id": "7",
             "sent_at": utc(time.time()),
             "text": "合成入站",
         }
@@ -571,7 +594,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         first = await manager.change(
             "enable", {"id": first["id"], "expected_revision": 1, "client_id": str(uuid.uuid4())}
         )
-        second, _ = await self._created("group:other")
+        second, _ = await self._created("888")
         started, release = asyncio.Event(), asyncio.Event()
         sends = []
         original = manager._plugin
