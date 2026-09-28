@@ -44,6 +44,8 @@ const messages: Record<string, string> = {
   not_found: "草稿或连接已失效，请刷新后重新检测。",
   draft_expired: "检测草稿已过期，请重新检测连接。",
   version_conflict: "连接已在另一窗口改变，请刷新后核对。",
+  result_unknown:
+    "上次配置操作尚未确认。请刷新状态；若连接仍待核对，可显式恢复。",
   idempotency_conflict: "本次请求与已有记录冲突，请刷新后核对。",
   dependency_unavailable:
     "插件或后台暂时不可达，请检查地址、插件运行状态与网络。",

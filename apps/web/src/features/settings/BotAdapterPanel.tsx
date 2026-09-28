@@ -57,8 +57,32 @@ function authorsFrom(value: string) {
 function uncertain(cause: unknown) {
   return (
     !(cause instanceof AdapterApiError) ||
+    cause.code === "result_unknown" ||
     cause.executionState === "unknown" ||
     cause.status >= 500
+  );
+}
+
+function settledTogether(
+  id: string,
+  revision: number,
+  receipt: AdapterConnection | undefined,
+  readback: AdapterConnection | undefined,
+) {
+  if (
+    !receipt ||
+    !readback ||
+    receipt.id !== id ||
+    readback.id !== id ||
+    receipt.revision !== revision ||
+    receipt.revision !== readback.revision ||
+    receipt.enabled !== readback.enabled ||
+    receipt.state !== readback.state
+  )
+    return false;
+  return (
+    (receipt.state === "ready" && receipt.enabled) ||
+    (receipt.state === "disabled" && !receipt.enabled)
   );
 }
 
@@ -491,6 +515,68 @@ export function BotAdapterPanel() {
     }
   }
 
+  async function reconcile(connection: AdapterConnection) {
+    if (
+      !view?.unlocked ||
+      busy ||
+      unverifiedIds.has(connection.id) ||
+      connection.state !== "unknown"
+    )
+      return;
+    const controller = start("reconcile");
+    let submitted = false;
+    try {
+      const result = await adapterPost<Receipt>(
+        "reconcile",
+        {
+          id: connection.id,
+          expected_revision: connection.revision,
+          client_id: requestId(),
+        },
+        csrf,
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      submitted = true;
+      const latest = await readView(controller);
+      if (controller.signal.aborted) return;
+      const confirmed = latest.connections.find(
+        (item) => item.id === connection.id,
+      );
+      if (
+        latest.unlocked &&
+        settledTogether(
+          connection.id,
+          connection.revision,
+          result.connection,
+          confirmed,
+        )
+      ) {
+        clearUnverified(connection.id);
+        setNotice(
+          confirmed?.state === "ready"
+            ? "上一次配置已恢复，适配器已启用。"
+            : "上一次配置已核对，适配器已停用。",
+        );
+      } else {
+        markUnverified(connection.id);
+        setNotice("恢复结果仍待核对。请刷新状态后检查，不要立即重复提交。");
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        markUnverified(connection.id);
+        requireUnlock(cause);
+        setError(
+          submitted || uncertain(cause)
+            ? `恢复结果无法确认。请刷新状态核对，不要立即重复提交。${message(cause)}`
+            : message(cause),
+        );
+      }
+    } finally {
+      if (!controller.signal.aborted) setBusy("");
+    }
+  }
+
   const expired = probe ? Date.parse(probe.expires_at) <= Date.now() : false;
   return (
     <div className="bot-adapter-page">
@@ -845,6 +931,16 @@ export function BotAdapterPanel() {
                             ? ` · ${connection.last_error}`
                             : ""}
                         </small>
+                        {connection.state === "unknown" && (
+                          <p className="muted">
+                            上一次配置操作尚未确认。“核对并恢复”会继续完成上一次操作；若上次是启用，恢复成功后将恢复正常消息处理。此操作不会发送测试消息。
+                          </p>
+                        )}
+                        {pending && connection.state !== "unknown" && (
+                          <p className="muted">
+                            页面结果待核对，请先刷新状态。
+                          </p>
+                        )}
                       </div>
                       <StatusRail tone={status.tone} label={status.label} />
                       <div className="bot-actions">
@@ -866,6 +962,16 @@ export function BotAdapterPanel() {
                         >
                           {connection.enabled ? "停用" : "启用"}
                         </button>
+                        {connection.state === "unknown" && (
+                          <button
+                            className="button"
+                            type="button"
+                            disabled={Boolean(busy) || pending}
+                            onClick={() => void reconcile(connection)}
+                          >
+                            核对并恢复
+                          </button>
+                        )}
                       </div>
                     </li>
                   );

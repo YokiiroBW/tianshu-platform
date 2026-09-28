@@ -609,3 +609,277 @@ test("private conversation explicitly uses the chosen contact as the allowed aut
   await panel.getByLabel("会话类型").selectOption("group");
   await expect(panel.getByLabel("明确允许的作者 ID")).toHaveValue("");
 });
+
+test("unknown backend phase requires one explicit reconcile and confirms the original revision", async ({
+  page,
+}, testInfo) => {
+  await signedIn(page);
+  let current = connection(false, 7, "unknown");
+  let reconciles = 0;
+  let ordinaryWrites = 0;
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked: true,
+        actors: [actor],
+        connections: [current],
+      });
+    if (path === "reconcile") {
+      reconciles++;
+      const body = route.request().postDataJSON();
+      expect(body).toMatchObject({
+        id: current.id,
+        expected_revision: 7,
+        client_id: expect.any(String),
+      });
+      expect(Object.keys(body).sort()).toEqual([
+        "client_id",
+        "expected_revision",
+        "id",
+      ]);
+      current = connection(true, 7, "ready");
+      return json(route, { connection: current });
+    }
+    if (path === "enable" || path === "disable") ordinaryWrites++;
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await expect(
+    panel.getByText("若上次是启用，恢复成功后将恢复正常消息处理", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("bot-adapter-recovery.png"),
+    fullPage: true,
+  });
+  await expect(
+    panel.getByRole("button", { name: "启用", exact: true }),
+  ).toBeDisabled();
+  await panel.getByRole("button", { name: "刷新状态" }).click();
+  expect(reconciles).toBe(0);
+  await panel.getByRole("button", { name: "核对并恢复" }).click();
+  await expect(panel.getByText("上一次配置已恢复，适配器已启用")).toBeVisible();
+  await expect(panel.getByText("已启用", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "核对并恢复" })).toHaveCount(
+    0,
+  );
+  expect(reconciles).toBe(1);
+  expect(ordinaryWrites).toBe(0);
+});
+
+test("reconcile can confirm a pending disable without choosing a new target", async ({
+  page,
+}) => {
+  await signedIn(page);
+  let current = connection(true, 9, "unknown");
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked: true,
+        actors: [actor],
+        connections: [current],
+      });
+    if (path === "reconcile") {
+      current = connection(false, 9, "disabled");
+      return json(route, { connection: current });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await expect(
+    panel.getByRole("button", { name: "停用", exact: true }),
+  ).toBeDisabled();
+  await panel.getByRole("button", { name: "核对并恢复" }).click();
+  await expect(panel.getByText("上一次配置已核对，适配器已停用")).toBeVisible();
+  await expect(panel.getByText("已保存 · 未启用")).toBeVisible();
+});
+
+test("reconcile receipt and readback must agree on revision, enabled and settled state", async ({
+  page,
+}) => {
+  await signedIn(page);
+  let current = connection(false, 4, "unknown");
+  let reconciles = 0;
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked: true,
+        actors: [actor],
+        connections: [current],
+      });
+    if (path === "reconcile") {
+      reconciles++;
+      current = connection(true, 4, "ready");
+      return json(route, { connection: connection(true, 5, "ready") });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await panel.getByRole("button", { name: "核对并恢复" }).click();
+  await expect(
+    panel.getByText("恢复结果仍待核对", { exact: false }),
+  ).toBeVisible();
+  await expect(panel.getByText("结果待核对", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "核对并恢复" })).toHaveCount(
+    0,
+  );
+  expect(reconciles).toBe(1);
+});
+
+test("reconcile returning unknown stays pending and never retries itself", async ({
+  page,
+}) => {
+  await signedIn(page);
+  const pending = connection(false, 3, "unknown");
+  let reconciles = 0;
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked: true,
+        actors: [actor],
+        connections: [pending],
+      });
+    if (path === "reconcile") {
+      reconciles++;
+      return json(route, { connection: pending });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await panel.getByRole("button", { name: "核对并恢复" }).click();
+  await expect(
+    panel.getByText("恢复结果仍待核对", { exact: false }),
+  ).toBeVisible();
+  await expect(panel.getByText("结果待核对", { exact: true })).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "核对并恢复" }),
+  ).toBeDisabled();
+  expect(reconciles).toBe(1);
+});
+
+test("409 result_unknown on ordinary enable only exposes recovery after readback says unknown", async ({
+  page,
+}) => {
+  await signedIn(page);
+  let current = connection();
+  let ordinaryWrites = 0;
+  let reconciles = 0;
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked: true,
+        actors: [actor],
+        connections: [current],
+      });
+    if (path === "enable") {
+      ordinaryWrites++;
+      current = connection(false, 1, "unknown");
+      return json(route, { code: "result_unknown" }, 409);
+    }
+    if (path === "reconcile") reconciles++;
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await panel.getByRole("button", { name: "启用", exact: true }).click();
+  await expect(
+    panel.getByText("操作结果无法确认", { exact: false }),
+  ).toBeVisible();
+  await expect(panel.getByText("页面结果待核对，请先刷新状态")).toBeVisible();
+  await expect(panel.getByRole("button", { name: "核对并恢复" })).toHaveCount(
+    0,
+  );
+  await panel.getByRole("button", { name: "刷新状态" }).click();
+  await expect(panel.getByRole("button", { name: "核对并恢复" })).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "启用", exact: true }),
+  ).toBeDisabled();
+  expect(ordinaryWrites).toBe(1);
+  expect(reconciles).toBe(0);
+});
+
+test("reconcile version conflict asks for refresh and management expiry asks for unlock", async ({
+  page,
+}) => {
+  await signedIn(page);
+  let mode: "conflict" | "locked" = "conflict";
+  let unlocked = true;
+  let reconciles = 0;
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked,
+        actors: [actor],
+        connections: [connection(false, 2, "unknown")],
+      });
+    if (path === "reconcile") {
+      reconciles++;
+      if (mode === "conflict")
+        return json(route, { code: "version_conflict" }, 409);
+      unlocked = false;
+      return json(
+        route,
+        { code: "management_required", execution_state: "unknown" },
+        403,
+      );
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await panel.getByRole("button", { name: "核对并恢复" }).click();
+  await expect(
+    panel.getByText("连接已在另一窗口改变，请刷新后核对", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "核对并恢复" }),
+  ).toBeDisabled();
+  expect(reconciles).toBe(1);
+  mode = "locked";
+  await panel.getByRole("button", { name: "刷新状态" }).click();
+  await panel.getByRole("button", { name: "核对并恢复" }).click();
+  await expect(
+    panel.getByText("恢复结果无法确认", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "解锁连接管理" }),
+  ).toBeVisible();
+  expect(reconciles).toBe(2);
+});
+
+test("draft connection has no recovery action", async ({ page }) => {
+  await signedIn(page);
+  await page.route("**/api/web/bot-adapters/view", (route) =>
+    json(route, {
+      available: true,
+      unlocked: true,
+      actors: [actor],
+      connections: [connection(false, 1, "draft")],
+    }),
+  );
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await expect(panel.getByRole("button", { name: "核对并恢复" })).toHaveCount(
+    0,
+  );
+  await expect(
+    panel.getByRole("button", { name: "启用", exact: true }),
+  ).toBeDisabled();
+});

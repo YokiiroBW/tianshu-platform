@@ -202,4 +202,8 @@
   .bot-actions .button {
     width: 100%;
   }
+  .bot-actions {
+    flex-wrap: wrap;
+    width: 100%;
+  }
 }
