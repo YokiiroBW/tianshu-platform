@@ -8,6 +8,8 @@
 
 每个槽位精确登记 `adapter`、`platform_id`、`self_id` 和同一外部会话的一个或多个 `input_entry_ids`。每个 input entry 对应一个明确的作者账号，owner 为前述平台 service principal。未知作者拒绝；群成员不能复用群主的 account。每个关联 actor entry 必须有 `platform→companion`、`companion→memory`、`companion→platform` dialogue route。Core 对该槽位 `channel.binding_id` 的 binding 必须显式选 `service=platform` 与已登记角色；旧绑定不切换。QQ 外部会话键为 `group:<群号>` 或 `private:<用户号>`，同时写入 input entry 的 `channel_conversation_id`。Core 自己生成的 conversation ID 是另一标识。
 
+同一真实机器人、渠道、外部会话、线程和角色只能有一个启用连接；不同 Core `binding_id`、NoneBot/AstrBot 类型或宿主实例 ID 不会绕过此限制。实际 `self_id` 不同的机器人属于不同发送身份，可显式共存；如果它们都监听同一群并选择同一角色，部署方应确认确实需要两台机器人分别回复。升级后若台账里已有冲突的启用连接，平台拒绝其新事件和领取，需先停用其中一个。
+
 [两种机器人登记样例](bots.settings.example.json)是**合成占位片段**：把占位 ID 替换为管理员明确选定的宿主实例、机器人账号、会话、作者和角色，并合并到现有平台设置与 Core 绑定。仅把片段原样复制到生产不会变成可用连接。改动设置前备份平台权威库与 `<database_path>.bots.sqlite`；首次启动创建 sidecar schema 1，未迁移原权威库。不要用首次安装工具覆盖现有服务。
 
 ## 网页流程

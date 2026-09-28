@@ -25,6 +25,6 @@ Core 仅对显式选定的平台 polling 绑定使用现有 `POST /internal/v1/c
 
 ## 约束与未决
 
-同一渠道会话和角色只允许一个启用的 reply owner，防止 NoneBot 和 AstrBot 双发。停用/撤权立即拒新输入与新领取；已领取且可能发出的回复保持 unknown/实际回执，不能承诺撤回 SDK 发送。日志只用连接 ID/固定状态码，不记录正文、账号号值、令牌。HTTP 只接受服务 TLS；本地合成测试可用 loopback。插件不能把 Core admission 当作回复，不可重发 unknown。`AstrBot` 不作为已发布 issuer；平台在受信适配器边界验证后以 `platform` 签发来源。Core 的 30 秒 reconcile 截止只表示 Core 不再等待，平台 60 秒 claim 租约与 SDK 晚到 ACK 是独立事实；网页台账继续显示最终 sent/failed，不自动重发。
+同一 `(namespace, 实际 bot self_id, 外部会话键, thread_id, actor_id)` 只允许一个启用的 reply owner；Core `binding_id`、运行时类型和宿主 `platform_id` 不参与物理目标判重，防止同一机器人跨 NoneBot/AstrBot 双发。不同实际 `self_id` 的机器人可作为独立发送身份显式共存，部署方需确认同群同角色的多机器人回复确属预期。停用/撤权立即拒新输入与新领取；已领取且可能发出的回复保持 unknown/实际回执，不能承诺撤回 SDK 发送。日志只用连接 ID/固定状态码，不记录正文、账号号值、令牌。HTTP 只接受服务 TLS；本地合成测试可用 loopback。插件不能把 Core admission 当作回复，不可重发 unknown。`AstrBot` 不作为已发布 issuer；平台在受信适配器边界验证后以 `platform` 签发来源。Core 的 30 秒 reconcile 截止只表示 Core 不再等待，平台 60 秒 claim 租约与 SDK 晚到 ACK 是独立事实；网页台账继续显示最终 sent/failed，不自动重发。
 
 联合测试需覆盖：两插件各一条 SDK 文本事件→HTTP admission→真实 Core 结果→平台 claim→原 SDK 发送器替身→ACK→Core reconcile；重复事件、重复回复、双实例竞争、claim 崩溃、ACK 丢失、撤权与重连。实机版本与账号/会话白名单由总控另行指定。

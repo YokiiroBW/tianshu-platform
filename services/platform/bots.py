@@ -141,10 +141,35 @@ class Bots:
         entries = [self.p.sources.entries[item] for item in slot["input_entry_ids"]]
         return slot, entries
 
+    def _physical_target(self, row):
+        slot, entries = self._slot(row)
+        channel = entries[0]["channel"]
+        return (
+            channel["namespace"],
+            slot["self_id"],
+            channel["channel_conversation_id"],
+            channel["thread_id"],
+        )
+
+    def _require_unique_owner(self, db, row):
+        target = self._physical_target(row)
+        actors = set(loads(row["actor_ids"]))
+        for other in db.execute(
+            "SELECT * FROM connections WHERE enabled=1 AND id<>?", (row["id"],)
+        ):
+            require(
+                self._physical_target(other) != target
+                or not actors.intersection(loads(other["actor_ids"])),
+                "idempotency_conflict",
+                409,
+            )
+
     def _connection(self, db, connection_id, *, enabled=True, authority=None):
         row = db.execute("SELECT * FROM connections WHERE id=?", (connection_id,)).fetchone()
         require(row is not None, "not_found", 404)
         require(not enabled or row["enabled"], "forbidden", 403)
+        if row["enabled"]:
+            self._require_unique_owner(db, row)
         slot, entries = self._slot(row)
 
         def check(current):
@@ -354,18 +379,7 @@ class Bots:
                 )
             elif operation == "enable":
                 self._connection(db, connection_id, enabled=False)
-                slot, entries = self._slot(row)
-                channel = entries[0]["channel"]
-                for other in db.execute(
-                    "SELECT * FROM connections WHERE enabled=1 AND id<>?", (connection_id,)
-                ):
-                    _, other_entries = self._slot(other)
-                    require(
-                        other_entries[0]["channel"] != channel
-                        or not set(loads(row["actor_ids"])) & set(loads(other["actor_ids"])),
-                        "idempotency_conflict",
-                        409,
-                    )
+                self._require_unique_owner(db, row)
                 db.execute(
                     "UPDATE connections SET enabled=1,last_error=NULL WHERE id=?", (connection_id,)
                 )
@@ -446,6 +460,65 @@ class Bots:
         require(isinstance(body["sent_at"], str), "invalid_input", 400)
         epoch(body["sent_at"])
         semantic = digest(body)
+        admission = await self.p.local_work.run(self._admit_event, header, body, semantic)
+        if "prior" in admission:
+            return admission["prior"]
+        connection_id = admission["connection_id"]
+        message_id = admission["message_id"]
+        entry_id = admission["entry_id"]
+        entry = admission["entry"]
+        channel = entry["channel"]
+        data = {
+            "message_key": {"channel": channel, "message_id": message_id, "revision": 1},
+            "author": entry["account"],
+            "sent_at": body["sent_at"],
+            "kind": "message",
+            "parts": [{"kind": "text", "text": body["text"]}],
+            "reply_refs": [],
+            "mentioned_accounts": [],
+        }
+        result, state = [], "unknown"
+        try:
+            platform_header = self._platform_header()
+            origin = await self.p.local_work.run(
+                self.p.sources.register_input, platform_header, entry_id, data
+            )
+            ingest = {
+                "schema_version": 1,
+                "command": {
+                    "schema_version": 1,
+                    "request_id": "request:" + uuid.uuid4().hex,
+                    "idempotency_key": "bot:"
+                    + digest([connection_id, body["event_id"], body["account_id"]]),
+                    "origin": {"assertion_ref": origin["assertion_ref"]},
+                    "deadline_at": utc(self.p.origins.clock() + 30),
+                },
+                "input": data,
+                "target_actor_ids": admission["actor_ids"],
+            }
+            answer = await self.p.sources.dispatch(platform_header, ingest)
+            result = [
+                {"actor_id": item["actor_id"], "state": item["state"]}
+                for item in answer["outcomes"]
+            ]
+            state = (
+                "accepted"
+                if any(item["state"] in {"accepted", "duplicate"} for item in result)
+                else "not_started"
+            )
+        except (Fault, OSError, sqlite3.Error):
+            pass
+        await self.p.local_work.run(
+            self._finish_event, connection_id, body["event_id"], body["account_id"], state, result
+        )
+        return {
+            "event_id": body["event_id"],
+            "message_id": message_id,
+            "state": state,
+            "outcomes": result,
+        }
+
+    def _admit_event(self, header, body, semantic):
         with closing(self._db()) as db:
             db.execute("BEGIN IMMEDIATE")
             row, slot, entries = self._authenticate(db, header, body["connection_id"])
@@ -481,10 +554,12 @@ class Bots:
             if old:
                 require(old["semantic"] == semantic, "idempotency_conflict", 409)
                 return {
-                    "event_id": body["event_id"],
-                    "message_id": old["message_id"],
-                    "state": old["state"],
-                    "outcomes": loads(old["result"]) if old["result"] else [],
+                    "prior": {
+                        "event_id": body["event_id"],
+                        "message_id": old["message_id"],
+                        "state": old["state"],
+                        "outcomes": loads(old["result"]) if old["result"] else [],
+                    }
                 }
             message_id = "message:" + uuid.uuid4().hex
             db.execute(
@@ -492,67 +567,31 @@ class Bots:
                 (row["id"], body["event_id"], body["account_id"], semantic, message_id, "unknown"),
             )
             db.commit()
-        data = {
-            "message_key": {"channel": channel, "message_id": message_id, "revision": 1},
-            "author": entry["account"],
-            "sent_at": body["sent_at"],
-            "kind": "message",
-            "parts": [{"kind": "text", "text": body["text"]}],
-            "reply_refs": [],
-            "mentioned_accounts": [],
+        return {
+            "connection_id": row["id"],
+            "message_id": message_id,
+            "entry_id": entry_id,
+            "entry": entry,
+            "actor_ids": loads(row["actor_ids"]),
         }
-        result, state = [], "unknown"
-        try:
-            platform_header = self._platform_header()
-            origin = await self.p.local_work.run(
-                self.p.sources.register_input, platform_header, entry_id, data
-            )
-            ingest = {
-                "schema_version": 1,
-                "command": {
-                    "schema_version": 1,
-                    "request_id": "request:" + uuid.uuid4().hex,
-                    "idempotency_key": "bot:"
-                    + digest([row["id"], body["event_id"], body["account_id"]]),
-                    "origin": {"assertion_ref": origin["assertion_ref"]},
-                    "deadline_at": utc(self.p.origins.clock() + 30),
-                },
-                "input": data,
-                "target_actor_ids": loads(row["actor_ids"]),
-            }
-            answer = await self.p.sources.dispatch(platform_header, ingest)
-            result = [
-                {"actor_id": item["actor_id"], "state": item["state"]}
-                for item in answer["outcomes"]
-            ]
-            state = (
-                "accepted"
-                if any(item["state"] in {"accepted", "duplicate"} for item in result)
-                else "not_started"
-            )
-        except (Fault, OSError, sqlite3.Error):
-            pass
+
+    def _finish_event(self, connection_id, event_id, account_id, state, result):
         with closing(self._db()) as db:
             db.execute(
                 "UPDATE events SET state=?,result=? WHERE connection_id=? AND event_id=? AND account_id=?",
-                (state, canonical(result), row["id"], body["event_id"], body["account_id"]),
+                (state, canonical(result), connection_id, event_id, account_id),
             )
             if state == "accepted":
                 db.execute(
                     "UPDATE connections SET last_event_at=?,last_error=NULL WHERE id=?",
-                    (self.p.origins.clock(), row["id"]),
+                    (self.p.origins.clock(), connection_id),
                 )
             elif state == "unknown":
                 db.execute(
-                    "UPDATE connections SET last_error='admission_unknown' WHERE id=?", (row["id"],)
+                    "UPDATE connections SET last_error='admission_unknown' WHERE id=?",
+                    (connection_id,),
                 )
             db.commit()
-        return {
-            "event_id": body["event_id"],
-            "message_id": message_id,
-            "state": state,
-            "outcomes": result,
-        }
 
     def event_status(self, header, body):
         require(set(body) == {"connection_id", "event_id", "account_id"}, "invalid_input", 400)
@@ -629,6 +668,7 @@ class Bots:
                     candidates.append(row)
             require(len(candidates) == 1, "forbidden", 403)
             connection = candidates[0]
+            self._require_unique_owner(db, connection)
             prior_command = db.execute(
                 "SELECT reply_id FROM replies WHERE command_key=?", (command_key,)
             ).fetchone()

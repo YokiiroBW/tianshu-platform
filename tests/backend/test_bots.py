@@ -1,9 +1,14 @@
 """Synthetic bot lifecycle, authority and durable delivery tests; no SDK or real sends."""
 
+import asyncio
+import copy
 import os
+import sqlite3
 import tempfile
+import threading
 import time
 import unittest
+from contextlib import closing
 from unittest.mock import AsyncMock, patch
 
 import aiohttp
@@ -370,6 +375,104 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.code, "idempotency_conflict")
         bot.change(self.connection_id, "disable")
         self.assertTrue(bot.change(second["connection_id"], "enable")["enabled"])
+
+    async def test_binding_id_cannot_create_second_owner_for_same_physical_bot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = bot_settings(directory)
+            other_entry = copy.deepcopy(settings["input_entries"]["bot-input-1"])
+            other_entry["channel"]["binding_id"] = "binding:same-bot-other-core-route"
+            other_entry["actor_entries"] = ["bot-actor-other"]
+            settings["input_entries"]["bot-input-other"] = other_entry
+            other_actor = copy.deepcopy(settings["entries"]["bot-actor-1"])
+            other_actor["channel"] = copy.deepcopy(other_entry["channel"])
+            settings["entries"]["bot-actor-other"] = other_actor
+            settings["bot_connections"]["slots"]["qq-astrbot-same-bot"] = {
+                "adapter": "astrbot",
+                "platform_id": "astrbot-other-runtime",
+                "self_id": "bot:42",
+                "input_entry_ids": ["bot-input-other"],
+                "label": "同机器人同群不同 Core 绑定",
+            }
+            platform = Platform(settings, clock=lambda: self.now)
+            try:
+                bot = platform.bots
+                first = bot.create("qq-onebot-main", ["actor:a"])
+                second = bot.create("qq-astrbot-same-bot", ["actor:a"])
+                bot.change(first["connection_id"], "enable")
+                with self.assertRaises(Fault) as caught:
+                    bot.change(second["connection_id"], "enable")
+                self.assertEqual(caught.exception.code, "idempotency_conflict")
+                platform.sources.dispatch = AsyncMock(
+                    return_value={"outcomes": [{"actor_id": "actor:a", "state": "accepted"}]}
+                )
+                event = {**self.event(), "connection_id": first["connection_id"]}
+                self.assertEqual(
+                    (await bot.event("Bearer " + first["token"], event))["state"], "accepted"
+                )
+                with self.assertRaises(Fault):
+                    await bot.event(
+                        "Bearer " + second["token"],
+                        {
+                            **event,
+                            "connection_id": second["connection_id"],
+                            "platform_id": "astrbot-other-runtime",
+                        },
+                    )
+                self.assertEqual(platform.sources.dispatch.await_count, 1)
+                # An already persisted duplicate from an older build also fails closed.
+                with closing(sqlite3.connect(bot.path)) as db:
+                    db.execute(
+                        "UPDATE connections SET enabled=1 WHERE id=?", (second["connection_id"],)
+                    )
+                    db.commit()
+                with self.assertRaises(Fault):
+                    await bot.event("Bearer " + first["token"], {**event, "event_id": "sdk:later"})
+                self.assertEqual(platform.sources.dispatch.await_count, 1)
+            finally:
+                platform.close()
+
+    async def test_distinct_real_bot_ids_can_be_explicit_separate_owners(self):
+        bot = self.platform.bots
+        bot.slots["qq-other-bot"] = {
+            "adapter": "astrbot",
+            "platform_id": "astrbot-other-runtime",
+            "self_id": "bot:99",
+            "input_entry_ids": ["bot-input-1", "bot-input-2"],
+            "label": "同群另一真实机器人",
+        }
+        other = bot.create("qq-other-bot", ["actor:a"])
+        self.assertTrue(bot.change(other["connection_id"], "enable")["enabled"])
+
+    async def test_event_database_lock_does_not_block_unrelated_loop_timer(self):
+        bot = self.platform.bots
+        self.platform.sources.dispatch = AsyncMock(
+            return_value={"outcomes": [{"actor_id": "actor:a", "state": "accepted"}]}
+        )
+        ready = threading.Event()
+        release = threading.Event()
+
+        def hold_bot_write_lock():
+            with closing(sqlite3.connect(bot.path, timeout=2)) as db:
+                db.execute("BEGIN IMMEDIATE")
+                ready.set()
+                release.wait(0.45)
+                db.commit()
+
+        holder = threading.Thread(target=hold_bot_write_lock, daemon=True)
+        holder.start()
+        self.assertTrue(await asyncio.to_thread(ready.wait, 2))
+        try:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            timer = loop.create_future()
+            loop.call_later(0.05, lambda: timer.set_result(loop.time() - started))
+            admission = asyncio.create_task(bot.event(self.token, self.event()))
+            elapsed = await asyncio.wait_for(timer, 2)
+            self.assertEqual((await asyncio.wait_for(admission, 2))["state"], "accepted")
+            self.assertLess(elapsed, 0.2)
+        finally:
+            release.set()
+            await asyncio.to_thread(holder.join, 2)
 
     async def test_actual_http_connector_and_web_management_boundaries(self):
         app = create_app(self.platform)
