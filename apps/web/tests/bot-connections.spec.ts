@@ -11,6 +11,8 @@ test("real local bot management: create, one-time token, enable, disable and rot
     .fill("synthetic-local-password-014");
   await page.getByRole("button", { name: "登录", exact: true }).click();
 
+  await page.getByText("旧连接管理（已配置的连接）").click();
+
   const section = page.getByRole("region", { name: "机器人连接管理" });
   await expect(
     section.getByRole("heading", { name: "机器人连接" }),
@@ -88,6 +90,7 @@ test("real local bot management: create, one-time token, enable, disable and rot
   ).toBe(200);
   await section.getByRole("button", { name: "已保存，隐藏凭据" }).click();
   await page.reload();
+  await page.getByText("旧连接管理（已配置的连接）").click();
   await expect(section.locator(".bot-secret code")).toHaveCount(0);
   await expect(
     section.getByRole("heading", { name: "机器人连接" }),

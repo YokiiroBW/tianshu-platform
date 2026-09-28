@@ -63,6 +63,14 @@ test("旧入口和新子页面各自只显示当前设置", async ({ page }) => 
       management: { code: "ok", unlocked: false },
     }),
   );
+  await page.route("**/api/web/bot-adapters/view", (route) =>
+    reply(route, {
+      available: false,
+      unlocked: false,
+      actors: [],
+      connections: [],
+    }),
+  );
   await page.route("**/api/web/access/view", (route) =>
     reply(route, {
       available: false,
@@ -91,6 +99,12 @@ test("旧入口和新子页面各自只显示当前设置", async ({ page }) => 
   await page.goto("/#/settings/2");
   await expect(page.getByRole("heading", { name: "模型配置" })).toBeVisible();
   await page.goto("/#/settings/3");
+  await expect(page.getByRole("heading", { name: "机器人接入" })).toBeVisible();
+  await expect(
+    page.getByText("当前部署尚未启用网页适配器管理", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "添加适配器" })).toHaveCount(0);
+  await page.getByText("旧连接管理（已配置的连接）").click();
   await expect(
     page.getByRole("heading", { name: "尚未添加机器人" }),
   ).toBeVisible();
