@@ -29,15 +29,15 @@ function formatTime(value: string | null) {
     : "时间未知";
 }
 
-function rail(connection: AdapterConnection) {
-  if (connection.state === "unknown")
+function rail(connection: AdapterConnection, unverified: boolean) {
+  if (unverified || connection.state === "unknown")
     return { tone: "yellow" as const, label: "结果待核对" };
   if (connection.state === "draft")
     return { tone: "yellow" as const, label: "保存待确认" };
   if (!connection.enabled)
     return { tone: "gray" as const, label: "已保存 · 未启用" };
   if (connection.state === "ready")
-    return { tone: "blue" as const, label: "已启用 · 待实机验收" };
+    return { tone: "blue" as const, label: "已启用" };
   if (connection.state === "degraded")
     return { tone: "red" as const, label: "连接异常" };
   return { tone: "yellow" as const, label: "等待后台确认" };
@@ -94,6 +94,22 @@ export function BotAdapterPanel() {
   );
   const [conversationId, setConversationId] = useState("");
   const [authors, setAuthors] = useState("");
+  const [autoPrivateAuthor, setAutoPrivateAuthor] = useState(false);
+  const [unverifiedIds, setUnverifiedIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  function markUnverified(id: string | undefined) {
+    if (id) setUnverifiedIds((before) => new Set(before).add(id));
+  }
+
+  function clearUnverified(id: string) {
+    setUnverifiedIds((before) => {
+      const next = new Set(before);
+      next.delete(id);
+      return next;
+    });
+  }
 
   function start(operation: string) {
     active.current?.abort();
@@ -136,6 +152,7 @@ export function BotAdapterPanel() {
     const controller = start("refresh");
     try {
       await readView(controller);
+      if (!controller.signal.aborted) setUnverifiedIds(new Set());
     } catch (cause) {
       if (controller.signal.aborted) return;
       setView(null);
@@ -177,6 +194,28 @@ export function BotAdapterPanel() {
     setNotice("");
   }
 
+  function requireUnlock(cause: unknown) {
+    if (
+      !(cause instanceof AdapterApiError) ||
+      cause.code !== "management_required"
+    )
+      return;
+    setView((before) => (before ? { ...before, unlocked: false } : before));
+    setOpen(false);
+    setPassword("");
+    setAddress("");
+    setAccessKey("");
+    setCaPem("");
+    setPrivateHttp(false);
+    setProbe(null);
+    setAccountId("");
+    setName("");
+    setActorId("");
+    setConversationId("");
+    setAuthors("");
+    setAutoPrivateAuthor(false);
+  }
+
   function cancel() {
     const pendingWrite = busy === "create";
     active.current?.abort();
@@ -192,6 +231,7 @@ export function BotAdapterPanel() {
     setActorId("");
     setConversationId("");
     setAuthors("");
+    setAutoPrivateAuthor(false);
     setError("");
     setNotice(
       pendingWrite
@@ -216,7 +256,10 @@ export function BotAdapterPanel() {
       if (!controller.signal.aborted && !next.unlocked)
         setError("管理员解锁未生效，请刷新后检查权限。");
     } catch (cause) {
-      if (!controller.signal.aborted) setError(message(cause));
+      if (!controller.signal.aborted) {
+        requireUnlock(cause);
+        setError(message(cause));
+      }
     } finally {
       setPassword("");
       if (!controller.signal.aborted) setBusy("");
@@ -298,7 +341,10 @@ export function BotAdapterPanel() {
           : "插件已响应，但 SDK 未提供在线机器人账号。请在宿主中登录机器人后重新检测。",
       );
     } catch (cause) {
-      if (!controller.signal.aborted) setError(message(cause));
+      if (!controller.signal.aborted) {
+        requireUnlock(cause);
+        setError(message(cause));
+      }
     } finally {
       if (!controller.signal.aborted) setBusy("");
     }
@@ -321,6 +367,7 @@ export function BotAdapterPanel() {
       return;
     }
     const controller = start("create");
+    let submitted = false;
     try {
       const result = await adapterPost<Receipt>(
         "create",
@@ -337,33 +384,39 @@ export function BotAdapterPanel() {
         controller.signal,
       );
       if (controller.signal.aborted) return;
+      submitted = true;
       const latest = await readView(controller);
       if (controller.signal.aborted) return;
       const confirmed = latest.connections.find(
         (item) => item.id === result.connection?.id,
       );
       if (
+        latest.unlocked &&
         result.connection?.enabled === false &&
+        result.connection.state === "disabled" &&
         confirmed?.enabled === false &&
+        confirmed.state === "disabled" &&
         confirmed.revision === result.connection.revision
       ) {
-        setNotice(
-          "连接已保存且保持停用。核对允许范围后，再单独点击“启用”。真实消息收发仍待验收。",
-        );
+        clearUnverified(result.connection.id);
+        setNotice("连接已保存且保持停用。核对允许范围后，再单独点击“启用”。");
         setProbe(null);
         setOpen(false);
       } else {
+        markUnverified(result.connection?.id);
         setNotice(
           "保存回执与当前状态未能一致核对。请刷新连接列表，确认后再操作。",
         );
       }
     } catch (cause) {
-      if (!controller.signal.aborted)
+      if (!controller.signal.aborted) {
+        requireUnlock(cause);
         setError(
-          uncertain(cause)
+          submitted || uncertain(cause)
             ? `保存结果无法确认。请刷新列表核对，不要立即重复提交。${message(cause)}`
             : message(cause),
         );
+      }
     } finally {
       if (!controller.signal.aborted) setBusy("");
     }
@@ -376,11 +429,13 @@ export function BotAdapterPanel() {
     if (
       !view?.unlocked ||
       busy ||
+      unverifiedIds.has(connection.id) ||
       connection.state === "unknown" ||
       connection.state === "draft"
     )
       return;
     const controller = start(operation);
+    let submitted = false;
     try {
       const result = await adapterPost<Receipt>(
         operation,
@@ -393,34 +448,44 @@ export function BotAdapterPanel() {
         controller.signal,
       );
       if (controller.signal.aborted) return;
+      submitted = true;
       const latest = await readView(controller);
       if (controller.signal.aborted) return;
       const confirmed = latest.connections.find(
         (item) => item.id === connection.id,
       );
-      if (
+      const verified = Boolean(
+        latest.unlocked &&
         confirmed &&
         confirmed.revision === result.connection?.revision &&
         confirmed.enabled === (operation === "enable") &&
         result.connection.enabled === confirmed.enabled &&
-        (operation === "disable" || confirmed.state === "ready")
-      )
+        confirmed.state === (operation === "enable" ? "ready" : "disabled") &&
+        result.connection.state === confirmed.state,
+      );
+      if (verified) {
+        clearUnverified(connection.id);
         setNotice(
           operation === "enable"
-            ? "适配器已启用，插件与后台状态已确认。真实消息收发仍待单独验收。"
+            ? "适配器已启用，插件与后台状态已确认。"
             : "适配器已停用，后台状态已确认。",
         );
-      else
+      } else {
+        markUnverified(connection.id);
         setNotice(
           "操作回执与当前状态尚未一致确认。请刷新状态并核对，勿直接重复操作。",
         );
+      }
     } catch (cause) {
-      if (!controller.signal.aborted)
+      if (!controller.signal.aborted) {
+        if (submitted || uncertain(cause)) markUnverified(connection.id);
+        requireUnlock(cause);
         setError(
-          uncertain(cause)
+          submitted || uncertain(cause)
             ? `操作结果无法确认。请刷新状态核对，不要立即重复提交。${message(cause)}`
             : message(cause),
         );
+      }
     } finally {
       if (!controller.signal.aborted) setBusy("");
     }
@@ -485,7 +550,7 @@ export function BotAdapterPanel() {
           <>
             <div className="bot-adapter-actions">
               <p className="muted">
-                管理已解锁。密钥仅用于检测，提交后会从表单清除。
+                管理已解锁。密钥由后台安全保存供后续连接使用；页面提交后清除且不回显。
               </p>
               {!open && (
                 <button
@@ -672,11 +737,25 @@ export function BotAdapterPanel() {
                           <select
                             value={conversationKind}
                             disabled={Boolean(busy)}
-                            onChange={(event) =>
-                              setConversationKind(
-                                event.target.value as "group" | "private",
-                              )
-                            }
+                            onChange={(event) => {
+                              const next = event.target.value as
+                                "group" | "private";
+                              setConversationKind(next);
+                              if (
+                                next === "private" &&
+                                !authors.trim() &&
+                                conversationId.trim()
+                              ) {
+                                setAuthors(conversationId.trim());
+                                setAutoPrivateAuthor(true);
+                              } else if (
+                                next === "group" &&
+                                autoPrivateAuthor
+                              ) {
+                                setAuthors("");
+                                setAutoPrivateAuthor(false);
+                              }
+                            }}
                           >
                             <option value="group">QQ群</option>
                             <option value="private">QQ私聊</option>
@@ -688,9 +767,17 @@ export function BotAdapterPanel() {
                             required
                             value={conversationId}
                             disabled={Boolean(busy)}
-                            onChange={(event) =>
-                              setConversationId(event.target.value)
-                            }
+                            onChange={(event) => {
+                              const next = event.target.value;
+                              setConversationId(next);
+                              if (
+                                conversationKind === "private" &&
+                                (autoPrivateAuthor || !authors.trim())
+                              ) {
+                                setAuthors(next.trim());
+                                setAutoPrivateAuthor(true);
+                              }
+                            }}
                           />
                         </label>
                         <label>
@@ -700,13 +787,16 @@ export function BotAdapterPanel() {
                             rows={3}
                             value={authors}
                             disabled={Boolean(busy)}
-                            onChange={(event) => setAuthors(event.target.value)}
+                            onChange={(event) => {
+                              setAuthors(event.target.value);
+                              setAutoPrivateAuthor(false);
+                            }}
                             aria-describedby="bot-authors-help"
                           />
                         </label>
                         <p id="bot-authors-help" className="muted">
-                          用逗号或换行分隔。群聊必须逐个填写允许的成员；私聊请填写允许的联系人
-                          ID。未列出的作者不会触发回复。
+                          用逗号或换行分隔。群聊必须逐个填写允许的成员；私聊默认填写上方联系人
+                          ID，可自行修改。未列出的作者不会触发回复。
                         </p>
                         <button className="button" disabled={Boolean(busy)}>
                           保存为停用
@@ -720,7 +810,7 @@ export function BotAdapterPanel() {
             <div className="bot-adapter-list-heading">
               <h3>已添加的适配器</h3>
               <p className="muted">
-                启用前请核对账号、会话与作者。状态只代表平台和插件确认，真实消息仍需另行验收。
+                启用前请核对账号、会话与作者。检测连接不会发送消息。
               </p>
             </div>
             {view.connections.length === 0 ? (
@@ -728,7 +818,8 @@ export function BotAdapterPanel() {
             ) : (
               <ul className="bot-list bot-adapter-list">
                 {view.connections.map((connection) => {
-                  const status = rail(connection);
+                  const pending = unverifiedIds.has(connection.id);
+                  const status = rail(connection, pending);
                   return (
                     <li key={connection.id}>
                       <div>
@@ -762,6 +853,7 @@ export function BotAdapterPanel() {
                           type="button"
                           disabled={
                             Boolean(busy) ||
+                            pending ||
                             connection.state === "unknown" ||
                             connection.state === "draft"
                           }

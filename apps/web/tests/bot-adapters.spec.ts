@@ -50,6 +50,29 @@ function json(route: Route, value: unknown, status = 200) {
   return route.fulfill({ status, json: value });
 }
 
+function probePayload() {
+  return {
+    draft_id: "draft:real-probe",
+    expires_at: expiry(),
+    protocol: "tianshu.bot-adapter/v1",
+    instance_id: "host:fixture",
+    accounts: [account],
+  };
+}
+
+async function fillWizard(page: Page) {
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await panel.getByRole("button", { name: "添加适配器" }).click();
+  await panel.getByLabel("插件地址").fill("https://bot.example.test:8443");
+  await panel.getByLabel("插件连接密钥").fill("fixture-key");
+  await panel.getByRole("button", { name: "检测连接并读取账号" }).click();
+  await panel.getByLabel("连接名称").fill("家庭测试群");
+  await panel.getByLabel("回复角色").selectOption(actor.id);
+  await panel.getByLabel("群 ID").fill("123456");
+  await panel.getByLabel("明确允许的作者 ID").fill("111, 222");
+  return panel;
+}
+
 test("adapter wizard detects a real returned account, saves disabled, then explicitly enables and disables", async ({
   page,
 }, testInfo) => {
@@ -156,7 +179,7 @@ test("adapter wizard detects a real returned account, saves disabled, then expli
     JSON.stringify(requests.filter((item) => item.path === "create")),
   ).not.toContain("secret-only-in-request");
   await panel.getByRole("button", { name: "启用", exact: true }).click();
-  await expect(panel.getByText("已启用 · 待实机验收")).toBeVisible();
+  await expect(panel.getByText("已启用", { exact: true })).toBeVisible();
   await panel.getByRole("button", { name: "停用", exact: true }).click();
   await expect(panel.getByText("已保存 · 未启用")).toBeVisible();
   await page.screenshot({
@@ -277,7 +300,7 @@ test("unknown write result is not reported as enabled or automatically retried",
   await expect(
     panel.getByText("操作结果无法确认", { exact: false }),
   ).toBeVisible();
-  await expect(panel.getByText("已启用 · 待实机验收")).toHaveCount(0);
+  await expect(panel.getByText("已启用", { exact: true })).toHaveCount(0);
   expect(writes).toBe(1);
 });
 
@@ -325,4 +348,264 @@ test("unreachable address and incompatible protocol explain why a draft was not 
   await expect(panel.getByRole("button", { name: "保存为停用" })).toHaveCount(
     0,
   );
+});
+
+for (const [receiptState, readState] of [
+  ["unknown", "disabled"],
+  ["disabled", "unknown"],
+] as const) {
+  test(`create receipt ${receiptState} and readback ${readState} do not claim saved`, async ({
+    page,
+  }) => {
+    await signedIn(page);
+    let saved = false;
+    let writes = 0;
+    await page.route("**/api/web/bot-adapters/*", (route) => {
+      const path = new URL(route.request().url()).pathname.split("/").pop();
+      if (path === "view")
+        return json(route, {
+          available: true,
+          unlocked: true,
+          actors: [actor],
+          connections: saved ? [connection(false, 1, readState)] : [],
+        });
+      if (path === "probe") return json(route, probePayload());
+      if (path === "create") {
+        writes++;
+        saved = true;
+        return json(route, { connection: connection(false, 1, receiptState) });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    await page.goto("/#/settings/3");
+    const panel = await fillWizard(page);
+    await panel.getByRole("button", { name: "保存为停用" }).click();
+    await expect(
+      panel.getByText("保存回执与当前状态未能一致核对", { exact: false }),
+    ).toBeVisible();
+    await expect(
+      panel.getByText("连接已保存且保持停用", { exact: false }),
+    ).toHaveCount(0);
+    await expect(panel.getByText("结果待核对", { exact: true })).toBeVisible();
+    await expect(
+      panel.getByRole("button", { name: "启用", exact: true }),
+    ).toBeDisabled();
+    expect(writes).toBe(1);
+  });
+}
+
+for (const operation of ["enable", "disable"] as const) {
+  test(`${operation} needs matching final state in both receipt and readback`, async ({
+    page,
+  }) => {
+    await signedIn(page);
+    const original =
+      operation === "disable" ? connection(true, 1, "ready") : connection();
+    const readback =
+      operation === "disable"
+        ? connection(false, 2, "unknown")
+        : connection(true, 2, "ready");
+    const receipt =
+      operation === "disable"
+        ? connection(false, 2, "disabled")
+        : connection(true, 2, "unknown");
+    let written = false;
+    await page.route("**/api/web/bot-adapters/*", (route) => {
+      const path = new URL(route.request().url()).pathname.split("/").pop();
+      if (path === "view")
+        return json(route, {
+          available: true,
+          unlocked: true,
+          actors: [actor],
+          connections: [written ? readback : original],
+        });
+      if (path === operation) {
+        written = true;
+        return json(route, { connection: receipt });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    await page.goto("/#/settings/3");
+    const panel = page.getByRole("region", { name: "机器人适配器管理" });
+    await panel
+      .getByRole("button", {
+        name: operation === "enable" ? "启用" : "停用",
+        exact: true,
+      })
+      .click();
+    await expect(
+      panel.getByText("操作回执与当前状态尚未一致确认", { exact: false }),
+    ).toBeVisible();
+    await expect(
+      panel.getByText(
+        operation === "enable" ? "适配器已启用" : "适配器已停用",
+        { exact: false },
+      ),
+    ).toHaveCount(0);
+    await expect(panel.getByText("结果待核对", { exact: true })).toBeVisible();
+  });
+}
+
+test("management expiry during probe restores unlock and clears sensitive draft", async ({
+  page,
+}) => {
+  await signedIn(page);
+  let unlocked = true;
+  await page.route("**/api/web/bots/unlock", (route) => {
+    unlocked = true;
+    return json(route, { unlocked: true });
+  });
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked,
+        actors: [actor],
+        connections: [],
+      });
+    if (path === "probe") {
+      unlocked = false;
+      return json(route, { code: "management_required" }, 403);
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await panel.getByRole("button", { name: "添加适配器" }).click();
+  await panel.getByLabel("插件地址").fill("https://bot.example.test:8443");
+  await panel.getByLabel("插件连接密钥").fill("secret-value");
+  await panel.getByRole("button", { name: "检测连接并读取账号" }).click();
+  await expect(
+    panel.getByRole("button", { name: "解锁连接管理" }),
+  ).toBeVisible();
+  await expect(panel.getByLabel("插件连接密钥")).toHaveCount(0);
+  await panel
+    .getByLabel("管理员密码（二次验证）")
+    .fill("synthetic-local-password-014");
+  await panel.getByRole("button", { name: "解锁连接管理" }).click();
+  await panel.getByRole("button", { name: "添加适配器" }).click();
+  await expect(panel.getByLabel("插件连接密钥")).toHaveValue("");
+  await expect(panel.getByLabel("插件地址")).toHaveValue("");
+});
+
+test("management expiry after create preserves unknown warning and requires a fresh probe", async ({
+  page,
+}) => {
+  await signedIn(page);
+  let unlocked = true;
+  let writes = 0;
+  await page.route("**/api/web/bots/unlock", (route) => {
+    unlocked = true;
+    return json(route, { unlocked: true });
+  });
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked,
+        actors: [actor],
+        connections: [],
+      });
+    if (path === "probe") return json(route, probePayload());
+    if (path === "create") {
+      writes++;
+      unlocked = false;
+      return json(
+        route,
+        { code: "management_required", execution_state: "unknown" },
+        403,
+      );
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = await fillWizard(page);
+  await panel.getByRole("button", { name: "保存为停用" }).click();
+  await expect(
+    panel.getByText("保存结果无法确认", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "解锁连接管理" }),
+  ).toBeVisible();
+  await panel
+    .getByLabel("管理员密码（二次验证）")
+    .fill("synthetic-local-password-014");
+  await panel.getByRole("button", { name: "解锁连接管理" }).click();
+  await panel.getByRole("button", { name: "添加适配器" }).click();
+  await expect(panel.getByLabel("插件连接密钥")).toHaveValue("");
+  await expect(panel.getByRole("button", { name: "保存为停用" })).toHaveCount(
+    0,
+  );
+  expect(writes).toBe(1);
+});
+
+test("management expiry during enable reopens unlock without a second write", async ({
+  page,
+}) => {
+  await signedIn(page);
+  let unlocked = true;
+  let writes = 0;
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked,
+        actors: [actor],
+        connections: [connection()],
+      });
+    if (path === "enable") {
+      writes++;
+      unlocked = false;
+      return json(
+        route,
+        { code: "management_required", execution_state: "unknown" },
+        403,
+      );
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await panel.getByRole("button", { name: "启用", exact: true }).click();
+  await expect(
+    panel.getByText("操作结果无法确认", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "解锁连接管理" }),
+  ).toBeVisible();
+  expect(writes).toBe(1);
+});
+
+test("private conversation explicitly uses the chosen contact as the allowed author", async ({
+  page,
+}) => {
+  await signedIn(page);
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked: true,
+        actors: [actor],
+        connections: [],
+      });
+    if (path === "probe") return json(route, probePayload());
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await panel.getByRole("button", { name: "添加适配器" }).click();
+  await panel.getByLabel("插件地址").fill("https://bot.example.test:8443");
+  await panel.getByLabel("插件连接密钥").fill("fixture-key");
+  await panel.getByRole("button", { name: "检测连接并读取账号" }).click();
+  await panel.getByLabel("会话类型").selectOption("private");
+  await panel.getByLabel("联系人 ID").fill("555000");
+  await expect(panel.getByLabel("明确允许的作者 ID")).toHaveValue("555000");
+  await panel.getByLabel("联系人 ID").fill("555001");
+  await expect(panel.getByLabel("明确允许的作者 ID")).toHaveValue("555001");
+  await panel.getByLabel("会话类型").selectOption("group");
+  await expect(panel.getByLabel("明确允许的作者 ID")).toHaveValue("");
 });
