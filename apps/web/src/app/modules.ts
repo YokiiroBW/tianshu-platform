@@ -73,8 +73,16 @@ export const modules = [
     label: "任务与设置",
     icon: Settings,
     group: "管理",
-    description: "任务、连接与系统偏好",
-    sections: ["任务", "连接", "模型与用量"],
+    description: "任务记录与各项连接设置",
+    sections: [
+      "任务记录",
+      "连接总览",
+      "模型供应商",
+      "机器人接入",
+      "资产库接入",
+      "家庭设备接入",
+      "访问与域名",
+    ],
   },
 ] as const;
 

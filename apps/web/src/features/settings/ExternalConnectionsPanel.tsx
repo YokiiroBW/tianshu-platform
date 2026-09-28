@@ -83,12 +83,11 @@ function testRail(result: LastTest, revision: number) {
 }
 
 /** Administrator-only external target setup. Internal Tianshu connections never ask for URLs. */
-export function ExternalConnectionsPanel() {
+export function ExternalConnectionsPanel({ kind }: { kind: Kind }) {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
   const [view, setView] = useState<View | null>(null);
-  const [selected, setSelected] = useState<Kind>("assets");
-  const [drafts, setDrafts] = useState<Record<Kind, Draft> | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -118,12 +117,12 @@ export function ExternalConnectionsPanel() {
       if (controller.signal.aborted) return null;
       setUnavailable(false);
       setView(next);
-      setDrafts({ assets: draftOf(next.assets), home: draftOf(next.home) });
+      setDraft(draftOf(next[kind]));
       return next;
     } catch (cause) {
       if (controller.signal.aborted) return null;
       setView(null);
-      setDrafts(null);
+      setDraft(null);
       setUnavailable(
         cause instanceof IntegrationError &&
           [
@@ -142,14 +141,10 @@ export function ExternalConnectionsPanel() {
   useEffect(() => {
     void load();
     return () => active.current?.abort();
-  }, [csrf]);
+  }, [csrf, kind]);
 
   function update(change: Partial<Draft>) {
-    setDrafts((before) =>
-      before
-        ? { ...before, [selected]: { ...before[selected], ...change } }
-        : before,
-    );
+    setDraft((before) => (before ? { ...before, ...change } : before));
   }
 
   async function unlock(event: FormEvent) {
@@ -196,13 +191,12 @@ export function ExternalConnectionsPanel() {
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (!csrf || !view || !drafts || !view.unlocked) return;
-    const draft = drafts[selected];
+    if (!csrf || !view || !draft || !view.unlocked) return;
     if (draft.keyAction === "replace" && !draft.key.trim()) {
       setError("请选择凭据替换后填写新凭据，或选择保留/清除。");
       return;
     }
-    if (selected === "home" && draft.entities.length === 0) {
+    if (kind === "home" && draft.entities.length === 0) {
       setError("请至少登记一个要读取的家庭实体。");
       return;
     }
@@ -213,7 +207,7 @@ export function ExternalConnectionsPanel() {
     const controller = start();
     setNotice("");
     const value =
-      selected === "assets"
+      kind === "assets"
         ? { enabled: draft.enabled, endpoint: draft.url.trim() }
         : {
             enabled: draft.enabled,
@@ -234,7 +228,7 @@ export function ExternalConnectionsPanel() {
       }>(
         "external/save",
         {
-          kind: selected,
+          kind,
           expected_revision: view.revision,
           client_id: requestId(),
           value,
@@ -251,13 +245,8 @@ export function ExternalConnectionsPanel() {
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      setDrafts((before) =>
-        before
-          ? {
-              ...before,
-              [selected]: { ...before[selected], key: "", caPem: "" },
-            }
-          : before,
+      setDraft((before) =>
+        before ? { ...before, key: "", caPem: "" } : before,
       );
       const refreshed = await load();
       if (!refreshed) return;
@@ -283,13 +272,8 @@ export function ExternalConnectionsPanel() {
               ? "保存结果无法确认。请先刷新配置核对当前修订，不要立即重复提交。"
               : readFailure(cause),
         );
-        setDrafts((before) =>
-          before
-            ? {
-                ...before,
-                [selected]: { ...before[selected], key: "", caPem: "" },
-              }
-            : before,
+        setDraft((before) =>
+          before ? { ...before, key: "", caPem: "" } : before,
         );
       }
     } finally {
@@ -302,7 +286,6 @@ export function ExternalConnectionsPanel() {
     const controller = start();
     setNotice("");
     try {
-      const kind = selected;
       const result = await integrationPost<TestResult>(
         "external/test",
         { kind },
@@ -343,21 +326,21 @@ export function ExternalConnectionsPanel() {
   }
 
   if (!csrf) return null;
-  const draft = drafts?.[selected];
-  const connection = view?.[selected];
+  const connection = view?.[kind];
   const rail = testRail(connection?.last_test ?? null, view?.revision ?? -1);
   return (
-    <section className="panel external-panel" aria-label="外部服务连接管理">
+    <section className="panel external-panel" aria-label={`${title(kind)}管理`}>
       <div className="section-heading">
-        <h2>外部服务连接</h2>
+        <h2>{title(kind)}</h2>
         <button className="button" disabled={busy} onClick={() => void load()}>
           <RefreshCw aria-hidden="true" />
           刷新配置
         </button>
       </div>
       <p className="muted">
-        这里仅设置 AssetLink 与 Home
-        Assistant。天枢内置的记忆、陪伴和模型网关由部署自动接线，无需填写内部地址或令牌。
+        {kind === "assets"
+          ? "在此管理资产库的 AssetLink 接入。保存设置后，请执行只读检测；资产可见范围仍由对端授权决定。"
+          : "在此管理家庭设备的 Home Assistant 接入。保存地址与读取实体后，请执行只读检测；设备控制在家庭设备页面另行授权。"}
       </p>
       {busy && !view && (
         <StatePanel kind="loading" title="正在读取外部连接配置">
@@ -379,35 +362,9 @@ export function ExternalConnectionsPanel() {
       )}
       {view && draft && connection && (
         <>
-          <div className="external-switch" role="group" aria-label="连接类型">
-            <button
-              type="button"
-              aria-pressed={selected === "assets"}
-              disabled={busy}
-              onClick={() => {
-                setSelected("assets");
-                setError("");
-                setNotice("");
-              }}
-            >
-              AssetLink 资产
-            </button>
-            <button
-              type="button"
-              aria-pressed={selected === "home"}
-              disabled={busy}
-              onClick={() => {
-                setSelected("home");
-                setError("");
-                setNotice("");
-              }}
-            >
-              Home Assistant 家庭
-            </button>
-          </div>
           <StatusRail tone={rail.tone} label={rail.label}>
             <p>
-              {title(selected)} ·{" "}
+              {title(kind)} ·{" "}
               {connection.last_test
                 ? `上次检测：${connection.last_test.checked_at}（${connection.last_test.code}）${connection.last_test.revision !== view.revision ? "；配置修订已改变，需重新检测" : ""}`
                 : "保存不会自动检测，尚无实际业务读取结果。"}
@@ -461,7 +418,7 @@ export function ExternalConnectionsPanel() {
                   启用此连接
                 </label>
                 <label>
-                  {selected === "assets"
+                  {kind === "assets"
                     ? "AssetLink HTTPS 端点"
                     : "Home Assistant 基础地址"}
                   <input
@@ -470,14 +427,14 @@ export function ExternalConnectionsPanel() {
                     required
                     maxLength={2048}
                     placeholder={
-                      selected === "assets"
+                      kind === "assets"
                         ? "https://资产服务:端口/assetlink/v1/control"
                         : "http://局域网设备:8123"
                     }
                     onChange={(event) => update({ url: event.target.value })}
                   />
                 </label>
-                {selected === "assets" ? (
+                {kind === "assets" ? (
                   <p className="muted">
                     只接受 HTTPS 的固定 AssetLink
                     控制端点；资产库可见范围仍由对端授权决定。
@@ -515,7 +472,7 @@ export function ExternalConnectionsPanel() {
                     <label key={action}>
                       <input
                         type="radio"
-                        name={`credential-${selected}`}
+                        name={`credential-${kind}`}
                         checked={draft.keyAction === action}
                         onChange={() => update({ keyAction: action, key: "" })}
                       />
@@ -554,7 +511,7 @@ export function ExternalConnectionsPanel() {
                     <label key={action}>
                       <input
                         type="radio"
-                        name={`ca-${selected}`}
+                        name={`ca-${kind}`}
                         checked={draft.caAction === action}
                         onChange={() => update({ caAction: action, caPem: "" })}
                       />

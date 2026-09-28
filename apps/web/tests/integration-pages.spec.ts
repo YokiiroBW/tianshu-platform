@@ -484,10 +484,9 @@ test("external HA setup saves a scoped target then performs one read-only check"
     }
     throw new Error(`unexpected ${path}`);
   });
-  await page.goto("/#/settings/1");
+  await page.goto("/#/settings/5");
   await page.getByLabel("管理员密码（二次验证）").fill("fixture-password");
   await page.getByRole("button", { name: "解锁连接管理" }).click();
-  await page.getByRole("button", { name: "Home Assistant 家庭" }).click();
   await page.getByLabel("启用此连接").check();
   await page
     .getByLabel("Home Assistant 基础地址")

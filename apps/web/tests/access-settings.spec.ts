@@ -32,7 +32,7 @@ test("access settings distinguish active and pending and require certificates", 
       json: { ...view, saved: body.value, revision: 1, restart_required: true },
     });
   });
-  await page.goto("/#/settings/1");
+  await page.goto("/#/settings/6");
   await expect(
     page.getByRole("heading", { name: "访问地址与 HTTPS" }),
   ).toBeVisible();

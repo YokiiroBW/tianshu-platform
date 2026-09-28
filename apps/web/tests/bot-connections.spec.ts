@@ -4,7 +4,7 @@ test("real local bot management: create, one-time token, enable, disable and rot
   page,
   request,
 }) => {
-  await page.goto("/#/settings/1");
+  await page.goto("/#/settings/3");
   await page.getByLabel("管理员账号").fill("synthetic-admin");
   await page
     .getByLabel("密码", { exact: true })
@@ -56,6 +56,7 @@ test("real local bot management: create, one-time token, enable, disable and rot
   await expect(section.getByText("插件在线")).toBeVisible();
 
   await section.getByRole("button", { name: "停用" }).click();
+  await expect(section.getByText("已停用")).toBeVisible();
   expect(
     (
       await request.post("/internal/v1/bot/heartbeat", {

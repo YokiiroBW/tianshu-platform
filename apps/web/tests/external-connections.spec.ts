@@ -85,7 +85,7 @@ test("a concurrent configuration change expires an in-flight connection test", a
     }
     throw new Error(`unexpected ${path}`);
   });
-  await page.goto("/#/settings/1");
+  await page.goto("/#/settings/4");
   await page.getByRole("button", { name: "检测连接（只读一次）" }).click();
   await started;
   revision = 5; // A second manager saved a new global revision while the old test ran.
@@ -122,7 +122,7 @@ test("a failed refresh cannot confirm a successful test against current settings
       });
     throw new Error(`unexpected ${path}`);
   });
-  await page.goto("/#/settings/1");
+  await page.goto("/#/settings/4");
   await page.getByRole("button", { name: "检测连接（只读一次）" }).click();
   await expect(
     page.getByText("上游暂时无法读取", { exact: false }),

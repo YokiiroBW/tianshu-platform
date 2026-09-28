@@ -59,6 +59,36 @@ function stamp(value: string | null) {
     : "尚无";
 }
 
+function SlotSetupGuide() {
+  return (
+    <div className="bot-setup-guide" role="note" aria-label="机器人接入准备">
+      <h3>尚未添加机器人</h3>
+      <p>
+        当前版本暂不支持在网页直接添加机器人账号。先请部署方登记实际机器人和允许会话，再回到这里创建连接。不会自动选择群或联系人。
+      </p>
+      <ol>
+        <li>
+          <strong>确认宿主类型：</strong>机器人运行在 NoneBot 时安装对应 NoneBot
+          插件；运行在 AstrBot 时安装对应 AstrBot
+          插件。两种方式分别登记，不要混用。
+        </li>
+        <li>
+          <strong>把实际接入对象交给部署方：</strong>
+          机器人账号、宿主实例、用于测试的群或私聊、明确允许的作者账号，以及要回复的角色。
+        </li>
+        <li>
+          <strong>由部署方完成登记：</strong>
+          确认机器人可进入指定会话，允许的作者和角色已准备好；完成后回到本页刷新。
+        </li>
+        <li>
+          <strong>再创建连接：</strong>
+          机器人出现在列表后解锁管理，选择机器人和角色，创建默认停用的连接；把一次性凭据保存到对应宿主插件的私有配置，再按实际测试结果启用。
+        </li>
+      </ol>
+    </div>
+  );
+}
+
 export function BotConnectionsPanel() {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
@@ -160,40 +190,30 @@ export function BotConnectionsPanel() {
           刷新状态
         </button>
       </div>
-      <p>
-        先由部署管理员安装对应插件并登记机器人、会话和作者；在这里选择角色、创建连接并复制一次性凭据。在线仅表示插件已认证，真实收发需另行测试。
-      </p>
+      {view && (view.slots.length > 0 || view.connections.length > 0) && (
+        <p>
+          先由部署管理员安装对应插件并登记机器人、会话和作者；在这里选择角色、创建连接并复制一次性凭据。在线仅表示插件已认证，真实收发需另行测试。
+        </p>
+      )}
       {error && (
         <p className="bot-error" role="alert">
           {error}
         </p>
       )}
       {!view && !error && <p>正在读取连接…</p>}
-      {view && !view.available && (
-        <div>
-          <p>本部署尚未登记机器人连接。</p>
-          <ol>
-            <li>
-              在机器人宿主安装 NoneBot 或 AstrBot 插件，并确认机器人账号。
-            </li>
-            <li>请部署管理员登记允许会话、作者、角色与对应 Core 绑定。</li>
-            <li>部署更新后回到此页创建连接，复制一次性凭据到插件私有配置。</li>
-          </ol>
-        </div>
-      )}
+      {view &&
+        (!view.available ||
+          (view.slots.length === 0 && view.connections.length === 0)) && (
+          <SlotSetupGuide />
+        )}
       {view &&
         view.available &&
         view.management.code === "operator_not_authorized" && (
           <p>当前账号没有机器人连接管理权限。</p>
         )}
-      {view && view.available && view.slots.length === 0 && (
-        <p>
-          尚无可用槽位。请部署管理员按 NoneBot 或 AstrBot 登记样例配置宿主
-          ID、机器人账号、允许会话、作者和角色，再更新平台与 Core。
-        </p>
-      )}
       {view &&
         view.available &&
+        (view.slots.length > 0 || view.connections.length > 0) &&
         view.management.code !== "operator_not_authorized" && (
           <>
             {!view.management.unlocked && (
