@@ -66,7 +66,7 @@ CANDIDATE_OPERATIONS = ("get", "history_page", "revision", "compare")
 MANIFEST_FILE = "manifest.json"
 # The coordinator publishes this digest only after actual producer/consumer HTTPS and browser
 # acceptance. Until it is pinned, a production page cannot load any locally edited package.
-PUBLISHED_MANIFEST_SHA256 = None
+PUBLISHED_MANIFEST_SHA256 = "72ae9ee2fd5e0140e122877c35d90eb747f1d56804c33d8f01c9eb38413c0e2d"
 PUBLISHED_PRODUCER_COMMIT = "31677983798ba27b24d57925feab4774c2eec30f"
 PUBLISHED_SAMPLE_PRODUCER_COMMIT = CANDIDATE_PRODUCER_COMMIT
 PUBLISHED_MANIFEST_KEYS = {
