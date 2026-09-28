@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import secrets
 import ssl
 import threading
@@ -28,6 +29,15 @@ TIMEOUT = 5
 def _id(value):
     require(
         isinstance(value, str) and 1 <= len(value) <= 128 and value.isprintable(),
+        "invalid_input",
+        400,
+    )
+    return value
+
+
+def _qq_id(value):
+    require(
+        isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value) is not None,
         "invalid_input",
         400,
     )
@@ -98,7 +108,7 @@ class BotAdapters:
         channel = {
             "namespace": "qq",
             "binding_id": binding_id,
-            "channel_conversation_id": row["conversation"]["id"],
+            "channel_conversation_id": f"{row['conversation']['kind']}:{row['conversation']['id']}",
             "thread_id": None,
         }
         self.p.contracts.check("common#channel_key", channel)
@@ -372,7 +382,12 @@ class BotAdapters:
                 "adapter_incompatible",
                 502,
             )
-            _id(account["id"])
+            require(
+                isinstance(account["id"], str)
+                and re.fullmatch(r"[1-9][0-9]*", account["id"]) is not None,
+                "adapter_incompatible",
+                502,
+            )
         draft_id = "draft:" + uuid.uuid4().hex
         expires = time.time() + 600
         draft = {
@@ -513,6 +528,7 @@ class BotAdapters:
             "invalid_input",
             400,
         )
+        _qq_id(account_id)
         require(any(a["id"] == account_id for a in value["accounts"]), "invalid_input", 400)
         require(actor_id in {a["id"] for a in self.config["actors"]}, "forbidden", 403)
         conversation = body["conversation"]
@@ -523,7 +539,7 @@ class BotAdapters:
             "invalid_input",
             400,
         )
-        _id(conversation["id"])
+        _qq_id(conversation["id"])
         authors = body["allowed_authors"]
         require(
             isinstance(authors, list)
@@ -533,7 +549,7 @@ class BotAdapters:
             400,
         )
         for author in authors:
-            _id(author)
+            _qq_id(author)
         require(
             conversation["kind"] != "private" or authors == [conversation["id"]],
             "invalid_input",
