@@ -47,6 +47,18 @@ const messages: Record<string, string> = {
   result_unknown:
     "上次配置操作尚未确认。请刷新状态；若连接仍待核对，可显式恢复。",
   idempotency_conflict: "本次请求与已有记录冲突，请刷新后核对。",
+  adapter_unauthorized: "插件拒绝了连接密钥，请核对宿主插件中配置的密钥。",
+  adapter_not_installed:
+    "该地址没有天枢机器人插件，请在所选宿主安装并启用插件。",
+  adapter_incompatible: "插件协议或版本不兼容，请更新所选宿主的天枢插件。",
+  adapter_unavailable: "插件暂时无法处理请求，请检查插件运行状态后重试。",
+  adapter_unreachable: "无法连接插件地址，请检查地址、网络及 HTTPS 证书。",
+  adapter_redirect: "插件地址发生跳转，请填写插件直接监听的地址。",
+  external_target_changed:
+    "插件地址的网络目标已变化，本次连接已拒绝；请联系管理员核对地址与 DNS。",
+  bot_role_not_approved:
+    "所选角色尚未获后台批准接入机器人，请联系管理员核对角色。",
+  queue_full: "机器人连接或检测草稿已达上限，请稍后再试或联系管理员清理。",
   dependency_unavailable:
     "插件或后台暂时不可达，请检查地址、插件运行状态与网络。",
   busy: "插件暂时忙碌，请稍后手动重试。",
@@ -65,6 +77,10 @@ export class AdapterApiError extends Error {
   ) {
     super(`${messages[code] ?? "操作未完成，请检查后台状态。"}（${code}）`);
   }
+}
+
+export function adapterErrorMessage(code: string) {
+  return messages[code] ?? code;
 }
 
 export async function adapterPost<T>(

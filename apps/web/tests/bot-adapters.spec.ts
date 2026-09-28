@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { adapterErrorMessage } from "../src/features/settings/botAdapterApi";
 
 const actor = { id: "xiaotian", label: "小天" };
 const account = { id: "100200300", platform: "qq", label: "测试机器人" };
@@ -49,6 +50,22 @@ async function signedIn(page: Page) {
 function json(route: Route, value: unknown, status = 200) {
   return route.fulfill({ status, json: value });
 }
+
+test("backend adapter fault codes have actionable Chinese messages", () => {
+  const cases: Record<string, string> = {
+    adapter_unauthorized: "连接密钥",
+    adapter_not_installed: "安装并启用插件",
+    adapter_incompatible: "协议或版本不兼容",
+    adapter_unavailable: "插件运行状态",
+    adapter_unreachable: "插件地址",
+    adapter_redirect: "地址发生跳转",
+    external_target_changed: "网络目标已变化",
+    bot_role_not_approved: "角色尚未获后台批准",
+    queue_full: "已达上限",
+  };
+  for (const [code, phrase] of Object.entries(cases))
+    expect(adapterErrorMessage(code)).toContain(phrase);
+});
 
 function probePayload() {
   return {
@@ -210,7 +227,8 @@ test("adapter errors, empty SDK accounts, expired draft and cancellation never s
       });
     if (path === "probe") {
       probeCount++;
-      if (probeCount === 1) return json(route, { code: "unauthorized" }, 401);
+      if (probeCount === 1)
+        return json(route, { code: "adapter_unauthorized" }, 401);
       if (probeCount === 2)
         return json(route, {
           draft_id: "empty",
@@ -243,7 +261,7 @@ test("adapter errors, empty SDK accounts, expired draft and cancellation never s
   await panel.getByLabel("允许局域网 HTTP（仅私有或本机地址）").check();
   await panel.getByRole("button", { name: "检测连接并读取账号" }).click();
   await expect(
-    panel.getByText("插件连接密钥或管理员登录状态", { exact: false }),
+    panel.getByText("插件拒绝了连接密钥", { exact: false }),
   ).toBeVisible();
   await expect(panel.getByLabel("插件连接密钥")).toHaveValue("");
   await panel.getByLabel("插件连接密钥").fill("valid-key");
@@ -321,7 +339,7 @@ test("unreachable address and incompatible protocol explain why a draft was not 
     if (path === "probe") {
       attempts++;
       if (attempts === 1)
-        return json(route, { code: "connection_failed" }, 503);
+        return json(route, { code: "adapter_unreachable" }, 503);
       return json(route, {
         draft_id: "wrong-version",
         expires_at: expiry(),
@@ -338,12 +356,60 @@ test("unreachable address and incompatible protocol explain why a draft was not 
   await panel.getByLabel("插件地址").fill("https://bot.example.test:8443");
   await panel.getByLabel("插件连接密钥").fill("fixture-key");
   await panel.getByLabel("插件连接密钥").press("Enter");
-  await expect(panel.getByText("无法连接插件", { exact: false })).toBeVisible();
+  await expect(
+    panel.getByText("无法连接插件地址", { exact: false }),
+  ).toBeVisible();
   await expect(panel.getByLabel("插件连接密钥")).toHaveValue("");
   await panel.getByLabel("插件连接密钥").fill("fixture-key");
   await panel.getByRole("button", { name: "检测连接并读取账号" }).click();
   await expect(
     panel.getByText("插件协议版本不兼容", { exact: false }),
+  ).toBeVisible();
+  await expect(panel.getByRole("button", { name: "保存为停用" })).toHaveCount(
+    0,
+  );
+});
+
+test("missing or incompatible installed plugin reports the backend fault instead of a generic failure", async ({
+  page,
+}) => {
+  await signedIn(page);
+  let attempts = 0;
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").pop();
+    if (path === "view")
+      return json(route, {
+        available: true,
+        unlocked: true,
+        actors: [actor],
+        connections: [],
+      });
+    if (path === "probe") {
+      attempts++;
+      return json(
+        route,
+        {
+          code:
+            attempts === 1 ? "adapter_not_installed" : "adapter_incompatible",
+        },
+        attempts === 1 ? 404 : 502,
+      );
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await page.goto("/#/settings/3");
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await panel.getByRole("button", { name: "添加适配器" }).click();
+  await panel.getByLabel("插件地址").fill("https://bot.example.test:8443");
+  await panel.getByLabel("插件连接密钥").fill("fixture-key");
+  await panel.getByRole("button", { name: "检测连接并读取账号" }).click();
+  await expect(
+    panel.getByText("安装并启用插件", { exact: false }),
+  ).toBeVisible();
+  await panel.getByLabel("插件连接密钥").fill("fixture-key");
+  await panel.getByRole("button", { name: "检测连接并读取账号" }).click();
+  await expect(
+    panel.getByText("插件协议或版本不兼容", { exact: false }),
   ).toBeVisible();
   await expect(panel.getByRole("button", { name: "保存为停用" })).toHaveCount(
     0,
@@ -583,6 +649,8 @@ test("private conversation explicitly uses the chosen contact as the allowed aut
   page,
 }) => {
   await signedIn(page);
+  let saved: ReturnType<typeof connection> | null = null;
+  let submitted: Record<string, unknown> | null = null;
   await page.route("**/api/web/bot-adapters/*", (route) => {
     const path = new URL(route.request().url()).pathname.split("/").pop();
     if (path === "view")
@@ -590,9 +658,18 @@ test("private conversation explicitly uses the chosen contact as the allowed aut
         available: true,
         unlocked: true,
         actors: [actor],
-        connections: [],
+        connections: saved ? [saved] : [],
       });
     if (path === "probe") return json(route, probePayload());
+    if (path === "create") {
+      submitted = route.request().postDataJSON();
+      saved = {
+        ...connection(),
+        conversation: { kind: "private", id: "555001" },
+        allowed_authors: ["555001"],
+      };
+      return json(route, { connection: saved });
+    }
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/3");
@@ -602,12 +679,32 @@ test("private conversation explicitly uses the chosen contact as the allowed aut
   await panel.getByLabel("插件连接密钥").fill("fixture-key");
   await panel.getByRole("button", { name: "检测连接并读取账号" }).click();
   await panel.getByLabel("会话类型").selectOption("private");
-  await panel.getByLabel("联系人 ID").fill("555000");
-  await expect(panel.getByLabel("明确允许的作者 ID")).toHaveValue("555000");
-  await panel.getByLabel("联系人 ID").fill("555001");
-  await expect(panel.getByLabel("明确允许的作者 ID")).toHaveValue("555001");
+  await panel.getByLabel("联系人 ID", { exact: true }).fill("555000");
+  await expect(
+    panel.getByLabel("私聊允许作者（由联系人 ID 确定）"),
+  ).toHaveValue("555000");
+  await expect(
+    panel.getByLabel("私聊允许作者（由联系人 ID 确定）"),
+  ).toHaveJSProperty("readOnly", true);
+  await expect(panel.getByLabel("明确允许的作者 ID")).toHaveCount(0);
+  await panel.getByLabel("联系人 ID", { exact: true }).fill("555001");
+  await expect(
+    panel.getByLabel("私聊允许作者（由联系人 ID 确定）"),
+  ).toHaveValue("555001");
   await panel.getByLabel("会话类型").selectOption("group");
   await expect(panel.getByLabel("明确允许的作者 ID")).toHaveValue("");
+  await panel.getByLabel("会话类型").selectOption("private");
+  await panel.getByLabel("连接名称").fill("测试私聊");
+  await expect(panel.getByLabel("连接名称")).toHaveAttribute("maxlength", "64");
+  await panel.getByLabel("回复角色").selectOption(actor.id);
+  await panel.getByRole("button", { name: "保存为停用" }).click();
+  await expect(
+    panel.getByText("连接已保存且保持停用", { exact: false }),
+  ).toBeVisible();
+  expect(submitted).toMatchObject({
+    conversation: { kind: "private", id: "555001" },
+    allowed_authors: ["555001"],
+  });
 });
 
 test("unknown backend phase requires one explicit reconcile and confirms the original revision", async ({

@@ -5,6 +5,7 @@ import { integrationPost } from "../../app/integrationApi";
 import { StatusRail } from "../../components/StatusRail";
 import {
   AdapterApiError,
+  adapterErrorMessage,
   adapterPost,
   type AdapterConnection,
   type AdapterKind,
@@ -118,7 +119,6 @@ export function BotAdapterPanel() {
   );
   const [conversationId, setConversationId] = useState("");
   const [authors, setAuthors] = useState("");
-  const [autoPrivateAuthor, setAutoPrivateAuthor] = useState(false);
   const [unverifiedIds, setUnverifiedIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -237,7 +237,7 @@ export function BotAdapterPanel() {
     setActorId("");
     setConversationId("");
     setAuthors("");
-    setAutoPrivateAuthor(false);
+    setConversationKind("group");
   }
 
   function cancel() {
@@ -255,7 +255,7 @@ export function BotAdapterPanel() {
     setActorId("");
     setConversationId("");
     setAuthors("");
-    setAutoPrivateAuthor(false);
+    setConversationKind("group");
     setError("");
     setNotice(
       pendingWrite
@@ -385,7 +385,14 @@ export function BotAdapterPanel() {
       setError("请从插件实际返回的账号中选择一个。");
       return;
     }
-    const allow = authorsFrom(authors);
+    const allow =
+      conversationKind === "private"
+        ? [conversationId.trim()]
+        : authorsFrom(authors);
+    if (name.trim().length > 64) {
+      setError("连接名称最多 64 个字符。");
+      return;
+    }
     if (!name.trim() || !actorId || !conversationId.trim() || !allow.length) {
       setError("请填写连接名称、角色、会话 ID 和明确允许的作者 ID。");
       return;
@@ -779,7 +786,7 @@ export function BotAdapterPanel() {
                           连接名称
                           <input
                             required
-                            maxLength={100}
+                            maxLength={64}
                             value={name}
                             disabled={Boolean(busy)}
                             onChange={(event) => setName(event.target.value)}
@@ -823,25 +830,11 @@ export function BotAdapterPanel() {
                           <select
                             value={conversationKind}
                             disabled={Boolean(busy)}
-                            onChange={(event) => {
-                              const next = event.target.value as
-                                "group" | "private";
-                              setConversationKind(next);
-                              if (
-                                next === "private" &&
-                                !authors.trim() &&
-                                conversationId.trim()
-                              ) {
-                                setAuthors(conversationId.trim());
-                                setAutoPrivateAuthor(true);
-                              } else if (
-                                next === "group" &&
-                                autoPrivateAuthor
-                              ) {
-                                setAuthors("");
-                                setAutoPrivateAuthor(false);
-                              }
-                            }}
+                            onChange={(event) =>
+                              setConversationKind(
+                                event.target.value as "group" | "private",
+                              )
+                            }
                           >
                             <option value="group">QQ群</option>
                             <option value="private">QQ私聊</option>
@@ -853,36 +846,39 @@ export function BotAdapterPanel() {
                             required
                             value={conversationId}
                             disabled={Boolean(busy)}
-                            onChange={(event) => {
-                              const next = event.target.value;
-                              setConversationId(next);
-                              if (
-                                conversationKind === "private" &&
-                                (autoPrivateAuthor || !authors.trim())
-                              ) {
-                                setAuthors(next.trim());
-                                setAutoPrivateAuthor(true);
+                            onChange={(event) =>
+                              setConversationId(event.target.value)
+                            }
+                          />
+                        </label>
+                        {conversationKind === "group" ? (
+                          <label>
+                            明确允许的作者 ID
+                            <textarea
+                              required
+                              rows={3}
+                              value={authors}
+                              disabled={Boolean(busy)}
+                              onChange={(event) =>
+                                setAuthors(event.target.value)
                               }
-                            }}
-                          />
-                        </label>
-                        <label>
-                          明确允许的作者 ID
-                          <textarea
-                            required
-                            rows={3}
-                            value={authors}
-                            disabled={Boolean(busy)}
-                            onChange={(event) => {
-                              setAuthors(event.target.value);
-                              setAutoPrivateAuthor(false);
-                            }}
-                            aria-describedby="bot-authors-help"
-                          />
-                        </label>
+                              aria-describedby="bot-authors-help"
+                            />
+                          </label>
+                        ) : (
+                          <label>
+                            私聊允许作者（由联系人 ID 确定）
+                            <input
+                              readOnly
+                              value={conversationId.trim()}
+                              aria-describedby="bot-authors-help"
+                            />
+                          </label>
+                        )}
                         <p id="bot-authors-help" className="muted">
-                          用逗号或换行分隔。群聊必须逐个填写允许的成员；私聊默认填写上方联系人
-                          ID，可自行修改。未列出的作者不会触发回复。
+                          {conversationKind === "group"
+                            ? "用逗号或换行分隔，逐个填写允许的群成员 ID。未列出的作者不会触发回复。"
+                            : "私聊只允许上方联系人触发回复，作者 ID 与联系人 ID 保持一致。"}
                         </p>
                         <button className="button" disabled={Boolean(busy)}>
                           保存为停用
@@ -928,7 +924,7 @@ export function BotAdapterPanel() {
                         <small>
                           最近检查：{formatTime(connection.last_checked_at)}
                           {connection.last_error
-                            ? ` · ${connection.last_error}`
+                            ? ` · ${adapterErrorMessage(connection.last_error)}`
                             : ""}
                         </small>
                         {connection.state === "unknown" && (
