@@ -15,7 +15,7 @@
 | `4d9214249467bb8c80d45d38d49eab96229e1b63` | 管理员固定 AssetLink/HA 连接、私有加密目录、URL pin、保存/检测/轮换联测与部署交接 |
 | `5c55ef1b62d962ad42278132a29ef46aa4111832` | 真实 Companion HTTPS 四路由联合验收及说明 |
 
-浏览器消费字段与错误码见 [CONNECT-B-API.md](CONNECT-B-API.md)；专门交接见 [CONNECT-B-KNOWLEDGE.md](CONNECT-B-KNOWLEDGE.md)、[CONNECT-B-EXTERNAL.md](CONNECT-B-EXTERNAL.md)、[CONNECT-B-LIFE.md](CONNECT-B-LIFE.md)。
+浏览器消费字段与错误码见 [CONNECT-B-API.md](CONNECT-B-API.md)；专门交接见 [CONNECT-B-KNOWLEDGE.md](CONNECT-B-KNOWLEDGE.md)、[CONNECT-B-EXTERNAL.md](CONNECT-B-EXTERNAL.md)、[CONNECT-B-LIFE.md](CONNECT-B-LIFE.md)。受控 NAS 配置增量与正式初始化顺序见 [CONNECT-B-NAS-CONFIG.md](CONNECT-B-NAS-CONFIG.md)。
 
 ## 部署前置配置
 
