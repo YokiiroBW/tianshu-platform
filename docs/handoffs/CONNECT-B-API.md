@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 登录/对话 | `/api/web/session`, `/api/web/messages`, `/api/web/snapshot` | 已有；模型与 Core 仍需实测 |
 | 模型供应商 | `/api/web/providers/*` | 已有，NAS 已部署 |
-| 人格目录/历史/版本/比较 | `/api/web/personas/{catalog,history,revision,compare}` | 已有；候选合同仅 local_rehearsal。正式 v1 消费器已备，最终 manifest 未发布前生产拒启 |
+| 人格目录/历史/版本/比较 | `/api/web/personas/{catalog,history,revision,compare}` | 已有；候选合同仅 local_rehearsal。正式 v1 manifest 已发布且 B 端固定 SHA；部署仍须登记发布目录、Companion 连接和凭据 |
 | 资产 | `/api/web/assets/{state,connection,libraries,browse,search,entry}` | 已有，须部署登记及对端授权 |
 | 家庭 | `/api/web/home/{view,refresh,control}` | 已有，须部署登记及对端授权；控制需独立解锁 |
 | 任务 | `/api/web/tasks/{view,detail}` | 已有，仅平台真实台账，其它来源按未接入显示 |

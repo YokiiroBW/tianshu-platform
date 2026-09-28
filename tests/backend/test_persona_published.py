@@ -1,4 +1,4 @@
-"""A synthetic publication proves the loader while the real release remains closed."""
+"""The pinned publication loads; altered and unpublished packages remain closed."""
 
 import hashlib
 import json
@@ -23,35 +23,33 @@ class PublishedPersonaTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "persona"
         shutil.copytree(SOURCE, self.root)
 
-    def _publish_fixture(self):
+    def _pending_fixture(self):
         manifest = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
         manifest.update(
-            status="published",
-            production_publish_authorized=True,
-            joint_runtime_acceptance="passed",
+            status="release_candidate",
+            production_publish_authorized=False,
+            joint_runtime_acceptance="pending",
         )
         raw = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         (self.root / "manifest.json").write_bytes(raw)
         return hashlib.sha256(raw).hexdigest()
 
     def test_pending_release_is_never_accepted(self):
-        current = hashlib.sha256((self.root / "manifest.json").read_bytes()).hexdigest()
-        with mock.patch("services.platform.persona_page_config.PUBLISHED_MANIFEST_SHA256", current):
+        pending = self._pending_fixture()
+        with mock.patch("services.platform.persona_page_config.PUBLISHED_MANIFEST_SHA256", pending):
             with self.assertRaises(Fault) as result:
                 load_published(self.root)
         self.assertEqual(result.exception.code, "dependency_unavailable")
 
     def test_only_exact_pinned_publication_loads(self):
-        digest = self._publish_fixture()
-        with mock.patch("services.platform.persona_page_config.PUBLISHED_MANIFEST_SHA256", digest):
-            loaded = load_published(self.root)
-            self.assertEqual(loaded.manifest["status"], "published")
-            self.assertEqual(loaded.manifest_sha256, digest)
-            (self.root / "examples.json").write_bytes(b"{}\n")
-            with self.assertRaises(Fault):
-                load_published(self.root)
-
-    def test_unpinned_publication_stays_closed(self):
-        self._publish_fixture()
+        loaded = load_published(self.root)
+        self.assertEqual(loaded.manifest["status"], "published")
+        self.assertEqual(loaded.manifest_sha256, hashlib.sha256((SOURCE / "manifest.json").read_bytes()).hexdigest())
+        (self.root / "examples.json").write_bytes(b"{}\n")
         with self.assertRaises(Fault):
             load_published(self.root)
+
+    def test_unpinned_publication_stays_closed(self):
+        with mock.patch("services.platform.persona_page_config.PUBLISHED_MANIFEST_SHA256", None):
+            with self.assertRaises(Fault):
+                load_published(self.root)
