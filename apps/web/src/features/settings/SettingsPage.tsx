@@ -3,7 +3,7 @@ import { TasksPanel } from "./TasksPanel";
 import { AccessPanel } from "./AccessPanel";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { ExternalConnectionsPanel } from "./ExternalConnectionsPanel";
-import { BotConnectionsPanel } from "./BotConnectionsPanel";
+import { BotAdapterPanel } from "./BotAdapterPanel";
 import "./settings.css";
 
 const setupLinks = [
@@ -15,7 +15,7 @@ const setupLinks = [
   {
     href: "#/settings/3",
     title: "机器人接入",
-    detail: "查看接入步骤，管理机器人连接。",
+    detail: "选择平台与插件地址，检测机器人并管理允许范围。",
   },
   {
     href: "#/settings/4",
@@ -69,7 +69,7 @@ export default function SettingsPage({ section }: { section: number }) {
   if (section === 0) return <TasksPanel />;
   if (section === 1) return <ConnectionsOverview />;
   if (section === 2) return <ProviderModelsPanel />;
-  if (section === 3) return <BotConnectionsPanel />;
+  if (section === 3) return <BotAdapterPanel />;
   if (section === 4)
     return <ExternalConnectionsPanel key="assets" kind="assets" />;
   if (section === 5) return <ExternalConnectionsPanel key="home" kind="home" />;
