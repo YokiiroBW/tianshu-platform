@@ -112,7 +112,7 @@ Memory 聊天进程继续使用既有私有 `mode:"source_sync"`、`database_pat
 }
 ```
 
-**不能从 `web-household/private-chat` 字符串猜 person/conversation ID，也不能插入数据库造映射。** 总控使用正式 Platform `origin.issue` 对当前 `web-actor` 发新引用，再以已登记的 `memory-browser-resolver` 服务凭据调用 Platform `/internal/v1/origins/resolve`，确认返回 `context.verified_account`、`authenticated_service=platform`、`audience_service=memory`、`allowed_scope` 与账号/actor/channel一致，并只把当次 `allowed_scope.person_id/conversation_id` 用于上面的精确 scope 登记。`origin.issue` 本身只回 assertion_ref/expiry，**不回 scope**。若任一 ID 为 null 或 resolve 拒绝，应停在 `memory_identity_not_ready`/未配置；需经正式身份 register/confirm 流程建立真实映射后重试，不能改 SQLite。
+**不能从 `web-household/private-chat` 字符串猜 person/conversation ID，也不能插入数据库造映射。** 总控使用正式 Platform `origin.issue` 对当前 `web-actor` 发新引用，再以已登记的 `memory-browser-resolver` 服务凭据调用 Platform `/internal/v1/origins/resolve`，确认返回 `context.verified_account`、`authenticated_service=platform`、`audience_service=memory`、`allowed_scope` 与账号/actor/channel一致，并只把当次 `allowed_scope.person_id/conversation_id` 用于上面的精确 scope 登记。`origin.issue` 本身只回 assertion_ref/expiry，**不回 scope**。若任一 ID 为 null 或 resolve 拒绝，应停在 `memory_identity_not_ready`/未配置，不能改 SQLite。Memory `identity/register` 可经正式 Core 身份调用创建 person，但 Platform `identities` 还需以真实 Memory 响应走 `prepare-mapping`/`confirm-mapping`；`channels` 的 conversation ID 仅在 Core 成功接受真实输入后，由 Platform `dispatch-fanout` 对真实 fanout 响应确认写入。Core 返回 `dependency_unavailable` 时这一步不会发生，须先排查失败阶段，再以正式路径重试。
 
 可审阅的 Platform 本地签发命令形状（输入文件仅 `{"entry_id":"web-actor"}`；需已设置独立 operator 环境凭据，输出 ref 是短期敏感引用，不进工单或仓库）：
 
