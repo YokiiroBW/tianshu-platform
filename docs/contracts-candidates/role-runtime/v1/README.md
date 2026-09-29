@@ -37,8 +37,10 @@ configuration can then be submitted as a new application.
 For a first explicit adoption of a deployment role, Core may list the actor
 only in `legacy_roles` because no runtime fact exists yet. Cancel must create
 and confirm a version-zero-to-one disabled Core fact using the original
-published Persona and binding before Memory denial can complete. If neither a
-runtime role nor the expected legacy role can be confirmed, cancel remains
+published Persona and binding before Memory denial can complete, even when a
+pending correction had selected a different profile. That proposed profile is
+never applied by cancellation. If neither a runtime role nor the expected
+legacy role can be confirmed, cancel remains
 pending. For an uncreated new dynamic actor, cancel creates no Core role.
 
 `POST /internal/v1/role-runtime/manage` on Companion accepts `operation:list`

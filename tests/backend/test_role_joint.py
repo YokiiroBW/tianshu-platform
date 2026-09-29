@@ -470,6 +470,77 @@ class RoleJoint(WebJoint):
             for key, original in bindings.items():
                 self.assertEqual(tuple(self.core.bindings[key]["actor_ids"]), original)
 
+    async def test_cancel_static_adoption_with_unapplied_selected_profile(self):
+        actor = "actor:a"
+        original_persona = self.core.personas.pin(actor)
+        manager = self.platform.role_runtime
+        original_provider = manager._provider
+        initial = {
+            "client_id": str(uuid.uuid4()), "actor_id": actor, "expected_version": 0,
+            "name": "Original static role", "profile_id": None, "profile_version": None,
+            "provider_id": self.providers[0]["provider_id"], "provider_revision": 1,
+            "enabled": True, "capabilities": ["dialogue", "memory.read"],
+        }
+        first = manager._begin(initial)
+
+        def unavailable_provider(_):
+            raise Fault("provider_unavailable", 409)
+
+        manager._provider = unavailable_provider
+        try:
+            with self.assertRaises(Fault) as failed:
+                await manager._resume(first)
+            manager._record_error(first, failed.exception)
+        finally:
+            manager._provider = original_provider
+        self.assertEqual(manager.get(actor)["state"], "failed")
+        self.assertIsNone(self.core.role_runtime.get(actor))
+        profile = self.core.personas.manage({
+            "operation": "create_profile", "request_id": str(uuid.uuid4()),
+            "operator": "joint-test", "reason": "synthetic", "name": "Proposed profile",
+            "description": "", "content": {"persona": "Must remain unapplied"},
+        })["item"]
+        selected = {
+            **initial, "client_id": str(uuid.uuid4()), "expected_version": 1,
+            "profile_id": profile["id"], "profile_version": profile["version"],
+        }
+        pending = manager._begin(selected)
+        original_remote = manager._remote
+
+        async def unavailable_before_pause(settings, path, payload):
+            if payload.get("request_id") == selected["client_id"] + ":pause":
+                raise Fault("dependency_unavailable", 503)
+            return await original_remote(settings, path, payload)
+
+        manager._remote = unavailable_before_pause
+        try:
+            with self.assertRaises(Fault) as interrupted:
+                await manager._resume(pending)
+            manager._record_error(pending, interrupted.exception)
+        finally:
+            manager._remote = original_remote
+        self.assertEqual(pending["stage"], "start")
+        self.assertEqual(pending["profile_id"], profile["id"])
+        self.assertIsNone(self.core.role_runtime.get(actor))
+        stopped = await manager._resume(manager._begin_cancel({
+            "client_id": str(uuid.uuid4()), "actor_id": actor,
+            "expected_version": pending["version"],
+        }))
+        self.assertEqual(stopped["state"], "disabled")
+        core_fact = self.core.role_runtime.get(actor)
+        self.assertFalse(core_fact["enabled"])
+        self.assertIsNone(core_fact["profile_id"])
+        self.assertFalse(self.core._role_allows(actor, "dialogue"))
+        self.assertEqual(self.core.personas.pin(actor)["revision_id"],
+                         original_persona["revision_id"])
+        self.assertEqual(self.core.store.list("persona_approvals", actor), [])
+        self.assertIsNone(self.core.personas._profile(profile["id"]).get("last_applied_target"))
+        grant = await original_remote(
+            manager.config["memory"], "/internal/v1/role-runtime/authorize",
+            {"operation": "status", "actor_id": actor},
+        )
+        self.assertFalse(grant["enabled"])
+
     async def browser_roles(self, profiles, script="role_joint_browser.mjs"):
         env = dict(
             os.environ,

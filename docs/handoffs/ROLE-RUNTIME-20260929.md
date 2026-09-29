@@ -23,6 +23,7 @@
 - 返修定向：Platform 角色及 Web/Provider 45 通过；Companion 受影响 Core/model/Persona/Role 41 通过；真实 HTTPS 四项联合 4 通过。新增 lost Memory 回执后源档案编辑的真实 owner 回归、active 停用双 owner 确认、取消 Core/Memory 停用写入都成功但回执先后丢失及两次重启的测试；Chromium 覆盖失败→retry 成功→继续编辑。TypeScript、Vite build 与受影响 Python Ruff 均通过。
 - 固定合成截图：`docs/handoffs/evidence/role-runtime/roles-desktop.png`、`roles-mobile.png`、`roles-existing.png`；隔离模型回执仍在 `.runtime/role-joint/results/joint-summary.json`，不含生产数据。
 - 静态首接管取消返修：若 Core 首次 pause 未提交，Companion 仍仅在 `legacy_roles` 暴露该 actor，取消必须从 version 0 写入 Core 显式 disabled，再写 Memory deny。若 Core 首次 pause 已提交但回执丢失，则按 catalog 中当前 runtime 版本停用。Core 不可确认时保持 pending；尚未创建的新动态角色不伪造 Core 角色。真实 HTTPS 用 `actor:a/b` 两支核对原 Persona/binding 保留、Memory 拒绝、Core 全量重启后仍拒绝；Platform 定向回归 45 通过，联合四项 4 通过。
+- 静态接管选档案修正分支：先前的接管意图在 Core 写入前失败，后续新意图可合法选择非空 profile；若其首次 pause 又未提交，取消仍以原静态 Persona 的 `profile_id/profile_version=null` 建立 Core disabled fact，不应用待选档案。新增真实 HTTPS 定向测试 1 通过；此窄补丁后定向 Platform 角色单元 10 通过、Ruff 通过，未重复完整 Chromium 联合套件。
 
 ### 联合测试复现（隔离数据）
 

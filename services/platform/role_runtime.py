@@ -314,8 +314,7 @@ class RoleRuntime:
                 if row["legacy"]:
                     # A static role without a runtime record is still allowed by Core.
                     # Install an explicit disabled fact before revoking Memory.
-                    require(legacy and row["profile_id"] is None,
-                            "dependency_unavailable", 503)
+                    require(legacy, "dependency_unavailable", 503)
                     current = {
                         "version": 0,
                         "name": row["name"],
