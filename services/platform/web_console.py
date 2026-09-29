@@ -63,6 +63,7 @@ EXTERNAL_PREFIX = "/api/web/external/"
 BOTS_PREFIX = "/api/web/bots/"
 BOT_ADAPTERS_PREFIX = "/api/web/bot-adapters/"
 BOT_OBSERVATION_PREFIX = "/api/web/bot-observation/"
+QQ_ADMIN_PREFIX = "/api/web/qq-admin/"
 
 
 class WebConsole:
@@ -192,6 +193,7 @@ class WebConsole:
         self.life = WebReader("life", platform, self)
         self.memory = WebMemory(platform, self)
         self.role_runtime = platform.role_runtime
+        self.qq_admin = platform.qq_admin
         if self.role_runtime.config is not None:
             self.role_runtime.console = self
 
@@ -653,6 +655,14 @@ class WebConsole:
             return web.json_response(result)
         if request.path.startswith(BOT_OBSERVATION_PREFIX):
             result = await self.platform.bot_observation.route(self, request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
+        if request.path.startswith(QQ_ADMIN_PREFIX):
+            result = await self.qq_admin.route(self, request.path, body, session)
             require(
                 await self.platform.local_work.run(self.session_valid, session),
                 "session_expired",

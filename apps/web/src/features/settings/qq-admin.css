@@ -1,0 +1,54 @@
+.qq-admin-page {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 72rem;
+  margin: 0 auto;
+}
+.qq-admin-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+.qq-admin-list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55rem 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 0.7rem;
+}
+.qq-admin-list small {
+  flex-basis: 100%;
+  opacity: 0.75;
+  overflow-wrap: anywhere;
+}
+.qq-admin-list button {
+  margin-left: auto;
+}
+.qq-admin-form {
+  display: grid;
+  gap: 0.8rem;
+  max-width: 34rem;
+}
+.qq-admin-form label {
+  display: grid;
+  gap: 0.3rem;
+}
+.qq-admin-form input,
+.qq-admin-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+.qq-admin-form textarea {
+  min-height: 4rem;
+}
+.qq-admin-form .qq-admin-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.qq-admin-form .qq-admin-toggle input {
+  width: auto;
+}

@@ -82,6 +82,7 @@ export const modules = [
       "资产库接入",
       "家庭设备接入",
       "访问与域名",
+      "QQ 用户与管理员",
     ],
   },
 ] as const;

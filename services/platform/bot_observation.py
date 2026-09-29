@@ -15,7 +15,7 @@ from .contracts import Fault, digest, require, utc
 from .transport import core_settings
 
 PREFIX = "/api/web/bot-observation/"
-ID = re.compile(r"^[1-9][0-9]{0,19}$")
+ID = re.compile(r"^[1-9][0-9]*$")
 MODES = {"observe_only", "whitelist", "blacklist"}
 MAX_SOURCES = 100000
 

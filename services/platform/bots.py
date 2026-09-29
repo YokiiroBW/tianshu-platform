@@ -456,28 +456,20 @@ class Bots:
         return {"state": "online", "observed_at": utc(at)}
 
     async def event(self, header, body):
+        version = body.get("schema_version")
+        base_fields = {
+            "schema_version", "connection_id", "platform_id", "self_id", "event_id",
+            "revision", "namespace", "conversation_id", "thread_id", "account_id",
+            "sent_at", "text",
+        }
         require(
-            set(body)
-            == {
-                "schema_version",
-                "connection_id",
-                "platform_id",
-                "self_id",
-                "event_id",
-                "revision",
-                "namespace",
-                "conversation_id",
-                "thread_id",
-                "account_id",
-                "sent_at",
-                "text",
-            },
+            set(body) == base_fields | ({"nickname", "group_card"} if version == 2 else set()),
             "invalid_input",
             400,
         )
         require(
             type(body["schema_version"]) is int
-            and body["schema_version"] == 1
+            and body["schema_version"] in (1, 2)
             and type(body["revision"]) is int
             and body["revision"] == 1,
             "invalid_input",
@@ -485,6 +477,19 @@ class Bots:
         )
         for key in ("event_id", "account_id", "conversation_id", "platform_id", "self_id"):
             require(isinstance(body[key], str) and 1 <= len(body[key]) <= 256, "invalid_input", 400)
+        from .qq_admin import qq_id
+
+        qq_id(body["account_id"])
+        qq_id(body["self_id"])
+        conversation = body["conversation_id"].split(":", 1)
+        require(len(conversation) == 2 and conversation[0] in {"group", "private"}, "invalid_input", 400)
+        qq_id(conversation[1])
+        require(conversation[0] != "private" or conversation[1] == body["account_id"], "invalid_input", 400)
+        if version == 2:
+            require(conversation[0] == "group" or body["group_card"] is None, "invalid_input", 400)
+            for value in (body["nickname"], body["group_card"]):
+                require(value is None or (type(value) is str and 1 <= len(value.strip()) <= 80 and all(ord(c) >= 32 and ord(c) != 127 and not 0x202A <= ord(c) <= 0x202E and not 0x2066 <= ord(c) <= 0x2069 for c in value)), "invalid_input", 400)
+            require(body["nickname"] is not None or body["group_card"] is not None, "invalid_input", 400)
         require(
             isinstance(body["text"], str)
             and 1 <= len(body["text"].strip()) <= 8000
@@ -497,6 +502,8 @@ class Bots:
         semantic = digest(body)
         admission = await self.p.local_work.run(self._admit_event, header, body, semantic)
         if "prior" in admission:
+            if admission["prior"]["state"] == "accepted":
+                await self.p.local_work.run(self.p.qq_admin.queue_alias, body)
             return admission["prior"]
         connection_id = admission["connection_id"]
         message_id = admission["message_id"]
@@ -546,6 +553,8 @@ class Bots:
         await self.p.local_work.run(
             self._finish_event, connection_id, body["event_id"], body["account_id"], state, result
         )
+        if state == "accepted":
+            await self.p.local_work.run(self.p.qq_admin.queue_alias, body)
         return {
             "event_id": body["event_id"],
             "message_id": message_id,

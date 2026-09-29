@@ -31,8 +31,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
-COMPANION_ROOT = PLATFORM_ROOT.parent / "tianshu-companion"
-CONTRACTS = PLATFORM_ROOT.parents[2] / "contracts" / "text-dialogue" / "v1"
+COMPANION_ROOT = Path(
+    os.environ.get("TS_QQ_COMPANION_ROOT", PLATFORM_ROOT.parent / "tianshu-companion")
+)
+CONTRACTS = Path(
+    os.environ.get(
+        "TS012_CONTRACT_DIR", PLATFORM_ROOT.parents[2] / "contracts" / "text-dialogue" / "v1"
+    )
+)
 for source in (
     COMPANION_ROOT / "src",
     COMPANION_ROOT / "tests",
@@ -108,6 +114,7 @@ class AdapterHostJointTests(unittest.IsolatedAsyncioTestCase):
                 "TS012_CONTRACT_DIR": str(CONTRACTS),
                 "TIANSHU_CONTRACTS": str(CONTRACTS),
                 "TS_ADAPTER_CORE_TOKEN": "synthetic-joint-platform-core-token-123456",
+                "TS_ADAPTER_QQ_CHECK": "synthetic-joint-qq-admin-reader-123456",
             },
         )
         environment.start()
@@ -118,6 +125,12 @@ class AdapterHostJointTests(unittest.IsolatedAsyncioTestCase):
         self.settings["principals"]["companion"]["resolver"] = {
             "caller": "platform",
             "purpose": "dialogue",
+        }
+        self.settings["principals"]["qqreader"] = {
+            "kind": "service",
+            "service": "companion",
+            "token_env": "TS_ADAPTER_QQ_CHECK",
+            "actions": ["qq.admin.check"],
         }
         self.settings["core"] = {
             "base_url": f"https://127.0.0.1:{core_port}",
@@ -165,6 +178,11 @@ class AdapterHostJointTests(unittest.IsolatedAsyncioTestCase):
                 "platform_sender": {
                     "url": self.platform_url,
                     "token_env": "TS012_COMPANION",
+                    "ca_file": str(self.ca),
+                },
+                "qq_admin": {
+                    "url": self.platform_url,
+                    "token_env": "TS_ADAPTER_QQ_CHECK",
                     "ca_file": str(self.ca),
                 },
             },

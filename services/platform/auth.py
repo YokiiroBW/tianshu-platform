@@ -8,6 +8,9 @@ import re
 from .contracts import canonical, digest, epoch, loads, require
 
 ACTIONS = {
+    "qq.admin.view",
+    "qq.admin.manage",
+    "qq.admin.check",
     "role.manage",
     "bot.manage",
     "dialogue.send",
@@ -73,6 +76,8 @@ class Auth:
             "web_knowledge",
             "web_life",
             "web_memory",
+            "web_qq_profiles",
+            "qq_alias_memory",
         ):
             if key in settings:
                 policy[key] = settings[key]
@@ -97,6 +102,8 @@ class Auth:
                     settings.get("web_knowledge"),
                     settings.get("web_life"),
                     settings.get("web_memory"),
+                    settings.get("web_qq_profiles"),
+                    settings.get("qq_alias_memory"),
                 )
                 if isinstance(entry, dict) and isinstance(entry.get("token_env"), str)
             )

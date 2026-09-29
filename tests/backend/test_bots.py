@@ -25,7 +25,8 @@ from web_fixtures import PASSWORD, web_settings
 def bot_settings(directory):
     config = web_settings(directory)
     config["principals"]["admin"]["actions"].append("bot.manage")
-    config["principals"]["companion"]["actions"].append("dialogue.send")
+    config["principals"]["admin"]["actions"] += ["qq.admin.view", "qq.admin.manage"]
+    config["principals"]["companion"]["actions"] += ["dialogue.send", "qq.admin.check"]
     channel = {
         "namespace": "qq",
         "binding_id": "binding:bot-qq",
@@ -34,7 +35,7 @@ def bot_settings(directory):
     }
     entries = []
     for number in ("1", "2"):
-        account = {"namespace": "qq", "immutable_account_id": "user:" + number}
+        account = {"namespace": "qq", "immutable_account_id": "100" + number}
         input_id = "bot-input-" + number
         actor_id = "bot-actor-" + number
         config["input_entries"][input_id] = {
@@ -68,7 +69,7 @@ def bot_settings(directory):
             "qq-onebot-main": {
                 "adapter": "nonebot",
                 "platform_id": "onebot11-main",
-                "self_id": "bot:42",
+                "self_id": "4242",
                 "input_entry_ids": entries,
                 "label": "测试群 · NoneBot",
             },
@@ -96,12 +97,12 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
     async def _close(self):
         self.platform.close()
 
-    def event(self, account="user:1"):
+    def event(self, account="1001"):
         return {
             "schema_version": 1,
             "connection_id": self.connection_id,
             "platform_id": "onebot11-main",
-            "self_id": "bot:42",
+            "self_id": "4242",
             "event_id": "sdk:101",
             "revision": 1,
             "namespace": "qq",
@@ -149,6 +150,129 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             "text": "合成模型结果",
         }
 
+    async def test_qq_administrator_web_grant_check_revoke_and_cas(self):
+        runner, url = await start_http(create_app(self.platform))
+        self.addAsyncCleanup(runner.cleanup)
+        self.settings["web"]["origin"] = url
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
+            async with client.get(url + "/api/web/session") as response:
+                anonymous = await response.json()
+            headers = {"Origin": url, "X-CSRF-Token": anonymous["csrf"]}
+            async with client.post(
+                url + "/api/web/qq-admin/view", json={}, headers=headers
+            ) as response:
+                self.assertEqual(response.status, 401)
+            async with client.post(
+                url + "/api/web/login",
+                json={"username": "synthetic-admin", "password": PASSWORD},
+                headers=headers,
+            ) as response:
+                self.assertEqual(response.status, 200)
+                csrf = (await response.json())["csrf"]
+            headers["X-CSRF-Token"] = csrf
+
+            async def web_post(operation, body):
+                async with client.post(
+                    url + "/api/web/qq-admin/" + operation, json=body, headers=headers
+                ) as response:
+                    return response.status, await response.json()
+
+            status, initial = await web_post("view", {})
+            self.assertEqual(status, 200)
+            self.assertEqual(initial["version"], 0)
+            self.assertEqual(initial["grants"], [])
+            request = {
+                "qq_id": "1001",
+                "expected_version": 0,
+                "note": "synthetic operator",
+                "actor_ids": ["actor:a"],
+                "conversations": ["group:123"],
+                "capabilities": ["identity.explain"],
+            }
+            status, granted = await web_post("grant", request)
+            self.assertEqual(status, 200, granted)
+            self.assertEqual(granted["version"], 1)
+            self.assertEqual((await web_post("grant", request))[0], 409)
+            self.assertEqual(
+                (await web_post("grant", {**request, "qq_id": True, "expected_version": 1}))[0], 400
+            )
+            self.assertEqual(
+                (await web_post("grant", {**request, "expected_version": 1, "capabilities": [[]]}))[
+                    0
+                ],
+                400,
+            )
+            self.assertEqual(
+                (await web_post("grant", {**request, "expected_version": 2**63}))[0], 400
+            )
+            with self.platform.store.connect(write=True) as db:
+                db.execute(
+                    "INSERT OR REPLACE INTO channels VALUES(?,?)",
+                    (
+                        canonical(self.settings["input_entries"]["bot-input-1"]["channel"]),
+                        "conversation:core",
+                    ),
+                )
+            issued = self.platform.origins.issue(bearer("CONNECTOR"), "bot-actor-1")
+            check = {
+                "schema_version": 1,
+                "request_id": "qq-check-1",
+                "assertion_ref": issued["assertion_ref"],
+                "actor_id": "actor:a",
+                "conversation_id": "conversation:core",
+            }
+            with self.platform.store.connect() as db:
+                _, _, context = self.platform.origins.context(
+                    db, issued["assertion_ref"], "companion", "platform", "dialogue"
+                )
+            self.assertEqual(context["allowed_scope"]["conversation_id"], "conversation:core")
+            self.assertEqual(context["allowed_scope"]["actor_id"], "actor:a")
+
+            async def internal(body, token="COMPANION"):
+                async with aiohttp.ClientSession() as service_client:
+                    async with service_client.post(
+                        url + "/internal/v1/qq-admin/check",
+                        json=body,
+                        headers={"Authorization": bearer(token)},
+                    ) as response:
+                        return response.status, await response.json()
+
+            self.assertEqual((await internal(check, "CONNECTOR"))[0], 403)
+            self.assertEqual((await internal({**check, "conversation_id": "other"}))[0], 403)
+            status, result = await internal(check)
+            self.assertEqual(status, 200, result)
+            self.assertTrue(result["is_admin"])
+            self.assertEqual(result["version"], 1)
+            status, revoked = await web_post("revoke", {"qq_id": "1001", "expected_version": 1})
+            self.assertEqual(status, 200, revoked)
+            self.assertEqual(revoked["version"], 2)
+            self.assertFalse((await internal(check))[1]["is_admin"])
+            self.assertEqual(type(self.platform.qq_admin)(self.platform)._view()["version"], 2)
+
+    async def test_qq_display_alias_queued_only_after_accepted_event(self):
+        self.platform.settings["qq_alias_memory"] = {
+            "base_url": "https://memory.synthetic.invalid",
+            "token_env": "TS_QQ_ALIAS_TEST",
+        }
+        self.platform.sources.dispatch = AsyncMock(
+            return_value={"outcomes": [{"actor_id": "actor:a", "state": "accepted"}]}
+        )
+        body = {**self.event(), "schema_version": 2, "nickname": "同名", "group_card": "群名片"}
+        accepted = await self.platform.bots.event(self.token, body)
+        self.assertEqual(accepted["state"], "accepted")
+        self.assertEqual(self.platform.qq_admin.pending_aliases(), [body])
+        with patch(
+            "services.platform.qq_admin.observe_alias", new_callable=AsyncMock, return_value=True
+        ) as writer:
+            await self.platform.qq_admin.flush_aliases()
+            writer.assert_awaited_once_with(self.platform, body)
+        self.assertEqual(self.platform.qq_admin.pending_aliases(), [])
+        with self.assertRaises(Fault):
+            await self.platform.bots.event(
+                self.token, {**body, "event_id": "sdk:102", "account_id": "０１００１"}
+            )
+        self.assertEqual(self.platform.qq_admin.pending_aliases(), [])
+
     async def test_event_dedup_author_binding_and_unknown_no_replay(self):
         bot = self.platform.bots
         self.platform.sources.dispatch = AsyncMock(
@@ -160,7 +284,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             (await bot.event(self.token, self.event()))["message_id"], first["message_id"]
         )
         self.assertEqual(self.platform.sources.dispatch.await_count, 1)
-        second = await bot.event(self.token, {**self.event("user:2"), "event_id": "sdk:102"})
+        second = await bot.event(self.token, {**self.event("1002"), "event_id": "sdk:102"})
         self.assertEqual(second["state"], "accepted")
         self.assertEqual(self.platform.sources.dispatch.await_count, 2)
         self.assertEqual(
@@ -169,7 +293,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "connection_id": self.connection_id,
                     "event_id": "sdk:101",
-                    "account_id": "user:1",
+                    "account_id": "1001",
                 },
             )["state"],
             "accepted",
@@ -189,7 +313,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "connection_id": self.connection_id,
                     "event_id": "sdk:unknown",
-                    "account_id": "user:1",
+                    "account_id": "1001",
                 },
             )["state"],
             "unknown",
@@ -365,7 +489,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         bot.slots["qq-astrbot-main"] = {
             "adapter": "astrbot",
             "platform_id": "astrbot-main",
-            "self_id": "bot:42",
+            "self_id": "4242",
             "input_entry_ids": ["bot-input-1", "bot-input-2"],
             "label": "同群备用 AstrBot",
         }
@@ -389,7 +513,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             settings["bot_connections"]["slots"]["qq-astrbot-same-bot"] = {
                 "adapter": "astrbot",
                 "platform_id": "astrbot-other-runtime",
-                "self_id": "bot:42",
+                "self_id": "4242",
                 "input_entry_ids": ["bot-input-other"],
                 "label": "同机器人同群不同 Core 绑定",
             }
@@ -436,7 +560,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         bot.slots["qq-other-bot"] = {
             "adapter": "astrbot",
             "platform_id": "astrbot-other-runtime",
-            "self_id": "bot:99",
+            "self_id": "9999",
             "input_entry_ids": ["bot-input-1", "bot-input-2"],
             "label": "同群另一真实机器人",
         }
@@ -502,7 +626,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
                 json={
                     "connection_id": self.connection_id,
                     "event_id": "sdk:101",
-                    "account_id": "user:1",
+                    "account_id": "1001",
                 },
                 headers={"Authorization": self.token},
             ) as response:
@@ -613,3 +737,18 @@ class BotConfigurationTests(unittest.TestCase):
             ]
             with self.assertRaises(Fault):
                 validate_settings(settings)
+
+    def test_qq_profile_credentials_must_be_distinct(self):
+        from services.platform.qq_admin import validate_profiles_configuration
+
+        with patch.dict(os.environ, {**ENV, "TS_QQ_PROFILE": ENV["TS012_ADMIN"]}):
+            with self.assertRaises(Fault):
+                validate_profiles_configuration(
+                    {
+                        "web_qq_profiles": {
+                            "base_url": "https://memory.synthetic.invalid",
+                            "token_env": "TS_QQ_PROFILE",
+                        }
+                    },
+                    ["TS012_ADMIN"],
+                )

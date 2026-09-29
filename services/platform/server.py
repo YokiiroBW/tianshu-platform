@@ -15,6 +15,7 @@ from .contracts import Fault, loads, require
 from . import model_origin_renewal
 from .service import registered_credentials
 from .web_console import CONSOLE_AUTH, WebConsole
+from .qq_admin import CHECK_PATH as QQ_ADMIN_CHECK
 
 PLATFORM = web.AppKey("platform", object)
 BODY = web.RequestKey("body", dict)
@@ -188,10 +189,11 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 OBSERVATION_ADMIN_STATUS,
                 OBSERVATION_ADMIN_ENROLL,
             }
+            qq_admin_call = request.path == QQ_ADMIN_CHECK
             require(
                 request.method == "POST"
                 and (
-                    schema is not None or renewal or provider_call or bot_call or observation_call
+                    schema is not None or renewal or provider_call or bot_call or observation_call or qq_admin_call
                 ),
                 "not_found",
                 404,
@@ -212,6 +214,8 @@ def create_app(platform, probe=None, *, console=None, public=False):
                     413,
                 )
             elif provider_call:
+                require(len(raw) <= 4096, "budget_exceeded", 413)
+            elif qq_admin_call:
                 require(len(raw) <= 4096, "budget_exceeded", 413)
             else:
                 platform.contracts.check(schema, body)
@@ -434,6 +438,13 @@ def create_app(platform, probe=None, *, console=None, public=False):
             )
         )
 
+    async def qq_admin_check(request):
+        return web.json_response(
+            await platform.local_work.run(
+                platform.qq_admin.check, request.headers.get("Authorization", ""), request[BODY]
+            )
+        )
+
     async def observation_admin_status(request):
         require(request[BODY] == {}, "invalid_input", 400)
         return web.json_response(
@@ -497,6 +508,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                     try:
                         await platform.bot_adapters.pump_once()
                         await platform.bot_observation.pump_once()
+                        await platform.qq_admin.flush_aliases()
                     except (Fault, OSError, sqlite3.Error):
                         pass
                     await asyncio.sleep(2)
@@ -509,6 +521,22 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 await asyncio.gather(task, return_exceptions=True)
 
         app.cleanup_ctx.append(bot_pump_context)
+    if not public and platform.bot_adapters.catalog is None and platform.settings.get("qq_alias_memory") is not None:
+        async def qq_alias_pump_context(app):
+            async def pump():
+                while True:
+                    try:
+                        await platform.qq_admin.flush_aliases()
+                    except (Fault, OSError, sqlite3.Error):
+                        pass
+                    await asyncio.sleep(2)
+            task = asyncio.create_task(pump())
+            try:
+                yield
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        app.cleanup_ctx.append(qq_alias_pump_context)
     if not public and platform.role_runtime.config is not None:
 
         async def role_pump_context(app):
@@ -537,6 +565,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             # Default closed; only an explicit deployment setting registers the native port.
             app.router.add_post(NATIVE_SNAPSHOT, native_snapshot)
         app.router.add_post("/internal/v1/source-access/read", source_access)
+        app.router.add_post(QQ_ADMIN_CHECK, qq_admin_check)
         if platform.bot_observation.catalog is not None:
             app.router.add_post(OBSERVATION_VERIFY, observation_verify)
             app.router.add_post(OBSERVATION_ADMIN_STATUS, observation_admin_status)

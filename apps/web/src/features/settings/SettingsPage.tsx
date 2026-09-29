@@ -4,6 +4,7 @@ import { AccessPanel } from "./AccessPanel";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { ExternalConnectionsPanel } from "./ExternalConnectionsPanel";
 import { BotAdapterPanel } from "./BotAdapterPanel";
+import { QQAdminPanel } from "./QQAdminPanel";
 import "./settings.css";
 
 const setupLinks = [
@@ -31,6 +32,11 @@ const setupLinks = [
     href: "#/settings/6",
     title: "访问与域名",
     detail: "设置网页访问地址与 HTTPS。",
+  },
+  {
+    href: "#/settings/7",
+    title: "QQ 用户与管理员",
+    detail: "查看 QQ 档案，设置和撤销对话中的管理身份。",
   },
 ];
 
@@ -73,5 +79,6 @@ export default function SettingsPage({ section }: { section: number }) {
   if (section === 4)
     return <ExternalConnectionsPanel key="assets" kind="assets" />;
   if (section === 5) return <ExternalConnectionsPanel key="home" kind="home" />;
+  if (section === 7) return <QQAdminPanel />;
   return <AccessPanel />;
 }

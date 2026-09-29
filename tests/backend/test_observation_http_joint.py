@@ -113,6 +113,13 @@ class ObservationHttpJointTests(unittest.IsolatedAsyncioTestCase):
         self.host_url = f"https://127.0.0.1:{self.host_port}"
         self.settings = bot_settings(str(self.root))
         self.settings["principals"]["memory"]["actions"].append("observation.verify")
+        self.settings["principals"]["qqreader"] = {
+            "kind": "service",
+            "service": "companion",
+            "token_env": "TS_OBS_QQ_CHECK",
+            "actions": ["qq.admin.check"],
+        }
+        os.environ["TS_OBS_QQ_CHECK"] = "synthetic-companion-qq-check-123456"
         self.settings["core"] = {
             "base_url": self.companion_url,
             "token_env": "TS_OBS_PLATFORM_CORE",
@@ -160,7 +167,7 @@ class ObservationHttpJointTests(unittest.IsolatedAsyncioTestCase):
                         "verify_url": self.platform_url + "/internal/v2/observation-source/verify",
                         "verify_token": ENV["TS012_MEMORY"],
                         "ca_file": str(self.ca),
-                    }
+                    },
                 }
             ),
             encoding="utf-8",
@@ -191,6 +198,11 @@ class ObservationHttpJointTests(unittest.IsolatedAsyncioTestCase):
                 "platform_sender": {
                     "url": self.platform_url,
                     "token_env": "TS_OBS_PLATFORM_CORE",
+                    "ca_file": str(self.ca),
+                },
+                "qq_admin": {
+                    "url": self.platform_url,
+                    "token_env": "TS_OBS_QQ_CHECK",
                     "ca_file": str(self.ca),
                 },
             },
