@@ -561,7 +561,9 @@ class BotObservation:
             409,
         )
         group, private = _policy(body["group_policy"]), _policy(body["private_policy"])
-        actors = {a["id"] for a in self.adapters.config["actors"]}
+        actors = {
+            a["id"] for a in self.adapters.config["actors"] + self.p.role_runtime.active_actors()
+        }
         for policy in (group, private):
             require(policy["actor_id"] is None or policy["actor_id"] in actors, "forbidden", 403)
             require(
@@ -959,6 +961,9 @@ class BotObservation:
             return True
         actor = policy["actor_id"]
         require(actor is not None, "scope_changed", 409)
+        managed = self.p.role_runtime.get(actor)
+        if managed is not None and not self.p.role_runtime.active(actor):
+            return True
         conn, token = await self._ensure_reply_scope(row, conversation, event["account_id"], actor)
         current = self.get(row["id"])
         if (

@@ -1,0 +1,448 @@
+"""Real TLS owners and gateway; only the paid model endpoint is recorded."""
+
+import asyncio
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import uuid
+from dataclasses import asdict
+from pathlib import Path
+
+from aiohttp import web
+from services.platform.contracts import utc
+from services.platform.provider_catalog import ProviderCatalog
+from services.platform.server import create_app
+from services.platform.web_console import WebConsole
+from ts050_source_support import reserve
+from ts050_support import CONTRACT
+from web_joint_scenarios import WebJoint
+from tianshu_gateway.config import ClientGrant
+from tianshu_gateway.server import Settings
+
+WebJoint.__test__ = False
+
+
+class RoleJoint(WebJoint):
+    __test__ = True
+    test_real_web_login_source_core_memory_gateway_and_persistent_sender = None
+
+    def make_platform_app(self):
+        self.console = WebConsole(self.platform)
+        app = create_app(self.platform, console=self.console)
+        self.provider_calls = getattr(self, "provider_calls", [])
+
+        @web.middleware
+        async def record_provider(request, handler):
+            response = await handler(request)
+            if "provider" in request.path:
+                self.provider_calls.append((request.path, response.status))
+            return response
+
+        app.middlewares.insert(0, record_provider)
+        return app
+
+    def platform_settings(self):
+        settings = super().platform_settings()
+        self.set_env("TS_ROLE_GATEWAY_MANAGE", "synthetic-role-" + secrets.token_urlsafe(30))
+        self.set_env("TS_ROLE_MEMORY_ADMIN", "synthetic-role-" + secrets.token_urlsafe(30))
+        self.set_env("TS_ROLE_PERSONA", "synthetic-role-" + secrets.token_urlsafe(30))
+        self.set_env("TS_ROLE_PROVIDER_KEY", self.tokens["MODEL"].removeprefix("synthetic-source-"))
+        self.set_env("TS_ROLE_BOT_ADMIN", "synthetic-role-" + secrets.token_urlsafe(30))
+        self.set_env("SSL_CERT_FILE", str(self.ca))
+        catalog_path = self.directory / "provider-catalog"
+        catalog = ProviderCatalog(catalog_path, create=True)
+        self.providers = []
+        for label in ("A", "B"):
+            provider = catalog.save(
+                client_id=str(uuid.uuid4()),
+                name="Synthetic " + label,
+                base_url=self.model_url + "/v1",
+                model_id="role-model-" + label,
+                api_key=self.tokens["MODEL"],
+            )
+            catalog.record_test(
+                client_id=str(uuid.uuid4()),
+                provider_id=provider["provider_id"],
+                expected_revision=1,
+                outcome="succeeded",
+            )
+            self.providers.append(provider)
+        catalog.set_default(
+            client_id=str(uuid.uuid4()),
+            provider_id=self.providers[0]["provider_id"],
+            expected_revision=1,
+            expected_default_revision=0,
+        )
+        settings["provider_self_service"] = {
+            "directory": str(catalog_path),
+            "gateway_url": "https://127.0.0.1:1",
+            "gateway_token_env": "TS_ROLE_GATEWAY_MANAGE",
+        }
+        settings["role_runtime"] = {
+            "enabled": True,
+            "memory": {
+                "base_url": self.memory_url,
+                "token_env": "TS_ROLE_MEMORY_ADMIN",
+                "ca_file": str(self.ca),
+                "timeout_seconds": 15,
+            },
+        }
+        settings["principals"]["operator"]["actions"].append("role.manage")
+        settings["principals"]["core"]["actions"].append("config.select")
+        settings["principals"]["gateway"]["actions"].append("provider.runtime")
+        settings["principals"]["operator"]["actions"].append("bot.manage")
+        settings["principals"]["bot-admin"] = {
+            "kind": "service",
+            "service": "platform",
+            "token_env": "TS_ROLE_BOT_ADMIN",
+            "actions": ["source.register", "source.dispatch", "mapping.prepare"],
+        }
+        settings["bot_connections"] = {"principal": "bot-admin", "slots": {}}
+        settings["bot_adapter_self_service"] = {
+            "directory": str(self.directory / "bot-adapters"),
+            "allowed_cidrs": ["127.0.0.0/8"],
+            "actors": [{"id": "actor:a", "label": "Existing synthetic actor"}],
+        }
+        return settings
+
+    def make_memory_config(self):
+        config = super().make_memory_config()
+        config["role_grants_database_path"] = str(self.directory / "memory-role-grants.sqlite")
+        config["callers"]["companion"]["allow_runtime_roles"] = True
+        config["callers"]["platform"] = {
+            "token": os.environ["TS_ROLE_MEMORY_ADMIN"],
+            "role_admin": True,
+        }
+        return config
+
+    def make_core_config(self):
+        config = super().make_core_config()
+        config["personas"] = {"admin_token_env": "TS_ROLE_PERSONA"}
+        config["provider_self_service"] = True
+        config["bot_binding_management_enabled"] = True
+        config["services"]["provider_selector"] = {
+            "url": self.platform_url,
+            "token_env": "TS050_SOURCE_CORE_PLATFORM",
+            "ca_file": str(self.ca),
+        }
+        return config
+
+    async def start_gateway(self):
+        settings = Settings(
+            str(CONTRACT),
+            str(self.directory / "gateway.sqlite"),
+            self.platform_url,
+            "secret-ref:source/platform",
+            "TS050_SOURCE_CONFIG_ORIGIN",
+            {
+                "secret-ref:source/platform": "TS050_SOURCE_GATEWAY_PLATFORM",
+                "secret-ref:source/core": "TS050_SOURCE_GATEWAY_CORE",
+                "secret-ref:fixture/provider-a": "TS050_SOURCE_MODEL",
+            },
+            [
+                {"base_url": url, "addresses": ["127.0.0.1"], "allow_private_http": False}
+                for url in (self.platform_url, self.model_url + "/v1")
+            ],
+            [ClientGrant("companion", "secret-ref:source/core", "provider-fixture", 7, True)],
+            config_refresh_seconds=0,
+            provider_self_service=True,
+        )
+        path = self.directory / "gateway-settings.json"
+        path.write_text(json.dumps(asdict(settings)), "utf-8")
+        sock = reserve()
+        port = sock.getsockname()[1]
+        sock.close()
+        self.gateway_url = f"https://127.0.0.1:{port}"
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-B",
+                str(Path(__file__).with_name("gateway_loopback_fixture.py")),
+                "--settings",
+                str(path),
+                "--port",
+                str(port),
+                "--tls-cert",
+                str(self.cert),
+                "--tls-key",
+                str(self.key),
+            ],
+            cwd=Path(os.environ["TS_ROLE_GATEWAY_ROOT"]),
+            env=dict(os.environ, SSL_CERT_FILE=str(self.ca)),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        self.gateway_process = process
+
+        async def stop():
+            if process.poll() is None:
+                process.terminate()
+                await asyncio.to_thread(process.wait, 5)
+
+        self.resources.append(stop)
+        async with asyncio.timeout(10):
+            while True:
+                self.assertIsNone(process.poll(), "gateway exited")
+                try:
+                    response = await self.client.get(
+                        self.gateway_url + "/internal/v1/model-requests/startup-probe",
+                        headers={"Authorization": self.bearer("GATEWAY_CORE")},
+                    )
+                    self.assertEqual(response.status_code, 404)
+                    break
+                except Exception:
+                    await asyncio.sleep(0.05)
+
+    async def record_model(self, request):
+        return await super(WebJoint, self).record_model(request)
+
+    async def test_real_role_apply_and_model_routing(self):
+        profiles = []
+        for label in ("A", "B"):
+            result = await self.client.post(
+                self.core_url + "/internal/v1/persona/manage",
+                headers={"Authorization": "Bearer " + os.environ["TS_ROLE_PERSONA"]},
+                json={
+                    "operation": "create_profile",
+                    "request_id": str(uuid.uuid4()),
+                    "operator": "joint-test",
+                    "reason": "synthetic",
+                    "name": "Profile " + label,
+                    "description": "",
+                    "content": {"persona": "Role " + label + " | synthetic persona"},
+                },
+            )
+            self.assertEqual(result.status_code, 200, result.text)
+            profiles.append(result.json()["item"])
+        await self.browser_roles(profiles)
+        self.assertEqual(len(self.platform.role_runtime.active_actors()), 1)
+        self.assertEqual(
+            {r["body"]["model"] for r in self.model_requests}, {"role-model-A", "role-model-B"}
+        )
+        self.assertEqual({r["actor"] for r in self.model_requests},
+                         {"Role A", "Role B", "actor:a"})
+        adopted = self.platform.role_runtime.get("actor:a")
+        self.assertTrue(adopted["legacy"])
+        self.assertIsNone(adopted["profile_id"])
+        self.assertEqual(adopted["provider_id"], self.providers[1]["provider_id"])
+        self.assertEqual(adopted["state"], "disabled")
+        self.assertNotIn("actor:a", self.core.roles)
+        memory_status = await self.client.post(
+            self.memory_url + "/internal/v1/role-runtime/authorize",
+            headers={"Authorization": "Bearer " + os.environ["TS_ROLE_MEMORY_ADMIN"]},
+            json={"operation": "status", "actor_id": "actor:a"},
+        )
+        self.assertEqual(memory_status.status_code, 200, memory_status.text)
+        self.assertFalse(memory_status.json()["enabled"])
+        self.assertGreaterEqual(
+            sum(path.endswith("/select") and status == 200 for path, status in self.provider_calls),
+            2,
+        )
+        self.assertGreaterEqual(
+            sum(
+                path.endswith("/runtime") and status == 200 for path, status in self.provider_calls
+            ),
+            2,
+        )
+        await self.exercise_bot_connections()
+        evidence = Path(os.environ["TS050_RUNTIME"]) / "results"
+        evidence.mkdir(exist_ok=True)
+        for name in ("roles-desktop.png", "roles-mobile.png", "roles-existing.png"):
+            shutil.copy2(self.directory / name, evidence / name)
+        (evidence / "joint-summary.json").write_text(
+            json.dumps(
+                {
+                    "models": sorted(r["body"]["model"] for r in self.model_requests),
+                    "personas": sorted(r["actor"] for r in self.model_requests),
+                    "browser": self.trace["browser"],
+                    "provider_calls": self.provider_calls,
+                    "bot_deliveries": self.bot_deliveries,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    async def browser_roles(self, profiles):
+        env = dict(
+            os.environ,
+            TS_ROLE_WEB_URL=self.platform_url,
+            TS_ROLE_WEB_PASSWORD=self.password,
+            TS_ROLE_OUTPUT=str(self.directory),
+            TS_ROLE_PROFILES=json.dumps([p["id"] for p in profiles]),
+            TS_ROLE_PROVIDERS=json.dumps([p["provider_id"] for p in self.providers]),
+        )
+        node = "C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe"
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [node, str(Path(__file__).with_name("role_joint_browser.mjs"))],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.trace["browser"] = json.loads(result.stdout)
+
+    async def exercise_bot_connections(self):
+        actors = [entry["actor"] for entry in self.trace["browser"]["roles"]]
+        session = next(s for s in self.console.sessions.values() if s["authenticated"])
+        old = self.platform.role_runtime.get(actors[0])
+        body = {
+            key: old[key]
+            for key in (
+                "actor_id",
+                "name",
+                "profile_id",
+                "profile_version",
+                "provider_id",
+                "provider_revision",
+                "capabilities",
+            )
+        }
+        body.update(client_id=str(uuid.uuid4()), expected_version=old["version"], enabled=True)
+        repaired = await self.platform.role_runtime.route(
+            self.console, "/api/web/roles/apply", body, session
+        )
+        self.assertEqual(repaired["role"]["state"], "active")
+        self.bot_events = {}
+        self.bot_deliveries = []
+        self.bot_bindings = {}
+        self.bot_actor_for_connection = {}
+        plugin_key = "synthetic-plugin-key-roles-123456789"
+
+        async def plugin(request):
+            self.assertEqual(request.headers.get("Authorization"), "Bearer " + plugin_key)
+            body = await request.json()
+            path = request.path.removeprefix("/tianshu/adapter/v1")
+            if path == "/capabilities":
+                return web.json_response(
+                    {
+                        "protocol": "tianshu.bot-adapter/v1",
+                        "adapter": "nonebot",
+                        "instance_id": "sdk:roles",
+                        "capabilities": ["text"],
+                        "max_outbound_utf8_bytes": 32768,
+                        "accounts": [
+                            {"id": number, "platform": "qq", "label": "Synthetic " + number}
+                            for number in ("42", "43")
+                        ],
+                    }
+                )
+            if path == "/bindings/apply":
+                result = {key: body[key] for key in ("connection_id", "revision", "enabled")}
+                self.bot_bindings[body["connection_id"]] = result
+                return web.json_response(result)
+            if path == "/bindings/status":
+                result = self.bot_bindings.get(body["connection_id"])
+                return web.json_response({"found": result is not None, "binding": result})
+            if path == "/events/poll":
+                return web.json_response({"events": self.bot_events.get(body["connection_id"], [])})
+            if path == "/events/ack":
+                self.bot_events[body["connection_id"]] = []
+                return web.json_response({"acknowledged": body["event_ids"]})
+            if path == "/messages/send":
+                delivery = body["delivery"]
+                self.bot_deliveries.append(
+                    {
+                        "connection_id": body["connection_id"],
+                        "actor_id": self.bot_actor_for_connection[body["connection_id"]],
+                        "text": delivery["text"],
+                    }
+                )
+                return web.json_response(
+                    {
+                        "reply_id": delivery["reply_id"],
+                        "attempt_id": delivery["attempt_id"],
+                        "state": "sent",
+                        "channel_message_ids": ["sdk:" + delivery["reply_id"]],
+                    }
+                )
+            if path == "/messages/status":
+                return web.json_response({"found": False, "receipt": None})
+            return web.json_response({"code": "not_found"}, status=404)
+
+        app = web.Application()
+        app.router.add_post("/tianshu/adapter/v1/{tail:.*}", plugin)
+        address = await self.start_aio(app)
+        adapter = self.platform.bot_adapters
+        session["bot_management"] = self.console.clock() + 1800
+        rows = []
+        for index, actor in enumerate(actors):
+            draft = await adapter.probe(
+                {
+                    "adapter": "nonebot",
+                    "address": address,
+                    "access_key": plugin_key,
+                    "allow_private_http": True,
+                    "ca_pem": self.ca.read_text(encoding="utf-8"),
+                },
+                session,
+            )
+            row = await adapter.create(
+                {
+                    "draft_id": draft["draft_id"],
+                    "name": f"Synthetic bot {index}",
+                    "account_id": str(42 + index),
+                    "conversation": {"kind": "private", "id": "7"},
+                    "allowed_authors": ["7"],
+                    "actor_id": actor,
+                    "client_id": str(uuid.uuid4()),
+                },
+                session,
+            )
+            self.assertEqual(row["state"], "disabled")
+            row = await adapter.change(
+                "enable",
+                {
+                    "id": row["id"],
+                    "expected_revision": row["revision"],
+                    "client_id": str(uuid.uuid4()),
+                },
+            )
+            self.assertEqual(row["state"], "ready")
+            self.bot_actor_for_connection[row["id"]] = actor
+            rows.append(row)
+        for index, row in enumerate(rows):
+            event = {
+                "schema_version": 1,
+                "connection_id": row["id"],
+                "platform_id": "sdk:roles",
+                "self_id": row["account_id"],
+                "event_id": f"sdk:roles:{index}",
+                "revision": 1,
+                "namespace": "qq",
+                "conversation_id": "private:7",
+                "thread_id": None,
+                "account_id": "7",
+                "sent_at": utc(self.platform.origins.clock()),
+                "text": f"synthetic bot parallel {index}",
+            }
+            self.bot_events[row["id"]] = [{"id": f"event:{index}", "event": event}]
+        try:
+            async with asyncio.timeout(30):
+                while len(self.bot_deliveries) < 2:
+                    await adapter.pump_once()
+                    await asyncio.sleep(0.15)
+        except TimeoutError:
+            self.fail(repr({
+                "connections": [(r["state"], r["last_error"]) for r in adapter.catalog.all()],
+                "events": self.bot_events,
+                "deliveries": self.bot_deliveries,
+                "model_requests": len(self.model_requests),
+            }))
+        self.assertEqual(len(self.bot_deliveries), 2)
+        for index, row in enumerate(rows):
+            matching = [item for item in self.bot_deliveries if item["connection_id"] == row["id"]]
+            self.assertEqual(len(matching), 1)
+            self.assertEqual(matching[0]["actor_id"], actors[index])
+            label = "B" if index else "A"
+            self.assertTrue(matching[0]["text"].startswith(f"Role {label} recorded reply"))
+        self.assertEqual(len(self.model_requests), 5)

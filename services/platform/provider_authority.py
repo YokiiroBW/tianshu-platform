@@ -46,6 +46,31 @@ class ProviderAuthority:
         self._identity(header, "config.select", "companion")
         view = self.catalog.view()
         selected = view["default"]
+        role_runtime = getattr(self.platform, "role_runtime", None)
+        role = role_runtime.get(body["actor_id"]) if role_runtime is not None else None
+        if role is not None:
+            require(role_runtime.active(body["actor_id"]), "forbidden", 403)
+            if role["provider_id"] is not None:
+                provider = next(
+                    (
+                        item
+                        for item in view["providers"]
+                        if item["provider_id"] == role["provider_id"]
+                    ),
+                    None,
+                )
+                require(
+                    provider is not None
+                    and provider["revision"] == role["provider_revision"]
+                    and self.catalog._selectable(provider),
+                    "provider_unavailable",
+                    409,
+                )
+                selected = {
+                    "configured": True,
+                    "provider_id": role["provider_id"],
+                    "provider_revision": role["provider_revision"],
+                }
         now = self.clock()
         # Existing static deployments may already have used the new numeric range.
         # Once enabled, Models.publish reserves it, so this read is stable for new grants.

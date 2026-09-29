@@ -14,6 +14,7 @@ from .transport import CoreFault, core_web_call
 class WebDialogue:
     def __init__(self, platform):
         self.p = platform
+        self.input_entries = list(platform.settings.get("web", {}).get("input_entries", []))
         self.path = platform.store.path + ".web-inputs.sqlite"
         platform.contracts.load_web(
             Path(platform.settings["contract_directory"]).parents[1] / "web-conversation/v1"
@@ -29,7 +30,16 @@ class WebDialogue:
         c = self.p.settings.get("web", {})
         return bool(c.get("dialogue_enabled") and self.p.settings.get("core"))
 
-    def model_configured(self):
+    def model_configured(self, actor_id=None):
+        role = self.p.role_runtime.get(actor_id) if actor_id else None
+        if role is not None:
+            if not self.p.role_runtime.active(actor_id):
+                return False
+            try:
+                self.p.role_runtime._provider(role)
+                return True
+            except Fault:
+                return False
         if (
             self.p.provider_catalog is not None
             and self.p.provider_catalog.view()["default"]["configured"]
@@ -57,7 +67,7 @@ class WebDialogue:
     def selection(self, body):
         p = self.p
         c = p.settings["web"]
-        require(body.get("conversation") in c["input_entries"])
+        require(body.get("conversation") in self.input_entries)
         header = "Bearer " + (secret(p.auth.principals[c["principal"]]["token_env"]) or "")
         with p.store.connect(write=True) as db:
             identity, _ = p.auth.authenticate(header, db, "source.register", operator=True)
@@ -179,7 +189,11 @@ class WebDialogue:
         except ValueError:
             raise Fault("invalid_input", 400) from None
         require(self.available(), "core_web_not_connected", 503)
-        require(await self.p.local_work.run(self.model_configured), "model_not_configured", 503)
+        require(
+            await self.p.local_work.run(self.model_configured, body["actor"]),
+            "model_not_configured",
+            503,
+        )
         header, entry, _, _ = await self.p.local_work.run(self.selection, body)
         semantic = digest({"body": body, "account": entry["account"]})
         message_id, prior = await self.p.local_work.run(

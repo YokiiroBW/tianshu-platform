@@ -509,6 +509,22 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 await asyncio.gather(task, return_exceptions=True)
 
         app.cleanup_ctx.append(bot_pump_context)
+    if not public and platform.role_runtime.config is not None:
+
+        async def role_pump_context(app):
+            async def pump():
+                while True:
+                    await platform.role_runtime.resume_pending()
+                    await asyncio.sleep(5)
+
+            task = asyncio.create_task(pump())
+            try:
+                yield
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        app.cleanup_ctx.append(role_pump_context)
     if not public:
         app.router.add_post("/internal/v1/origins/resolve", resolve)
         app.router.add_post("/internal/v1/model-config/snapshot", snapshot)

@@ -85,12 +85,14 @@ class BotAdapters:
 
     def _live(self, row):
         current = self.catalog.get(row["id"])
+        managed = self.p.role_runtime.get(row["actor_id"])
         return (
             current is not None
             and current["revision"] == row["revision"]
             and current["enabled"]
             and not current["pending"]
             and current["state"] in {"ready", "degraded"}
+            and (managed is None or self.p.role_runtime.active(row["actor_id"]))
         )
 
     def _attach(self, row):
@@ -209,7 +211,9 @@ class BotAdapters:
             return {
                 "available": available,
                 "unlocked": available and code == "ready",
-                "actors": self.config["actors"] if available else [],
+                "actors": self.config["actors"] + self.p.role_runtime.active_actors()
+                if available
+                else [],
                 "connections": [
                     self._project(row)
                     for row in self.catalog.all()
@@ -538,7 +542,12 @@ class BotAdapters:
         )
         _qq_id(account_id)
         require(any(a["id"] == account_id for a in value["accounts"]), "invalid_input", 400)
-        require(actor_id in {a["id"] for a in self.config["actors"]}, "forbidden", 403)
+        require(
+            actor_id
+            in {a["id"] for a in self.config["actors"] + self.p.role_runtime.active_actors()},
+            "forbidden",
+            403,
+        )
         conversation = body["conversation"]
         require(
             isinstance(conversation, dict)

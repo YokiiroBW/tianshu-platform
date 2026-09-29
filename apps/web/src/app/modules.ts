@@ -26,7 +26,7 @@ export const modules = [
     icon: MessageCircle,
     group: "个人空间",
     description: "文字对话与角色近况",
-    sections: ["文字对话", "生活与日记", "人格与世界"],
+    sections: ["文字对话", "生活与日记", "人格与世界", "角色管理"],
   },
   {
     id: "room",
@@ -93,6 +93,7 @@ export type ModuleId = Module["id"];
 export const pages = {
   companion: lazy(() => import("../features/companion/CompanionPage")),
   personas: lazy(() => import("../features/companion/PersonaPanel")),
+  roles: lazy(() => import("../features/companion/RoleManager")),
   workbench: lazy(() => import("../features/workbench/WorkbenchPage")),
   room: lazy(() => import("../features/room/RoomPage")),
   settings: lazy(() => import("../features/settings/SettingsPage")),

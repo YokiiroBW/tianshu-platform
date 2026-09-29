@@ -74,6 +74,8 @@ class WebConsole:
         self.config = platform.settings.get("web")
         if self.config is not None and self.access.current is not None:
             self.config = {**self.config, "origin": self.access.current["origin"]}
+        if self.config is not None:
+            self.input_entries = list(self.config["input_entries"])
         self.sessions = {}
         self.failures = []
         self.login_lock = asyncio.Lock()
@@ -160,6 +162,8 @@ class WebConsole:
         )
         self.dialogue = WebDialogue(platform)
         self.sender = WebSender(platform)
+        self.dialogue.input_entries = self.input_entries
+        self.sender.input_entries = self.input_entries
         self.models = WebModels(platform, self)
         self.providers = ProviderManagement(platform, self)
         self.external = WebExternal(platform, self)
@@ -187,6 +191,9 @@ class WebConsole:
         self.knowledge = WebReader("knowledge", platform, self)
         self.life = WebReader("life", platform, self)
         self.memory = WebMemory(platform, self)
+        self.role_runtime = platform.role_runtime
+        if self.role_runtime.config is not None:
+            self.role_runtime.console = self
 
     def verify_password(self, password):
         """One fixed-cost verifier for the login form and the management unlock step."""
@@ -230,12 +237,12 @@ class WebConsole:
                 {
                     "policy": p.auth.policy_digest,
                     "effective": p.auth.effective_digest(),
-                    "web": self.config,
+                    "web": {**p.settings["web"], "origin": self.config["origin"]},
                     "credential": self.credential(),
                 }
             )
             conversations = []
-            for entry_id in self.config["input_entries"]:
+            for entry_id in self.input_entries:
                 try:
                     entry = p.sources._entry(db, entry_id)
                     actors = []
@@ -487,6 +494,13 @@ class WebConsole:
                     dialogue={
                         "available": self.dialogue.available(),
                         "code": "ready" if self.dialogue.available() else "core_web_not_connected",
+                        "actor_models": {
+                            actor: await self.platform.local_work.run(
+                                self.dialogue.model_configured, actor
+                            )
+                            for conversation in conversations
+                            for actor in conversation["actors"]
+                        },
                         "model": "not_configured"
                         if not await self.platform.local_work.run(self.dialogue.model_configured)
                         else "unverified",
@@ -647,6 +661,14 @@ class WebConsole:
             return web.json_response(result)
         if request.path.startswith(BOTS_PREFIX):
             result = await self.platform.bots.web_route(self, request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
+        if request.path.startswith("/api/web/roles/"):
+            result = await self.role_runtime.route(self, request.path, body, session)
             require(
                 await self.platform.local_work.run(self.session_valid, session),
                 "session_expired",

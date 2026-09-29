@@ -4,7 +4,12 @@ export type Session = {
   csrf: string;
   username?: string;
   conversations?: { id: string; label: string; actors: string[] }[];
-  dialogue?: { available: boolean; code: string; model: string };
+  dialogue?: {
+    available: boolean;
+    code: string;
+    model: string;
+    actor_models?: Record<string, boolean>;
+  };
 };
 
 const errors: Record<string, string> = {

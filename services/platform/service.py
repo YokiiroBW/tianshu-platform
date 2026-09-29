@@ -117,6 +117,7 @@ SETTINGS_KEYS = frozenset(
         "diagnostics",
         "bot_connections",
         "bot_adapter_self_service",
+        "role_runtime",
     }
 )
 
@@ -214,6 +215,21 @@ def validate_settings(settings):
     validate_memory_binding(settings, auth)
     validate_external_configuration(settings.get("web_external"), settings)
     validate_bot_adapter_configuration(settings.get("bot_adapter_self_service"), settings)
+    role_runtime = settings.get("role_runtime")
+    if role_runtime is not None:
+        from .transport import core_settings
+
+        require(
+            isinstance(role_runtime, dict)
+            and set(role_runtime) == {"enabled", "memory"}
+            and type(role_runtime["enabled"]) is bool
+            and settings.get("core") is not None
+            and settings.get("web") is not None
+            and settings.get("provider_self_service") is not None,
+            "invalid_input",
+            400,
+        )
+        core_settings(role_runtime["memory"])
     connections = persona_connections(
         settings.get("persona_connections"), contracts.check, credentials
     )
@@ -278,6 +294,9 @@ class Platform:
             else None
         )
         self.auth.activate(self.store, clock)
+        from .role_runtime import RoleRuntime
+
+        self.role_runtime = RoleRuntime(self)
         from .bot_adapters import BotAdapters
 
         self.bot_adapters = BotAdapters(self)

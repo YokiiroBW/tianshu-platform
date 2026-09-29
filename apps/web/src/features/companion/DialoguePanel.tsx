@@ -121,6 +121,10 @@ export function DialoguePanel({
   const available = Boolean(
     session.dialogue?.available && conversation && actor,
   );
+  const modelUnavailable =
+    session.dialogue?.actor_models?.[actor] === false ||
+    (session.dialogue?.actor_models?.[actor] === undefined &&
+      session.dialogue?.model === "not_configured");
 
   useEffect(() => {
     alive.current = true;
@@ -251,9 +255,7 @@ export function DialoguePanel({
           <h3>对话通道尚未接通</h3>
           <p>登录服务已连接；消息历史与回复通道仍待接入。</p>
           <p>
-            {session.dialogue?.model === "not_configured"
-              ? "模型尚未配置。"
-              : "模型运行状态尚未核验。"}
+            {modelUnavailable ? "模型尚未配置。" : "模型运行状态尚未核验。"}
             这里不会生成演示回复。
           </p>
         </div>
@@ -383,7 +385,7 @@ export function DialoguePanel({
           )}
         </>
       )}
-      {session.dialogue?.model === "not_configured" && (
+      {modelUnavailable && (
         <a className="button primary" href="#/settings/2">
           前往配置模型供应商
         </a>
@@ -410,7 +412,7 @@ export function DialoguePanel({
           <p id="chat-send-help" className="muted">
             {!available
               ? "发送暂不可用。接入后"
-              : session.dialogue?.model === "not_configured"
+              : modelUnavailable
                 ? "模型尚未配置，发送不可用。"
                 : ""}
             由后台合并 5 秒内的续句；入站回执不代表已回复。
@@ -419,10 +421,7 @@ export function DialoguePanel({
             className="button primary"
             type="submit"
             disabled={
-              !available ||
-              sending ||
-              !draft.trim() ||
-              session.dialogue?.model === "not_configured"
+              !available || sending || !draft.trim() || modelUnavailable
             }
           >
             {sending ? "正在提交…" : "发送"}

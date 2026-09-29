@@ -10,6 +10,7 @@ from .contracts import Fault, canonical, digest, epoch, loads, require, utc
 class WebSender:
     def __init__(self, platform):
         self.platform = platform
+        self.input_entries = list(platform.settings.get("web", {}).get("input_entries", []))
         # Dedicated additive sidecar: no migration of the authority store.
         self.path = platform.store.path + ".web-replies.sqlite"
         with closing(sqlite3.connect(self.path, timeout=5)) as db:
@@ -58,7 +59,7 @@ class WebSender:
             c = p.settings.get("web")
             require(c is not None and entry["owner"] == c["principal"])
             allowed = False
-            for entry_id in c["input_entries"]:
+            for entry_id in self.input_entries:
                 if entry_id not in p.sources.entries:
                     continue
                 try:
