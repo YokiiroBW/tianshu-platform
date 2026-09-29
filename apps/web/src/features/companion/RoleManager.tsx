@@ -164,6 +164,9 @@ export default function RoleManager() {
     const provider = providers.find(
       (item) => `${item.id}@${item.revision}` === form.provider_key,
     );
+    const pinnedVersion = role && profile && role.profile_id === profile.id
+      && role.profile_revision === profile.revision
+      ? role.profile_version : profile?.version;
     if ((!legacy && role?.profile_id !== null && !profile?.revision) ||
         (form.profile_id && !profile?.revision) ||
         (form.provider_key && !provider)) {
@@ -183,7 +186,7 @@ export default function RoleManager() {
           expected_version: role?.version ?? 0,
           name: form.name.trim(),
           profile_id: profile?.id ?? null,
-          profile_version: profile?.version ?? null,
+          profile_version: pinnedVersion ?? null,
           provider_id: provider?.id ?? null,
           provider_revision: provider?.revision ?? null,
           enabled,
@@ -224,13 +227,44 @@ export default function RoleManager() {
         session.csrf,
       );
       await refresh();
+      setPendingId(result.role.state === "pending" ? result.role.client_id : null);
+      setForm(formFor(result.role));
       setNotice(
         result.role.state === "pending"
-          ? "仍在配置中，请稍后重试。"
-          : "配置已生效。",
+          ? result.role.stage.startsWith("cancel_")
+            ? "仍在停用中，请稍后继续。"
+            : "仍在配置中，请稍后重试。"
+          : result.role.state === "disabled"
+            ? "角色已停用，历史记录保留。"
+            : "配置已生效。",
       );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "重试失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelPending() {
+    if (!session?.authenticated || !role) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await request<{ role: Role }>(
+        "roles/cancel",
+        new AbortController().signal,
+        { actor_id: role.actor_id, expected_version: role.version, client_id: requestId() },
+        session.csrf,
+      );
+      await refresh();
+      setPendingId(null);
+      setForm(formFor(result.role));
+      setNotice(result.role.state === "disabled"
+        ? "角色已停用，历史记录保留。"
+        : "正在停用角色；完成授权核对前不会显示为已停用。");
+    } catch (cause) {
+      await refresh();
+      setError(cause instanceof Error ? cause.message : "停用尚未完成，请刷新后继续。");
     } finally {
       setBusy(false);
     }
@@ -326,15 +360,24 @@ export default function RoleManager() {
                 {role?.state === "pending" && (
                   <div className="role-pending">
                     <p>
-                      此设置尚未生效。{failure(role.error_code)}
+                      {role.stage.startsWith("cancel_")
+                        ? `正在停用角色。${failure(role.error_code)}`
+                        : `此设置尚未生效。${failure(role.error_code)}`}
                     </p>
                     <button
                       className="button"
                       disabled={busy}
                       onClick={() => void retry()}
                     >
-                      继续配置
+                      {role.stage.startsWith("cancel_") ? "继续停用" : "继续配置"}
                     </button>
+                    {!role.stage.startsWith("cancel_") && <button
+                      className="button"
+                      disabled={busy}
+                      onClick={() => void cancelPending()}
+                    >
+                      取消配置并停用
+                    </button>}
                   </div>
                 )}
                 {role?.state === "failed" && (

@@ -12,7 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from aiohttp import web
-from services.platform.contracts import utc
+from services.platform.contracts import Fault, utc
 from services.platform.provider_catalog import ProviderCatalog
 from services.platform.server import create_app
 from services.platform.web_console import WebConsole
@@ -267,7 +267,128 @@ class RoleJoint(WebJoint):
             encoding="utf-8",
         )
 
-    async def browser_roles(self, profiles):
+    async def test_lost_memory_receipt_and_profile_edit_reuse_approved_snapshot(self):
+        profile = self.core.personas.manage({
+            "operation": "create_profile", "request_id": str(uuid.uuid4()),
+            "operator": "joint-test", "reason": "synthetic", "name": "Pinned source",
+            "description": "", "content": {"persona": "First approved persona", "tone": "calm"},
+        })["item"]
+        client = str(uuid.uuid4())
+        manager = self.platform.role_runtime
+        body = {
+            "client_id": client, "actor_id": None, "expected_version": 0,
+            "name": "Pinned role", "profile_id": profile["id"],
+            "profile_version": profile["version"],
+            "provider_id": self.providers[0]["provider_id"], "provider_revision": 1,
+            "enabled": True, "capabilities": ["dialogue", "memory.read"],
+        }
+        row = manager._begin(body)
+        original_remote = manager._remote
+        lost = False
+
+        async def lose_after_memory_apply(settings, path, payload):
+            nonlocal lost
+            answer = await original_remote(settings, path, payload)
+            if payload.get("request_id") == client + ":memory" and not lost:
+                lost = True
+                raise Fault("dependency_unavailable", 503)
+            return answer
+
+        manager._remote = lose_after_memory_apply
+        try:
+            with self.assertRaises(Fault):
+                await manager._resume(row)
+            self.assertEqual(row["stage"], "core_paused")
+            actor = row["actor_id"]
+            paused = self.core.role_runtime.get(actor)
+            self.assertFalse(paused["enabled"])
+            self.assertEqual(paused["application_id"], client)
+            self.assertEqual(paused["profile_version"], profile["version"])
+            approvals = self.core.store.list("persona_approvals", actor)
+            publications = self.core.store.list("persona_publications", actor)
+            self.assertEqual(len(approvals), 1)
+            self.assertEqual(approvals[0]["operator"], self.console.config["principal"])
+            self.assertEqual(len(publications), 1)
+            self.assertEqual(publications[0]["operator"], self.console.config["principal"])
+            self.assertEqual(publications[0]["kind"], "publish")
+            linked = self.core.personas._profile(profile["id"])
+            self.assertEqual(linked["last_applied_target"], actor)
+            self.core.personas.manage({
+                "operation": "save_profile", "request_id": str(uuid.uuid4()),
+                "operator": "joint-test", "reason": "synthetic edit",
+                "subject": profile["id"], "expected": linked["version"],
+                "name": "Pinned source", "description": "",
+                "content": {"persona": "Second persona", "tone": "warm"},
+            })
+        finally:
+            manager._remote = original_remote
+        active = await manager._resume(row)
+        self.assertEqual(active["state"], "active")
+        self.assertEqual(active["profile_revision"], paused["profile_revision"])
+        self.assertEqual(self.core.role_runtime.pin(actor)["persona"], "First approved persona")
+        self.assertEqual(len(self.core.store.list("persona_approvals", actor)), 1)
+        self.assertEqual(len(self.core.store.list("persona_publications", actor)), 1)
+        memory_status = await original_remote(
+            manager.config["memory"], "/internal/v1/role-runtime/authorize",
+            {"operation": "status", "actor_id": actor},
+        )
+        self.assertEqual((memory_status["version"], memory_status["enabled"]), (1, True))
+        def revoked_provider(_):
+            raise AssertionError("Disabling an active role must not inspect its provider")
+
+        manager._provider = revoked_provider
+        disable = {**body, "client_id": str(uuid.uuid4()), "actor_id": actor,
+                   "expected_version": 1, "enabled": False,
+                   "profile_version": linked["version"] + 1,
+                   "provider_revision": 999}
+        disabled = await manager._resume(manager._begin(disable))
+        self.assertEqual(disabled["state"], "disabled")
+        self.assertEqual(disabled["profile_version"], profile["version"])
+        self.assertNotIn(actor, self.core.roles)
+        denied_memory = await original_remote(
+            manager.config["memory"], "/internal/v1/role-runtime/authorize",
+            {"operation": "status", "actor_id": actor},
+        )
+        self.assertFalse(denied_memory["enabled"])
+        self.assertEqual(manager._begin(body)["state"], "disabled")
+        stale_enable = {
+            "operation": "apply", "request_id": client + ":enable",
+            "application_id": client, "operator": self.console.config["principal"],
+            "actor_id": actor, "expected_version": 1,
+            "name": body["name"], "profile_id": body["profile_id"],
+            "profile_version": body["profile_version"], "enabled": True,
+            "capabilities": body["capabilities"],
+        }
+        self.assertTrue(self.core.manage_role("platform", stale_enable)["enabled"])
+        self.assertNotIn(actor, self.core.roles)
+
+    async def test_browser_failed_retry_then_edit_uses_new_intent(self):
+        profile = self.core.personas.manage({
+            "operation": "create_profile", "request_id": str(uuid.uuid4()),
+            "operator": "joint-test", "reason": "synthetic", "name": "Retry source",
+            "description": "", "content": {"persona": "Retry persona"},
+        })["item"]
+        manager = self.platform.role_runtime
+        original_remote = manager._remote
+        lost = False
+
+        async def lose_first_memory_receipt(settings, path, payload):
+            nonlocal lost
+            answer = await original_remote(settings, path, payload)
+            if path.endswith("/role-runtime/authorize") and payload.get("request_id", "").endswith(":memory") and not lost:
+                lost = True
+                raise Fault("dependency_unavailable", 503)
+            return answer
+
+        manager._remote = lose_first_memory_receipt
+        try:
+            await self.browser_roles([profile], "role_retry_browser.mjs")
+        finally:
+            manager._remote = original_remote
+        self.assertTrue(lost)
+        self.assertEqual(self.trace["browser"]["flow"], "pending-retry-edit")
+
+    async def browser_roles(self, profiles, script="role_joint_browser.mjs"):
         env = dict(
             os.environ,
             TS_ROLE_WEB_URL=self.platform_url,
@@ -279,7 +400,7 @@ class RoleJoint(WebJoint):
         node = "C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe"
         result = await asyncio.to_thread(
             subprocess.run,
-            [node, str(Path(__file__).with_name("role_joint_browser.mjs"))],
+            [node, str(Path(__file__).with_name(script))],
             cwd=Path(__file__).resolve().parents[2],
             env=env,
             capture_output=True,

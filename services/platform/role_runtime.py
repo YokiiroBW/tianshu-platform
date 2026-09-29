@@ -207,11 +207,15 @@ class RoleRuntime:
         core = self.p.settings["core"]
         memory = self.config["memory"]
         actor = row["actor_id"]
+        if row["stage"].startswith("cancel_"):
+            return await self._resume_cancel(row, core, memory)
 
         def core_body(stage, enabled, expected):
             return {
                 "operation": "apply",
                 "request_id": row["client_id"] + ":" + stage,
+                "application_id": row["client_id"],
+                "operator": row["operator"],
                 "actor_id": actor,
                 "expected_version": expected,
                 "name": row["name"],
@@ -290,6 +294,87 @@ class RoleRuntime:
             row["state"] = "active" if row["enabled"] else "disabled"
             self._put(row)
             self._install_web(row)
+        return row
+
+    async def _resume_cancel(self, row, core, memory):
+        """Fence old in-flight writes by advancing both owners' exact versions."""
+        actor = row["actor_id"]
+        if row["stage"] == "cancel_reconcile":
+            catalog = await self._remote(
+                core, "/internal/v1/role-runtime/manage", {"operation": "list"}
+            )
+            current = next(
+                (item for item in catalog.get("roles", []) if item.get("actor_id") == actor), None
+            )
+            if current is None:
+                # Only the first pause may still have no Core fact. Its late write is
+                # disabled; no old Memory/enable stage could have been dispatched.
+                require(row["cancel_source_stage"] == "start", "dependency_unavailable", 503)
+                row["stage"] = "cancel_memory_prepare"
+            else:
+                row["cancel_core_body"] = {
+                    "operation": "apply",
+                    "request_id": f'{row["client_id"]}:cancel-core:{row["cancel_epoch"]}',
+                    "application_id": row["client_id"],
+                    "operator": row["operator"],
+                    "actor_id": actor,
+                    "expected_version": current["version"],
+                    "name": current["name"],
+                    "profile_id": current["profile_id"],
+                    "profile_version": current.get("profile_version", row["profile_version"]),
+                    "enabled": False,
+                    "capabilities": current["capabilities"],
+                }
+                row["stage"] = "cancel_core"
+            self._put(row)
+        if row["stage"] == "cancel_core":
+            try:
+                answer = await self._remote(
+                    core, "/internal/v1/role-runtime/manage", row["cancel_core_body"]
+                )
+            except Fault as error:
+                if error.code == "version_conflict":
+                    row["cancel_epoch"] += 1
+                    row["stage"] = "cancel_reconcile"
+                    self._put(row)
+                    raise Fault("dependency_unavailable", 503) from None
+                raise
+            row["companion_version"] = answer["version"]
+            row["profile_revision"] = answer["profile_revision"]
+            row["stage"] = "cancel_memory_prepare"
+            self._put(row)
+        if row["stage"] == "cancel_memory_prepare":
+            status = await self._remote(
+                memory, "/internal/v1/role-runtime/authorize",
+                {"operation": "status", "actor_id": actor},
+            )
+            row["cancel_memory_body"] = {
+                "request_id": f'{row["client_id"]}:cancel-memory:{row["cancel_epoch"]}',
+                "actor_id": actor,
+                "expected_version": status["version"],
+                "enabled": False,
+                "legacy": row["legacy"],
+            }
+            row["stage"] = "cancel_memory"
+            self._put(row)
+        if row["stage"] == "cancel_memory":
+            try:
+                answer = await self._remote(
+                    memory, "/internal/v1/role-runtime/authorize", row["cancel_memory_body"]
+                )
+            except Fault as error:
+                if error.code == "version_conflict":
+                    row["cancel_epoch"] += 1
+                    row["stage"] = "cancel_memory_prepare"
+                    self._put(row)
+                    raise Fault("dependency_unavailable", 503) from None
+                raise
+            row["memory_version"] = answer["version"]
+            row["stage"] = "complete"
+            self._put(row)
+        if row["stage"] == "complete":
+            row["state"] = "disabled"
+            self._put(row)
         return row
 
     async def resume_pending(self):
@@ -410,6 +495,7 @@ class RoleRuntime:
             )
             row = {
                 **body,
+                "operator": self.console.config["principal"],
                 "actor_id": actor,
                 "version": body["expected_version"] + 1,
                 "state": "pending",
@@ -420,6 +506,21 @@ class RoleRuntime:
                 "memory_version": old["memory_version"] if old else 0,
                 "legacy": old["legacy"] if old else body["actor_id"] is not None,
             }
+            if old is not None and old["state"] == "active" and not body["enabled"]:
+                # Stop the current installed snapshot. The form may carry stale
+                # provider/profile fields, but disable must never reapply them.
+                row = {
+                    **old,
+                    "client_id": client,
+                    "operator": self.console.config["principal"],
+                    "version": old["version"] + 1,
+                    "enabled": False,
+                    "state": "pending",
+                    "stage": "cancel_reconcile",
+                    "error_code": None,
+                    "cancel_source_stage": "active",
+                    "cancel_epoch": 0,
+                }
             db.execute("INSERT INTO intents VALUES (?,?,?)", (client, signature, actor))
             db.execute(
                 "INSERT INTO roles VALUES (?,?) ON CONFLICT(actor_id) DO UPDATE SET body=excluded.body",
@@ -429,10 +530,56 @@ class RoleRuntime:
         self._remove_web(actor)
         return row
 
+    def _begin_cancel(self, body):
+        require(
+            isinstance(body, dict)
+            and set(body) == {"client_id", "actor_id", "expected_version"}
+            and isinstance(body["actor_id"], str)
+            and type(body["expected_version"]) is int,
+            "invalid_input", 400,
+        )
+        try:
+            client = str(uuid.UUID(body["client_id"]))
+            require(client == body["client_id"], "invalid_input", 400)
+        except (TypeError, ValueError):
+            raise Fault("invalid_input", 400) from None
+        signature = digest(body)
+        with closing(self._db()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            prior = db.execute(
+                "SELECT signature,actor_id FROM intents WHERE client_id=?", (client,)
+            ).fetchone()
+            if prior:
+                require(prior[0] == signature, "idempotency_conflict", 409)
+                saved = db.execute("SELECT body FROM roles WHERE actor_id=?", (prior[1],)).fetchone()
+                return json.loads(saved[0])
+            saved = db.execute("SELECT body FROM roles WHERE actor_id=?", (body["actor_id"],)).fetchone()
+            require(saved is not None, "not_found", 404)
+            old = json.loads(saved[0])
+            require(old["version"] == body["expected_version"], "version_conflict", 409)
+            require(old["state"] == "pending", "role_configuring", 409)
+            row = {
+                **old,
+                "client_id": client,
+                "operator": self.console.config["principal"],
+                "version": old["version"] + 1,
+                "enabled": False,
+                "state": "pending",
+                "stage": "cancel_reconcile",
+                "error_code": None,
+                "cancel_source_stage": old["stage"],
+                "cancel_epoch": 0,
+            }
+            db.execute("INSERT INTO intents VALUES (?,?,?)", (client, signature, body["actor_id"]))
+            db.execute("UPDATE roles SET body=? WHERE actor_id=?", (canonical(row), body["actor_id"]))
+            db.commit()
+        self._remove_web(body["actor_id"])
+        return row
+
     async def route(self, console, path, body, session):
         self._gate(console, session)
         name = path[len(PREFIX) :] if path.startswith(PREFIX) else ""
-        require(name in {"view", "apply", "retry"}, "not_found", 404)
+        require(name in {"view", "apply", "retry", "cancel"}, "not_found", 404)
         if name == "view":
             require(body == {}, "invalid_input", 400)
             companion = await self._remote(
@@ -485,6 +632,8 @@ class RoleRuntime:
                         "forbidden", 403,
                     )
                 row = await self.p.local_work.run(self._begin, body)
+            elif name == "cancel":
+                row = await self.p.local_work.run(self._begin_cancel, body)
             else:
                 require(isinstance(body, dict) and set(body) == {"actor_id", "client_id"},
                         "invalid_input", 400)

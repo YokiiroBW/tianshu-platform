@@ -12,6 +12,7 @@
 - 按 actor 固定提供商修订版，显式提供商不可用时失败关闭；无显式选择才继承当前全局默认。已有网页 origin/source 正式登记链继续生效，新增角色只在 active 后进入网页入口。原有静态角色可由操作者明确接管：保留 actor ID、原人格与原静态网页/BOT 连接，单独选择模型；不自动接管生产角色。
 - 陪伴页面新增角色管理：列表、搜索、新建、编辑、停用、人格版本、模型、记忆读写开关；仅显示真正接通的能力。失败原因用可读文案，原始 ID/修订哈希收在诊断信息。BOT 连接和观察选角仅接受 active 角色；创建角色不自动发言或改观察策略。
 - 候选跨产品合同：`docs/contracts-candidates/role-runtime/v1/`。未发布到根 `contracts/`。
+- 返修：Core pause/enable 共享不可变 `application_id`、操作主体和配置签名；新增 pending 取消/停用入口，active 角色停用也走相同的精确 owner 版本 CAS 拒绝链。停用不依赖失效的 provider 或已升版档案，不重新应用 Persona，Core 与 Memory 均确认后才显示 disabled，旧应用回放不能重新启用。网页可见“取消配置并停用”与“继续停用”，已绑定但内容未变的档案沿用固定版本；retry 完成后清理旧请求 ID，继续编辑产生新意图。
 
 ## 实际验证
 
@@ -19,6 +20,23 @@
 - 受影响 Platform 回归：基础范围 77 通过、1 跳过、3 个子测试通过（Web console/dialogue/sender、provider、BOT、观察、角色）；追加配置门控及失败场景后，角色/Web dialogue/观察定向回归 18 通过；Ruff 通过；`pnpm exec tsc --noEmit` 和 Vite build 通过。
 - `tests/backend/test_role_joint.py::RoleJoint::test_real_role_apply_and_model_routing`：1 通过。隔离 HTTPS Platform/Companion/Memory/Gateway、Chromium 桌面与手机、新建/编辑/停用/接管、录制模型上游请求、两条合成 NoneBot 连接及对应回复。模型请求共 5 次：新 A、B、原有 actor:a 和 A/B BOT；不同模型、人格均按 actor 录制。伪造网页 actor/conversation 返回 403；新角色和接管的原有角色停用后消息均拒绝；Core/Memory 同时为 disabled。证据：`.runtime/role-joint/results/joint-summary.json`、`roles-desktop.png`、`roles-mobile.png`、`roles-existing.png`（运行目录，不入库）。测试 Gateway 仅在隔离进程对回环地址放行录制模型；产品 Gateway 未修改。
 - 12 项失败场景与未覆盖点：`docs/handoffs/ROLE-RUNTIME-FAILURE-MATRIX.md`。该矩阵中的“部分/缺口”必须保留，不能宣称全量通过。
+- 返修定向：Platform 角色及 Web/Provider 43 通过；Companion 受影响 Core/model/Persona/Role 41 通过；真实 HTTPS 三项联合 3 通过。新增 lost Memory 回执后源档案编辑的真实 owner 回归、active 停用双 owner 确认、取消 Core/Memory 停用写入都成功但回执先后丢失及两次重启的测试；Chromium 覆盖失败→retry 成功→继续编辑。TypeScript、Vite build 与受影响 Python Ruff 均通过。
+- 固定合成截图：`docs/handoffs/evidence/role-runtime/roles-desktop.png`、`roles-mobile.png`、`roles-existing.png`；隔离模型回执仍在 `.runtime/role-joint/results/joint-summary.json`，不含生产数据。
+
+### 联合测试复现（隔离数据）
+
+从本 Platform 检出目录运行；`uv` 使用 Python 3.12，浏览器脚本 `tests/backend/role_joint_browser.mjs` 与 `role_retry_browser.mjs` 由测试调用，使用安装在本检出 `node_modules` 中的 Playwright 和 Chromium。Node 可执行文件为 `C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe`。测试服务读取本检出的 `apps/web/dist`，所以先构建当前 UI。测试固定到合成回环录制端点，不产生真实模型/QQ流量。
+
+```powershell
+& 'C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/pnpm.cmd' exec vite build --config apps/web/vite.config.ts
+$env:TS050_RUNTIME='C:/YOKI/Codex/role-runtime-worktrees/platform/.runtime/role-joint'
+$env:TS050_CONTRACTS='C:/YOKI/Codex/tianshu-peiban-bot/contracts/text-dialogue/v1'
+$env:TS_ROLE_GATEWAY_ROOT='C:/YOKI/Codex/tianshu-peiban-bot/projects/tianshu-model-gateway'
+$env:PYTHONPATH='C:/YOKI/Codex/role-runtime-worktrees/platform;C:/YOKI/Codex/role-runtime-worktrees/platform/tests/backend;C:/YOKI/Codex/role-runtime-worktrees/companion/src;C:/YOKI/Codex/role-runtime-worktrees/memory/src;C:/YOKI/Codex/tianshu-peiban-bot/projects/tianshu-model-gateway/src;C:/YOKI/Codex/tianshu-peiban-bot/tests/integration'
+uv run --python 3.12 --with pytest --with httpx --with uvicorn --with fastapi python -m pytest tests/backend/test_role_joint.py -q --tb=short --show-capture=no
+$env:TS012_CONTRACT_DIR='C:/YOKI/Codex/tianshu-peiban-bot/contracts/text-dialogue/v1'
+uv run --python 3.12 --with pytest python -m pytest tests/backend/test_role_runtime.py -q --tb=short
+```
 
 ## 部署与回滚准备
 

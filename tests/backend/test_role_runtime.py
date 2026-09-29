@@ -76,6 +76,12 @@ class Peers:
                 "actor_id": actor,
                 "version": payload["expected_version"] + 1,
                 "enabled": payload["enabled"],
+                "name": payload["name"],
+                "profile_id": payload["profile_id"],
+                "profile_version": payload["profile_version"],
+                "application_id": payload["application_id"],
+                "operator": payload["operator"],
+                "capabilities": payload["capabilities"],
                 "profile_revision": "revision-household" if payload["profile_id"] is None else "revision-profile-a",
             }
             self.roles[actor] = result
@@ -325,5 +331,147 @@ def test_enabling_role_does_not_promote_observe_only_account(tmp_path):
                             "group")["reply_permitted"]
         with closing(observation._db()) as db:
             assert db.execute("SELECT COUNT(*) FROM reply_connections").fetchone()[0] == 0
+
+    asyncio.run(scenario())
+
+
+def test_cancel_pending_after_provider_revocation_reboots_and_fences_old_intent(tmp_path):
+    async def scenario():
+        platform, manager, console, peers = fixture(tmp_path)
+        original_remote = peers.call
+        lost = False
+
+        async def lose_memory_receipt(settings, path, payload):
+            nonlocal lost
+            result = await original_remote(settings, path, payload)
+            if path.endswith("/role-runtime/authorize") and payload.get("request_id", "").endswith(":memory") and not lost:
+                lost = True
+                raise Fault("dependency_unavailable", 503)
+            return result
+
+        manager._remote = lose_memory_receipt
+        original = body("provider-a")
+        pending = (await manager.route(console, "/api/web/roles/apply", original, {}))["role"]
+        assert pending["state"] == "pending" and pending["stage"] == "core_paused"
+        assert peers.grants[pending["actor_id"]]["enabled"]
+        manager._remote = original_remote
+        original_provider = manager._provider
+
+        def revoked(_):
+            raise Fault("provider_unavailable", 409)
+
+        manager._provider = revoked
+        still_pending = (await manager.route(console, "/api/web/roles/retry", {
+            "actor_id": pending["actor_id"], "client_id": original["client_id"],
+        }, {}))["role"]
+        assert still_pending["stage"] == "memory_applied"
+        assert still_pending["error_code"] == "provider_unavailable"
+        cancel = {"actor_id": pending["actor_id"], "expected_version": 1,
+                  "client_id": str(uuid.uuid4())}
+        lost_cancel_core = False
+        lost_cancel_memory = False
+
+        async def lose_cancel_receipts(settings, path, payload):
+            nonlocal lost_cancel_core, lost_cancel_memory
+            result = await original_remote(settings, path, payload)
+            request_id = payload.get("request_id", "")
+            if ":cancel-core:" in request_id and not lost_cancel_core:
+                lost_cancel_core = True
+                raise Fault("dependency_unavailable", 503)
+            if ":cancel-memory:" in request_id and not lost_cancel_memory:
+                lost_cancel_memory = True
+                raise Fault("dependency_unavailable", 503)
+            return result
+
+        manager._remote = lose_cancel_receipts
+        cancelling = (await manager.route(console, "/api/web/roles/cancel", cancel, {}))["role"]
+        assert cancelling["state"] == "pending"
+        assert cancelling["stage"] == "cancel_core"
+        assert not peers.roles[pending["actor_id"]]["enabled"]
+        restarted = RoleRuntime(platform)
+        restarted.console = SimpleNamespace(
+            config={"principal": "admin"}, input_entries=["web-input"],
+            session_valid=lambda session: True,
+        )
+        restarted._remote = lose_cancel_receipts
+        restarted._provider = revoked
+        await restarted.resume_pending()
+        assert restarted.get(pending["actor_id"])["stage"] == "cancel_memory"
+        assert not peers.grants[pending["actor_id"]]["enabled"]
+        restarted = RoleRuntime(platform)
+        restarted.console = SimpleNamespace(
+            config={"principal": "admin"}, input_entries=["web-input"],
+            session_valid=lambda session: True,
+        )
+        restarted._remote = original_remote
+        restarted._provider = revoked
+        await restarted.resume_pending()
+        disabled = restarted.get(pending["actor_id"])
+        assert disabled["state"] == "disabled"
+        assert not peers.grants[pending["actor_id"]]["enabled"]
+        assert not restarted.active(pending["actor_id"])
+        assert (await restarted.route(restarted.console, "/api/web/roles/apply", original,
+                                     {}))["role"]["state"] == "disabled"
+        try:
+            await restarted.route(restarted.console, "/api/web/roles/retry", {
+                "actor_id": pending["actor_id"], "client_id": original["client_id"],
+            }, {})
+        except Fault as error:
+            assert error.code == "forbidden"
+        else:
+            raise AssertionError("Old retry must not bypass cancel")
+        restarted._provider = original_provider
+        corrected = body("provider-b", actor=pending["actor_id"], version=2)
+        active = (await restarted.route(restarted.console, "/api/web/roles/apply",
+                                        corrected, {}))["role"]
+        assert active["state"] == "active" and active["provider_id"] == "provider-b"
+
+    asyncio.run(scenario())
+
+
+def test_active_disable_waits_for_both_denials_without_provider_or_profile(tmp_path):
+    async def scenario():
+        platform, manager, console, peers = fixture(tmp_path)
+        original = body("provider-a")
+        active = (await manager.route(console, "/api/web/roles/apply", original, {}))["role"]
+        actor = active["actor_id"]
+
+        def revoked(_):
+            raise AssertionError("A disabled role must not inspect its provider")
+
+        manager._provider = revoked
+        original_remote = peers.call
+        grant_unavailable = True
+
+        async def fail_memory_deny(settings, path, payload):
+            if (grant_unavailable and path.endswith("/role-runtime/authorize")
+                    and ":cancel-memory:" in payload.get("request_id", "")):
+                raise Fault("dependency_unavailable", 503)
+            return await original_remote(settings, path, payload)
+
+        manager._remote = fail_memory_deny
+        disable = {**original, "client_id": str(uuid.uuid4()), "actor_id": actor,
+                   "expected_version": 1, "enabled": False,
+                   "profile_version": 999, "provider_revision": 999}
+        pending = (await manager.route(console, "/api/web/roles/apply", disable, {}))["role"]
+        assert pending["state"] == "pending"
+        assert pending["stage"] == "cancel_memory"
+        assert pending["profile_version"] == original["profile_version"]
+        assert not manager.active(actor)
+        assert not peers.roles[actor]["enabled"]
+        assert peers.grants[actor]["enabled"]
+        grant_unavailable = False
+        restarted = RoleRuntime(platform)
+        restarted.console = SimpleNamespace(
+            config={"principal": "admin"}, input_entries=["web-input"],
+            session_valid=lambda session: True,
+        )
+        restarted._remote = original_remote
+        restarted._provider = revoked
+        await restarted.resume_pending()
+        assert restarted.get(actor)["state"] == "disabled"
+        assert not peers.grants[actor]["enabled"]
+        assert (await restarted.route(restarted.console, "/api/web/roles/apply", original,
+                                     {}))["role"]["state"] == "disabled"
 
     asyncio.run(scenario())

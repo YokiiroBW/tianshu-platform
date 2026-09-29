@@ -14,6 +14,26 @@ revision, then `core_apply(enabled=true)` and marks the intent active. A peer
 response loss is recovered with the same stage request ID. On restart an active
 role is pending until Core and Memory answer with the recorded versions.
 
+Each Core write also carries the immutable Platform `application_id`. Companion
+receives the authenticated console principal as `operator` for Persona approval
+and publication history; the service credential still authenticates the call.
+Companion may enable only the exact disabled snapshot created by that application, with
+the same name, profile binding/version, and capabilities. A source profile edit
+after the pause cannot change that snapshot or prevent its enable. Applying a
+profile uses Companion's draft, approval, and publication ledger in the same
+transaction as the role fact and receipt. A new role is an unpublished target
+until that application succeeds.
+
+`POST /api/web/roles/cancel` takes `platform_cancel` for a pending role. It
+records a new intent, removes the web admission, and reconciles the current
+Core and Memory versions to explicit disabled facts. A lost disable receipt is
+replayed with its original request body. Version conflicts trigger a fresh
+read and compare-and-swap attempt. Platform reports `disabled` only after both
+owners confirm denial. This recovery does not require a usable provider or a
+live source profile; the pinned Core snapshot supplies the disable payload.
+Old apply/retry receipts cannot reactivate the canceled role. A corrected
+configuration can then be submitted as a new application.
+
 `POST /internal/v1/role-runtime/manage` on Companion accepts `operation:list`
 or `operation:apply` plus `core_apply`. Only its registered Platform caller can
 write. `POST /internal/v1/role-runtime/authorize` on Memory accepts `status`
