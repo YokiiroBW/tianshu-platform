@@ -34,6 +34,13 @@ live source profile; the pinned Core snapshot supplies the disable payload.
 Old apply/retry receipts cannot reactivate the canceled role. A corrected
 configuration can then be submitted as a new application.
 
+For a first explicit adoption of a deployment role, Core may list the actor
+only in `legacy_roles` because no runtime fact exists yet. Cancel must create
+and confirm a version-zero-to-one disabled Core fact using the original
+published Persona and binding before Memory denial can complete. If neither a
+runtime role nor the expected legacy role can be confirmed, cancel remains
+pending. For an uncreated new dynamic actor, cancel creates no Core role.
+
 `POST /internal/v1/role-runtime/manage` on Companion accepts `operation:list`
 or `operation:apply` plus `core_apply`. Only its registered Platform caller can
 write. `POST /internal/v1/role-runtime/authorize` on Memory accepts `status`

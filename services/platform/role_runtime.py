@@ -307,11 +307,28 @@ class RoleRuntime:
                 (item for item in catalog.get("roles", []) if item.get("actor_id") == actor), None
             )
             if current is None:
-                # Only the first pause may still have no Core fact. Its late write is
-                # disabled; no old Memory/enable stage could have been dispatched.
                 require(row["cancel_source_stage"] == "start", "dependency_unavailable", 503)
-                row["stage"] = "cancel_memory_prepare"
-            else:
+                legacy = any(
+                    item.get("id") == actor for item in catalog.get("legacy_roles", [])
+                )
+                if row["legacy"]:
+                    # A static role without a runtime record is still allowed by Core.
+                    # Install an explicit disabled fact before revoking Memory.
+                    require(legacy and row["profile_id"] is None,
+                            "dependency_unavailable", 503)
+                    current = {
+                        "version": 0,
+                        "name": row["name"],
+                        "profile_id": None,
+                        "profile_version": None,
+                        "capabilities": row["capabilities"],
+                    }
+                else:
+                    # A late first pause for a new role can only write disabled.
+                    # Neither Memory nor enable could have been dispatched yet.
+                    require(not legacy, "dependency_unavailable", 503)
+                    row["stage"] = "cancel_memory_prepare"
+            if current is not None:
                 row["cancel_core_body"] = {
                     "operation": "apply",
                     "request_id": f'{row["client_id"]}:cancel-core:{row["cancel_epoch"]}',

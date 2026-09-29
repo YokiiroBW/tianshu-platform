@@ -388,6 +388,88 @@ class RoleJoint(WebJoint):
         self.assertTrue(lost)
         self.assertEqual(self.trace["browser"]["flow"], "pending-retry-edit")
 
+    async def test_cancel_first_static_adoption_denies_core_before_memory_and_restart(self):
+        manager = self.platform.role_runtime
+        original_remote = manager._remote
+        originals = {}
+        for actor, committed in (("actor:a", False), ("actor:b", True)):
+            self.assertTrue(self.core._role_allows(actor, "dialogue"))
+            original_persona = self.core.personas.pin(actor)
+            original_bindings = {
+                key: tuple(value["actor_ids"])
+                for key, value in self.core.bindings.items()
+                if actor in value["actor_ids"]
+            }
+            originals[actor] = (original_persona["revision_id"], original_bindings)
+            client = str(uuid.uuid4())
+            body = {
+                "client_id": client, "actor_id": actor, "expected_version": 0,
+                "name": "Adopt " + actor, "profile_id": None, "profile_version": None,
+                "provider_id": self.providers[0]["provider_id"], "provider_revision": 1,
+                "enabled": True, "capabilities": ["dialogue", "memory.read"],
+            }
+            row = manager._begin(body)
+
+            async def lose_first_pause(settings, path, payload):
+                if payload.get("request_id") == client + ":pause":
+                    if committed:
+                        await original_remote(settings, path, payload)
+                    raise Fault("dependency_unavailable", 503)
+                return await original_remote(settings, path, payload)
+
+            manager._remote = lose_first_pause
+            try:
+                with self.assertRaises(Fault) as interrupted:
+                    await manager._resume(row)
+                manager._record_error(row, interrupted.exception)
+            finally:
+                manager._remote = original_remote
+            self.assertEqual(row["stage"], "start")
+            self.assertEqual(row["state"], "pending")
+            self.assertEqual(self.core.role_runtime.get(actor) is not None, committed)
+            cancel = manager._begin_cancel({
+                "client_id": str(uuid.uuid4()), "actor_id": actor,
+                "expected_version": row["version"],
+            })
+
+            async def core_unavailable(settings, path, payload):
+                if path.endswith("/role-runtime/manage") and payload.get("operation") == "list":
+                    raise Fault("dependency_unavailable", 503)
+                return await original_remote(settings, path, payload)
+
+            manager._remote = core_unavailable
+            try:
+                with self.assertRaises(Fault) as unavailable:
+                    await manager._resume(cancel)
+                manager._record_error(cancel, unavailable.exception)
+            finally:
+                manager._remote = original_remote
+            self.assertEqual(manager.get(actor)["state"], "pending")
+            stopped = await manager._resume(cancel)
+            self.assertEqual(stopped["state"], "disabled")
+            self.assertFalse(self.core.role_runtime.get(actor)["enabled"])
+            self.assertFalse(self.core._role_allows(actor, "dialogue"))
+            self.assertEqual(self.core.personas.pin(actor)["revision_id"],
+                             original_persona["revision_id"])
+            catalog = self.core.manage_role("platform", {"operation": "list"})
+            self.assertNotIn(actor, [item["id"] for item in catalog["legacy_roles"]])
+            for key, bindings in original_bindings.items():
+                self.assertEqual(tuple(self.core.bindings[key]["actor_ids"]), bindings)
+            grant = await original_remote(
+                manager.config["memory"], "/internal/v1/role-runtime/authorize",
+                {"operation": "status", "actor_id": actor},
+            )
+            self.assertFalse(grant["enabled"])
+            self.assertEqual(manager._begin(body)["state"], "disabled")
+
+        await self.restart_core()
+        for actor, (revision, bindings) in originals.items():
+            self.assertFalse(self.core._role_allows(actor, "dialogue"))
+            self.assertFalse(self.core.role_runtime.get(actor)["enabled"])
+            self.assertEqual(self.core.personas.pin(actor)["revision_id"], revision)
+            for key, original in bindings.items():
+                self.assertEqual(tuple(self.core.bindings[key]["actor_ids"]), original)
+
     async def browser_roles(self, profiles, script="role_joint_browser.mjs"):
         env = dict(
             os.environ,

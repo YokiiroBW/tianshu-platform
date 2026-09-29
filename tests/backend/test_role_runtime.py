@@ -475,3 +475,68 @@ def test_active_disable_waits_for_both_denials_without_provider_or_profile(tmp_p
                                      {}))["role"]["state"] == "disabled"
 
     asyncio.run(scenario())
+
+
+def test_cancel_first_static_adoption_writes_core_denial_before_memory(tmp_path):
+    async def scenario(committed):
+        directory = tmp_path / str(committed)
+        directory.mkdir()
+        platform, manager, console, peers = fixture(directory)
+        original_remote = peers.call
+        request = body("provider-a", actor="actor:household")
+        request["profile_id"] = None
+        request["profile_version"] = None
+
+        async def lose_first_core_pause(settings, path, payload):
+            if payload.get("request_id") == request["client_id"] + ":pause":
+                if committed:
+                    await original_remote(settings, path, payload)
+                raise Fault("dependency_unavailable", 503)
+            return await original_remote(settings, path, payload)
+
+        manager._remote = lose_first_core_pause
+        pending = (await manager.route(console, "/api/web/roles/apply", request, {}))["role"]
+        assert pending["state"] == "pending" and pending["stage"] == "start"
+        assert ("actor:household" in peers.roles) == committed
+        manager._remote = original_remote
+        cancel = {"client_id": str(uuid.uuid4()), "actor_id": "actor:household",
+                  "expected_version": pending["version"]}
+        stopped = (await manager.route(console, "/api/web/roles/cancel", cancel, {}))["role"]
+        assert stopped["state"] == "disabled"
+        assert peers.roles["actor:household"]["enabled"] is False
+        assert peers.roles["actor:household"]["profile_id"] is None
+        assert peers.roles["actor:household"]["version"] == (2 if committed else 1)
+        assert peers.grants["actor:household"]["enabled"] is False
+        assert (await manager.route(console, "/api/web/roles/apply", request,
+                                    {}))["role"]["state"] == "disabled"
+        restarted = RoleRuntime(platform)
+        assert restarted.get("actor:household")["state"] == "disabled"
+
+    asyncio.run(scenario(False))
+    asyncio.run(scenario(True))
+
+
+def test_cancel_uncreated_dynamic_role_does_not_write_core_role(tmp_path):
+    async def scenario():
+        _, manager, console, peers = fixture(tmp_path)
+        original_remote = peers.call
+        request = body("provider-a")
+
+        async def unavailable_first_pause(settings, path, payload):
+            if payload.get("request_id") == request["client_id"] + ":pause":
+                raise Fault("dependency_unavailable", 503)
+            return await original_remote(settings, path, payload)
+
+        manager._remote = unavailable_first_pause
+        pending = (await manager.route(console, "/api/web/roles/apply", request, {}))["role"]
+        assert pending["state"] == "pending" and pending["stage"] == "start"
+        manager._remote = original_remote
+        stopped = (await manager.route(console, "/api/web/roles/cancel", {
+            "client_id": str(uuid.uuid4()), "actor_id": pending["actor_id"],
+            "expected_version": pending["version"],
+        }, {}))["role"]
+        assert stopped["state"] == "disabled"
+        assert pending["actor_id"] not in peers.roles
+        assert peers.grants[pending["actor_id"]]["enabled"] is False
+
+    asyncio.run(scenario())

@@ -16,12 +16,13 @@
 
 ## 实际验证
 
-- `tests/backend/test_role_runtime.py`：6 通过，含新建/重放/重启/停用、预应用失败重配、原有角色接管且保留静态来源、Peer 成功后丢回执再重试无重复作用、启用角色不改变 observe-only 账号且不建立隐式回复连接。
+- `tests/backend/test_role_runtime.py`：10 通过，含新建/重放/重启/停用、预应用失败重配、原有角色接管且保留静态来源、Peer 成功后丢回执再重试无重复作用、首次静态接管取消的两种 Core 回执情况、新动态角色未创建时取消不伪造 Core 角色，以及启用角色不改变 observe-only 账号且不建立隐式回复连接。
 - 受影响 Platform 回归：基础范围 77 通过、1 跳过、3 个子测试通过（Web console/dialogue/sender、provider、BOT、观察、角色）；追加配置门控及失败场景后，角色/Web dialogue/观察定向回归 18 通过；Ruff 通过；`pnpm exec tsc --noEmit` 和 Vite build 通过。
 - `tests/backend/test_role_joint.py::RoleJoint::test_real_role_apply_and_model_routing`：1 通过。隔离 HTTPS Platform/Companion/Memory/Gateway、Chromium 桌面与手机、新建/编辑/停用/接管、录制模型上游请求、两条合成 NoneBot 连接及对应回复。模型请求共 5 次：新 A、B、原有 actor:a 和 A/B BOT；不同模型、人格均按 actor 录制。伪造网页 actor/conversation 返回 403；新角色和接管的原有角色停用后消息均拒绝；Core/Memory 同时为 disabled。证据：`.runtime/role-joint/results/joint-summary.json`、`roles-desktop.png`、`roles-mobile.png`、`roles-existing.png`（运行目录，不入库）。测试 Gateway 仅在隔离进程对回环地址放行录制模型；产品 Gateway 未修改。
 - 12 项失败场景与未覆盖点：`docs/handoffs/ROLE-RUNTIME-FAILURE-MATRIX.md`。该矩阵中的“部分/缺口”必须保留，不能宣称全量通过。
-- 返修定向：Platform 角色及 Web/Provider 43 通过；Companion 受影响 Core/model/Persona/Role 41 通过；真实 HTTPS 三项联合 3 通过。新增 lost Memory 回执后源档案编辑的真实 owner 回归、active 停用双 owner 确认、取消 Core/Memory 停用写入都成功但回执先后丢失及两次重启的测试；Chromium 覆盖失败→retry 成功→继续编辑。TypeScript、Vite build 与受影响 Python Ruff 均通过。
+- 返修定向：Platform 角色及 Web/Provider 45 通过；Companion 受影响 Core/model/Persona/Role 41 通过；真实 HTTPS 四项联合 4 通过。新增 lost Memory 回执后源档案编辑的真实 owner 回归、active 停用双 owner 确认、取消 Core/Memory 停用写入都成功但回执先后丢失及两次重启的测试；Chromium 覆盖失败→retry 成功→继续编辑。TypeScript、Vite build 与受影响 Python Ruff 均通过。
 - 固定合成截图：`docs/handoffs/evidence/role-runtime/roles-desktop.png`、`roles-mobile.png`、`roles-existing.png`；隔离模型回执仍在 `.runtime/role-joint/results/joint-summary.json`，不含生产数据。
+- 静态首接管取消返修：若 Core 首次 pause 未提交，Companion 仍仅在 `legacy_roles` 暴露该 actor，取消必须从 version 0 写入 Core 显式 disabled，再写 Memory deny。若 Core 首次 pause 已提交但回执丢失，则按 catalog 中当前 runtime 版本停用。Core 不可确认时保持 pending；尚未创建的新动态角色不伪造 Core 角色。真实 HTTPS 用 `actor:a/b` 两支核对原 Persona/binding 保留、Memory 拒绝、Core 全量重启后仍拒绝；Platform 定向回归 45 通过，联合四项 4 通过。
 
 ### 联合测试复现（隔离数据）
 
