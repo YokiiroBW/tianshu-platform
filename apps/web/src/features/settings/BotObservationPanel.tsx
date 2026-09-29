@@ -1,4 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { Archive, RefreshCw, UsersRound, UserRound } from "lucide-react";
+import { StatusRail } from "../../components/StatusRail";
 import { webFetch } from "../../app/sessionTransport";
 import { requestId } from "../../app/requestId";
 import {
@@ -109,6 +111,35 @@ function modeText(mode: Policy["mode"], list: string[]) {
     : "黑名单为空：所有会话均可触发回复";
 }
 
+function stateLabel(state: string) {
+  const labels: Record<string, string> = {
+    ready: "运行正常",
+    disabled: "已停用",
+    pending: "待确认",
+    unknown: "状态待核对",
+    degraded: "运行受限",
+    failed: "连接失败",
+    error: "连接异常",
+  };
+  return labels[state] ?? "状态待核对";
+}
+
+function archiveStateLabel(state: string) {
+  const labels: Record<string, string> = {
+    archived: "已归档",
+    pending_memory: "等待 Memory 归档",
+    failed: "归档失败",
+    revoked: "已撤销",
+  };
+  return labels[state] ?? "归档状态待核对";
+}
+
+function stateTone(state: string): "blue" | "yellow" | "red" | "gray" {
+  if (state === "ready") return "blue";
+  if (state === "failed" || state === "error") return "red";
+  return state === "disabled" ? "gray" : "yellow";
+}
+
 function PolicyEditor({
   title,
   kind,
@@ -125,8 +156,15 @@ function PolicyEditor({
   onChange: (value: Policy) => void;
 }) {
   return (
-    <fieldset className="bot-form" disabled={disabled}>
-      <legend>{title}</legend>
+    <fieldset className="bot-observation-policy bot-form" disabled={disabled}>
+      <legend>
+        {kind === "group" ? (
+          <UsersRound aria-hidden="true" />
+        ) : (
+          <UserRound aria-hidden="true" />
+        )}
+        {title}策略
+      </legend>
       <label className="bot-check">
         <input
           type="checkbox"
@@ -181,8 +219,8 @@ function PolicyEditor({
           ))}
         </select>
       </label>
-      <p className="muted">
-        {modeText(value.mode, value.list)}。
+      <p className="bot-observation-policy-note">
+        <strong>{modeText(value.mode, value.list)}。</strong>{" "}
         {kind === "group" ? "群聊还须直接 @机器人。" : "私聊允许时正常触发。"}
         切换回复模式会清空原模式名单。允许回复不会追补旧观察。停止观察只停止新增消息，既有档案仍可按当前读取授权查看。
       </p>
@@ -416,19 +454,25 @@ export function BotObservationPanel({
 
   if (!view?.available) return null;
   return (
-    <section className="panel bot-adapter" aria-label="账号级观察与回复策略">
+    <section
+      className="panel bot-adapter bot-observation"
+      aria-label="账号级观察与回复策略"
+    >
       <div className="section-heading">
-        <h2>观察与回复策略</h2>
+        <div>
+          <h2>观察与回复策略</h2>
+          <p className="muted">按机器人账号管理群聊、私聊的观察与回复。</p>
+        </div>
         <button
           className="button"
           type="button"
           disabled={busy}
           onClick={() => void refresh()}
         >
-          刷新
+          <RefreshCw size={16} aria-hidden="true" /> 刷新状态
         </button>
       </div>
-      <p className="muted">
+      <p className="bot-observation-intro">
         新连接默认观察已接入账号收到的群聊和私聊并自动建档，默认不搭话。
         天枢仅控制自己的回复，宿主中的其他插件仍可能独立回复。旧精确范围连接不会自动升级。
       </p>
@@ -443,7 +487,10 @@ export function BotObservationPanel({
         </p>
       )}
       {unlocked && (
-        <form className="bot-form" onSubmit={(event) => void detect(event)}>
+        <form
+          className="bot-form bot-observation-card"
+          onSubmit={(event) => void detect(event)}
+        >
           <h3>连接与账号</h3>
           <label>
             宿主
@@ -498,7 +545,11 @@ export function BotObservationPanel({
         </form>
       )}
       {unlocked && probe && (
-        <form className="bot-form" onSubmit={(event) => void create(event)}>
+        <form
+          className="bot-form bot-observation-card"
+          onSubmit={(event) => void create(event)}
+        >
+          <h3>确认在线账号</h3>
           <label>
             账号观察名称
             <input
@@ -526,7 +577,7 @@ export function BotObservationPanel({
         </form>
       )}
       {view.connections.length > 0 && (
-        <label>
+        <label className="bot-observation-account">
           已接入账号
           <select
             value={selected}
@@ -545,7 +596,7 @@ export function BotObservationPanel({
           >
             {view.connections.map((row) => (
               <option key={row.id} value={row.id}>
-                {row.name} · {row.account_id} · {row.state}
+                {row.name} · {row.account_id} · {stateLabel(row.state)}
               </option>
             ))}
           </select>
@@ -553,83 +604,135 @@ export function BotObservationPanel({
       )}
       {current && group && privatePolicy && (
         <>
-          <p role="status">
-            插件状态：{current.state}；观察账号：{current.account_id}
-            ；宿主待转交：{current.host_pending}；宿主容量拒收：
-            {current.host_dropped}；历史读取：
-            {current.read_enabled ? "允许" : "已撤销"}。
-          </p>
-          {current.last_error && (
-            <p role="alert">
-              最近失败：{current.last_error}。积压可能尚未归档。
-            </p>
-          )}
-          <button
-            className="button"
-            type="button"
-            disabled={!unlocked || busy}
-            onClick={() => void setHistory(!current.read_enabled)}
+          <div
+            className="bot-observation-card bot-observation-summary"
+            role="status"
           >
-            {current.read_enabled
-              ? "撤销历史读取并暂停新增观察"
-              : "恢复历史读取与新增观察"}
-          </button>
-          <PolicyEditor
-            title="群聊"
-            kind="group"
-            value={group}
-            actors={actors}
-            disabled={!unlocked || busy}
-            onChange={setGroup}
-          />
-          <PolicyEditor
-            title="私聊"
-            kind="private"
-            value={privatePolicy}
-            actors={actors}
-            disabled={!unlocked || busy}
-            onChange={setPrivate}
-          />
-          <button
-            className="button"
-            type="button"
-            disabled={!unlocked || busy || current.state === "unknown"}
-            onClick={() => void savePolicy()}
-          >
-            保存群聊与私聊策略
-          </button>
-          <h3>已发现会话</h3>
-          <button
-            className="button"
-            type="button"
-            disabled={busy || !current.read_enabled}
-            onClick={() => void loadFound()}
-          >
-            读取发现列表
-          </button>
-          <ul>
+            <div className="bot-observation-summary-head">
+              <div>
+                <h3>{current.name}</h3>
+                <p className="muted">
+                  观察账号{" "}
+                  <span className="bot-observation-id">
+                    {current.account_id}
+                  </span>
+                </p>
+              </div>
+              <StatusRail
+                tone={stateTone(current.state)}
+                label={stateLabel(current.state)}
+              />
+            </div>
+            <dl className="bot-observation-facts">
+              <div>
+                <dt>宿主待转交</dt>
+                <dd>{current.host_pending}</dd>
+              </div>
+              <div>
+                <dt>容量拒收</dt>
+                <dd>{current.host_dropped}</dd>
+              </div>
+              <div>
+                <dt>历史读取</dt>
+                <dd>{current.read_enabled ? "允许" : "已撤销"}</dd>
+              </div>
+            </dl>
+            {current.last_error && (
+              <p role="alert" className="bot-observation-alert">
+                最近失败：{current.last_error}。积压可能尚未归档。
+              </p>
+            )}
+            <button
+              className="button bot-observation-history"
+              type="button"
+              disabled={!unlocked || busy}
+              onClick={() => void setHistory(!current.read_enabled)}
+            >
+              {current.read_enabled
+                ? "撤销历史读取并暂停新增观察"
+                : "恢复历史读取与新增观察"}
+            </button>
+          </div>
+          <div className="bot-observation-policies">
+            <PolicyEditor
+              title="群聊"
+              kind="group"
+              value={group}
+              actors={actors}
+              disabled={!unlocked || busy}
+              onChange={setGroup}
+            />
+            <PolicyEditor
+              title="私聊"
+              kind="private"
+              value={privatePolicy}
+              actors={actors}
+              disabled={!unlocked || busy}
+              onChange={setPrivate}
+            />
+          </div>
+          <div className="bot-observation-save">
+            <button
+              className="button primary"
+              type="button"
+              disabled={!unlocked || busy || current.state === "unknown"}
+              onClick={() => void savePolicy()}
+            >
+              保存群聊与私聊策略
+            </button>
+          </div>
+          <div className="bot-observation-discovered-heading">
+            <div>
+              <h3>已发现会话</h3>
+              <p className="muted">按需读取收到消息的会话与归档状态。</p>
+            </div>
+            <button
+              className="button"
+              type="button"
+              disabled={busy || !current.read_enabled}
+              onClick={() => void loadFound()}
+            >
+              读取发现列表
+            </button>
+          </div>
+          <ul className="bot-observation-list">
             {found.map((item) => (
               <li key={`${item.conversation}:${item.author}`}>
-                {item.conversation} · 发言人 {item.author} · 已收到 {item.count}{" "}
-                条 · 最近{" "}
-                {new Date(item.last_at * 1000).toLocaleString("zh-CN")} ·
-                {item.decision.reply_permitted ? "可触发回复" : "只观察"}
-                <button
-                  className="button"
-                  type="button"
-                  disabled={busy || !unlocked}
-                  onClick={() => addToList(item.conversation)}
-                >
-                  加入回复白名单
-                </button>
-                <button
-                  className="button"
-                  type="button"
-                  disabled={busy || !current.read_enabled}
-                  onClick={() => void loadArchive(item.conversation)}
-                >
-                  查看归档状态
-                </button>
+                <div className="bot-observation-item-head">
+                  <strong className="bot-observation-id">
+                    {item.conversation}
+                  </strong>
+                  <StatusRail
+                    tone={item.decision.reply_permitted ? "blue" : "gray"}
+                    label={
+                      item.decision.reply_permitted ? "可触发回复" : "只观察"
+                    }
+                  />
+                </div>
+                <p className="muted">
+                  发言人{" "}
+                  <span className="bot-observation-id">{item.author}</span> ·
+                  已收到 {item.count} 条 · 最近{" "}
+                  {new Date(item.last_at * 1000).toLocaleString("zh-CN")}
+                </p>
+                <div className="bot-observation-item-actions">
+                  <button
+                    className="button"
+                    type="button"
+                    disabled={busy || !unlocked}
+                    onClick={() => addToList(item.conversation)}
+                  >
+                    加入回复白名单
+                  </button>
+                  <button
+                    className="button"
+                    type="button"
+                    disabled={busy || !current.read_enabled}
+                    onClick={() => void loadArchive(item.conversation)}
+                  >
+                    查看归档状态
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
@@ -644,27 +747,62 @@ export function BotObservationPanel({
             </button>
           )}
           {archive && (
-            <div role="status">
-              <h4>{archiveConversation} 的归档</h4>
-              <p>
-                Memory：
-                {archive.memory_state === "available" ? "可读取" : "暂不可读取"}
-                ；已确认归档 {archive.archive_items.length} 条；待归档{" "}
-                {archive.backlog.pending_memory ?? 0}；失败{" "}
-                {archive.backlog.failed ?? 0}；撤销{" "}
-                {archive.backlog.revoked ?? 0}。
-              </p>
-              <ul>
+            <div
+              className="bot-observation-card bot-observation-archive"
+              role="status"
+            >
+              <div className="bot-observation-item-head">
+                <h4>
+                  <Archive size={18} aria-hidden="true" />{" "}
+                  <span className="bot-observation-id">
+                    {archiveConversation}
+                  </span>{" "}
+                  的归档
+                </h4>
+                <StatusRail
+                  tone={
+                    archive.memory_state === "available" ? "blue" : "yellow"
+                  }
+                  label={
+                    archive.memory_state === "available"
+                      ? "Memory 可读取"
+                      : "Memory 暂不可读取"
+                  }
+                />
+              </div>
+              <dl className="bot-observation-facts">
+                <div>
+                  <dt>已确认归档</dt>
+                  <dd>{archive.archive_items.length}</dd>
+                </div>
+                <div>
+                  <dt>待归档</dt>
+                  <dd>{archive.backlog.pending_memory ?? 0}</dd>
+                </div>
+                <div>
+                  <dt>失败</dt>
+                  <dd>{archive.backlog.failed ?? 0}</dd>
+                </div>
+                <div>
+                  <dt>撤销</dt>
+                  <dd>{archive.backlog.revoked ?? 0}</dd>
+                </div>
+              </dl>
+              <ul className="bot-observation-archive-list">
                 {archive.items.map((item) => (
                   <li key={item.source_ref}>
-                    来源 {item.source_ref} · 发言人 {item.author} ·{" "}
-                    {item.archive_state}
+                    <span className="bot-observation-id">
+                      来源 {item.source_ref}
+                    </span>{" "}
+                    · 发言人{" "}
+                    <span className="bot-observation-id">{item.author}</span> ·{" "}
+                    {archiveStateLabel(item.archive_state)}
                     {item.error_code ? ` · ${item.error_code}` : ""}
                   </li>
                 ))}
               </ul>
               <h5>授权可读正文</h5>
-              <ul>
+              <ul className="bot-observation-archive-list">
                 {archive.archive_items.map((item) => (
                   <li key={item.source_ref}>
                     {item.sent_at} · 发言人 {item.author} ·{" "}

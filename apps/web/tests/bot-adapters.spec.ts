@@ -176,6 +176,159 @@ test("account observation is the default entry without conversation, author or a
   expect(createBody).not.toHaveProperty("actor_id");
 });
 
+test("observation cards render connected, archive, error and locked states", async ({
+  page,
+}, testInfo) => {
+  await signedIn(page);
+  let unlocked = false;
+  let lockedState = false;
+  const policy = {
+    observe: true,
+    mode: "observe_only",
+    list: [],
+    actor_id: null,
+  };
+  const observed = () => ({
+    id: "obs:fixture",
+    name: "家庭观察",
+    adapter: "nonebot",
+    account_id: "1365939091",
+    instance_id: "host:fixture",
+    enabled: true,
+    revision: 2,
+    host_revision: 2,
+    state: lockedState ? "unknown" : "ready",
+    last_error: lockedState
+      ? "adapter_unreachable: fixture-host-long-identifier"
+      : null,
+    last_checked_at: "2026-09-29T00:00:00Z",
+    read_enabled: !lockedState,
+    host_pending: 2,
+    host_dropped: 0,
+    group_policy: policy,
+    private_policy: policy,
+  });
+  await page.route("**/api/web/bots/unlock", (route) => {
+    unlocked = true;
+    return json(route, { unlocked: true });
+  });
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const operation = new URL(route.request().url()).pathname.split("/").pop();
+    if (operation === "view")
+      return json(route, {
+        available: true,
+        unlocked: unlocked && !lockedState,
+        actors: [{ id: "xiaotian", label: "小天" }],
+        connections: [],
+      });
+    throw new Error(`Unexpected adapter request: ${operation}`);
+  });
+  await page.route("**/api/web/bot-observation/*", (route) => {
+    const operation = new URL(route.request().url()).pathname.split("/").pop();
+    if (operation === "view")
+      return json(route, {
+        available: true,
+        unlocked: unlocked && !lockedState,
+        connections: [observed()],
+      });
+    if (operation === "discovered")
+      return json(route, {
+        items: [
+          {
+            conversation: "group:123456789012345678",
+            author: "987654321",
+            count: 3,
+            last_at: 1790630400,
+            decision: {
+              observe: true,
+              reply_permitted: false,
+              reply_triggered: false,
+            },
+          },
+        ],
+        next_cursor: null,
+      });
+    if (operation === "archive")
+      return json(route, {
+        memory_state: "available",
+        backlog: { pending_memory: 2, failed: 0, revoked: 0 },
+        archive_next_cursor: null,
+        items: [
+          {
+            source_ref: "source:fixture-long-identifier-123456789",
+            author: "987654321",
+            archive_state: "pending_memory",
+            error_code: null,
+          },
+        ],
+        archive_items: [
+          {
+            source_ref: "source:fixture-1",
+            author: "987654321",
+            content_state: "text",
+            text: "仅供隔离页面测试的合成内容",
+            sent_at: "2026-09-29 08:00",
+          },
+        ],
+      });
+    throw new Error(`Unexpected observation request: ${operation}`);
+  });
+
+  await page.goto("/#/settings/3");
+  await page
+    .getByLabel("管理员密码（二次验证）")
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "解锁连接管理" }).click();
+  const observation = page.getByRole("region", {
+    name: "账号级观察与回复策略",
+  });
+  await observation.getByRole("button", { name: "读取发现列表" }).click();
+  await observation.getByRole("button", { name: "查看归档状态" }).click();
+  await expect(
+    observation.getByText("运行正常", { exact: true }),
+  ).toBeVisible();
+  await expect(observation.getByText("Memory 可读取")).toBeVisible();
+  await expect(
+    observation.getByRole("group", { name: "群聊策略" }),
+  ).toBeVisible();
+  await expect(
+    observation.getByRole("group", { name: "私聊策略" }),
+  ).toBeVisible();
+  expect(
+    await observation
+      .getByLabel("已接入账号")
+      .evaluate((select) => getComputedStyle(select).borderRadius),
+  ).not.toBe("0px");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await observation.screenshot({
+    path: testInfo.outputPath("observation-ready.png"),
+  });
+
+  lockedState = true;
+  await page.reload();
+  await expect(
+    observation.getByText("状态待核对", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    observation.getByRole("alert").filter({ hasText: "adapter_unreachable" }),
+  ).toBeVisible();
+  await expect(
+    observation.getByRole("button", { name: "保存群聊与私聊策略" }),
+  ).toBeDisabled();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await observation.screenshot({
+    path: testInfo.outputPath("observation-locked-error.png"),
+  });
+});
+
 async function fillWizard(page: Page) {
   const panel = page.getByRole("region", { name: "机器人适配器管理" });
   await panel.getByRole("button", { name: "添加适配器" }).click();

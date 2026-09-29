@@ -186,6 +186,230 @@
 .bot-legacy > .bot-connections {
   box-shadow: none;
 }
+.bot-observation {
+  min-width: 0;
+  gap: var(--space-5);
+}
+.bot-observation .section-heading {
+  align-items: start;
+}
+.bot-observation .section-heading p,
+.bot-observation-discovered-heading p,
+.bot-observation-summary-head p {
+  margin: var(--space-1) 0 0;
+}
+.bot-observation .button svg,
+.bot-observation-policy legend svg,
+.bot-observation-archive h4 svg {
+  flex: none;
+  vertical-align: middle;
+}
+.bot-observation .button {
+  gap: var(--space-2);
+}
+.bot-observation-intro {
+  margin: 0;
+  color: var(--color-muted);
+  line-height: 1.65;
+}
+.bot-observation-card,
+.bot-observation-policy,
+.bot-observation-list li {
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-input);
+  padding: var(--space-5);
+}
+.bot-observation-card h3,
+.bot-observation-policy legend,
+.bot-observation-discovered-heading h3,
+.bot-observation-archive h4,
+.bot-observation-archive h5 {
+  margin: 0;
+}
+.bot-observation .bot-form {
+  max-width: none;
+}
+.bot-observation .bot-form label,
+.bot-observation-account {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+  font-weight: 600;
+}
+.bot-observation .bot-form input:not([type="checkbox"]),
+.bot-observation .bot-form select,
+.bot-observation .bot-form textarea,
+.bot-observation-account select {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-weight: 400;
+}
+.bot-observation-account {
+  max-width: 36rem;
+}
+.bot-observation-account select:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+.bot-observation .bot-form label.bot-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 400;
+}
+.bot-observation .bot-check input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+.bot-observation .bot-form > .button {
+  justify-self: start;
+}
+.bot-observation-summary {
+  display: grid;
+  gap: var(--space-4);
+}
+.bot-observation-summary-head,
+.bot-observation-item-head,
+.bot-observation-discovered-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.bot-observation-summary-head > div:first-child,
+.bot-observation-item-head > :first-child {
+  min-width: 0;
+}
+.bot-observation-id,
+.bot-observation-alert,
+.bot-observation-archive-list li {
+  overflow-wrap: anywhere;
+}
+.bot-observation-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+.bot-observation-facts > div {
+  min-width: 0;
+}
+.bot-observation-facts dt {
+  color: var(--color-muted);
+  font-size: var(--text-small);
+}
+.bot-observation-facts dd {
+  margin: var(--space-1) 0 0;
+  font-weight: 600;
+}
+.bot-observation-alert {
+  margin: 0;
+  border-radius: var(--radius-control);
+  background: var(--color-red-soft);
+  color: var(--color-red);
+  padding: var(--space-3);
+}
+.bot-observation-history {
+  justify-self: start;
+}
+.bot-observation-policies {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.bot-observation-policy {
+  gap: var(--space-4);
+  margin: 0;
+}
+.bot-observation-policy legend {
+  float: left;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0 0 var(--space-1);
+  font-size: var(--text-section);
+  font-weight: 700;
+}
+.bot-observation-policy legend svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  color: var(--color-accent-text);
+}
+.bot-observation-policy-note {
+  margin: 0;
+  border-radius: var(--radius-control);
+  background: var(--color-blue-soft);
+  color: var(--color-muted);
+  padding: var(--space-3);
+  font-size: var(--text-small);
+  line-height: 1.6;
+}
+.bot-observation-policy-note strong {
+  color: var(--color-text);
+}
+.bot-observation-save {
+  display: flex;
+  justify-content: flex-end;
+}
+.bot-observation-save .primary {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-surface);
+}
+.bot-observation-list,
+.bot-observation-archive-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.bot-observation-list li {
+  display: grid;
+  gap: var(--space-3);
+}
+.bot-observation-list li p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.bot-observation-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.bot-observation-archive {
+  display: grid;
+  gap: var(--space-4);
+}
+.bot-observation-archive h4 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.bot-observation-archive-list li {
+  border-top: 1px solid var(--color-line);
+  padding-top: var(--space-3);
+}
+@media (max-width: 760px) {
+  .bot-observation-policies {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 560px) {
   .bot-wizard,
   .bot-adapter-list li {
@@ -205,5 +429,17 @@
   .bot-actions {
     flex-wrap: wrap;
     width: 100%;
+  }
+  .bot-observation .section-heading .button,
+  .bot-observation-discovered-heading .button,
+  .bot-observation-save .button,
+  .bot-observation-history,
+  .bot-observation-item-actions .button {
+    width: 100%;
+  }
+  .bot-observation-card,
+  .bot-observation-policy,
+  .bot-observation-list li {
+    padding: var(--space-4);
   }
 }
