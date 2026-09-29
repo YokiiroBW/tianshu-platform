@@ -1,42 +1,24 @@
-/* Persona directory and version comparison. Tokens only; no colour, gradient or radius is
-   invented here, and every layout collapses to one column without horizontal scrolling. */
-
 .persona-page {
-  display: grid;
-  gap: var(--space-5);
-  padding: var(--space-5);
   min-width: 0;
+  padding: var(--space-5);
+}
+.persona-page-heading {
+  padding: 0 0 var(--space-4);
+  border-bottom: 1px solid var(--color-line);
 }
 .persona-page h2,
-.persona-page h3 {
-  margin: 0;
+.persona-page h3,
+.persona-page h4,
+.persona-page p {
+  margin-top: 0;
 }
-.persona-toolbar,
-.persona-actions,
-.persona-pager,
-.persona-pager-actions,
-.persona-row-actions,
-.persona-kinds {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-.persona-toolbar {
-  justify-content: space-between;
-  align-items: flex-start;
-  border-bottom: 1px solid var(--color-line);
-  padding-bottom: var(--space-4);
-}
-.persona-page .eyebrow {
-  margin: 0 0 var(--space-1);
-  color: var(--color-muted);
-  font-size: var(--text-small);
-  letter-spacing: 0.08em;
+.persona-page h2 {
+  margin-bottom: 0;
 }
 .persona-page .button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-2);
   min-height: var(--control-height);
   border: 1px solid var(--color-line);
@@ -57,409 +39,248 @@
   color: var(--color-surface);
   border-color: transparent;
 }
-.persona-page .button[aria-pressed="true"] {
-  border-color: var(--color-accent);
-  background: var(--color-selection);
-}
 .persona-page .button:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
 }
-.persona-page .button:focus-visible,
-.persona-subject:focus-visible,
-.persona-page input:focus-visible {
+.persona-page button:focus-visible,
+.persona-page input:focus-visible,
+.persona-page textarea:focus-visible,
+.persona-page select:focus-visible,
+.persona-page summary:focus-visible {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);
 }
 .persona-page .muted {
   color: var(--color-muted);
   font-size: var(--text-small);
-  margin: 0;
-}
-.persona-page .persona-intro {
-  max-width: 46rem;
-  margin-top: var(--space-2);
-  line-height: 1.6;
-}
-
-.persona-author {
-  display: grid;
-  gap: var(--space-4);
-  padding: var(--space-4);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-panel);
-  background: var(--color-surface);
-}
-.persona-read-details {
-  min-width: 0;
-  border-top: 1px solid var(--color-line);
-  padding-top: var(--space-3);
-}
-.persona-read-details > summary {
-  cursor: pointer;
-  font-weight: 650;
-  color: var(--color-text);
-  padding: var(--space-2) 0;
-}
-.persona-read-details > summary:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-offset);
-}
-.persona-read-body {
-  display: grid;
-  gap: var(--space-5);
-  padding-top: var(--space-3);
-}
-.persona-author-head,
-.persona-author-title,
-.persona-author-actions,
-.persona-target-options {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-.persona-author-head h3,
-.persona-author h4 {
-  margin: 0;
 }
 .persona-author-layout {
   display: grid;
-  grid-template-columns: minmax(13rem, 0.75fr) minmax(0, 2fr);
-  gap: var(--space-4);
-  align-items: start;
-  min-width: 0;
-}
-.persona-author-list,
-.persona-author-form,
-.persona-author-field,
-.persona-author-targets {
-  display: grid;
-  gap: var(--space-2);
-  min-width: 0;
+  grid-template-columns: minmax(14rem, 16rem) minmax(0, 1fr);
+  min-height: min(42rem, 70vh);
 }
 .persona-author-list {
-  align-content: start;
+  min-width: 0;
+  padding: var(--space-5) var(--space-4) 0 0;
+  border-right: 1px solid var(--color-line);
 }
-.persona-author-list h4:not(:first-child) {
-  margin-top: var(--space-3);
+.persona-list-heading,
+.persona-author-title,
+.persona-title-actions,
+.persona-author-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
 }
-.persona-author-list .persona-subject {
-  width: 100%;
-  text-align: left;
+.persona-list-heading {
+  margin-bottom: var(--space-4);
 }
-.persona-author-form {
-  gap: var(--space-4);
-  padding: var(--space-4);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-panel);
-  background: var(--color-input);
+.persona-list-heading h3,
+.persona-author-title h3 {
+  margin-bottom: 0;
 }
-.persona-author-field {
-  font-weight: 600;
-}
+.persona-search,
 .persona-author-field input,
-.persona-author-field textarea {
-  width: 100%;
+.persona-author-field textarea,
+.persona-apply-target select {
   box-sizing: border-box;
-  padding: var(--space-3);
+  width: 100%;
+  min-width: 0;
   border: 1px solid var(--color-line);
   border-radius: var(--radius-control);
-  background: var(--color-surface);
+  background: var(--color-input);
   color: var(--color-text);
+  padding: var(--space-3);
   font: inherit;
+}
+.persona-search {
+  margin-bottom: var(--space-4);
+}
+.persona-list-items {
+  display: grid;
+  gap: var(--space-1);
+}
+.persona-subject {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-3);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.persona-subject:hover,
+.persona-subject[aria-pressed="true"] {
+  background: var(--color-selection);
+}
+.persona-list-name {
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+.persona-list-badge {
+  flex: none;
+  color: var(--color-muted);
+  font-size: var(--text-small);
   font-weight: 400;
+}
+.persona-author-form {
+  min-width: 0;
+  padding: var(--space-5) 0 var(--space-5) var(--space-6);
+}
+.persona-author-title {
+  align-items: flex-start;
+  margin-bottom: var(--space-6);
+}
+.persona-author-title h3 {
+  font-size: 1.5rem;
+}
+.persona-title-actions {
+  flex: none;
+}
+.persona-more-menu {
+  position: relative;
+}
+.persona-more-menu summary {
+  display: grid;
+  place-items: center;
+  min-width: var(--control-height);
+  min-height: var(--control-height);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  list-style: none;
+}
+.persona-more-menu summary::-webkit-details-marker {
+  display: none;
+}
+.persona-more-menu[open] > .button {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 2;
+  width: max-content;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+.persona-fields {
+  display: grid;
+  gap: var(--space-5);
+  max-width: 52rem;
+}
+.persona-author-field {
+  display: grid;
+  gap: var(--space-2);
+  font-weight: 600;
+}
+.persona-author-field textarea {
   resize: vertical;
+  line-height: 1.65;
+}
+.persona-author-field .persona-main-text {
+  min-height: 19rem;
+}
+.persona-extra-settings {
+  border-top: 1px solid var(--color-line);
+  padding-top: var(--space-3);
+  color: var(--color-muted);
+}
+.persona-extra-settings summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.persona-extra-settings[open] {
+  display: grid;
+  gap: var(--space-4);
+}
+.persona-extra-settings .persona-author-field {
+  color: var(--color-text);
+}
+.persona-extra-settings p {
+  white-space: pre-wrap;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+.persona-apply-target {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 20rem;
 }
 .persona-author-actions {
   justify-content: flex-start;
+  flex-wrap: wrap;
 }
-.persona-target-options {
-  justify-content: flex-start;
+.persona-view {
+  max-width: 54rem;
 }
-.persona-author .button[aria-pressed="true"] {
-  border-color: var(--color-accent);
-  background: var(--color-selection);
+.persona-view h4 {
+  color: var(--color-muted);
+  font-size: var(--text-small);
 }
-@media (max-width: 760px) {
-  .persona-author-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .persona-author-list {
-    max-height: 16rem;
-    overflow: auto;
-  }
-  .persona-author-form {
-    padding: var(--space-3);
-  }
+.persona-body {
+  min-height: 8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.75;
 }
-.persona-error {
-  margin: 0;
+.persona-error,
+.persona-notice {
+  margin-bottom: var(--space-4);
   padding: var(--space-3);
   border-radius: var(--radius-control);
+}
+.persona-error {
   color: var(--color-red);
   background: var(--color-red-soft);
 }
 .persona-notice {
-  margin: 0;
-  padding: var(--space-3);
-  border-radius: var(--radius-control);
   color: var(--color-blue);
   background: var(--color-blue-soft);
 }
-.persona-login {
-  display: grid;
-  gap: var(--space-3);
-  justify-items: start;
-  max-width: 26rem;
+.persona-mobile-back {
+  display: none !important;
 }
-.persona-login form {
-  display: grid;
-  gap: var(--space-4);
-  width: 100%;
-}
-.persona-login label {
-  display: grid;
-  gap: var(--space-2);
-  font-size: var(--text-small);
-}
-.persona-login input {
-  min-width: 0;
-  min-height: var(--control-height);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-control);
-  color: var(--color-text);
-  background: var(--color-input);
-  padding: var(--space-2) var(--space-3);
-  font: inherit;
-}
-.persona-layout {
-  display: grid;
-  /* One column by default; the frozen two-column layout starts at 1100px (see the media queries
-     below). Both tracks may shrink, and at 200% text the directory column keeps its own width
-     without starving the detail column. */
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-5);
-  align-items: start;
-}
-.persona-catalog,
-.persona-detail {
-  display: grid;
-  gap: var(--space-3);
-  min-width: 0;
-}
-/* The compact selector exists for widths where a 20-row card list would push the body far down;
-   it is shown by the media query at the end of this file and never duplicates authority. */
-.persona-picker {
-  display: none;
-  gap: var(--space-2);
-  font-size: var(--text-small);
-  color: var(--color-muted);
-}
-.persona-picker select {
-  min-width: 0;
-  min-height: var(--control-height);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-control);
-  color: var(--color-text);
-  background: var(--color-input);
-  padding: var(--space-2) var(--space-3);
-  font: inherit;
-}
-.persona-picker select:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-offset);
-}
-.persona-subjects,
-.persona-rows {
-  display: grid;
-  gap: var(--space-3);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.persona-subject {
-  display: grid;
-  gap: var(--space-1);
-  width: 100%;
-  min-width: 0;
-  text-align: left;
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-panel);
-  background: var(--color-surface);
-  color: var(--color-text);
-  padding: var(--space-3);
-  font: inherit;
-  cursor: pointer;
-}
-.persona-subject[aria-pressed="true"] {
-  border-color: var(--color-accent);
-  background: var(--color-selection);
-}
-.persona-subject-id {
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-.persona-subject-meta,
-.persona-subject-time {
-  color: var(--color-muted);
-  font-size: var(--text-small);
-  overflow-wrap: anywhere;
-}
-.persona-facts {
-  display: grid;
-  /* `min(11rem, 100%)` keeps one track inside a narrow column when the text is enlarged. */
-  grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr));
-  gap: var(--space-3);
-  margin: 0;
-}
-.persona-facts div {
-  display: grid;
-  gap: var(--space-1);
-  min-width: 0;
-}
-.persona-facts dt {
-  color: var(--color-muted);
-  font-size: var(--text-small);
-}
-.persona-facts dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-.persona-facts .persona-absent {
-  color: var(--color-muted);
-  font-style: italic;
-}
-.persona-content dd {
-  border-left: var(--rail-width) solid var(--color-line);
-  padding-left: var(--space-3);
-}
-/* The four interpreted fields of one revision fold one by one, so a long persona stays readable. */
-.persona-field {
-  border-top: 1px solid var(--color-line);
-  padding: var(--space-2) 0;
-}
-.persona-field summary {
-  cursor: pointer;
-  color: var(--color-muted);
-  font-size: var(--text-small);
-}
-.persona-field summary:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-offset);
-}
-.persona-field-body {
-  margin: var(--space-2) 0 0;
-  border-left: var(--rail-width) solid var(--color-line);
-  padding-left: var(--space-3);
-  /* Real text keeps its own line breaks and long tokens wrap instead of widening the page. */
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.persona-pointer {
-  display: grid;
-  gap: var(--space-3);
-  min-width: 0;
-}
-.persona-pointer .persona-facts dd {
-  font-variant-numeric: tabular-nums;
-}
-.persona-rows li {
-  min-width: 0;
-}
-.persona-changes {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
-  gap: var(--space-3);
-}
-.persona-change {
-  min-width: 0;
-}
-.persona-revision,
-.persona-history {
-  display: grid;
-  gap: var(--space-3);
-  min-width: 0;
-}
-.persona-revision {
-  border-top: 1px solid var(--color-line);
-  padding-top: var(--space-4);
-}
-.persona-empty {
-  margin: 0;
-  padding: var(--space-4);
-  border: 1px dashed var(--color-line);
-  border-radius: var(--radius-panel);
-  color: var(--color-muted);
-}
-.persona-state .status-rail {
-  align-items: flex-start;
-}
-.persona-foot {
-  border-top: 1px solid var(--color-line);
-  padding-top: var(--space-3);
-}
-
-/* The frozen breakpoints: a 240px directory column beside the body from 1100px, and one labelled
-   compact selector above the body below that - the twenty cards are an instrument of the wide
-   layout only, so from 768px to 1099px the directory is the same selector the phone layout uses,
-   with its paging kept, instead of a card list that pushes the body thousands of pixels down. */
-@media (min-width: 68.75rem) {
-  .persona-layout {
-    grid-template-columns: 15rem minmax(0, 1fr);
-  }
-}
-@media (min-width: 48rem) and (max-width: 68.749rem) {
-  .persona-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .persona-subjects {
-    display: none;
-  }
-  .persona-picker {
-    display: grid;
-  }
-}
-@media (max-width: 47.999rem) {
-  .persona-subjects {
-    display: none;
-  }
-  .persona-picker {
-    display: grid;
-  }
-  /* Every tool stacks, and a comparison reads as old version above new version, field by field. */
-  .persona-actions,
-  .persona-pager-actions,
-  .persona-row-actions,
-  .persona-kinds {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .persona-page .button {
-    width: 100%;
-    justify-content: center;
-  }
-  .persona-changes {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .persona-sides {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-@media (max-width: 30rem) {
+@media (max-width: 48rem) {
   .persona-page {
     padding: var(--space-4);
   }
-  .persona-toolbar {
-    flex-direction: column;
-    gap: var(--space-4);
+  .persona-author-layout {
+    display: block;
+    min-height: 0;
   }
-  .persona-pager-actions,
-  .persona-row-actions,
-  .persona-actions {
-    width: 100%;
+  .persona-author-list {
+    border-right: 0;
+    padding: var(--space-4) 0;
+  }
+  .persona-author-form {
+    display: none;
+    padding: var(--space-4) 0;
+  }
+  .persona-show-detail .persona-author-list {
+    display: none;
+  }
+  .persona-show-detail .persona-author-form {
+    display: block;
+  }
+  .persona-mobile-back {
+    display: inline-flex !important;
+    margin-bottom: var(--space-4);
+  }
+  .persona-author-title {
+    margin-bottom: var(--space-5);
+  }
+  .persona-list-items {
+    gap: var(--space-2);
+  }
+  .persona-subject {
+    min-height: 3.5rem;
+    border-bottom: 1px solid var(--color-line);
   }
 }

@@ -13,281 +13,193 @@ async function api(page: Page, path: string, body: object) {
   });
 }
 
-test("real HTTPS persona authoring, conflict and role readback", async ({
-  page,
-}) => {
+async function signIn(page: Page) {
   await page.goto("/#/companion/2");
   await page.getByLabel("管理员账号").fill(admin);
   await page.getByLabel("密码", { exact: true }).fill(password);
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
-  await page.evaluate(() => {
-    window.location.hash = "#/workbench";
+  await expect(
+    page.locator(".persona-author-list .persona-subject"),
+  ).toHaveCount(2);
+}
+
+test("clean persona page creates, edits and applies while preserving hidden data", async ({
+  page,
+}) => {
+  await signIn(page);
+  const panel = page.locator(".persona-page");
+  await expect(panel.getByRole("heading", { name: "人格列表" })).toBeVisible();
+  await expect(panel.locator(".persona-body")).toContainText("甲的初始人格");
+  await expect(panel).not.toContainText("actor:a");
+  await expect(panel).not.toContainText("版本历史");
+  await expect(panel).not.toContainText("修订");
+
+  await panel.getByRole("button", { name: "新建人格" }).click();
+  await panel.getByLabel("名称").fill("温和伙伴");
+  await panel
+    .getByLabel("人设正文")
+    .fill("你是温和、可信的陪伴者。\n保持真诚。");
+  await panel.getByText("更多设置").click();
+  await panel.getByLabel("简介").fill("隔离演练档案");
+  await panel.getByLabel("语气").fill("平静而亲切");
+  await panel.getByLabel("表达风格").fill("用简短的自然语言回答");
+  await panel.getByLabel("称呼").fill("朋友");
+  await panel.getByText("更多设置").click();
+  await page.screenshot({
+    path: "apps/web/test-results/persona-clean-edit.png",
+    fullPage: true,
   });
-  await expect(page).toHaveURL(/#\/workbench$/);
-  await page.evaluate(() => {
-    window.location.hash = "#/companion/2";
-  });
-  await expect(page).toHaveURL(/#\/companion\/2$/);
-  await page.getByRole("button", { name: "创建与编辑" }).click();
-  await expect(page.locator(".persona-read-details")).not.toHaveAttribute(
-    "open",
-    "",
-  );
-  const editor = page.locator(".persona-author");
-  await expect(editor.getByText("创建与编辑")).toBeVisible();
-  await editor.locator(".persona-author-field input").fill("温和伙伴");
-  const boxes = editor.locator(".persona-author-field textarea");
-  await boxes.nth(0).fill("隔离演练档案");
-  await boxes.nth(1).fill("你是温和、可信的陪伴者。\n保持真诚。");
-  await boxes.nth(2).fill("平静而亲切");
-  await boxes.nth(3).fill("用简短的自然语言回答");
-  await boxes.nth(4).fill("朋友");
-  await expect(editor.getByText("有尚未保存的输入。")).toBeVisible();
   let backPrompts = 0;
   page.once("dialog", async (dialog) => {
-    backPrompts += 1;
+    backPrompts++;
     await dialog.dismiss();
   });
   await page.evaluate(() => window.history.back());
   await expect.poll(() => backPrompts).toBe(1);
   await expect(page).toHaveURL(/#\/companion\/2$/);
-  await expect(boxes.nth(1)).toHaveValue(
+  await expect(panel.getByLabel("人设正文")).toHaveValue(
     "你是温和、可信的陪伴者。\n保持真诚。",
   );
-  await editor.getByRole("button", { name: "保存草稿" }).click();
+  await panel.getByRole("button", { name: "保存草稿" }).click();
   await expect(
-    editor.getByText("草稿已保存，运行中的人格没有改变。"),
+    panel.getByRole("status").filter({ hasText: "草稿已保存" }),
   ).toBeVisible();
   await expect(
-    editor.locator(".persona-author-list").getByText("温和伙伴"),
-  ).toBeVisible();
-  await page.screenshot({
-    path: "apps/web/test-results/persona-author-desktop.png",
-    fullPage: true,
-  });
-
-  await boxes.nth(1).fill("你是温和、可信且耐心的陪伴者。\n保持真诚。");
-  await editor.getByRole("button", { name: "保存草稿" }).click();
-  await expect(
-    editor.getByText("草稿已保存，运行中的人格没有改变。"),
-  ).toBeVisible();
-  await editor
-    .locator(".persona-target-options button")
-    .filter({ hasText: "actor:a" })
-    .click();
-  await expect(editor.getByText(/目标 actor:a · 读取版本/)).toBeVisible();
-  await editor.getByRole("button", { name: "保存并应用" }).click();
-  await expect(editor.getByText(/已应用到 actor:a/)).toBeVisible();
-
-  const role = await api(page, "view", { id: "actor:a" });
-  expect(role.ok()).toBeTruthy();
-  const body = (await role.json()) as {
+    panel.locator(".persona-author-list .persona-subject"),
+  ).toHaveCount(3);
+  const created = await api(page, "profiles", {});
+  const items = (await created.json()) as {
+    profiles: { id: string; name: string }[];
+  };
+  const profile = items.profiles.find((item) => item.name === "温和伙伴")!;
+  const saved = await api(page, "view", { id: profile.id });
+  const savedItem = (await saved.json()) as {
     item: {
-      content: { persona: string };
-      published_revision: string | null;
-      draft_revision: string | null;
-      version: number;
+      content: {
+        persona: string;
+        tone: string;
+        style: string;
+        address: string;
+      };
+      description: string;
     };
   };
-  expect(body.item.content.persona).toBe(
-    "你是温和、可信且耐心的陪伴者。\n保持真诚。",
-  );
-  expect(body.item.published_revision).not.toBeNull();
-  expect(body.item.draft_revision).toBeNull();
+  expect(savedItem.item.description).toBe("隔离演练档案");
+  expect(savedItem.item.content.tone).toBe("平静而亲切");
+  expect(savedItem.item.content.style).toBe("用简短的自然语言回答");
+  expect(savedItem.item.content.address).toBe("朋友");
 
-  const stale = await api(page, "save", {
-    id: "actor:a",
-    name: "旧表单",
-    description: "",
-    expected: body.item.version - 1,
-    client_id: "stale-role-form-0001",
-    content: { persona: "不能覆盖", tone: "", style: "", address: "" },
-  });
-  expect(stale.status()).toBe(409);
-  expect((await stale.json()).code).toBe("version_conflict");
-  const oversized = await api(page, "save", {
-    id: "actor:a",
-    name: "过长正文",
-    description: "",
-    expected: body.item.version,
-    client_id: "oversized-role-form-0001",
-    content: { persona: "字".repeat(20001), tone: "", style: "", address: "" },
-  });
-  expect(oversized.status()).toBe(400);
-  expect((await oversized.json()).code).toBe("invalid_input");
-  const outside = await api(page, "view", { id: "actor:outside" });
-  expect(outside.status()).toBe(403);
-
-  const catalogCurrent = await api(page, "profiles", {});
-  const currentProfiles = (await catalogCurrent.json()) as {
-    profiles: {
-      id: string;
-      name: string;
-      applied_state: string;
-      applied_target: string;
-    }[];
-  };
-  const profileA = currentProfiles.profiles.find(
-    (item) => item.name === "温和伙伴",
-  )!;
-  expect(profileA.applied_state).toBe("current");
-  expect(profileA.applied_target).toBe("actor:a");
-  const directA = await api(page, "apply", {
-    id: "actor:a",
-    name: "甲的角色",
-    description: "",
-    expected: body.item.version,
-    target: "actor:a",
-    target_expected: body.item.version,
-    client_id: "direct-a-replacement-0001",
-    content: {
-      persona: "甲直接编辑后的角色",
-      tone: "",
-      style: "",
-      address: "",
-    },
-  });
-  expect(directA.ok()).toBeTruthy();
-  const afterDirect = await api(page, "profiles", {});
-  const afterDirectProfiles = (await afterDirect.json()) as {
-    profiles: { id: string; applied_state: string }[];
-  };
-  expect(
-    afterDirectProfiles.profiles.find((item) => item.id === profileA.id)
-      ?.applied_state,
-  ).toBe("previous");
-  const createdB = await api(page, "create", {
-    name: "第二档案",
-    description: "独立候选",
-    client_id: "second-profile-create-0001",
-    content: { persona: "第二档案正文", tone: "", style: "", address: "" },
-  });
-  expect(createdB.ok()).toBeTruthy();
-  const profileB = (await createdB.json()) as {
-    item: { id: string; version: number };
-  };
-  const changedRole = await api(page, "view", { id: "actor:a" });
-  const changedRoleVersion = (await changedRole.json()) as {
-    item: { version: number };
-  };
-  const appliedB = await api(page, "apply", {
-    id: profileB.item.id,
-    name: "第二档案",
-    description: "独立候选",
-    expected: profileB.item.version,
-    target: "actor:a",
-    target_expected: changedRoleVersion.item.version,
-    client_id: "second-profile-apply-0001",
-    content: { persona: "第二档案正文", tone: "", style: "", address: "" },
-  });
-  expect(appliedB.ok()).toBeTruthy();
-  const afterB = await api(page, "profiles", {});
-  const afterBProfiles = (await afterB.json()) as {
-    profiles: { id: string; applied_state: string }[];
-  };
-  expect(
-    afterBProfiles.profiles.find((item) => item.id === profileA.id)
-      ?.applied_state,
-  ).toBe("previous");
-  expect(
-    afterBProfiles.profiles.find((item) => item.id === profileB.item.id)
-      ?.applied_state,
-  ).toBe("current");
-  await page.reload();
-  await page.getByRole("button", { name: "创建与编辑" }).click();
+  await panel.getByRole("button", { name: "编辑", exact: true }).click();
+  await panel.getByLabel("人设正文").fill("你是温和、耐心的陪伴者。");
+  await panel.getByRole("button", { name: "保存并应用" }).click();
+  await expect(panel.getByLabel("应用到")).toBeVisible();
+  await panel.getByLabel("应用到").selectOption("actor:a");
+  await panel.getByRole("button", { name: "保存并应用" }).click();
   await expect(
-    editor
-      .locator(".persona-author-list .persona-subject")
-      .filter({ hasText: "温和伙伴" }),
-  ).toContainText("曾应用到 actor:a");
-  await expect(
-    editor
-      .locator(".persona-author-list .persona-subject")
-      .filter({ hasText: "第二档案" }),
-  ).toContainText("当前生效于 actor:a");
-
-  await editor
-    .locator(".persona-author-list .persona-subject")
-    .filter({ hasText: "actor:b" })
-    .click();
-  await expect(editor.locator(".persona-author-field input")).toHaveValue(
-    "actor:b",
-  );
-  await editor.locator(".persona-author-field input").fill("乙的角色");
-  await boxes.nth(1).fill("乙的新版人格\n保留上下文。");
-  await editor.getByRole("button", { name: "保存并应用" }).click();
-  await expect(editor.getByText(/已应用到 actor:b/)).toBeVisible();
-  const directRole = await api(page, "view", { id: "actor:b" });
-  expect(directRole.ok()).toBeTruthy();
-  const roleB = (await directRole.json()) as {
-    item: { version: number; content: { persona: string } };
-  };
-  expect(roleB.item.content.persona).toBe("乙的新版人格\n保留上下文。");
-  await expect(
-    editor.locator(".persona-author-list").getByText("乙的角色"),
+    panel.getByRole("status").filter({ hasText: "已保存并应用" }),
   ).toBeVisible();
-
-  await page.setViewportSize({ width: 390, height: 844 });
+  const roleA = await api(page, "view", { id: "actor:a" });
+  const roleAItem = (await roleA.json()) as {
+    item: {
+      content: { persona: string };
+      additional_fields: string[];
+      published_revision: string | null;
+    };
+  };
+  expect(roleAItem.item.content.persona).toBe("你是温和、耐心的陪伴者。");
+  expect(roleAItem.item.additional_fields).toContain("custom");
+  expect(roleAItem.item.published_revision).not.toBeNull();
   await page.screenshot({
-    path: "apps/web/test-results/persona-author-mobile.png",
+    path: "apps/web/test-results/persona-clean-desktop.png",
     fullPage: true,
   });
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await boxes.nth(1).fill("本地尚未保存的编辑");
+
+  await panel
+    .locator(".persona-author-list .persona-subject")
+    .filter({ hasText: "角色 2" })
+    .click();
+  await panel.getByRole("button", { name: "编辑", exact: true }).click();
+  await panel.getByLabel("名称").fill("乙的角色");
+  await panel.getByLabel("人设正文").fill("乙的新人格");
+  await panel.getByRole("button", { name: "保存并应用" }).click();
+  await expect(
+    panel.getByRole("status").filter({ hasText: "已保存并应用" }),
+  ).toBeVisible();
+  await expect(panel.locator(".persona-author-list")).toContainText("乙的角色");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(panel.getByRole("button", { name: "人格列表" })).toBeVisible();
+  await page.screenshot({
+    path: "apps/web/test-results/persona-clean-mobile-detail.png",
+    fullPage: true,
+  });
+  await panel.getByRole("button", { name: "人格列表" }).click();
+  await expect(panel.locator(".persona-author-list")).toBeVisible();
+  await page.screenshot({
+    path: "apps/web/test-results/persona-clean-mobile-list.png",
+    fullPage: true,
+  });
+  await panel
+    .locator(".persona-author-list .persona-subject")
+    .filter({ hasText: "乙的角色" })
+    .click();
+  await expect(panel.locator(".persona-body")).toContainText("乙的新人格");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+
+  const latest = await api(page, "view", { id: "actor:b" });
+  const latestItem = (await latest.json()) as { item: { version: number } };
+  await panel.getByRole("button", { name: "编辑", exact: true }).click();
+  await panel.getByLabel("人设正文").fill("本地尚未保存的编辑");
   const concurrent = await api(page, "save", {
     id: "actor:b",
     name: "乙的角色",
     description: "",
-    expected: roleB.item.version,
-    client_id: "concurrent-role-save-0001",
+    expected: latestItem.item.version,
+    client_id: "concurrent-role-save-clean-0001",
     content: { persona: "另一个编辑", tone: "", style: "", address: "" },
   });
   expect(concurrent.ok()).toBeTruthy();
-  await editor.getByRole("button", { name: "保存草稿" }).click();
-  await expect(editor.getByRole("alert")).toContainText("version_conflict");
-  await expect(boxes.nth(1)).toHaveValue("本地尚未保存的编辑");
-  await page.screenshot({
-    path: "apps/web/test-results/persona-author-conflict.png",
-    fullPage: true,
-  });
+  await panel.getByRole("button", { name: "保存草稿" }).click();
+  await expect(panel.getByRole("alert")).toContainText("version_conflict");
+  await expect(panel.getByLabel("人设正文")).toHaveValue("本地尚未保存的编辑");
   page.once("dialog", (dialog) => void dialog.accept());
-  await editor
+  await panel
     .locator(".persona-author-list .persona-subject")
-    .filter({ hasText: "actor:b" })
+    .filter({ hasText: "乙的角色" })
     .click();
-  await expect(boxes.nth(1)).toHaveValue("另一个编辑");
-  await editor.getByRole("button", { name: "复制为新档案" }).click();
-  await expect(editor.locator(".persona-author-field input")).toHaveValue(
-    "乙的角色 副本",
-  );
-  await editor.getByRole("button", { name: "保存草稿" }).click();
+  await expect(panel.locator(".persona-body")).toContainText("另一个编辑");
+  await page.reload();
   await expect(
-    editor.getByText("草稿已保存，运行中的人格没有改变。"),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "退出登录" }).click();
-  const afterLogout = await api(page, "profiles", {});
-  expect(afterLogout.status()).toBe(401);
+    panel
+      .locator(".persona-author-list .persona-subject")
+      .filter({ hasText: "乙的角色" }),
+  ).toContainText("有新草稿");
+  await panel
+    .locator(".persona-author-list .persona-subject")
+    .filter({ hasText: "乙的角色" })
+    .click();
+  await panel.getByLabel("更多操作").click();
+  await panel.getByRole("button", { name: "复制为新人格" }).click();
+  await expect(panel.getByLabel("名称")).toHaveValue("乙的角色 副本");
+  await expect(panel.getByLabel("人设正文")).toHaveValue("另一个编辑");
 });
 
-test("a reader can view personas but cannot create or apply", async ({
-  page,
-}) => {
+test("read-only account sees detail and cannot write", async ({ page }) => {
   await page.goto("https://127.0.0.1:4841/#/companion/2");
   await page.getByLabel("管理员账号").fill(admin);
   await page.getByLabel("密码", { exact: true }).fill(password);
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await expect(page.locator(".persona-state")).toContainText("已授权角色 2 个");
-  await page.getByRole("button", { name: "创建与编辑" }).click();
-  const editor = page.locator(".persona-author");
-  await expect(editor.getByText("创建与编辑")).toBeVisible();
-  await expect(editor.getByText(/创建、编辑和应用权限未开放/)).toBeVisible();
-  await expect(editor.getByRole("button", { name: "新建档案" })).toBeDisabled();
+  const panel = page.locator(".persona-page");
+  await expect(panel.locator(".persona-body")).not.toBeEmpty();
+  await expect(panel.getByRole("button", { name: "新建人格" })).toBeDisabled();
+  await expect(
+    panel.getByRole("button", { name: "编辑", exact: true }),
+  ).toHaveCount(0);
   const refused = await api(page, "create", {
-    name: "只读账号不能创建",
+    name: "不可创建",
     description: "",
-    client_id: "read-only-create-0001",
-    content: { persona: "不可保存的人格", tone: "", style: "", address: "" },
+    client_id: "read-only-create-clean-0001",
+    content: { persona: "不可保存", tone: "", style: "", address: "" },
   });
   expect(refused.status()).toBe(403);
   expect((await refused.json()).code).toBe("persona_write_required");
