@@ -21,6 +21,14 @@ test("real HTTPS persona authoring, conflict and role readback", async ({
   await page.getByLabel("密码", { exact: true }).fill(password);
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+  await page.evaluate(() => {
+    window.location.hash = "#/workbench";
+  });
+  await expect(page).toHaveURL(/#\/workbench$/);
+  await page.evaluate(() => {
+    window.location.hash = "#/companion/2";
+  });
+  await expect(page).toHaveURL(/#\/companion\/2$/);
   await page.getByRole("button", { name: "创建与编辑" }).click();
   await expect(page.locator(".persona-read-details")).not.toHaveAttribute(
     "open",
@@ -35,6 +43,18 @@ test("real HTTPS persona authoring, conflict and role readback", async ({
   await boxes.nth(2).fill("平静而亲切");
   await boxes.nth(3).fill("用简短的自然语言回答");
   await boxes.nth(4).fill("朋友");
+  await expect(editor.getByText("有尚未保存的输入。")).toBeVisible();
+  let backPrompts = 0;
+  page.once("dialog", async (dialog) => {
+    backPrompts += 1;
+    await dialog.dismiss();
+  });
+  await page.evaluate(() => window.history.back());
+  await expect.poll(() => backPrompts).toBe(1);
+  await expect(page).toHaveURL(/#\/companion\/2$/);
+  await expect(boxes.nth(1)).toHaveValue(
+    "你是温和、可信的陪伴者。\n保持真诚。",
+  );
   await editor.getByRole("button", { name: "保存草稿" }).click();
   await expect(
     editor.getByText("草稿已保存，运行中的人格没有改变。"),
@@ -99,6 +119,94 @@ test("real HTTPS persona authoring, conflict and role readback", async ({
   const outside = await api(page, "view", { id: "actor:outside" });
   expect(outside.status()).toBe(403);
 
+  const catalogCurrent = await api(page, "profiles", {});
+  const currentProfiles = (await catalogCurrent.json()) as {
+    profiles: {
+      id: string;
+      name: string;
+      applied_state: string;
+      applied_target: string;
+    }[];
+  };
+  const profileA = currentProfiles.profiles.find(
+    (item) => item.name === "温和伙伴",
+  )!;
+  expect(profileA.applied_state).toBe("current");
+  expect(profileA.applied_target).toBe("actor:a");
+  const directA = await api(page, "apply", {
+    id: "actor:a",
+    name: "甲的角色",
+    description: "",
+    expected: body.item.version,
+    target: "actor:a",
+    target_expected: body.item.version,
+    client_id: "direct-a-replacement-0001",
+    content: {
+      persona: "甲直接编辑后的角色",
+      tone: "",
+      style: "",
+      address: "",
+    },
+  });
+  expect(directA.ok()).toBeTruthy();
+  const afterDirect = await api(page, "profiles", {});
+  const afterDirectProfiles = (await afterDirect.json()) as {
+    profiles: { id: string; applied_state: string }[];
+  };
+  expect(
+    afterDirectProfiles.profiles.find((item) => item.id === profileA.id)
+      ?.applied_state,
+  ).toBe("previous");
+  const createdB = await api(page, "create", {
+    name: "第二档案",
+    description: "独立候选",
+    client_id: "second-profile-create-0001",
+    content: { persona: "第二档案正文", tone: "", style: "", address: "" },
+  });
+  expect(createdB.ok()).toBeTruthy();
+  const profileB = (await createdB.json()) as {
+    item: { id: string; version: number };
+  };
+  const changedRole = await api(page, "view", { id: "actor:a" });
+  const changedRoleVersion = (await changedRole.json()) as {
+    item: { version: number };
+  };
+  const appliedB = await api(page, "apply", {
+    id: profileB.item.id,
+    name: "第二档案",
+    description: "独立候选",
+    expected: profileB.item.version,
+    target: "actor:a",
+    target_expected: changedRoleVersion.item.version,
+    client_id: "second-profile-apply-0001",
+    content: { persona: "第二档案正文", tone: "", style: "", address: "" },
+  });
+  expect(appliedB.ok()).toBeTruthy();
+  const afterB = await api(page, "profiles", {});
+  const afterBProfiles = (await afterB.json()) as {
+    profiles: { id: string; applied_state: string }[];
+  };
+  expect(
+    afterBProfiles.profiles.find((item) => item.id === profileA.id)
+      ?.applied_state,
+  ).toBe("previous");
+  expect(
+    afterBProfiles.profiles.find((item) => item.id === profileB.item.id)
+      ?.applied_state,
+  ).toBe("current");
+  await page.reload();
+  await page.getByRole("button", { name: "创建与编辑" }).click();
+  await expect(
+    editor
+      .locator(".persona-author-list .persona-subject")
+      .filter({ hasText: "温和伙伴" }),
+  ).toContainText("曾应用到 actor:a");
+  await expect(
+    editor
+      .locator(".persona-author-list .persona-subject")
+      .filter({ hasText: "第二档案" }),
+  ).toContainText("当前生效于 actor:a");
+
   await editor
     .locator(".persona-author-list .persona-subject")
     .filter({ hasText: "actor:b" })
@@ -115,9 +223,7 @@ test("real HTTPS persona authoring, conflict and role readback", async ({
   const roleB = (await directRole.json()) as {
     item: { version: number; content: { persona: string } };
   };
-  expect(roleB.item.content.persona).toBe(
-    "乙的新版人格\n保留上下文。",
-  );
+  expect(roleB.item.content.persona).toBe("乙的新版人格\n保留上下文。");
   await expect(
     editor.locator(".persona-author-list").getByText("乙的角色"),
   ).toBeVisible();

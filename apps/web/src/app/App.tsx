@@ -53,6 +53,7 @@ export function App() {
 function AppShell() {
   const auth = useAuth();
   const [hash, setHash] = useState(window.location.hash);
+  const acceptedHash = useRef(window.location.hash);
   const [drawer, setDrawer] = useState<"navigation" | "appearance" | null>(
     null,
   );
@@ -98,7 +99,27 @@ function AppShell() {
 
   useEffect(() => {
     const change = () => {
-      setHash(window.location.hash);
+      const next = window.location.hash;
+      if (next !== acceptedHash.current) {
+        const leaving = new CustomEvent("tianshu:before-route", {
+          cancelable: true,
+          detail: { from: acceptedHash.current, to: next },
+        });
+        if (!window.dispatchEvent(leaving)) {
+          // A history traversal already changed the URL. Restore the editor route without
+          // triggering a second hashchange or losing the mounted form.
+          window.history.pushState(
+            null,
+            "",
+            window.location.pathname +
+              window.location.search +
+              acceptedHash.current,
+          );
+          return;
+        }
+        acceptedHash.current = next;
+      }
+      setHash(next);
       setDrawer(null);
     };
     const online = () => setOffline(!navigator.onLine);

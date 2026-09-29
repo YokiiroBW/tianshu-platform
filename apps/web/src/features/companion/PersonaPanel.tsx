@@ -489,7 +489,7 @@ export default function PersonaPanel() {
         <div>
           <p className="eyebrow">角色服务 · 人格管理</p>
           <h2 ref={heading} tabIndex={-1}>
-            人格版本
+            人格档案
           </h2>
           <p className="muted persona-intro">
             创建可复用档案，编辑已有角色，保存草稿并明确应用。下方保留版本历史与差异查看。

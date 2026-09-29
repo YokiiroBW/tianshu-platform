@@ -141,6 +141,7 @@ class WebPersonaAuthor:
                 "updated_at",
                 "last_applied_target",
                 "last_applied_profile_revision",
+                "last_applied_target_revision",
             )
         }
         if "content" in item:
@@ -149,6 +150,27 @@ class WebPersonaAuthor:
             result["content"] = {field: content.get(field, "") for field in FIELDS}
             result["additional_fields"] = sorted(set(content) - set(FIELDS))
         return result
+
+    def _profile_status(self, item, role_map=None):
+        if item["kind"] != "profile":
+            return item
+        last_target = item.pop("last_applied_target")
+        target_revision = item.pop("last_applied_target_revision")
+        visible_target = last_target if last_target in self.rule["apply_subjects"] else None
+        if last_target is None:
+            state = "never"
+        elif visible_target is None or role_map is None or visible_target not in role_map:
+            state = "unknown"
+        else:
+            state = (
+                "current"
+                if target_revision is not None
+                and role_map[visible_target]["published_revision"] == target_revision
+                else "previous"
+            )
+        item["applied_state"] = state
+        item["applied_target"] = visible_target
+        return item
 
     async def route(self, path, body, session):
         name = path.rsplit("/", 1)[-1]
@@ -175,7 +197,9 @@ class WebPersonaAuthor:
                 role_map[item["id"]] = item
             require(set(self.rule["apply_subjects"]) <= set(role_map), "invalid_upstream", 502)
             return {
-                "profiles": [self._item({"item": item}) for item in profiles],
+                "profiles": [
+                    self._profile_status(self._item({"item": item}), role_map) for item in profiles
+                ],
                 "targets": [role_map[subject] for subject in self.rule["apply_subjects"]],
                 "permissions": {
                     action: self.console.persona_action_authorised("persona." + action)
@@ -194,7 +218,7 @@ class WebPersonaAuthor:
                 None,
                 target,
             )
-            return {"item": self._item(answer, identifier)}
+            return {"item": self._profile_status(self._item(answer, identifier))}
         if name == "create":
             require(
                 set(body)
@@ -285,7 +309,10 @@ class WebPersonaAuthor:
             result = answer.get("item")
             require(isinstance(result, dict), "invalid_upstream", 502)
             return {
-                "item": self._item({"item": result.get("profile")}, identifier),
+                "item": self._profile_status(
+                    self._item({"item": result.get("profile")}, identifier),
+                    {target: self._item({"item": result.get("target")}, target)},
+                ),
                 "target": self._item({"item": result.get("target")}, target),
             }
-        return {"item": self._item(answer, identifier)}
+        return {"item": self._profile_status(self._item(answer, identifier))}

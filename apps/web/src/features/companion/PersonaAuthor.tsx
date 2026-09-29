@@ -19,8 +19,9 @@ type Item = {
   published_revision: string | null;
   draft_revision: string | null;
   updated_at: number | null;
-  last_applied_target: string | null;
   last_applied_profile_revision: string | null;
+  applied_state?: "never" | "current" | "previous" | "unknown";
+  applied_target?: string | null;
   content?: Content;
   additional_fields?: string[];
 };
@@ -70,6 +71,19 @@ function fromItem(item: Item): Form {
   };
 }
 
+function applicationLabel(item: Item) {
+  const target = item.applied_target;
+  const newDraft =
+    item.draft_revision &&
+    item.last_applied_profile_revision !== item.draft_revision;
+  if (item.applied_state === "current")
+    return `当前生效于 ${target}${newDraft ? " · 有新草稿" : ""}`;
+  if (item.applied_state === "previous")
+    return `曾应用到 ${target}${newDraft ? " · 有新草稿" : ""}`;
+  if (item.applied_state === "unknown") return "应用状态不在当前授权范围";
+  return "草稿";
+}
+
 export default function PersonaAuthor({
   session,
   onApplied,
@@ -100,32 +114,30 @@ export default function PersonaAuthor({
   const request = useRef<{ body: string; id: string } | null>(null);
   const controller = useRef<AbortController | null>(null);
   const dirty = JSON.stringify(form) !== JSON.stringify(baseline);
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
-      if (!dirty) return;
+      if (!dirtyRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  }, []);
 
   useEffect(() => {
-    const protect = (event: MouseEvent) => {
-      if (!dirty) return;
-      const link = (event.target as Element | null)?.closest?.("a[href]");
+    const protect = (event: Event) => {
       if (
-        link &&
+        dirtyRef.current &&
         !window.confirm("有尚未保存的输入。离开后会丢失，确定继续吗？")
-      ) {
+      )
         event.preventDefault();
-        event.stopPropagation();
-      }
     };
-    document.addEventListener("click", protect, true);
-    return () => document.removeEventListener("click", protect, true);
-  }, [dirty]);
+    window.addEventListener("tianshu:before-route", protect);
+    return () => window.removeEventListener("tianshu:before-route", protect);
+  }, []);
 
   useEffect(() => () => controller.current?.abort(), []);
 
@@ -332,11 +344,7 @@ export default function PersonaAuthor({
                 {item.description || "没有简介"}
               </span>
               <span className="persona-subject-time">
-                {item.draft_revision &&
-                item.last_applied_profile_revision === item.draft_revision
-                  ? "已应用"
-                  : "草稿"}{" "}
-                · {shortTime(item.updated_at)}
+                {applicationLabel(item)} · {shortTime(item.updated_at)}
               </span>
             </button>
           ))}
@@ -374,6 +382,13 @@ export default function PersonaAuthor({
               {stateLabel(selected.state)} · 更新{" "}
               {shortTime(selected.updated_at)} ·{" "}
               {selected.draft_revision ? "有草稿" : "无草稿"}
+            </p>
+          )}
+          {selected?.kind === "profile" && (
+            <p className="muted">
+              {applicationLabel(
+                profiles.find((item) => item.id === selected.id) || selected,
+              )}
             </p>
           )}
           <label className="persona-author-field">
