@@ -14,6 +14,7 @@ type View = {
   grants: Grant[];
   capabilities: string[];
   alias_pending: number;
+  roles: { id: string; label: string }[];
 };
 type Profile = {
   qq_id: string;
@@ -171,6 +172,15 @@ export function QQAdminPanel() {
     }
   }
 
+  function toggleActor(id: string) {
+    setActors((current) => {
+      const selected = new Set(split(current));
+      if (selected.has(id)) selected.delete(id);
+      else selected.add(id);
+      return [...selected].join("\n");
+    });
+  }
+
   return (
     <div className="qq-admin-page">
       <section className="panel">
@@ -188,7 +198,6 @@ export function QQAdminPanel() {
                 <li key={item.qq_id}>
                   <strong>{item.display_name}</strong>
                   <span>QQ {item.qq_id}</span>
-                  <small>档案 {item.person_id}</small>
                   {item.aliases.map((alias) => (
                     <small
                       key={`${alias.kind}:${alias.bot_id}:${alias.group_id}`}
@@ -204,6 +213,7 @@ export function QQAdminPanel() {
             </ul>
             {profiles.next_cursor && (
               <button
+                className="button"
                 type="button"
                 disabled={busy}
                 onClick={() => void moreProfiles()}
@@ -233,10 +243,18 @@ export function QQAdminPanel() {
                   <strong>{grant.note || `QQ ${grant.qq_id}`}</strong>
                   <span>QQ {grant.qq_id}</span>
                   <small>
-                    角色：{grant.actor_ids.join("、") || "所有已启用角色"}
+                    角色：
+                    {grant.actor_ids
+                      .map(
+                        (id) =>
+                          view.roles.find((role) => role.id === id)?.label ??
+                          id,
+                      )
+                      .join("、") || "所有已准入角色"}
                     ；会话：{grant.conversations.join("、") || "已准入会话"}
                   </small>
                   <button
+                    className="button"
                     type="button"
                     disabled={busy}
                     onClick={() => void revoke(grant.qq_id)}
@@ -273,20 +291,38 @@ export function QQAdminPanel() {
                   onChange={(event) => setNote(event.target.value)}
                 />
               </label>
+              {view.roles.length > 0 && (
+                <fieldset className="qq-admin-roles">
+                  <legend>适用角色（不选择表示所有已准入角色）</legend>
+                  {view.roles.map((role) => (
+                    <label key={role.id}>
+                      <input
+                        type="checkbox"
+                        checked={split(actors).includes(role.id)}
+                        onChange={() => toggleActor(role.id)}
+                      />
+                      {role.label}
+                    </label>
+                  ))}
+                </fieldset>
+              )}
+              <details className="qq-admin-advanced">
+                <summary>高级设置：手动指定角色范围</summary>
+                <label>
+                  角色标识（每行一个；留空表示所有已准入角色）
+                  <textarea
+                    value={actors}
+                    onChange={(event) => setActors(event.target.value)}
+                    placeholder="actor:..."
+                  />
+                </label>
+              </details>
               <label>
-                适用角色（每行一个，留空表示已准入角色）
-                <textarea
-                  value={actors}
-                  onChange={(event) => setActors(event.target.value)}
-                  placeholder="actor:..."
-                />
-              </label>
-              <label>
-                适用会话（每行一个，留空表示已准入会话）
+                适用会话（留空表示所有已准入会话）
                 <textarea
                   value={conversations}
                   onChange={(event) => setConversations(event.target.value)}
-                  placeholder="group:... 或 private:..."
+                  placeholder="群聊 group:群号；私聊 private:该用户QQ号（每行一个）"
                 />
               </label>
               <label className="qq-admin-toggle">
@@ -297,7 +333,7 @@ export function QQAdminPanel() {
                 />
                 允许在对话中说明管理身份
               </label>
-              <button type="submit" disabled={busy}>
+              <button className="button" type="submit" disabled={busy}>
                 保存管理身份
               </button>
             </form>

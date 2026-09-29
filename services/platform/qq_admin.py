@@ -196,6 +196,12 @@ class QQAdmin:
         return db.execute("SELECT version FROM head WHERE id=1").fetchone()[0]
 
     def _view(self):
+        roles = {
+            item["id"]: item["label"]
+            for item in (self.p.settings.get("bot_adapter_self_service") or {}).get("actors", [])
+            if type(item) is dict and type(item.get("id")) is str and type(item.get("label")) is str
+        }
+        roles.update({item["id"]: item["label"] for item in self.p.role_runtime.active_actors()})
         with closing(self._db()) as db:
             return {
                 "schema_version": 1,
@@ -205,6 +211,9 @@ class QQAdmin:
                     for row in db.execute("SELECT body FROM grants ORDER BY qq_id")
                 ],
                 "capabilities": sorted(CAPABILITIES),
+                "roles": [
+                    {"id": actor, "label": label} for actor, label in sorted(roles.items())
+                ],
                 "alias_pending": db.execute("SELECT count(*) FROM alias_pending").fetchone()[0],
             }
 
