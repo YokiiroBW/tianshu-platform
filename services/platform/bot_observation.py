@@ -665,8 +665,27 @@ class BotObservation:
         return row
 
     def record(self, row, event):
+        base_fields = {
+            "schema_version",
+            "platform_id",
+            "self_id",
+            "namespace",
+            "conversation_id",
+            "account_id",
+            "event_id",
+            "revision",
+            "sent_at",
+            "text",
+            "content_state",
+            "mentioned",
+            "scope_revision",
+        }
         require(
-            event.get("schema_version") == 2
+            type(event) is dict
+            and type(event.get("schema_version")) is int
+            and event["schema_version"] in (2, 3)
+            and set(event)
+            == base_fields | ({"nickname", "group_card"} if event["schema_version"] == 3 else set())
             and event.get("platform_id") == row["instance_id"]
             and event.get("self_id") == row["account_id"]
             and event.get("namespace") == "qq"
@@ -682,6 +701,25 @@ class BotObservation:
             502,
         )
         kind = conversation.split(":", 1)[0]
+        if event["schema_version"] == 3:
+            require(kind == "group" or event["group_card"] is None, "adapter_incompatible", 502)
+            for name in (event["nickname"], event["group_card"]):
+                require(
+                    name is None
+                    or (
+                        type(name) is str
+                        and 1 <= len(name.strip()) <= 80
+                        and all(
+                            ord(char) >= 32
+                            and ord(char) != 127
+                            and not 0x202A <= ord(char) <= 0x202E
+                            and not 0x2066 <= ord(char) <= 0x2069
+                            for char in name
+                        )
+                    ),
+                    "adapter_incompatible",
+                    502,
+                )
         with closing(self._db()) as db:
             version = db.execute(
                 "SELECT * FROM observation_versions WHERE observation_id=? AND revision=?",

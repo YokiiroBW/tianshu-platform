@@ -260,18 +260,37 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         body = {**self.event(), "schema_version": 2, "nickname": "同名", "group_card": "群名片"}
         accepted = await self.platform.bots.event(self.token, body)
         self.assertEqual(accepted["state"], "accepted")
-        self.assertEqual(self.platform.qq_admin.pending_aliases(), [body])
+        queued = self.platform.qq_admin.pending_aliases()
+        self.assertEqual(len(queued), 1)
+        self.assertNotIn("text", queued[0])
         with patch(
             "services.platform.qq_admin.observe_alias", new_callable=AsyncMock, return_value=True
         ) as writer:
             await self.platform.qq_admin.flush_aliases()
-            writer.assert_awaited_once_with(self.platform, body)
+            writer.assert_awaited_once_with(self.platform, queued[0])
         self.assertEqual(self.platform.qq_admin.pending_aliases(), [])
         with self.assertRaises(Fault):
             await self.platform.bots.event(
                 self.token, {**body, "event_id": "sdk:102", "account_id": "０１００１"}
             )
         self.assertEqual(self.platform.qq_admin.pending_aliases(), [])
+
+    async def test_qq_alias_queue_rotates_past_failed_first_page(self):
+        self.platform.settings["qq_alias_memory"] = {
+            "base_url": "https://memory.synthetic.invalid",
+            "token_env": "TS_QQ_ALIAS_TEST",
+        }
+        base = {**self.event(), "schema_version": 2, "nickname": "称呼", "group_card": None}
+        for index in range(40):
+            self.platform.qq_admin.queue_alias({**base, "event_id": f"sdk:{index + 1000}"})
+        first = self.platform.qq_admin.pending_aliases()
+        second = self.platform.qq_admin.pending_aliases()
+        self.assertEqual(len(first), 32)
+        self.assertEqual(len(second), 8)
+        self.assertEqual(
+            {item["event_id"] for item in first + second},
+            {f"sdk:{index + 1000}" for index in range(40)},
+        )
 
     async def test_event_dedup_author_binding_and_unknown_no_replay(self):
         bot = self.platform.bots

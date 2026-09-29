@@ -171,6 +171,10 @@ class QQAdmin:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS alias_pending (event_ref TEXT PRIMARY KEY, semantic TEXT NOT NULL, body TEXT NOT NULL)"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS alias_progress (id INTEGER PRIMARY KEY CHECK(id=1), last_ref TEXT NOT NULL)"
+            )
+            db.execute("INSERT OR IGNORE INTO alias_progress VALUES (1,'')")
             db.execute("PRAGMA user_version=1")
 
     def _db(self):
@@ -210,7 +214,21 @@ class QQAdmin:
         key = hashlib.sha256(
             canonical([body["connection_id"], body["event_id"], body["account_id"]]).encode()
         ).hexdigest()
-        semantic = hashlib.sha256(canonical(body).encode()).hexdigest()
+        projected = {
+            key: body[key]
+            for key in (
+                "schema_version",
+                "connection_id",
+                "event_id",
+                "account_id",
+                "self_id",
+                "conversation_id",
+                "nickname",
+                "group_card",
+                "sent_at",
+            )
+        }
+        semantic = hashlib.sha256(canonical(projected).encode()).hexdigest()
         with closing(self._db()) as db, db:
             prior = db.execute(
                 "SELECT semantic FROM alias_pending WHERE event_ref=?", (key,)
@@ -218,15 +236,25 @@ class QQAdmin:
             require(prior is None or prior["semantic"] == semantic, "idempotency_conflict", 409)
             db.execute(
                 "INSERT OR IGNORE INTO alias_pending VALUES (?,?,?)",
-                (key, semantic, canonical(body)),
+                (key, semantic, canonical(projected)),
             )
 
     def pending_aliases(self):
-        with closing(self._db()) as db:
-            return [
-                json.loads(row[0])
-                for row in db.execute("SELECT body FROM alias_pending ORDER BY event_ref LIMIT 32")
-            ]
+        with closing(self._db()) as db, db:
+            cursor = db.execute("SELECT last_ref FROM alias_progress WHERE id=1").fetchone()[0]
+            rows = db.execute(
+                "SELECT event_ref,body FROM alias_pending WHERE event_ref>? ORDER BY event_ref LIMIT 32",
+                (cursor,),
+            ).fetchall()
+            if not rows:
+                rows = db.execute(
+                    "SELECT event_ref,body FROM alias_pending ORDER BY event_ref LIMIT 32"
+                ).fetchall()
+            if rows:
+                db.execute(
+                    "UPDATE alias_progress SET last_ref=? WHERE id=1", (rows[-1]["event_ref"],)
+                )
+            return [json.loads(row["body"]) for row in rows]
 
     def finish_alias(self, body):
         key = hashlib.sha256(

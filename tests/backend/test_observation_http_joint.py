@@ -120,6 +120,7 @@ class ObservationHttpJointTests(unittest.IsolatedAsyncioTestCase):
             "actions": ["qq.admin.check"],
         }
         os.environ["TS_OBS_QQ_CHECK"] = "synthetic-companion-qq-check-123456"
+        os.environ["TS_OBS_MEMORY_PROFILE"] = "synthetic-platform-profile-token-123456"
         self.settings["core"] = {
             "base_url": self.companion_url,
             "token_env": "TS_OBS_PLATFORM_CORE",
@@ -129,6 +130,11 @@ class ObservationHttpJointTests(unittest.IsolatedAsyncioTestCase):
             "directory": str(self.root / "adapters"),
             "allowed_cidrs": ["127.0.0.0/8"],
             "actors": [{"id": "actor:a", "label": "Synthetic actor"}],
+        }
+        self.settings["web_qq_profiles"] = {
+            "base_url": self.memory_url,
+            "token_env": "TS_OBS_MEMORY_PROFILE",
+            "ca_file": str(self.ca),
         }
         self.platform = Platform(self.settings)
         self.addAsyncCleanup(self._close_platform)
@@ -150,6 +156,7 @@ class ObservationHttpJointTests(unittest.IsolatedAsyncioTestCase):
         contracts.load_sources()
         self.store.migrate_sources(self.root / "sources.bak", contracts)
         self.store.migrate_observations(self.root / "observations.bak")
+        self.store.migrate_qq_aliases(self.root / "qq-aliases.bak")
         memory_config = self.root / "memory-config.json"
         memory_config.write_text(
             json.dumps(
@@ -161,7 +168,15 @@ class ObservationHttpJointTests(unittest.IsolatedAsyncioTestCase):
                         "companion": {
                             "token": "synthetic-companion-memory-token-123456",
                             "operations": ["observe_ingest", "observe_query"],
-                        }
+                        },
+                        "platform_qq_profiles": {
+                            "token": "synthetic-platform-profile-token-123456",
+                            "operations": ["qq_profiles"],
+                        },
+                        "platform_qq_alias": {
+                            "token": "synthetic-platform-alias-token-123456",
+                            "operations": ["qq_alias"],
+                        },
                     },
                     "observation_source": {
                         "verify_url": self.platform_url + "/internal/v2/observation-source/verify",
@@ -219,7 +234,10 @@ class ObservationHttpJointTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def accounts():
-            return [{"id": "10001", "platform": "qq", "label": "Synthetic bot"}]
+            return [
+                {"id": account, "platform": "qq", "label": "Synthetic bot"}
+                for account in ("10001", "10002")
+            ]
 
         self.sent = []
 
@@ -281,6 +299,97 @@ class ObservationHttpJointTests(unittest.IsolatedAsyncioTestCase):
 
     async def _close_platform(self):
         self.platform.close()
+
+    async def test_observation_v3_registers_qq_profiles_without_reply(self):
+        admin = {"Authorization": "Bearer " + ENV["TS012_ADMIN"]}
+        for account in ("10001", "10002"):
+            config = {
+                "adapter": "nonebot",
+                "address": self.host_url,
+                "access_key": self.host.access_key,
+                "allow_private_http": False,
+                "ca_pem": self.ca.read_text(encoding="utf-8"),
+                "account_id": account,
+                "name": "Synthetic observation",
+            }
+            async with self.tls_client.post(
+                self.platform_url + "/internal/v2/observation-admin/enroll-default",
+                json=config,
+                headers=admin,
+            ) as response:
+                self.assertEqual(response.status, 200, await response.text())
+                self.assertTrue((await response.json())["created"])
+        events = [
+            ("10001", "group:20002", "30003", "51", "同名", "甲群名片"),
+            ("10001", "private:30003", "30003", "52", "同名", None),
+            ("10002", "group:20004", "30003", "53", "同名", "乙群名片"),
+            ("10002", "group:20004", "30004", "54", "同名", "同名片"),
+        ]
+        for bot, conversation, author, event_id, nickname, card in events[:1]:
+            self.assertTrue(
+                await self.host.capture_observation(
+                    bot,
+                    conversation,
+                    author,
+                    event_id,
+                    "2026-09-29T01:00:00Z",
+                    "observed only",
+                    True,
+                    identity_v3=True,
+                    nickname=nickname,
+                    group_card=card,
+                )
+            )
+        await self.platform.bot_observation.pump_once()
+        await self.inbox.flush()  # The real Memory HTTPS listener is deliberately offline.
+        with closing(self.inbox._db()) as db:
+            self.assertEqual(
+                db.execute("SELECT archive_state FROM inbox").fetchone()[0], "pending_memory"
+            )
+        await self._start_uvicorn(self.memory_app, self.memory_port)
+        with closing(self.inbox._db()) as db, db:
+            db.execute("UPDATE inbox SET next_attempt_at=0")
+        await self.inbox.flush()
+        for bot, conversation, author, event_id, nickname, card in events[1:]:
+            self.assertTrue(
+                await self.host.capture_observation(
+                    bot,
+                    conversation,
+                    author,
+                    event_id,
+                    "2026-09-29T01:00:01Z",
+                    "observed only",
+                    conversation.startswith("group:"),
+                    identity_v3=True,
+                    nickname=nickname,
+                    group_card=card,
+                )
+            )
+        await self.platform.bot_observation.pump_once()
+        await self.inbox.flush()
+        with closing(self.inbox._db()) as db:
+            self.assertEqual(
+                db.execute("SELECT count(*) FROM inbox WHERE archive_state='archived'").fetchone()[
+                    0
+                ],
+                4,
+            )
+        profiles = await self.platform.qq_admin._profiles({"limit": 10, "after": None})
+        by_qq = {item["qq_id"]: item for item in profiles["items"]}
+        self.assertEqual(set(by_qq), {"30003", "30004"})
+        self.assertNotEqual(by_qq["30003"]["person_id"], by_qq["30004"]["person_id"])
+        aliases = by_qq["30003"]["aliases"]
+        self.assertEqual(
+            {(a["bot_id"], a["group_id"]) for a in aliases if a["kind"] == "group_card"},
+            {("10001", "20002"), ("10002", "20004")},
+        )
+        from tianshu_memory.store import Store as MemoryStore
+        from tianshu_memory.qq_identity import profiles as memory_profiles
+
+        self.assertEqual(
+            len(memory_profiles(MemoryStore(self.store.path), limit=10, after=None)["items"]), 2
+        )
+        self.assertEqual(self.sent, [])
 
     async def test_offline_pause_recover_via_authenticated_https(self):
         admin = {"Authorization": "Bearer " + ENV["TS012_ADMIN"]}
