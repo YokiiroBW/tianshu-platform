@@ -30,6 +30,7 @@ from .web_dialogue import WebDialogue
 from .web_models import WebModels
 from .provider_management import ProviderManagement
 from .web_personas import WebPersonas
+from .web_persona_author import WebPersonaAuthor
 from .web_readers import WebReader
 from .web_memory import WebMemory
 from .web_connections import view as connections_view
@@ -182,6 +183,7 @@ class WebConsole:
             authority=lambda: self.authority()[0],
             run_local=platform.local_work.run,
         )
+        self.persona_author = WebPersonaAuthor(self, self.personas)
         self.knowledge = WebReader("knowledge", platform, self)
         self.life = WebReader("life", platform, self)
         self.memory = WebMemory(platform, self)
@@ -295,6 +297,15 @@ class WebConsole:
             principal.get("kind") == "operator"
             and principal.get("service") == "platform"
             and "persona.read" in set(principal.get("actions", []))
+        )
+
+    def persona_action_authorised(self, action):
+        principal = self.platform.auth.principals.get(self.config["principal"], {})
+        return (
+            principal.get("kind") == "operator"
+            and principal.get("service") == "platform"
+            and action in {"persona.create", "persona.edit", "persona.apply"}
+            and action in set(principal.get("actions", []))
         )
 
     def issue(self, authenticated=False, fingerprint=None):
@@ -501,7 +512,12 @@ class WebConsole:
             async with asyncio.timeout(5):
                 async for chunk in request.content.iter_chunked(4096):
                     data.extend(chunk)
-                    require(len(data) <= 16384, "budget_exceeded", 413)
+                    require(
+                        len(data)
+                        <= (262144 if request.path.startswith(PERSONAS_PREFIX) else 16384),
+                        "budget_exceeded",
+                        413,
+                    )
         except TimeoutError:
             raise Fault("timeout", 408) from None
         body = loads(bytes(data))
@@ -691,6 +707,14 @@ class WebConsole:
             require(self.external.revision == external_revision, "external_revision_changed", 409)
             return web.json_response(result)
         if request.path.startswith(PERSONAS_PREFIX):
+            if request.path[len(PERSONAS_PREFIX) :] in self.persona_author.routes:
+                result = await self.persona_author.route(request.path, body, session)
+                require(
+                    await self.platform.local_work.run(self.session_valid, session),
+                    "session_expired",
+                    401,
+                )
+                return web.json_response(result)
             # The persona page reads through its own registered character-service credential and
             # proves this session, this action and this subject allowlist at the start of every
             # outbound step and again before answering. This console makes the same proof once more

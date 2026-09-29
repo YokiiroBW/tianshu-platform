@@ -28,6 +28,7 @@ export const messages: Record<string, string> = {
   personas_not_configured: "这个部署没有登记人格页。",
   personas_disabled: "这个部署没有启用人格页。",
   persona_read_required: "当前账号没有读取人格的权限。",
+  persona_write_required: "当前账号没有这项人格管理权限。",
   unauthorized: "账号或密码不正确，或登录已失效。",
   session_expired: "登录已过期，请重新登录。",
   forbidden:
@@ -97,6 +98,15 @@ export async function read<T>(
   return (await post(`personas/${path}`, body, csrf, signal)) as T;
 }
 
+export async function author<T>(
+  path: "profiles" | "view" | "create" | "save" | "apply",
+  body: object,
+  csrf: string,
+  signal: AbortSignal,
+) {
+  return (await post(`personas/${path}`, body, csrf, signal)) as T;
+}
+
 export async function session(signal: AbortSignal): Promise<SessionState> {
   const response = await fetch("/api/web/session", {
     credentials: "same-origin",
@@ -127,5 +137,5 @@ export async function logout(csrf: string, signal: AbortSignal): Promise<void> {
 export function reason(cause: unknown) {
   if (cause instanceof PersonaError) return cause.message;
   if (cause instanceof Error && cause.name === "AbortError") return "";
-  return "读取中断，请重新连接。";
+  return "请求中断，请重新连接。";
 }

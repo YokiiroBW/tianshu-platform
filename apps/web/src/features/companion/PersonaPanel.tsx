@@ -15,6 +15,7 @@ import {
 } from "./personaApi";
 import { PersonaHistory } from "./PersonaHistory";
 import { PersonaRevision } from "./PersonaRevision";
+import PersonaAuthor from "./PersonaAuthor";
 import {
   HISTORY_KINDS,
   rowErrorLabel,
@@ -69,6 +70,8 @@ export default function PersonaPanel() {
   const [error, setError] = useState("");
   const [stale, setStale] = useState<{ code: string; from: Read } | null>(null);
   const [notice, setNotice] = useState("");
+  const [authorOpen, setAuthorOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(true);
   const [catalog, setCatalog] = useState<CatalogPage | null>(null);
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const [page, setPage] = useState(0);
@@ -484,15 +487,27 @@ export default function PersonaPanel() {
     >
       <div className="persona-toolbar">
         <div>
-          <p className="eyebrow">只读 · 角色服务</p>
+          <p className="eyebrow">角色服务 · 人格管理</p>
           <h2 ref={heading} tabIndex={-1}>
             人格版本
           </h2>
           <p className="muted persona-intro">
-            查看已登记角色的人格历史与版本差异。这里只读取：不编辑、不批准、不发布、不回退；世界状态尚待后续接入，本页只是人格版本这一个切片，不是完整的世界编辑器。
+            创建可复用档案，编辑已有角色，保存草稿并明确应用。下方保留版本历史与差异查看。
           </p>
         </div>
         <div className="persona-actions">
+          {session?.authenticated && (
+            <button
+              type="button"
+              className="button primary"
+              onClick={() => {
+                setAuthorOpen(true);
+                setHistoryOpen(false);
+              }}
+            >
+              创建与编辑
+            </button>
+          )}
           <button
             type="button"
             className="button"
@@ -505,261 +520,282 @@ export default function PersonaPanel() {
         </div>
       </div>
 
-      <div className="persona-state">
-        <StatusRail
-          tone={
-            unreachable || error || absent
-              ? "red"
-              : busy || stale
-                ? "yellow"
-                : "blue"
-          }
-          label={status}
-        >
-          <p>
-            {unreachable
-              ? unreachable
-              : error
-                ? error
-                : absent
-                  ? `${absent}：这个部署或这个账号不能读取人格。`
-                  : catalog
-                    ? `已授权角色 ${catalog.subjects} 个 · 每页 ${catalog.page} 个`
-                    : "登录后只显示本部署登记的角色。"}
-          </p>
-          {!!error && !!catalog && (
-            // Rows left over from an earlier successful read are never passed off as this read.
-            <p>下面显示的目录是上一次成功读取的结果，不是这一次的结果。</p>
-          )}
-        </StatusRail>
-      </div>
-
-      {notice && (
-        <p className="persona-notice" role="status">
-          {notice}
-        </p>
+      {authorOpen && session?.authenticated && (
+        <PersonaAuthor session={session} onApplied={() => void connect()} />
       )}
 
-      {!session?.authenticated ? (
-        <LoginLink />
-      ) : absent ? (
-        <StatePanel
-          kind="unconfigured"
-          title={deploymentState[absent] ?? "不可用"}
-        >
-          <p>{absent}</p>
-          <p>
-            人格页需要部署登记一个角色服务、一份显式角色名单和读取权限，三者缺一都不会显示角色。
-          </p>
-        </StatePanel>
-      ) : empty ? (
-        <StatePanel kind="empty" title="目录为空">
-          <p>这个部署登记了 0 个角色，因此没有可读的目录。</p>
-        </StatePanel>
-      ) : !catalog ? (
-        // No directory at all is a state of the read, never an empty list: the panel says which.
-        busy ? (
-          <StatePanel kind="loading" title="正在读取目录">
-            <p>正在向本部署登记的角色服务读取目录。</p>
-          </StatePanel>
-        ) : (
-          <StatePanel kind="error" title="目录读取失败">
-            <p>{error || unreachable || "目录没有读到。"}</p>
-            <p>没有任何角色被显示出来，因为这一页确实没有读到目录。</p>
-          </StatePanel>
-        )
-      ) : (
-        <div className="persona-layout">
-          <div className="persona-catalog">
-            <h3 id="persona-subject-label">角色目录</h3>
-            <ul
-              className="persona-subjects"
-              aria-labelledby="persona-subject-label"
+      <details
+        className="persona-read-details"
+        open={historyOpen}
+        onToggle={(event) => setHistoryOpen(event.currentTarget.open)}
+      >
+        <summary>版本历史与差异</summary>
+        <div className="persona-read-body">
+          <div className="persona-state">
+            <StatusRail
+              tone={
+                unreachable || error || absent
+                  ? "red"
+                  : busy || stale
+                    ? "yellow"
+                    : "blue"
+              }
+              label={status}
             >
-              {catalog.entries.map((entry) => (
-                <li key={entry.subject}>
-                  <button
-                    type="button"
-                    className="persona-subject"
-                    aria-pressed={entry.subject === scope.subject}
-                    // Choosing a character is always possible: it starts a new scope and abandons
-                    // the read it replaces instead of waiting for it.
-                    onClick={() => enter(entry.subject, scopeRef.current.kind)}
-                  >
-                    <span className="persona-subject-id">{entry.subject}</span>
-                    <span className="persona-subject-meta">
-                      {entry.error
-                        ? rowErrorLabel(entry.error)
-                        : `${stateLabel(entry.state)} · 版本 ${entry.version ?? "未知"}`}
-                    </span>
-                    <span className="persona-subject-time">
-                      {entry.error
-                        ? "没有可显示的指针"
-                        : `更新 ${shortTime(entry.updated_at)}`}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <label className="persona-picker">
-              角色目录
-              <select
-                value={scope.subject}
-                onChange={(event) =>
-                  enter(event.target.value, scopeRef.current.kind)
-                }
-              >
-                {catalog.entries.map((entry) => (
-                  <option key={entry.subject} value={entry.subject}>
-                    {entry.error
-                      ? `${entry.subject} · ${rowErrorLabel(entry.error)}`
-                      : `${entry.subject} · ${stateLabel(entry.state)} · 版本 ${entry.version ?? "未知"}`}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="persona-pager">
-              <p className="muted" role="status">
-                {busy
-                  ? "正在读取目录…"
-                  : `第 ${page + 1} 页 · 本页 ${catalog.entries.length} 个角色 · 共 ${catalog.subjects} 个`}
+              <p>
+                {unreachable
+                  ? unreachable
+                  : error
+                    ? error
+                    : absent
+                      ? `${absent}：这个部署或这个账号不能读取人格。`
+                      : catalog
+                        ? `已授权角色 ${catalog.subjects} 个 · 每页 ${catalog.page} 个`
+                        : "登录后只显示本部署登记的角色。"}
               </p>
-              <div className="persona-pager-actions">
-                <button
-                  type="button"
-                  className="button"
-                  disabled={busy || page === 0}
-                  onClick={() =>
-                    void loadCatalog(
-                      start().signal,
-                      page - 1,
-                      cursors[page - 1] ?? null,
-                    )
-                  }
+              {!!error && !!catalog && (
+                // Rows left over from an earlier successful read are never passed off as this read.
+                <p>下面显示的目录是上一次成功读取的结果，不是这一次的结果。</p>
+              )}
+            </StatusRail>
+          </div>
+
+          {notice && (
+            <p className="persona-notice" role="status">
+              {notice}
+            </p>
+          )}
+
+          {!session?.authenticated ? (
+            <LoginLink />
+          ) : absent ? (
+            <StatePanel
+              kind="unconfigured"
+              title={deploymentState[absent] ?? "不可用"}
+            >
+              <p>{absent}</p>
+              <p>
+                人格页需要部署登记一个角色服务、一份显式角色名单和读取权限，三者缺一都不会显示角色。
+              </p>
+            </StatePanel>
+          ) : empty ? (
+            <StatePanel kind="empty" title="目录为空">
+              <p>这个部署登记了 0 个角色，因此没有可读的目录。</p>
+            </StatePanel>
+          ) : !catalog ? (
+            // No directory at all is a state of the read, never an empty list: the panel says which.
+            busy ? (
+              <StatePanel kind="loading" title="正在读取目录">
+                <p>正在向本部署登记的角色服务读取目录。</p>
+              </StatePanel>
+            ) : (
+              <StatePanel kind="error" title="目录读取失败">
+                <p>{error || unreachable || "目录没有读到。"}</p>
+                <p>没有任何角色被显示出来，因为这一页确实没有读到目录。</p>
+              </StatePanel>
+            )
+          ) : (
+            <div className="persona-layout">
+              <div className="persona-catalog">
+                <h3 id="persona-subject-label">角色目录</h3>
+                <ul
+                  className="persona-subjects"
+                  aria-labelledby="persona-subject-label"
                 >
-                  <ChevronLeft aria-hidden="true" />
-                  上一页角色
-                </button>
-                <button
-                  type="button"
-                  className="button"
-                  disabled={busy || !catalog.has_more}
-                  onClick={() =>
-                    void loadCatalog(
-                      start().signal,
-                      page + 1,
-                      catalog.next_cursor,
-                    )
-                  }
+                  {catalog.entries.map((entry) => (
+                    <li key={entry.subject}>
+                      <button
+                        type="button"
+                        className="persona-subject"
+                        aria-pressed={entry.subject === scope.subject}
+                        // Choosing a character is always possible: it starts a new scope and abandons
+                        // the read it replaces instead of waiting for it.
+                        onClick={() =>
+                          enter(entry.subject, scopeRef.current.kind)
+                        }
+                      >
+                        <span className="persona-subject-id">
+                          {entry.subject}
+                        </span>
+                        <span className="persona-subject-meta">
+                          {entry.error
+                            ? rowErrorLabel(entry.error)
+                            : `${stateLabel(entry.state)} · 版本 ${entry.version ?? "未知"}`}
+                        </span>
+                        <span className="persona-subject-time">
+                          {entry.error
+                            ? "没有可显示的指针"
+                            : `更新 ${shortTime(entry.updated_at)}`}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <label className="persona-picker">
+                  角色目录
+                  <select
+                    value={scope.subject}
+                    onChange={(event) =>
+                      enter(event.target.value, scopeRef.current.kind)
+                    }
+                  >
+                    {catalog.entries.map((entry) => (
+                      <option key={entry.subject} value={entry.subject}>
+                        {entry.error
+                          ? `${entry.subject} · ${rowErrorLabel(entry.error)}`
+                          : `${entry.subject} · ${stateLabel(entry.state)} · 版本 ${entry.version ?? "未知"}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="persona-pager">
+                  <p className="muted" role="status">
+                    {busy
+                      ? "正在读取目录…"
+                      : `第 ${page + 1} 页 · 本页 ${catalog.entries.length} 个角色 · 共 ${catalog.subjects} 个`}
+                  </p>
+                  <div className="persona-pager-actions">
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={busy || page === 0}
+                      onClick={() =>
+                        void loadCatalog(
+                          start().signal,
+                          page - 1,
+                          cursors[page - 1] ?? null,
+                        )
+                      }
+                    >
+                      <ChevronLeft aria-hidden="true" />
+                      上一页角色
+                    </button>
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={busy || !catalog.has_more}
+                      onClick={() =>
+                        void loadCatalog(
+                          start().signal,
+                          page + 1,
+                          catalog.next_cursor,
+                        )
+                      }
+                    >
+                      下一页角色
+                      <ChevronRight aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="persona-detail">
+                <section
+                  className="persona-pointer"
+                  aria-label="当前发布与草稿指针"
                 >
-                  下一页角色
-                  <ChevronRight aria-hidden="true" />
-                </button>
+                  <h3>当前发布与草稿</h3>
+                  {!chosen ? (
+                    <p className="muted">还没有选中角色。</p>
+                  ) : chosen.error ? (
+                    <p className="muted">
+                      {`${rowErrorLabel(chosen.error)}：这个角色没有可显示的指针。`}
+                    </p>
+                  ) : (
+                    <dl className="persona-facts">
+                      <div>
+                        <dt>状态</dt>
+                        <dd data-pointer="state">{stateLabel(chosen.state)}</dd>
+                      </div>
+                      <div>
+                        <dt>版本</dt>
+                        <dd data-pointer="version">
+                          {chosen.version ?? "未知"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>当前发布</dt>
+                        <dd data-pointer="published">
+                          {shortDigest(chosen.published_revision)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>当前草稿</dt>
+                        <dd data-pointer="draft">
+                          {shortDigest(chosen.draft_revision)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>更新</dt>
+                        <dd data-pointer="updated">
+                          {shortTime(chosen.updated_at)}
+                        </dd>
+                      </div>
+                    </dl>
+                  )}
+                </section>
+                {stale && (
+                  <StatusRail
+                    tone="yellow"
+                    label={conflictLabel[stale.code] ?? "已过期"}
+                  >
+                    <p>
+                      {stale.code === "cursor_conflict"
+                        ? "这一页的续读位置由本页签发，已经不再对应当前会话。"
+                        : "人格在这期间已经变化，旧的一页不再代表同一批记录。"}
+                      这里不会自动翻页，请重新打开第一页。
+                    </p>
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={busy}
+                      onClick={reopen}
+                    >
+                      重新打开第一页
+                    </button>
+                  </StatusRail>
+                )}
+                <PersonaHistory
+                  kind={scope.kind}
+                  subject={scope.subject}
+                  pages={pages}
+                  current={current}
+                  busy={busy}
+                  baseline={baseline}
+                  failure={historyFailure}
+                  onKind={(next) => enter(scopeRef.current.subject, next)}
+                  onPrevious={() =>
+                    setCurrent((index) => Math.max(0, index - 1))
+                  }
+                  onNext={() => {
+                    const known = pages[current + 1];
+                    const next = pages[current]?.next_cursor ?? null;
+                    if (known) setCurrent(current + 1);
+                    else if (next) {
+                      void loadHistory(start().signal, current + 1, next);
+                    }
+                  }}
+                  onRestart={() => void loadHistory(start().signal, 0, null)}
+                  onSelect={(id) => void openRevision(id)}
+                  onBaseline={(id) => {
+                    setBaseline(id);
+                    setNotice(`已把 ${shortDigest(id)} 设为对比基线。`);
+                  }}
+                  onCompare={(id) => void compareWith(id)}
+                />
+                <PersonaRevision
+                  revision={revision}
+                  comparison={comparison}
+                  busy={busy}
+                  unavailable={versionGone}
+                />
               </div>
             </div>
-          </div>
-          <div className="persona-detail">
-            <section
-              className="persona-pointer"
-              aria-label="当前发布与草稿指针"
-            >
-              <h3>当前发布与草稿</h3>
-              {!chosen ? (
-                <p className="muted">还没有选中角色。</p>
-              ) : chosen.error ? (
-                <p className="muted">
-                  {`${rowErrorLabel(chosen.error)}：这个角色没有可显示的指针。`}
-                </p>
-              ) : (
-                <dl className="persona-facts">
-                  <div>
-                    <dt>状态</dt>
-                    <dd data-pointer="state">{stateLabel(chosen.state)}</dd>
-                  </div>
-                  <div>
-                    <dt>版本</dt>
-                    <dd data-pointer="version">{chosen.version ?? "未知"}</dd>
-                  </div>
-                  <div>
-                    <dt>当前发布</dt>
-                    <dd data-pointer="published">
-                      {shortDigest(chosen.published_revision)}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>当前草稿</dt>
-                    <dd data-pointer="draft">
-                      {shortDigest(chosen.draft_revision)}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>更新</dt>
-                    <dd data-pointer="updated">
-                      {shortTime(chosen.updated_at)}
-                    </dd>
-                  </div>
-                </dl>
-              )}
-            </section>
-            {stale && (
-              <StatusRail
-                tone="yellow"
-                label={conflictLabel[stale.code] ?? "已过期"}
-              >
-                <p>
-                  {stale.code === "cursor_conflict"
-                    ? "这一页的续读位置由本页签发，已经不再对应当前会话。"
-                    : "人格在这期间已经变化，旧的一页不再代表同一批记录。"}
-                  这里不会自动翻页，请重新打开第一页。
-                </p>
-                <button
-                  type="button"
-                  className="button"
-                  disabled={busy}
-                  onClick={reopen}
-                >
-                  重新打开第一页
-                </button>
-              </StatusRail>
-            )}
-            <PersonaHistory
-              kind={scope.kind}
-              subject={scope.subject}
-              pages={pages}
-              current={current}
-              busy={busy}
-              baseline={baseline}
-              failure={historyFailure}
-              onKind={(next) => enter(scopeRef.current.subject, next)}
-              onPrevious={() => setCurrent((index) => Math.max(0, index - 1))}
-              onNext={() => {
-                const known = pages[current + 1];
-                const next = pages[current]?.next_cursor ?? null;
-                if (known) setCurrent(current + 1);
-                else if (next) {
-                  void loadHistory(start().signal, current + 1, next);
-                }
-              }}
-              onRestart={() => void loadHistory(start().signal, 0, null)}
-              onSelect={(id) => void openRevision(id)}
-              onBaseline={(id) => {
-                setBaseline(id);
-                setNotice(`已把 ${shortDigest(id)} 设为对比基线。`);
-              }}
-              onCompare={(id) => void compareWith(id)}
-            />
-            <PersonaRevision
-              revision={revision}
-              comparison={comparison}
-              busy={busy}
-              unavailable={versionGone}
-            />
-          </div>
+          )}
+          <p className="muted persona-foot">
+            {`历史类别共 ${HISTORY_KINDS.length} 类，每页固定 ${catalog?.page ?? 20} 条，续读位置由本页签发。历史区仅供查看。`}
+          </p>
         </div>
-      )}
-      <p className="muted persona-foot">
-        {`历史类别共 ${HISTORY_KINDS.length} 类，每页固定 ${catalog?.page ?? 20} 条，续读位置由本页签发。这里只读取，不修改、不批准、不发布、不回退。`}
-      </p>
+      </details>
     </section>
   );
 }

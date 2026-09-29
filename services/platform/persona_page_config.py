@@ -96,6 +96,8 @@ PAGE_SETTING_KEYS = {
     "candidate_directory",
     "allow_candidate",
     "published_directory",
+    "authoring_enabled",
+    "apply_subjects",
 }
 SUBJECT_LIMIT = 64
 CURSOR_LIMIT = 2048
@@ -355,6 +357,7 @@ def page_configuration(section, connection_table, mode, check):
     )
     require(type(section.get("enabled", False)) is bool, "invalid_input", 400)
     require(type(section.get("allow_candidate", False)) is bool, "invalid_input", 400)
+    require(type(section.get("authoring_enabled", False)) is bool, "invalid_input", 400)
     enabled = section.get("enabled", False)
     allow_candidate = section.get("allow_candidate", False)
     directory = section.get("candidate_directory")
@@ -380,10 +383,22 @@ def page_configuration(section, connection_table, mode, check):
     )
     for subject in subjects:
         check("common#id", subject)
+    apply_subjects = section.get("apply_subjects", [])
+    require(
+        isinstance(apply_subjects, list)
+        and len(apply_subjects) <= SUBJECT_LIMIT
+        and all(isinstance(subject, str) for subject in apply_subjects)
+        and len(set(apply_subjects)) == len(apply_subjects)
+        and set(apply_subjects) <= set(subjects),
+        "invalid_input",
+        400,
+    )
     rule = {
         "enabled": enabled,
         "connection_id": connection_id,
         "allowed_subjects": tuple(sorted(subjects)),
+        "authoring_enabled": section.get("authoring_enabled", False),
+        "apply_subjects": tuple(sorted(apply_subjects)),
         "candidate": None,
         "reason": "personas_disabled" if not enabled else "ready",
     }
