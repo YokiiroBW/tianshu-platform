@@ -34,6 +34,16 @@ test("memory role selection persists and late responses cannot replace the new r
   await page.route("**/api/web/logout", (route) => answer(route, { ok: true }));
   let currentRoles = [...roles];
   let delayA = false;
+  let holdBVerification = false;
+  let revokeB = false;
+  let releaseVerification: (() => void) | undefined;
+  let bVerifications = 0;
+  function releaseHeldVerification() {
+    const release = releaseVerification;
+    releaseVerification = undefined;
+    if (!release) throw new Error("verification was not held");
+    release();
+  }
   const requests: { path: string; role: string }[] = [];
   await page.route("**/api/web/memory/*", async (route) => {
     const path = new URL(route.request().url()).pathname.split("/").at(-1)!;
@@ -53,6 +63,18 @@ test("memory role selection persists and late responses cannot replace the new r
     requests.push({ path, role: body.role_id });
     expect(body.role_version).toBe(body.role_id === "actor:a" ? 0 : 2);
     if (path === "overview") {
+      if (body.role_id === "actor:b" && holdBVerification) {
+        bVerifications++;
+        await new Promise<void>((resolve) => {
+          releaseVerification = resolve;
+        });
+        if (revokeB)
+          return route.fulfill({
+            status: 403,
+            contentType: "application/json",
+            body: JSON.stringify({ code: "upstream_forbidden" }),
+          });
+      }
       if (body.role_id === "actor:a" && delayA)
         await new Promise((resolve) => setTimeout(resolve, 650));
       try {
@@ -132,6 +154,50 @@ test("memory role selection persists and late responses cannot replace the new r
   await expect(page.getByText("乙的记忆")).toBeVisible();
   await page.reload();
   await expect(page.getByLabel("查看哪位角色的记忆")).toHaveValue("actor:b");
+  await expect(page.getByText("乙的记忆")).toBeVisible();
+
+  holdBVerification = true;
+  const recordsBeforeResume = requests.filter(
+    (item) => item.path === "records" && item.role === "actor:b",
+  ).length;
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await expect.poll(() => bVerifications).toBe(1);
+  await expect(page.getByText("正在重新核验角色记忆")).toBeVisible();
+  await expect(page.getByText("乙的记忆")).toHaveCount(0);
+  releaseHeldVerification();
+  await expect(page.getByText("乙的记忆")).toBeVisible();
+  await expect
+    .poll(
+      () =>
+        requests.filter(
+          (item) => item.path === "records" && item.role === "actor:b",
+        ).length,
+    )
+    .toBeGreaterThan(recordsBeforeResume);
+
+  revokeB = true;
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await expect.poll(() => bVerifications).toBe(2);
+  await expect(page.getByText("正在重新核验角色记忆")).toBeVisible();
+  await expect(page.getByText("乙的记忆")).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath(
+      `memory-role-resume-pending-${testInfo.project.name}.png`,
+    ),
+    fullPage: true,
+  });
+  releaseHeldVerification();
+  await expect(
+    page.getByRole("heading", { name: "该角色暂不可读取" }),
+  ).toBeVisible();
+  await expect(page.getByText("乙的记忆")).toHaveCount(0);
+  holdBVerification = false;
+  revokeB = false;
+  await page.getByRole("button", { name: "刷新角色" }).click();
   await expect(page.getByText("乙的记忆")).toBeVisible();
 
   await page.goto("/#/memory/0");

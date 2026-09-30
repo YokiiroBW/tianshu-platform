@@ -105,6 +105,7 @@ export default function MemoryPage({ section }: { section: number }) {
   const [recordsCursor, setRecordsCursor] = useState<string | null>(null);
   const [recordsScope, setRecordsScope] = useState("");
   const [busy, setBusy] = useState(false);
+  const [revalidating, setRevalidating] = useState(false);
   const [error, setError] = useState("");
   const [stateError, setStateError] = useState("");
   const current = useRef<AbortController | null>(null);
@@ -123,6 +124,7 @@ export default function MemoryPage({ section }: { section: number }) {
     setRecordsScope("");
     setError("");
     setBusy(false);
+    setRevalidating(false);
   }
 
   function roleRequest() {
@@ -311,27 +313,47 @@ export default function MemoryPage({ section }: { section: number }) {
     const selection = roleRequest();
     if (!csrf || !state?.available || !selection) return;
     let pending: AbortController | null = null;
-    const verify = async () => {
+    const verify = async (resumed = false) => {
       if (document.hidden || pending) return;
       const controller = new AbortController();
       const mark = generation.current;
       pending = controller;
       try {
-        await integrationPost<Overview>(
+        const answer = await integrationPost<Overview>(
           "memory/overview",
           selection,
           csrf,
           controller.signal,
         );
+        if (
+          controller.signal.aborted ||
+          mark !== generation.current ||
+          !resumed
+        )
+          return;
+        if (section === 0) setOverview(answer);
+        else if (section === 1) await listSubjects();
+        else if (section === 3) await listRecords(null);
       } catch (cause) {
         if (!controller.signal.aborted && mark === generation.current)
           failRead(cause);
       } finally {
         if (pending === controller) pending = null;
+        if (
+          !controller.signal.aborted &&
+          mark === generation.current &&
+          resumed
+        )
+          setRevalidating(false);
       }
     };
     const visible = () => {
-      if (!document.hidden) void verify();
+      if (document.hidden) return;
+      pending?.abort();
+      pending = null;
+      clearResults();
+      setRevalidating(true);
+      void verify(true);
     };
     const timer = window.setInterval(() => void verify(), 15000);
     document.addEventListener("visibilitychange", visible);
@@ -340,7 +362,7 @@ export default function MemoryPage({ section }: { section: number }) {
       document.removeEventListener("visibilitychange", visible);
       pending?.abort();
     };
-  }, [csrf, state?.available, role?.id, role?.version]);
+  }, [csrf, state?.available, role?.id, role?.version, section]);
 
   function choose(row: SubjectKey) {
     generation.current++;
@@ -449,6 +471,16 @@ export default function MemoryPage({ section }: { section: number }) {
               : "此角色当前不可读取。"}
             请刷新角色列表或选择当前可读取的角色。
           </p>
+        </StatePanel>
+      </div>
+    );
+
+  if (revalidating)
+    return (
+      <div className="memory-page">
+        {rolePicker}
+        <StatePanel kind="loading" title="正在重新核验角色记忆">
+          <p>请稍候，核验完成后会显示当前角色的记忆。</p>
         </StatePanel>
       </div>
     );
