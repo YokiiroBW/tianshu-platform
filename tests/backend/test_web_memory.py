@@ -218,6 +218,8 @@ class MemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
         role["capabilities"] = ["dialogue", "memory.read"]
         role["enabled"] = False
         self.assertEqual((await self.call("overview", selected, 403))["code"], "role_disabled")
+        role["state"] = "disabled"
+        self.assertEqual((await self.call("state", {}))["roles"][1]["reason"], "role_disabled")
         self.assertEqual(self.requests[-1]["scope"]["actor_id"], "actor:role-b")
         managed_default = {**role, "actor_id": "actor:a", "name": "默认角色", "version": 3}
         self.platform.role_runtime.directory = lambda: [managed_default]

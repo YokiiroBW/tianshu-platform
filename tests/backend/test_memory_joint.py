@@ -3,6 +3,7 @@
 Set TS_CONNECT_M_PATH to a fixed Memory worktree commit. No files are written there.
 """
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -24,8 +25,10 @@ from aiohttp import web
 from fixtures import ENV, start_http
 from services.platform.contracts import canonical
 from services.platform.origins import channel_key
+from services.platform.provider_catalog import ProviderCatalog
 from services.platform.server import create_app
 from services.platform.service import Platform
+from services.platform.web_console import WebConsole
 from web_fixtures import PASSWORD, web_settings
 
 
@@ -265,7 +268,16 @@ class MemoryJointTests(unittest.IsolatedAsyncioTestCase):
                     },
                     {"actor:a"},
                 )
-                config = web_settings(str(root))
+                browser_node = os.environ.get("TS_MEMORY_ROLE_BROWSER_NODE")
+                static = (
+                    Path(__file__).resolve().parents[2] / "apps/web/dist" if browser_node else None
+                )
+                if browser_node:
+                    self.assertTrue(
+                        (static / "index.html").is_file(),
+                        "build the web app before live browser verification",
+                    )
+                config = web_settings(str(root), static=static)
                 config["principals"]["admin"]["actions"].append("memory.read")
                 config["principals"]["memory_resolver"]["resolver"]["caller"] = "platform"
                 config["entries"]["actor-a"]["routes"].append(
@@ -280,6 +292,9 @@ class MemoryJointTests(unittest.IsolatedAsyncioTestCase):
                     "runtime_roles": True,
                 }
                 platform = Platform(config)
+                # The authenticated web session inspects model readiness for every visible
+                # actor, even though this test never calls a model.
+                platform.provider_catalog = ProviderCatalog(root / "providers", create=True)
                 platform.role_runtime.config = {"enabled": True}
                 with closing(sqlite3.connect(platform.role_runtime.path)) as role_db:
                     role_db.execute(
@@ -298,6 +313,8 @@ class MemoryJointTests(unittest.IsolatedAsyncioTestCase):
                                     "state": "active",
                                     "enabled": True,
                                     "capabilities": ["dialogue", "memory.read"],
+                                    "provider_id": None,
+                                    "provider_revision": None,
                                 }
                             ),
                         ),
@@ -313,7 +330,8 @@ class MemoryJointTests(unittest.IsolatedAsyncioTestCase):
                         "INSERT INTO channels VALUES(?,?)",
                         (channel_key(entry), h.scope()["conversation_id"]),
                     )
-                app = create_app(platform)
+                console = WebConsole(platform)
+                app = create_app(platform, console=console)
                 runner, web_url = await start_http(app)
                 self.addAsyncCleanup(runner.cleanup)
                 config["web"]["origin"] = web_url
@@ -485,6 +503,37 @@ class MemoryJointTests(unittest.IsolatedAsyncioTestCase):
                             400,
                         )
                         self.assertEqual(crossed["code"], "invalid_input")
+                        if browser_node:
+                            await asyncio.to_thread(console.authority)
+                            await asyncio.to_thread(console.dialogue.model_configured)
+                            for actor in ("actor:a", "actor:b"):
+                                await asyncio.to_thread(console.dialogue.model_configured, actor)
+                            screenshots = (
+                                Path(__file__).resolve().parents[2] / ".runtime/memory-role-browser"
+                            )
+                            browser_env = dict(
+                                os.environ, TS_MEMORY_ROLE_B_GROUP=second["group_ids"][0]
+                            )
+                            checked = await asyncio.to_thread(
+                                subprocess.run,
+                                [
+                                    browser_node,
+                                    str(Path(__file__).with_name("memory_role_joint_browser.mjs")),
+                                    web_url,
+                                    str(screenshots),
+                                ],
+                                env=browser_env,
+                                capture_output=True,
+                                text=True,
+                                encoding="utf-8",
+                                errors="replace",
+                                timeout=90,
+                            )
+                            self.assertEqual(
+                                checked.returncode,
+                                0,
+                                (checked.stdout or "") + (checked.stderr or ""),
+                            )
                         process.terminate()
                         process.wait(timeout=5)
                         process.stdout.close()

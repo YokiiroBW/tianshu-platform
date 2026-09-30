@@ -1,7 +1,8 @@
 """Browser's read-only window over Memory's fixed, scoped browser reader.
 
 Platform owns the login and fresh origin; Memory owns the account, actor, scope and source checks.
-No browser field can name a service identity, account, actor, origin or upstream URL.
+The browser may select a listed role id and version. It cannot supply a service identity,
+account, scope, origin or upstream URL; Platform derives those from current authority.
 """
 
 import asyncio
@@ -78,10 +79,12 @@ class WebMemory(WebReader):
             if row is not None:
                 if not p.role_runtime.config or not p.role_runtime.config["enabled"]:
                     reason = "role_unavailable"
+                elif row.get("state") == "disabled" or (
+                    row.get("state") == "active" and not row.get("enabled")
+                ):
+                    reason = "role_disabled"
                 elif row.get("state") != "active":
                     reason = "role_configuring"
-                elif not row.get("enabled"):
-                    reason = "role_disabled"
                 elif "memory.read" not in row.get("capabilities", []):
                     reason = "memory_read_disabled"
             result.append(
