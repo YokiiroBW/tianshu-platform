@@ -1,0 +1,169 @@
+import { test, expect, type Route } from "@playwright/test";
+
+const roles = [
+  {
+    id: "actor:a",
+    label: "默认角色",
+    version: 0,
+    available: true,
+    reason: null,
+  },
+  { id: "actor:b", label: "小岚", version: 2, available: true, reason: null },
+];
+
+async function answer(route: Route, value: unknown) {
+  await route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(value),
+  });
+}
+
+test("memory role selection persists and late responses cannot replace the new role", async ({
+  page,
+}, testInfo) => {
+  await page.route("**/api/web/session", (route) =>
+    answer(route, {
+      authenticated: true,
+      csrf: "memory-role-browser-fixture",
+      username: "memory-role-owner",
+      conversations: [],
+      dialogue: { available: false, code: "model_not_configured", model: "" },
+    }),
+  );
+  await page.route("**/api/web/logout", (route) => answer(route, { ok: true }));
+  let currentRoles = [...roles];
+  let delayA = false;
+  const requests: { path: string; role: string }[] = [];
+  await page.route("**/api/web/memory/*", async (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").at(-1)!;
+    if (path === "state")
+      return answer(route, {
+        available: true,
+        code: "ready",
+        actor_id: "actor:a",
+        roles: currentRoles,
+        peer: { configured: true, verified_at: null, code: "unverified" },
+      });
+    const body = route.request().postDataJSON() as {
+      role_id: string;
+      role_version: number;
+      cursor?: string | null;
+    };
+    requests.push({ path, role: body.role_id });
+    expect(body.role_version).toBe(body.role_id === "actor:a" ? 0 : 2);
+    if (path === "overview") {
+      if (body.role_id === "actor:a" && delayA)
+        await new Promise((resolve) => setTimeout(resolve, 650));
+      try {
+        return await answer(route, {
+          memory_group_count: body.role_id === "actor:a" ? 1 : 2,
+          counts_truncated: false,
+          verified_at: "2026-09-30T00:00:00Z",
+          scope_version: 1,
+        });
+      } catch {
+        return;
+      } // An aborted old request has no response to deliver.
+    }
+    if (path === "subjects")
+      return answer(route, {
+        items: [
+          {
+            subject: {
+              kind: "person",
+              person_id: body.role_id === "actor:a" ? "person-a" : "person-b",
+            },
+            categories: ["偏好"],
+            group_count: 1,
+            group_count_truncated: false,
+          },
+        ],
+        next_cursor: null,
+        verified_at: "2026-09-30T00:00:00Z",
+        scope_version: 1,
+      });
+    if (path === "records")
+      return answer(route, {
+        items: [
+          {
+            semantic_group_id:
+              body.role_id === "actor:a" ? "group-a" : "group-b",
+            category: "偏好",
+            field_key: "drink",
+            item_key: "tea",
+            units: [
+              {
+                record_id: body.role_id === "actor:a" ? "record-a" : "record-b",
+                record_version: 1,
+                statement: body.role_id === "actor:a" ? "甲的记忆" : "乙的记忆",
+                conditions: [],
+                negations: [],
+                valid_time: null,
+                uncertainty: null,
+                reality: "real",
+              },
+            ],
+          },
+        ],
+        next_cursor: null,
+        verified_at: "2026-09-30T00:00:00Z",
+        scope_version: 1,
+      });
+    throw new Error(`unexpected memory path ${path}`);
+  });
+
+  await page.goto("/#/memory/0");
+  await expect(page.getByLabel("查看哪位角色的记忆")).toHaveValue("actor:a");
+  await expect(page.locator(".memory-counts dd")).toHaveText("1");
+  await page.getByLabel("查看哪位角色的记忆").selectOption("actor:b");
+  await expect(page.locator(".memory-counts dd")).toHaveText("2");
+  await page.screenshot({
+    path: testInfo.outputPath(
+      `memory-role-active-${testInfo.project.name}.png`,
+    ),
+    fullPage: true,
+  });
+  await page.getByRole("link", { name: "查看人物与群" }).click();
+  await expect(page.getByText("人物 person-b")).toBeVisible();
+  await page.locator(".memory-list button").click();
+  await expect(page.getByText("乙的记忆")).toBeVisible();
+  await page.getByRole("link", { name: "本人记忆", exact: true }).click();
+  await expect(page.getByText("乙的记忆")).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel("查看哪位角色的记忆")).toHaveValue("actor:b");
+  await expect(page.getByText("乙的记忆")).toBeVisible();
+
+  await page.goto("/#/memory/0");
+  delayA = true;
+  await page.getByLabel("查看哪位角色的记忆").selectOption("actor:a");
+  await expect
+    .poll(
+      () =>
+        requests.filter(
+          (item) => item.path === "overview" && item.role === "actor:a",
+        ).length,
+    )
+    .toBeGreaterThan(1);
+  await page.getByLabel("查看哪位角色的记忆").selectOption("actor:b");
+  await expect(page.locator(".memory-counts dd")).toHaveText("2");
+  await page.waitForTimeout(700);
+  await expect(page.locator(".memory-counts dd")).toHaveText("2");
+
+  currentRoles = [roles[0]];
+  await page.getByRole("button", { name: "刷新角色" }).click();
+  await expect(page.getByText("原角色已不在授权列表").last()).toBeVisible();
+  await expect(page.locator(".memory-counts dd")).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath(`memory-role-${testInfo.project.name}.png`),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "退出登录" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        sessionStorage.getItem("tianshu-memory-role:memory-role-owner"),
+      ),
+    )
+    .toBeNull();
+});

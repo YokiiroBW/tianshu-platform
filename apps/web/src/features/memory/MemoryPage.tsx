@@ -16,7 +16,16 @@ type SubjectKey =
 type Connection = {
   available: boolean;
   code: string;
+  actor_id: string | null;
+  roles: RoleChoice[];
   peer?: { configured: boolean; verified_at: string | null; code: string };
+};
+type RoleChoice = {
+  id: string;
+  label: string;
+  version: number;
+  available: boolean;
+  reason: string | null;
 };
 type Overview = {
   memory_group_count: number;
@@ -74,11 +83,20 @@ function unavailableTitle(code: string) {
   return "记忆浏览尚未配置";
 }
 
+function roleReason(code: string | null) {
+  if (code === "role_disabled") return "角色已停用";
+  if (code === "memory_read_disabled") return "该角色未开启记忆读取";
+  if (code === "role_configuring") return "角色正在核验，请稍后刷新";
+  return "该角色暂不可读取";
+}
+
 /** A scoped, read-only view; no approval/forget controls are exposed to a service reader. */
 export default function MemoryPage({ section }: { section: number }) {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
+  const storageKey = `tianshu-memory-role:${encodeURIComponent(session?.username || csrf)}`;
   const [state, setState] = useState<Connection | null>(null);
+  const [roleId, setRoleId] = useState<string | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [subjectsCursor, setSubjectsCursor] = useState<string | null>(null);
@@ -91,6 +109,65 @@ export default function MemoryPage({ section }: { section: number }) {
   const [stateError, setStateError] = useState("");
   const current = useRef<AbortController | null>(null);
   const generation = useRef(0);
+  const role = state?.roles.find((item) => item.id === roleId);
+
+  function clearResults() {
+    generation.current++;
+    current.current?.abort();
+    setOverview(null);
+    setSubjects([]);
+    setSubjectsCursor(null);
+    setSelected(null);
+    setRecords([]);
+    setRecordsCursor(null);
+    setRecordsScope("");
+    setError("");
+    setBusy(false);
+  }
+
+  function roleRequest() {
+    if (!role || !role.available) return null;
+    return { role_id: role.id, role_version: role.version };
+  }
+
+  function failRead(cause: unknown) {
+    const message = readFailure(cause);
+    clearResults();
+    if (
+      cause instanceof IntegrationError &&
+      [
+        "scope_changed",
+        "upstream_forbidden",
+        "memory_identity_not_ready",
+        "role_disabled",
+        "role_configuring",
+        "role_unavailable",
+        "memory_read_disabled",
+        "memory_read_required",
+        "session_expired",
+      ].includes(cause.code)
+    ) {
+      setState((before) =>
+        before && roleId
+          ? {
+              ...before,
+              roles: before.roles.map((item) =>
+                item.id === roleId
+                  ? { ...item, available: false, reason: cause.code }
+                  : item,
+              ),
+            }
+          : before,
+      );
+    }
+    setError(message);
+  }
+
+  function chooseRole(next: string) {
+    clearResults();
+    setRoleId(next);
+    sessionStorage.setItem(storageKey, next);
+  }
 
   function start() {
     current.current?.abort();
@@ -103,8 +180,10 @@ export default function MemoryPage({ section }: { section: number }) {
 
   async function loadState() {
     if (!csrf) return;
+    clearResults();
     const controller = start();
     setState(null);
+    setRoleId(null);
     setStateError("");
     try {
       const next = await integrationPost<Connection>(
@@ -113,7 +192,10 @@ export default function MemoryPage({ section }: { section: number }) {
         csrf,
         controller.signal,
       );
-      if (!controller.signal.aborted) setState(next);
+      if (!controller.signal.aborted) {
+        setState(next);
+        setRoleId(sessionStorage.getItem(storageKey) || next.actor_id);
+      }
     } catch (cause) {
       if (!controller.signal.aborted) setStateError(readFailure(cause));
     } finally {
@@ -122,37 +204,38 @@ export default function MemoryPage({ section }: { section: number }) {
   }
 
   useEffect(() => {
-    generation.current++;
-    setOverview(null);
-    setSubjects([]);
-    setSelected(null);
-    setRecords([]);
-    setError("");
+    clearResults();
+    if (!csrf) sessionStorage.removeItem(storageKey);
     void loadState();
     return () => current.current?.abort();
-  }, [csrf]);
+  }, [csrf, storageKey]);
 
   async function readOverview() {
-    if (!csrf) return;
+    const selection = roleRequest();
+    if (!csrf || !selection) return;
     const controller = start();
+    const mark = generation.current;
     setOverview(null);
     try {
       const answer = await integrationPost<Overview>(
         "memory/overview",
-        {},
+        selection,
         csrf,
         controller.signal,
       );
-      if (!controller.signal.aborted) setOverview(answer);
+      if (!controller.signal.aborted && mark === generation.current)
+        setOverview(answer);
     } catch (cause) {
-      if (!controller.signal.aborted) setError(readFailure(cause));
+      if (!controller.signal.aborted && mark === generation.current)
+        failRead(cause);
     } finally {
       if (!controller.signal.aborted) setBusy(false);
     }
   }
 
   async function listSubjects(cursor: string | null = null) {
-    if (!csrf) return;
+    const selection = roleRequest();
+    if (!csrf || !selection) return;
     const controller = start();
     const mark = generation.current;
     if (!cursor) {
@@ -162,7 +245,7 @@ export default function MemoryPage({ section }: { section: number }) {
     try {
       const answer = await integrationPost<Subjects>(
         "memory/subjects",
-        { limit: 20, cursor },
+        { ...selection, limit: 20, cursor },
         csrf,
         controller.signal,
       );
@@ -173,21 +256,7 @@ export default function MemoryPage({ section }: { section: number }) {
       setSubjectsCursor(answer.next_cursor);
     } catch (cause) {
       if (!controller.signal.aborted && mark === generation.current) {
-        setError(readFailure(cause));
-        if (
-          cause instanceof IntegrationError &&
-          [
-            "scope_changed",
-            "upstream_forbidden",
-            "memory_identity_not_ready",
-          ].includes(cause.code)
-        ) {
-          setSubjects([]);
-          setSubjectsCursor(null);
-          setSelected(null);
-          setRecords([]);
-          setRecordsCursor(null);
-        }
+        failRead(cause);
       }
     } finally {
       if (!controller.signal.aborted) setBusy(false);
@@ -198,7 +267,8 @@ export default function MemoryPage({ section }: { section: number }) {
     subject: SubjectKey | null,
     cursor: string | null = null,
   ) {
-    if (!csrf) return;
+    const selection = roleRequest();
+    if (!csrf || !selection) return;
     const controller = start();
     const mark = generation.current;
     const key = subject ? subjectText(subject) : "本人记忆";
@@ -210,7 +280,7 @@ export default function MemoryPage({ section }: { section: number }) {
     try {
       const answer = await integrationPost<Records>(
         "memory/records",
-        { subject, limit: 20, cursor },
+        { ...selection, subject, limit: 20, cursor },
         csrf,
         controller.signal,
       );
@@ -221,20 +291,7 @@ export default function MemoryPage({ section }: { section: number }) {
       setRecordsCursor(answer.next_cursor);
     } catch (cause) {
       if (!controller.signal.aborted && mark === generation.current) {
-        setError(readFailure(cause));
-        if (
-          cause instanceof IntegrationError &&
-          [
-            "scope_changed",
-            "upstream_forbidden",
-            "memory_identity_not_ready",
-          ].includes(cause.code)
-        ) {
-          setRecords([]);
-          setRecordsCursor(null);
-          setSubjects([]);
-          setSubjectsCursor(null);
-        }
+        failRead(cause);
       }
     } finally {
       if (!controller.signal.aborted) setBusy(false);
@@ -242,20 +299,48 @@ export default function MemoryPage({ section }: { section: number }) {
   }
 
   useEffect(() => {
-    generation.current++;
-    if (state?.available) current.current?.abort();
-    setOverview(null);
-    setSubjects([]);
-    setSubjectsCursor(null);
-    setSelected(null);
-    setRecords([]);
-    setRecordsCursor(null);
-    setError("");
-    if (!state?.available) return;
+    if (!state) return;
+    clearResults();
+    if (!state?.available || !role?.available) return;
     if (section === 0) void readOverview();
     else if (section === 1) void listSubjects();
     else if (section === 3) void listRecords(null);
-  }, [state?.available, section, csrf]);
+  }, [state, roleId, section, csrf]);
+
+  useEffect(() => {
+    const selection = roleRequest();
+    if (!csrf || !state?.available || !selection) return;
+    let pending: AbortController | null = null;
+    const verify = async () => {
+      if (document.hidden || pending) return;
+      const controller = new AbortController();
+      const mark = generation.current;
+      pending = controller;
+      try {
+        await integrationPost<Overview>(
+          "memory/overview",
+          selection,
+          csrf,
+          controller.signal,
+        );
+      } catch (cause) {
+        if (!controller.signal.aborted && mark === generation.current)
+          failRead(cause);
+      } finally {
+        if (pending === controller) pending = null;
+      }
+    };
+    const visible = () => {
+      if (!document.hidden) void verify();
+    };
+    const timer = window.setInterval(() => void verify(), 15000);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", visible);
+      pending?.abort();
+    };
+  }, [csrf, state?.available, role?.id, role?.version]);
 
   function choose(row: SubjectKey) {
     generation.current++;
@@ -312,8 +397,65 @@ export default function MemoryPage({ section }: { section: number }) {
       </StatePanel>
     );
 
+  const rolePicker = (
+    <section className="panel memory-role-panel">
+      <div className="section-heading">
+        <h2>当前角色</h2>
+        <button
+          className="button"
+          onClick={() => void loadState()}
+          disabled={busy}
+        >
+          <RefreshCw aria-hidden="true" />
+          刷新角色
+        </button>
+      </div>
+      <label htmlFor="memory-role-select">查看哪位角色的记忆</label>
+      <select
+        id="memory-role-select"
+        value={roleId ?? ""}
+        onChange={(event) => chooseRole(event.target.value)}
+      >
+        {roleId && !role && (
+          <option value={roleId}>原角色已不在授权列表</option>
+        )}
+        {!roleId && <option value="">请选择角色</option>}
+        {state.roles.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.label}
+            {item.available ? "" : ` · ${roleReason(item.reason)}`}
+          </option>
+        ))}
+      </select>
+      {role && !role.available && (
+        <p className="muted">
+          {roleReason(role.reason)}。已隐藏此角色的记忆内容。
+        </p>
+      )}
+    </section>
+  );
+
+  if (!role || !role.available)
+    return (
+      <div className="memory-page">
+        {rolePicker}
+        <StatePanel
+          kind="error"
+          title={role ? roleReason(role.reason) : "角色不可用"}
+        >
+          <p>
+            {roleId && !role
+              ? "原角色已不在授权列表。"
+              : "此角色当前不可读取。"}
+            请刷新角色列表或选择当前可读取的角色。
+          </p>
+        </StatePanel>
+      </div>
+    );
+
   return (
     <div className="memory-page">
+      {rolePicker}
       <section className="panel">
         <div className="section-heading">
           <h2>授权记忆范围</h2>

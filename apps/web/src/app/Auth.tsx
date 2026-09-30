@@ -112,12 +112,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         controller.signal,
       );
       if (!controller.signal.aborted) {
-        setSession(next);
+        setSession((before) => {
+          if (before?.authenticated && !next.authenticated)
+            sessionStorage.removeItem(
+              `tianshu-memory-role:${encodeURIComponent(before.username || before.csrf)}`,
+            );
+          return next;
+        });
         return next;
       }
     } catch (cause) {
       if (!controller.signal.aborted) {
-        setSession(null);
+        setSession((before) => {
+          if (before?.authenticated)
+            sessionStorage.removeItem(
+              `tianshu-memory-role:${encodeURIComponent(before.username || before.csrf)}`,
+            );
+          return null;
+        });
         setError(cause instanceof Error ? cause.message : "连接中断，请重试。");
       }
     } finally {
@@ -157,6 +169,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     if (!session || exiting.current) return;
     exiting.current = true;
+    sessionStorage.removeItem(
+      `tianshu-memory-role:${encodeURIComponent(session.username || session.csrf)}`,
+    );
     active.current?.abort();
     setSession(null);
     setLoading(true);
