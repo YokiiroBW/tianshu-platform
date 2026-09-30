@@ -1,5 +1,6 @@
 """Platform login, real origin issuance and a synthetic Memory HTTPS browser peer."""
 
+import asyncio
 import os
 import socket
 import ssl
@@ -42,6 +43,9 @@ class MemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
         key = str(Path(self.temp.name) / "localhost-key.pem")
         self.port = port()
         self.requests = []
+        self.pause_actor = None
+        self.peer_entered = asyncio.Event()
+        self.peer_release = asyncio.Event()
         env = mock.patch.dict(
             os.environ,
             {**ENV, "TEST_MEMORY_BROWSER": "synthetic-browser-memory-reader-0001"},
@@ -55,6 +59,7 @@ class MemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
             "token_env": "TEST_MEMORY_BROWSER",
             "ca_file": cert,
             "entry_id": "actor-a",
+            "runtime_roles": True,
         }
         self.config["principals"]["admin"]["actions"].append("memory.read")
         self.config["principals"]["memory_resolver"]["resolver"]["caller"] = "platform"
@@ -108,6 +113,9 @@ class MemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(resolved["context"]["allowed_scope"], body["scope"])
+        if body["scope"]["actor_id"] == self.pause_actor:
+            self.peer_entered.set()
+            await self.peer_release.wait()
         self.assertEqual(
             resolved["context"]["verified_account"],
             self.config["web"]["account"]
@@ -165,3 +173,119 @@ class MemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
             400,
         )
         self.assertEqual(answer["code"], "invalid_input")
+
+    async def test_current_operator_role_directory_and_derived_origin(self):
+        role = {
+            "actor_id": "actor:role-b",
+            "operator": "admin",
+            "name": "小岚",
+            "version": 7,
+            "state": "active",
+            "enabled": True,
+            "capabilities": ["dialogue", "memory.read"],
+        }
+        other = {**role, "actor_id": "actor:other", "operator": "someone-else"}
+        self.platform.role_runtime.config = {"enabled": True}
+        self.platform.role_runtime.directory = lambda: [role, other]
+        state = await self.call("state", {})
+        self.assertEqual([row["id"] for row in state["roles"]], ["actor:a", "actor:role-b"])
+        self.assertEqual(state["roles"][1]["label"], "小岚")
+        selected = {"role_id": "actor:role-b", "role_version": 7}
+        await self.call("overview", selected)
+        self.assertEqual(self.requests[-1]["scope"]["actor_id"], "actor:role-b")
+        self.assertNotIn("role_id", self.requests[-1])
+        self.assertFalse(any(key.startswith("memory-view-") for key in self.platform.auth.entries))
+        self.assertEqual(
+            (await self.call("overview", {"role_id": "actor:other", "role_version": 7}, 403))[
+                "code"
+            ],
+            "forbidden",
+        )
+        self.assertEqual(
+            (await self.call("overview", {"role_id": None, "role_version": None}, 400))["code"],
+            "invalid_input",
+        )
+        self.assertEqual(
+            (await self.call("overview", {"role_id": "actor:role-b", "role_version": 6}, 409))[
+                "code"
+            ],
+            "scope_changed",
+        )
+        role["capabilities"] = ["dialogue"]
+        self.assertEqual(
+            (await self.call("overview", selected, 403))["code"], "memory_read_disabled"
+        )
+        role["capabilities"] = ["dialogue", "memory.read"]
+        role["enabled"] = False
+        self.assertEqual((await self.call("overview", selected, 403))["code"], "role_disabled")
+        role["state"] = "disabled"
+        self.assertEqual((await self.call("state", {}))["roles"][1]["reason"], "role_disabled")
+        self.assertEqual(self.requests[-1]["scope"]["actor_id"], "actor:role-b")
+        managed_default = {**role, "actor_id": "actor:a", "name": "默认角色", "version": 3}
+        self.platform.role_runtime.directory = lambda: [managed_default]
+        default_state = await self.call("state", {})
+        self.assertFalse(default_state["roles"][0]["available"])
+        self.assertEqual((await self.call("overview", {}, 403))["code"], "role_disabled")
+
+    async def test_role_version_change_during_slow_read_discards_response(self):
+        role = {
+            "actor_id": "actor:role-b",
+            "operator": "admin",
+            "name": "小岚",
+            "version": 1,
+            "state": "active",
+            "enabled": True,
+            "capabilities": ["dialogue", "memory.read"],
+        }
+        self.platform.role_runtime.config = {"enabled": True}
+        self.platform.role_runtime.directory = lambda: [role]
+        self.pause_actor = "actor:role-b"
+        pending = asyncio.create_task(
+            self.call("overview", {"role_id": "actor:role-b", "role_version": 1}, 409)
+        )
+        await asyncio.wait_for(self.peer_entered.wait(), timeout=3)
+        role["version"] = 2
+        self.peer_release.set()
+        self.assertEqual((await pending)["code"], "scope_changed")
+        self.assertFalse(any(key.startswith("memory-view-") for key in self.platform.auth.entries))
+
+    async def test_concurrent_same_role_origins_are_independent_after_cancel(self):
+        role = {
+            "actor_id": "actor:role-b",
+            "operator": "admin",
+            "name": "小岚",
+            "version": 1,
+            "state": "active",
+            "enabled": True,
+            "capabilities": ["dialogue", "memory.read"],
+        }
+        self.platform.role_runtime.config = {"enabled": True}
+        self.platform.role_runtime.directory = lambda: [role]
+        self.pause_actor = "actor:role-b"
+        selected = {"role_id": "actor:role-b", "role_version": 1}
+        abandoned = asyncio.create_task(self.call("overview", selected))
+        retained = asyncio.create_task(
+            self.call(
+                "records",
+                {
+                    **selected,
+                    "subject": None,
+                    "limit": 20,
+                    "cursor": None,
+                },
+            )
+        )
+        await asyncio.wait_for(self.peer_entered.wait(), timeout=3)
+        for _ in range(100):
+            if sum(key.startswith("memory-view-") for key in self.platform.auth.entries) == 2:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(
+            sum(key.startswith("memory-view-") for key in self.platform.auth.entries), 2
+        )
+        abandoned.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await abandoned
+        self.peer_release.set()
+        self.assertEqual((await retained)["items"], [])
+        self.assertFalse(any(key.startswith("memory-view-") for key in self.platform.auth.entries))

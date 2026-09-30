@@ -24,10 +24,18 @@ TOKEN_ENV = re.compile(r"[A-Z][A-Z0-9_]{0,127}\Z")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 READ_ROUTES = {
-    "knowledge": frozenset({
-        "query", "documents", "document", "notes", "lessons", "experiences",
-        "continuation", "continuation-check",
-    }),
+    "knowledge": frozenset(
+        {
+            "query",
+            "documents",
+            "document",
+            "notes",
+            "lessons",
+            "experiences",
+            "continuation",
+            "continuation-check",
+        }
+    ),
     "life": frozenset({"actors", "snapshot", "diaries", "revision"}),
 }
 
@@ -43,7 +51,7 @@ def validate_readers(settings, reserved):
         if name == "knowledge":
             allowed |= {"projects"}
         if name == "memory":
-            allowed |= {"entry_id"}
+            allowed |= {"entry_id", "runtime_roles"}
         require(isinstance(config, dict) and set(config) <= allowed, "invalid_input", 400)
         require(type(config.get("enabled", False)) is bool, "invalid_input", 400)
         # A disabled section is still validated: bad deployment input must not silently appear
@@ -116,7 +124,8 @@ def validate_readers(settings, reserved):
                         and IDENTIFIER.fullmatch(checkout["id"]) is not None
                         and isinstance(checkout["label"], str)
                         and 1 <= len(checkout["label"]) <= 128,
-                        "invalid_input", 400,
+                        "invalid_input",
+                        400,
                     )
                     checkout_ids.append(checkout["id"])
                 require(len(checkout_ids) == len(set(checkout_ids)), "invalid_input", 400)
@@ -128,6 +137,7 @@ def validate_readers(settings, reserved):
                 "invalid_input",
                 400,
             )
+            require(type(config.get("runtime_roles", False)) is bool, "invalid_input", 400)
 
 
 def _text(value, maximum=128):
@@ -168,14 +178,14 @@ class WebReader:
 
     def forget_session(self, session):
         self.packages = {
-            handle: item for handle, item in self.packages.items()
-            if item["owner"] is not session
+            handle: item for handle, item in self.packages.items() if item["owner"] is not session
         }
 
     def _prune_packages(self):
         now = self.console.clock()
         self.packages = {
-            handle: item for handle, item in self.packages.items()
+            handle: item
+            for handle, item in self.packages.items()
             if item["expires"] > now and self.console.session_valid(item["owner"])
         }
 
@@ -185,7 +195,8 @@ class WebReader:
         item = self.packages.get(handle)
         require(
             item is not None and item["owner"] is session and item["project_id"] == project_id,
-            "continuation_handle_expired", 409,
+            "continuation_handle_expired",
+            409,
         )
         return item["package"]
 
@@ -199,12 +210,17 @@ class WebReader:
         require(
             size <= RESPONSE_LIMIT
             and sum(item["bytes"] for item in self.packages.values()) + size <= 4 * 1024 * 1024,
-            "budget_exceeded", 413,
+            "budget_exceeded",
+            413,
         )
         handle = secrets.token_urlsafe(32)
         self.packages[handle] = {
-            "owner": session, "project_id": project_id, "checkout_id": checkout_id,
-            "package": package, "bytes": size, "expires": self.console.clock() + 900,
+            "owner": session,
+            "project_id": project_id,
+            "checkout_id": checkout_id,
+            "package": package,
+            "bytes": size,
+            "expires": self.console.clock() + 900,
         }
         return handle
 
@@ -238,7 +254,8 @@ class WebReader:
                     {**project, "checkouts": project.get("checkouts", [])}
                     for project in self.config["projects"]
                 ]
-                if self.config and self._authorized() else []
+                if self.config and self._authorized()
+                else []
             )
         return answer
 
@@ -283,17 +300,23 @@ class WebReader:
         self.last = {"at": datetime.now(timezone.utc).isoformat(), "code": "ok"}
         if self.name == "knowledge":
             if name == "continuation":
-                handle = self._hold_package(session, body["project_id"], body["checkout_id"], result)
+                handle = self._hold_package(
+                    session, body["project_id"], body["checkout_id"], result
+                )
                 return {
-                    "project_id": body["project_id"], "operation": name,
+                    "project_id": body["project_id"],
+                    "operation": name,
                     "result": self._continuation_view(result, handle),
                 }
             if name == "continuation-check":
                 return {
-                    "project_id": body["project_id"], "operation": name,
+                    "project_id": body["project_id"],
+                    "operation": name,
                     "result": {
-                        "valid": result["valid"], "reason": result["reason"],
-                        "differences": result["differences"], "observed": result["observed"],
+                        "valid": result["valid"],
+                        "reason": result["reason"],
+                        "differences": result["differences"],
+                        "observed": result["observed"],
                         "checkout_id": result["worktree"]["id"],
                         "checked_at": result.get("checked_at"),
                     },
@@ -352,7 +375,8 @@ class WebReader:
                 project = next(p for p in self.config["projects"] if p["project_id"] == project_id)
                 require(
                     checkout_id in {entry["id"] for entry in project.get("checkouts", [])},
-                    "checkout_not_allowed", 403,
+                    "checkout_not_allowed",
+                    403,
                 )
                 arguments["worktree"] = checkout_id
         elif name == "continuation-check":
@@ -395,15 +419,22 @@ class WebReader:
                 "unfinished": state.get("unfinished"),
             }
         return {
-            "handle": handle, "expires_in": 900, "status": package["status"],
+            "handle": handle,
+            "expires_in": 900,
+            "status": package["status"],
             "checkout": {
-                "id": tree["id"], "branch": tree["branch"], "head": tree["head"],
-                "dirty": tree["dirty"], "collected_at": tree["collected_at"],
+                "id": tree["id"],
+                "branch": tree["branch"],
+                "head": tree["head"],
+                "dirty": tree["dirty"],
+                "collected_at": tree["collected_at"],
             },
             "index": {key: package["index"][key] for key in ("total", "listed", "truncated")},
             "state": safe_state,
             "omissions": package["omissions"],
-            "budget": {key: package["budget"][key] for key in ("limit_bytes", "used_bytes", "over_budget")},
+            "budget": {
+                key: package["budget"][key] for key in ("limit_bytes", "used_bytes", "over_budget")
+            },
             "revision": package["revision"],
         }
 
@@ -512,7 +543,8 @@ class WebReader:
                 ("project_id" not in answer or answer["project_id"] == payload["project_id"])
                 if name == "experiences"
                 else answer.get("project_id") == payload["project_id"],
-                "invalid_upstream", 502,
+                "invalid_upstream",
+                502,
             )
             field = {
                 "query": "blocks",
@@ -535,7 +567,8 @@ class WebReader:
                     and isinstance(answer.get("index"), dict)
                     and isinstance(answer.get("budget"), dict)
                     and isinstance(answer.get("omissions"), list),
-                    "invalid_upstream", 502,
+                    "invalid_upstream",
+                    502,
                 )
             if name == "continuation-check":
                 require(
@@ -543,8 +576,10 @@ class WebReader:
                     and isinstance(answer.get("reason"), str)
                     and type(answer.get("observed")) is bool
                     and isinstance(answer.get("worktree"), dict)
-                    and answer["worktree"].get("id") == payload["arguments"]["package"]["worktree"]["id"],
-                    "invalid_upstream", 502,
+                    and answer["worktree"].get("id")
+                    == payload["arguments"]["package"]["worktree"]["id"],
+                    "invalid_upstream",
+                    502,
                 )
             if name in {"documents", "document"}:
                 require(

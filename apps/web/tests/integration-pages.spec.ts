@@ -285,6 +285,15 @@ test("memory separates overview, shared subjects and own records", async ({
         code: "ready",
         peer: { configured: true, verified_at: null, code: "unverified" },
         actor_id: "actor-a",
+        roles: [
+          {
+            id: "actor-a",
+            label: "默认角色",
+            version: 0,
+            available: true,
+            reason: null,
+          },
+        ],
       });
     if (path.endsWith("/overview"))
       return answer(route, {
@@ -352,11 +361,19 @@ test("memory separates overview, shared subjects and own records", async ({
   expect(bodyOfRecords).toEqual(
     expect.arrayContaining([
       {
+        role_id: "actor-a",
+        role_version: 0,
         subject: { kind: "person", person_id: "person-a" },
         limit: 20,
         cursor: null,
       },
-      { subject: null, limit: 20, cursor: null },
+      {
+        role_id: "actor-a",
+        role_version: 0,
+        subject: null,
+        limit: 20,
+        cursor: null,
+      },
     ]),
   );
 });

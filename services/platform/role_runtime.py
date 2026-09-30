@@ -69,8 +69,13 @@ class RoleRuntime:
 
     def active(self, actor):
         row = self.get(actor)
-        return bool(self.config and self.config["enabled"] and row
-                    and row["state"] == "active" and row["enabled"])
+        return bool(
+            self.config
+            and self.config["enabled"]
+            and row
+            and row["state"] == "active"
+            and row["enabled"]
+        )
 
     def active_actors(self):
         if self.config is None or not self.config["enabled"]:
@@ -84,6 +89,15 @@ class RoleRuntime:
             for row in rows
             if row["state"] == "active" and row["enabled"]
         ]
+
+    def directory(self):
+        """Read only the current local role intents for a narrow browser projection."""
+        if self.config is None:
+            return []
+        with closing(self._db()) as db:
+            return [
+                json.loads(row[0]) for row in db.execute("SELECT body FROM roles ORDER BY actor_id")
+            ]
 
     def _put(self, row):
         with closing(self._db()) as db, db:
@@ -308,9 +322,7 @@ class RoleRuntime:
             )
             if current is None:
                 require(row["cancel_source_stage"] == "start", "dependency_unavailable", 503)
-                legacy = any(
-                    item.get("id") == actor for item in catalog.get("legacy_roles", [])
-                )
+                legacy = any(item.get("id") == actor for item in catalog.get("legacy_roles", []))
                 if row["legacy"]:
                     # A static role without a runtime record is still allowed by Core.
                     # Install an explicit disabled fact before revoking Memory.
@@ -330,7 +342,7 @@ class RoleRuntime:
             if current is not None:
                 row["cancel_core_body"] = {
                     "operation": "apply",
-                    "request_id": f'{row["client_id"]}:cancel-core:{row["cancel_epoch"]}',
+                    "request_id": f"{row['client_id']}:cancel-core:{row['cancel_epoch']}",
                     "application_id": row["client_id"],
                     "operator": row["operator"],
                     "actor_id": actor,
@@ -361,11 +373,12 @@ class RoleRuntime:
             self._put(row)
         if row["stage"] == "cancel_memory_prepare":
             status = await self._remote(
-                memory, "/internal/v1/role-runtime/authorize",
+                memory,
+                "/internal/v1/role-runtime/authorize",
                 {"operation": "status", "actor_id": actor},
             )
             row["cancel_memory_body"] = {
-                "request_id": f'{row["client_id"]}:cancel-memory:{row["cancel_epoch"]}',
+                "request_id": f"{row['client_id']}:cancel-memory:{row['cancel_epoch']}",
                 "actor_id": actor,
                 "expected_version": status["version"],
                 "enabled": False,
@@ -447,7 +460,8 @@ class RoleRuntime:
         require(
             type(body["expected_version"]) is int
             and (
-                body["actor_id"] is None and body["expected_version"] == 0
+                body["actor_id"] is None
+                and body["expected_version"] == 0
                 or isinstance(body["actor_id"], str)
                 and body["actor_id"].startswith("actor:")
                 and len(body["actor_id"]) <= 128
@@ -460,7 +474,8 @@ class RoleRuntime:
             isinstance(body["name"], str)
             and 1 <= len(body["name"].strip()) <= 80
             and (
-                body["profile_id"] is None and body["profile_version"] is None
+                body["profile_id"] is None
+                and body["profile_version"] is None
                 and body["actor_id"] is not None
                 or isinstance(body["profile_id"], str)
                 and body["profile_id"].startswith("persona-profile:")
@@ -497,9 +512,12 @@ class RoleRuntime:
             existing = db.execute("SELECT body FROM roles WHERE actor_id=?", (actor,)).fetchone()
             old = json.loads(existing[0]) if existing else None
             require(
-                old is not None or body["actor_id"] is None
-                or body["profile_id"] is None and body["expected_version"] == 0,
-                "invalid_input", 400,
+                old is not None
+                or body["actor_id"] is None
+                or body["profile_id"] is None
+                and body["expected_version"] == 0,
+                "invalid_input",
+                400,
             )
             require(
                 (old or {}).get("version", 0) == body["expected_version"], "version_conflict", 409
@@ -552,7 +570,8 @@ class RoleRuntime:
             and set(body) == {"client_id", "actor_id", "expected_version"}
             and isinstance(body["actor_id"], str)
             and type(body["expected_version"]) is int,
-            "invalid_input", 400,
+            "invalid_input",
+            400,
         )
         try:
             client = str(uuid.UUID(body["client_id"]))
@@ -567,9 +586,13 @@ class RoleRuntime:
             ).fetchone()
             if prior:
                 require(prior[0] == signature, "idempotency_conflict", 409)
-                saved = db.execute("SELECT body FROM roles WHERE actor_id=?", (prior[1],)).fetchone()
+                saved = db.execute(
+                    "SELECT body FROM roles WHERE actor_id=?", (prior[1],)
+                ).fetchone()
                 return json.loads(saved[0])
-            saved = db.execute("SELECT body FROM roles WHERE actor_id=?", (body["actor_id"],)).fetchone()
+            saved = db.execute(
+                "SELECT body FROM roles WHERE actor_id=?", (body["actor_id"],)
+            ).fetchone()
             require(saved is not None, "not_found", 404)
             old = json.loads(saved[0])
             require(old["version"] == body["expected_version"], "version_conflict", 409)
@@ -587,7 +610,9 @@ class RoleRuntime:
                 "cancel_epoch": 0,
             }
             db.execute("INSERT INTO intents VALUES (?,?,?)", (client, signature, body["actor_id"]))
-            db.execute("UPDATE roles SET body=? WHERE actor_id=?", (canonical(row), body["actor_id"]))
+            db.execute(
+                "UPDATE roles SET body=? WHERE actor_id=?", (canonical(row), body["actor_id"])
+            )
             db.commit()
         self._remove_web(body["actor_id"])
         return row
@@ -640,19 +665,27 @@ class RoleRuntime:
                     and body.get("profile_id") is None
                 ):
                     companion = await self._remote(
-                        self.p.settings["core"], "/internal/v1/role-runtime/manage",
+                        self.p.settings["core"],
+                        "/internal/v1/role-runtime/manage",
                         {"operation": "list"},
                     )
                     require(
-                        any(item["id"] == body["actor_id"] for item in companion.get("legacy_roles", [])),
-                        "forbidden", 403,
+                        any(
+                            item["id"] == body["actor_id"]
+                            for item in companion.get("legacy_roles", [])
+                        ),
+                        "forbidden",
+                        403,
                     )
                 row = await self.p.local_work.run(self._begin, body)
             elif name == "cancel":
                 row = await self.p.local_work.run(self._begin_cancel, body)
             else:
-                require(isinstance(body, dict) and set(body) == {"actor_id", "client_id"},
-                        "invalid_input", 400)
+                require(
+                    isinstance(body, dict) and set(body) == {"actor_id", "client_id"},
+                    "invalid_input",
+                    400,
+                )
                 row = await self.p.local_work.run(self.get, body["actor_id"])
                 require(row is not None and row["client_id"] == body["client_id"], "forbidden", 403)
             if row["state"] == "pending":

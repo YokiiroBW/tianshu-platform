@@ -1,10 +1,12 @@
 """Browser's read-only window over Memory's fixed, scoped browser reader.
 
 Platform owns the login and fresh origin; Memory owns the account, actor, scope and source checks.
-No browser field can name a service identity, account, actor, origin or upstream URL.
+The browser may select a listed role id and version. It cannot supply a service identity,
+account, scope, origin or upstream URL; Platform derives those from current authority.
 """
 
 import asyncio
+import copy
 import ssl
 import uuid
 from datetime import datetime, timezone
@@ -50,10 +52,63 @@ class WebMemory(WebReader):
         answer = super().state()
         entry = self.platform.auth.entries.get(self.config["entry_id"]) if self.config else None
         answer["actor_id"] = entry["actor_id"] if entry and self._authorized() else None
+        answer["roles"] = self._directory() if entry and self._authorized() else []
         return answer
 
-    def _scope(self):
+    def _directory(self):
         p, config = self.platform, self.config
+        principal = self.console.config["principal"]
+        template = p.auth.entries[config["entry_id"]]
+        default = template["actor_id"]
+        rows = {
+            row["actor_id"]: row
+            for row in p.role_runtime.directory()
+            if row.get("operator") == principal
+        }
+        actors = [default]
+        if (
+            config.get("runtime_roles", False)
+            and p.role_runtime.config
+            and p.role_runtime.config["enabled"]
+        ):
+            actors.extend(actor for actor in rows if actor != default)
+        result = []
+        for actor in actors:
+            row = rows.get(actor)
+            reason = None
+            if row is not None:
+                if not p.role_runtime.config or not p.role_runtime.config["enabled"]:
+                    reason = "role_unavailable"
+                elif row.get("state") == "disabled" or (
+                    row.get("state") == "active" and not row.get("enabled")
+                ):
+                    reason = "role_disabled"
+                elif row.get("state") != "active":
+                    reason = "role_configuring"
+                elif "memory.read" not in row.get("capabilities", []):
+                    reason = "memory_read_disabled"
+            result.append(
+                {
+                    "id": actor,
+                    "label": row["name"] if row else "默认角色",
+                    "version": row["version"] if row else 0,
+                    "available": reason is None,
+                    "reason": reason,
+                }
+            )
+        return result
+
+    def _role(self, actor, version):
+        roles = {row["id"]: row for row in self._directory()}
+        require(actor in roles, "forbidden", 403)
+        row = roles[actor]
+        require(version == row["version"], "scope_changed", 409)
+        require(row["available"], row["reason"], 403)
+        return row
+
+    def _scope(self, actor, version):
+        p, config = self.platform, self.config
+        self._role(actor, version)
         principal_id = self.console.config["principal"]
         principal = p.auth.principals[principal_id]
         header = "Bearer " + (secret(principal["token_env"]) or "")
@@ -71,19 +126,31 @@ class WebMemory(WebReader):
             )
             p.auth.route(entry, "platform", "memory", "dialogue")
             scope = p.origins.scope(db, entry)
+            scope["actor_id"] = actor
             require(
                 scope["person_id"] is not None and scope["conversation_id"] is not None,
                 "memory_identity_not_ready",
                 503,
             )
-        return header, scope
+        return header, scope, entry
 
-    def _selection(self):
-        header, scope = self._scope()
-        origin = self.platform.origins.issue(header, self.config["entry_id"])
-        _, current = self._scope()
-        require(current == scope, "scope_changed", 409)
-        return origin["assertion_ref"], scope
+    def _selection(self, actor, version, temporary_entry):
+        header, scope, template = self._scope(actor, version)
+        entry_id = temporary_entry or self.config["entry_id"]
+        if temporary_entry is not None:
+            require(actor != template["actor_id"], "scope_changed", 409)
+            entry = copy.deepcopy(template)
+            entry["actor_id"] = actor
+            self.platform.auth.entries[entry_id] = entry
+        try:
+            origin = self.platform.origins.issue(header, entry_id)
+            _, current, _ = self._scope(actor, version)
+            require(current == scope, "scope_changed", 409)
+            return origin["assertion_ref"], scope
+        except BaseException:
+            if temporary_entry is not None:
+                self.platform.auth.entries.pop(entry_id, None)
+            raise
 
     def _still_issued(self, reference, scope):
         with self.platform.store.connect() as db:
@@ -100,13 +167,29 @@ class WebMemory(WebReader):
             require(body == {}, "invalid_input", 400)
             return self.state()
         self._prove(session)
-        request = self._request(name, body)
+        request, actor, version = self._request(name, body)
         require(self.active < 4, "too_many_requests", 429)
         self.active += 1
+        default = self.platform.auth.entries[self.config["entry_id"]]["actor_id"]
+        temporary_entry = "memory-view-" + uuid.uuid4().hex if actor != default else None
         try:
             async with self.slots:
                 self._prove(session)
-                reference, scope = await self.platform.local_work.run(self._selection)
+                selection = asyncio.create_task(
+                    self.platform.local_work.run(self._selection, actor, version, temporary_entry)
+                )
+                try:
+                    reference, scope = await asyncio.shield(selection)
+                except BaseException:
+
+                    def discard_late(done):
+                        if not done.cancelled():
+                            done.exception()
+                        if temporary_entry is not None:
+                            self.platform.auth.entries.pop(temporary_entry, None)
+
+                    selection.add_done_callback(discard_late)
+                    raise
                 self._prove(session)
                 request.update(
                     request_id="memory-web-" + uuid.uuid4().hex,
@@ -115,7 +198,7 @@ class WebMemory(WebReader):
                 )
                 answer = await self._read(name, request)
             self._prove(session)
-            _, current = await self.platform.local_work.run(self._scope)
+            _, current, _ = await self.platform.local_work.run(self._scope, actor, version)
             require(current == scope, "scope_changed", 409)
             await self.platform.local_work.run(self._still_issued, reference, scope)
             self.last = {"at": datetime.now(timezone.utc).isoformat(), "code": "ok"}
@@ -128,23 +211,38 @@ class WebMemory(WebReader):
             self.last = {"at": datetime.now(timezone.utc).isoformat(), "code": exc.code}
             raise
         finally:
+            if temporary_entry is not None:
+                self.platform.auth.entries.pop(temporary_entry, None)
             self.active -= 1
 
     def _request(self, name, body):
-        if name == "overview":
-            require(body == {}, "invalid_input", 400)
-            return {"schema_version": 1}
-        if name == "subjects":
-            require(set(body) == {"limit", "cursor"}, "invalid_input", 400)
+        selected = "role_id" in body or "role_version" in body
+        require(not selected or {"role_id", "role_version"} <= set(body), "invalid_input", 400)
+        if not selected:
+            chosen = self.platform.auth.entries[self.config["entry_id"]]["actor_id"]
+            version = next((row["version"] for row in self._directory() if row["id"] == chosen), 0)
         else:
-            require(set(body) == {"subject", "limit", "cursor"}, "invalid_input", 400)
+            chosen = _text(body["role_id"])
+            version = body["role_version"]
+            require(type(version) is int and version >= 0, "invalid_input", 400)
+        self._role(chosen, version)
+        content = {
+            key: value for key, value in body.items() if key not in {"role_id", "role_version"}
+        }
+        if name == "overview":
+            require(content == {}, "invalid_input", 400)
+            return {"schema_version": 1}, chosen, version
+        if name == "subjects":
+            require(set(content) == {"limit", "cursor"}, "invalid_input", 400)
+        else:
+            require(set(content) == {"subject", "limit", "cursor"}, "invalid_input", 400)
         result = {
             "schema_version": 1,
-            "limit": _limit(body["limit"]),
-            "cursor": _cursor(body["cursor"]),
+            "limit": _limit(content["limit"]),
+            "cursor": _cursor(content["cursor"]),
         }
         if name == "records":
-            subject = body["subject"]
+            subject = content["subject"]
             require(subject is None or isinstance(subject, dict), "invalid_input", 400)
             if subject is not None:
                 if subject.get("kind") == "person":
@@ -160,7 +258,7 @@ class WebMemory(WebReader):
                     raise Fault("invalid_input", 400)
             if subject is not None:
                 result["subject"] = subject
-        return result
+        return result, chosen, version
 
     async def _read(self, name, request):
         base = self.config["base_url"].rstrip("/")
@@ -235,6 +333,8 @@ class WebMemory(WebReader):
 
     def _error(self, status, answer):
         code = answer.get("code")
+        if status == 400 and code == "invalid_input":
+            raise Fault("invalid_input", 400)
         if status in {401, 403} and code in {"unauthorized", "forbidden"}:
             raise Fault("upstream_forbidden", 403)
         if status == 409 and code == "scope_changed":
