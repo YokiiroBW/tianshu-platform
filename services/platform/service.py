@@ -63,6 +63,7 @@ def registered_credentials(settings, *, include_setup=True):
     take(settings.get("web_knowledge"))
     take(settings.get("web_life"))
     take(settings.get("web_memory"))
+    take((settings.get("web_relationships") or {}).get("memory"))
     take(settings.get("web_qq_profiles"))
     take(settings.get("qq_alias_memory"))
     if include_setup:
@@ -115,6 +116,7 @@ SETTINGS_KEYS = frozenset(
         "web_knowledge",
         "web_life",
         "web_memory",
+        "web_relationships",
         "web_qq_profiles",
         "qq_alias_memory",
         "web_external",
@@ -144,7 +146,13 @@ def validate_settings(settings):
 
     validate_profiles_configuration(
         settings,
-        registered_credentials({key: value for key, value in settings.items() if key not in {"web_qq_profiles", "qq_alias_memory"}}),
+        registered_credentials(
+            {
+                key: value
+                for key, value in settings.items()
+                if key not in {"web_qq_profiles", "qq_alias_memory"}
+            }
+        ),
     )
     require(settings.get("storage") == "sqlite_local", "dependency_unavailable", 503)
     require(type(settings.get("native_config_http", False)) is bool, "invalid_input", 400)
@@ -223,6 +231,9 @@ def validate_settings(settings):
         )
     validate_readers(settings, existing)
     validate_memory_binding(settings, auth)
+    from .relationships.config import validate as validate_relationships
+
+    validate_relationships(settings)
     validate_external_configuration(settings.get("web_external"), settings)
     validate_bot_adapter_configuration(settings.get("bot_adapter_self_service"), settings)
     role_runtime = settings.get("role_runtime")
@@ -316,6 +327,9 @@ class Platform:
         from .qq_admin import QQAdmin
 
         self.qq_admin = QQAdmin(self)
+        from .relationships.application import Relationships
+
+        self.relationships = Relationships(self)
         # Everything the read-only probes are allowed to know about this deployment, assembled
         # once as a frozen description. The health module never receives this object, a store or a
         # console, and nothing here can write.

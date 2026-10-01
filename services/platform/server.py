@@ -14,7 +14,7 @@ from . import diagnostics, diagnostics_config, runtime_health
 from .contracts import Fault, loads, require
 from . import model_origin_renewal
 from .service import registered_credentials
-from .web_console import CONSOLE_AUTH, WebConsole
+from .web_console import CONSOLE_AUTH
 from .qq_admin import CHECK_PATH as QQ_ADMIN_CHECK
 
 PLATFORM = web.AppKey("platform", object)
@@ -61,8 +61,14 @@ NATIVE_ERRORS = {
 }
 
 
+def create_console(platform):
+    from .relationships.routes import RelationshipConsole
+
+    return RelationshipConsole(platform)
+
+
 def create_app(platform, probe=None, *, console=None, public=False):
-    console = console or WebConsole(platform)
+    console = console or create_console(platform)
     require(not public or console.access.current is not None, "invalid_input", 400)
     native_open = platform.native_config_http is True
     renewal_open = model_origin_renewal.enabled(platform.settings)
@@ -193,7 +199,12 @@ def create_app(platform, probe=None, *, console=None, public=False):
             require(
                 request.method == "POST"
                 and (
-                    schema is not None or renewal or provider_call or bot_call or observation_call or qq_admin_call
+                    schema is not None
+                    or renewal
+                    or provider_call
+                    or bot_call
+                    or observation_call
+                    or qq_admin_call
                 ),
                 "not_found",
                 404,
@@ -521,7 +532,12 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 await asyncio.gather(task, return_exceptions=True)
 
         app.cleanup_ctx.append(bot_pump_context)
-    if not public and platform.bot_adapters.catalog is None and platform.settings.get("qq_alias_memory") is not None:
+    if (
+        not public
+        and platform.bot_adapters.catalog is None
+        and platform.settings.get("qq_alias_memory") is not None
+    ):
+
         async def qq_alias_pump_context(app):
             async def pump():
                 while True:
@@ -530,12 +546,14 @@ def create_app(platform, probe=None, *, console=None, public=False):
                     except (Fault, OSError, sqlite3.Error):
                         pass
                     await asyncio.sleep(2)
+
             task = asyncio.create_task(pump())
             try:
                 yield
             finally:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+
         app.cleanup_ctx.append(qq_alias_pump_context)
     if not public and platform.role_runtime.config is not None:
 

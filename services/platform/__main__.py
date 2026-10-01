@@ -15,8 +15,7 @@ from aiohttp import web
 from . import diagnostics, diagnostics_config, runtime_health
 from .assets import REQUEST_LIMIT
 from .contracts import Fault, canonical, loads, require
-from .server import create_app
-from .web_console import WebConsole
+from .server import create_app, create_console
 from .service import Platform, credential_present, registered_credentials, validate_settings
 from .transport import server_tls
 
@@ -77,7 +76,7 @@ async def serve_forever(
     stops presenting it as current, record the terminal event, and only then make the log durable
     and close it. Nothing is killed to look like a clean stop, and every step is bounded.
     """
-    console = WebConsole(platform)
+    console = create_console(platform)
     runners = []
     try:
         runner = web.AppRunner(create_app(platform, console=console), access_log=None)
