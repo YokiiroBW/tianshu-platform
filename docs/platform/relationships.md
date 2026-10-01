@@ -1,5 +1,11 @@
 # Platform 角色—人物关系管理（TS-116）
 
+## 正式发布绑定（2026-10-01）
+
+隔离发布绑定协调仓库 contracts/role-relationship/v1 1.0.0（根发布提交 37b086f66ca8521ec065578b9126111d97d0f112），schema LF SHA256 e96397bac2b6ad8ff9d23c023d7d3c5ba0701734b27053a05b9d0f65a7ff8ee6。配置键 candidate_schema_path 保留兼容名称，值只指向正式版本。测试固定 Memory 1f3121c9758faeb31fc9d0fe2a54974c72505d55 与 Companion 21e4ff37f1d4f4e3e9db94f8c965031a8dcb9cd6 的 Git 归档；结果见 docs/handoffs/release-2026.10.01-rc.1.md。下文候选状态、旧固定 SHA 和此前结果保留为任务历史。发布绑定没有扩大权限，也不表示 NAS 已迁移或完成真实使用验收。
+
+## 原任务记录（示例路径和哈希已指向正式包）
+
 2026-10-01。本功能已完成隔离本地实现与验收；尚未合入产品 main、正式发布合同或部署。Memory 唯一拥有 `(actor_id, person_id)` 的关系、分数、冻结时间及事件账本。Platform 只验证后台会话、角色及人物选择，转发操作并显示脱敏结果，没有第二套分数表或关系数据库。
 
 ## 页面及模块
@@ -16,7 +22,7 @@
 {
   "web_relationships": {
     "enabled": true,
-    "candidate_schema_path": "/contracts/role-relationship/candidate-v1/schema.json",
+    "candidate_schema_path": "/contracts/role-relationship/v1/schema.json",
     "memory": {
       "base_url": "https://memory.example.invalid:9443",
       "token_env": "RELATIONSHIPS_MANAGER_TOKEN",
@@ -27,7 +33,7 @@
 }
 ```
 
-启用前必须已有 `web_memory` 和 `web_qq_profiles`，三者指向同一 Memory 地址，并分别登记读取、人物目录及管理凭据；管理凭据不得与其他业务凭据同值。配置 schema 按 LF 归一化后固定 SHA256 `f3b588591411f1ed4b8aa7c9003d201530644d4dfc02294bdd9e9d7f847214a3`。这是显式隔离候选输入，不能视为正式发布或生产启用授权。
+启用前必须已有 `web_memory` 和 `web_qq_profiles`，三者指向同一 Memory 地址，并分别登记读取、人物目录及管理凭据；管理凭据不得与其他业务凭据同值。配置 schema 按 LF 归一化后固定 SHA256 `e96397bac2b6ad8ff9d23c023d7d3c5ba0701734b27053a05b9d0f65a7ff8ee6`。这是显式隔离候选输入，不能视为正式发布或生产启用授权。
 
 实际操作人来自已认证控制台 principal，须同时有既有 `role.manage`、`memory.read`、`qq.admin.view`，还须满足现有 Memory 查询证明、当前角色版本/能力和 QQ 管理目录检查。登录和角色类型不自动增加权限。Memory 管理调用方需自己的 `relationships.read/manage`、`role_admin` 和实时 Platform origin；跨人物私密查询仅为获准后台 `managed=true`，不用于群上下文。
 

@@ -39,8 +39,8 @@ from services.platform.service import Platform
 from services.platform.transport import server_tls
 from web_fixtures import PASSWORD
 
-MEMORY_SHA = "ba03202c44648a3820f7552629edd9eb5797d424"
-COMPANION_SHA = "ea5c044719bfa76de384b0b69bbfd7ed1439996b"
+MEMORY_SHA = "1f3121c9758faeb31fc9d0fe2a54974c72505d55"
+COMPANION_SHA = "21e4ff37f1d4f4e3e9db94f8c965031a8dcb9cd6"
 PLATFORM_BASE = "dffedb231ae884c97661056e2c5bcb90d9ea950b"
 ROOT = Path(os.environ["TS012_CONTRACT_DIR"]).parents[2]
 

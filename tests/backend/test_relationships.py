@@ -20,7 +20,7 @@ from services.platform.server import create_app
 from services.platform.service import Platform, validate_settings
 
 ROOT = Path(os.environ["TS012_CONTRACT_DIR"]).parents[2]
-SCHEMA = ROOT / "contracts/role-relationship/candidate-v1/schema.json"
+SCHEMA = ROOT / "contracts/role-relationship/v1/schema.json"
 SELECTION = {
     "role_id": "actor:a",
     "role_version": 0,

@@ -18,8 +18,7 @@ from services.platform.transport import server_tls
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = (
-    Path(os.environ["TS012_CONTRACT_DIR"]).parents[2]
-    / "contracts/role-relationship/candidate-v1/schema.json"
+    Path(os.environ["TS012_CONTRACT_DIR"]).parents[2] / "contracts/role-relationship/v1/schema.json"
 )
 PAIR = {"actor_id": "actor:a", "person_id": "person:synthetic"}
 

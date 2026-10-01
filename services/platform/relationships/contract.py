@@ -9,7 +9,7 @@ from jsonschema.exceptions import ValidationError
 
 from ..contracts import Fault
 
-SCHEMA_HASH = "f3b588591411f1ed4b8aa7c9003d201530644d4dfc02294bdd9e9d7f847214a3"
+SCHEMA_HASH = "e96397bac2b6ad8ff9d23c023d7d3c5ba0701734b27053a05b9d0f65a7ff8ee6"
 
 
 class Contract:
