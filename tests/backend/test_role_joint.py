@@ -550,9 +550,13 @@ class RoleJoint(WebJoint):
             "description": "", "content": {"persona": "Distinct profile", "tone": "warm"},
         })["item"]
         await self.browser_roles([profile], "optional_persona_browser.mjs")
+        self.assertEqual(len(self.core.store.list("persona_revisions", profile["id"])), 1)
+        self.assertEqual(self.core.personas._profile(profile["id"])["version"], 3)
         roles = self.core.role_runtime.list()
         self.assertEqual(len(roles), 2)
         for role in roles:
+            self.assertEqual(len(self.core.store.list("persona_revisions", role["actor_id"])),
+                             3 if role["name"] == "Optional with profiles" else 1)
             self.assertFalse(role["enabled"])
             self.assertIsNone(role["profile_id"])
             self.assertEqual(self.core.personas._revision(role["persona_revision"])["content"],

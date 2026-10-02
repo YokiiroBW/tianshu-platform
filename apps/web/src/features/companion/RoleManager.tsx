@@ -407,7 +407,7 @@ export default function RoleManager() {
                       <option value="">{legacy || role?.legacy ? "保留原角色人格" : "无（基础默认行为）"}</option>
                       {profiles.map((item) => (
                         <option key={item.id} value={item.id}>
-                          {item.name} · 第 {item.version} 版
+                          {item.name}
                         </option>
                       ))}
                     </select>

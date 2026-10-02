@@ -25,12 +25,21 @@ try {
   await expect(form.getByLabel("人格档案")).toHaveValue("");
   await expect(form.getByLabel("启用对话")).not.toBeChecked();
   if (profiles.length) {
+    await expect(form.locator(`option[value="${profiles[0]}"]`)).toHaveText("Optional source");
     await form.getByLabel("人格档案").selectOption(profiles[0]);
     await form.getByRole("button", { name: "应用设置" }).click();
     await expect(page.getByText("角色已停用，历史记录保留。", { exact: true })).toBeVisible();
     await page.reload();
     await page.getByRole("button", { name: new RegExp(name) }).click();
     await expect(form.getByLabel("人格档案")).toHaveValue(profiles[0]);
+    for (let index = 0; index < 2; index++) {
+      await form.getByRole("button", { name: "应用设置" }).click();
+      await expect(page.getByText("角色已停用，历史记录保留。", { exact: true })).toBeVisible();
+      await page.reload();
+      await page.getByRole("button", { name: new RegExp(name) }).click();
+      await expect(form.getByLabel("人格档案")).toHaveValue(profiles[0]);
+      await expect(form.locator(`option[value="${profiles[0]}"]`)).toHaveText("Optional source");
+    }
     await form.getByLabel("人格档案").selectOption("");
     await form.getByRole("button", { name: "应用设置" }).click();
     await expect(page.getByText("角色已停用，历史记录保留。", { exact: true })).toBeVisible();
