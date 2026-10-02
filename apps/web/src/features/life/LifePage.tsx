@@ -4,15 +4,18 @@ import { useAuth } from "../../app/Auth";
 import { integrationPost, readFailure } from "../../app/integrationApi";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
+import { DailyLife } from "./DailyLife";
 import "./life.css";
 
 type Connection = {
+  can_retry?: boolean;
   available: boolean;
   code: string;
   peer: { configured: boolean; verified_at: string | null; code: string };
 };
 type Actor = {
   actor_id: string;
+  label?: string;
   actor_version: number;
   world_id: string;
   room_id: string;
@@ -404,7 +407,7 @@ export default function LifePage() {
             >
               {actors.map((row) => (
                 <option key={row.actor_id} value={row.actor_id}>
-                  {row.actor_id}
+                  {row.label || row.actor_id}
                 </option>
               ))}
             </select>
@@ -450,6 +453,12 @@ export default function LifePage() {
       )}
       {actor && (
         <>
+          <DailyLife
+            key={`${csrf}:${actor}`}
+            actor={actor}
+            csrf={csrf}
+            canRetry={state.can_retry === true}
+          />
           <section className="panel">
             <div className="section-heading">
               <h2>最近一次生活状态</h2>
@@ -470,7 +479,10 @@ export default function LifePage() {
               snapshot && (
                 <>
                   <p className="muted">
-                    角色 {snapshot.actor_id} ·{" "}
+                    角色{" "}
+                    {actors.find((row) => row.actor_id === snapshot.actor_id)
+                      ?.label || snapshot.actor_id}{" "}
+                    ·{" "}
                     {snapshot.state_basis === "last_persisted"
                       ? "最后持久化状态"
                       : "状态依据未知"}{" "}

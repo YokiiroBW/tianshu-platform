@@ -23,7 +23,7 @@ try {
     await form.getByLabel("人格档案").selectOption(profiles[i]);
     await form.getByLabel("模型").selectOption(`${providers[i]}@1`);
     if (i === 1) await form.getByLabel("记住新的经历").uncheck();
-    await form.getByLabel("启用对话").check();
+    await form.getByLabel("启用角色", { exact: true }).check();
     await form.getByRole("button", { name: "应用设置" }).click();
     await expect(page.getByText("角色设置已生效。")).toBeVisible({ timeout: 20000 });
     const response = await context.request.get(url + "/api/web/session");

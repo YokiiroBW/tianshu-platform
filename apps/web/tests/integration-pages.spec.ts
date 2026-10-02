@@ -201,6 +201,45 @@ test("life reads last persisted state and only opens a published diary", async (
         ],
         next_after_actor_id: null,
       });
+    if (path.endsWith("/today"))
+      return answer(route, {
+        schema_version: 1,
+        fictional: true,
+        actor_id: "actor-a",
+        day: "2026-09-27",
+        timezone: "Asia/Shanghai",
+        enabled: true,
+        observed_at: 1790471000,
+        state_basis: "last_persisted",
+        plan: {
+          plan_id: "plan-a",
+          version: 1,
+          state: "active",
+          generation_state: "unavailable",
+          generated_by: "baseline",
+          entries: [
+            {
+              phase_id: "phase-a",
+              minute: 0,
+              activity: "安静休息",
+              detail: null,
+              state: "current",
+              generation_state: "unavailable",
+            },
+          ],
+          current_phase_id: "phase-a",
+        },
+      });
+    if (path.endsWith("/timeline"))
+      return answer(route, {
+        schema_version: 1,
+        fictional: true,
+        actor_id: "actor-a",
+        day: "2026-09-27",
+        state_basis: "last_persisted",
+        items: [],
+        next_after: null,
+      });
     if (path.endsWith("/snapshot"))
       return answer(route, {
         schema_version: 1,

@@ -184,7 +184,7 @@ class QQAdmin:
         db.execute("PRAGMA synchronous=FULL")
         return db
 
-    def _gate(self, console, session, action):
+    def check_access(self, console, session, action):
         require(console.session_valid(session), "session_expired", 401)
         principal = self.p.auth.principals[console.config["principal"]]
         require(
@@ -211,9 +211,7 @@ class QQAdmin:
                     for row in db.execute("SELECT body FROM grants ORDER BY qq_id")
                 ],
                 "capabilities": sorted(CAPABILITIES),
-                "roles": [
-                    {"id": actor, "label": label} for actor, label in sorted(roles.items())
-                ],
+                "roles": [{"id": actor, "label": label} for actor, label in sorted(roles.items())],
                 "alias_pending": db.execute("SELECT count(*) FROM alias_pending").fetchone()[0],
             }
 
@@ -346,7 +344,7 @@ class QQAdmin:
         operation = path.removeprefix(WEB_PREFIX)
         require(operation in {"view", "profiles", "grant", "revoke"}, "not_found", 404)
         action = "qq.admin.view" if operation in {"view", "profiles"} else "qq.admin.manage"
-        self._gate(console, session, action)
+        self.check_access(console, session, action)
         if operation == "view":
             require(body == {}, "invalid_input", 400)
             answer = await self.p.local_work.run(self._view)
@@ -356,7 +354,7 @@ class QQAdmin:
             answer = await self.p.local_work.run(
                 self._write, operation, body, console.config["principal"]
             )
-        self._gate(console, session, action)
+        self.check_access(console, session, action)
         return answer
 
     async def _profiles(self, body):

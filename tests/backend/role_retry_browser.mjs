@@ -18,7 +18,7 @@ try {
   await form.getByLabel("名称").fill("Retry role");
   await form.getByLabel("人格档案").selectOption(profile);
   await form.getByLabel("模型").selectOption(`${provider}@1`);
-  await form.getByLabel("启用对话").check();
+  await form.getByLabel("启用角色", { exact: true }).check();
   await form.getByRole("button", { name: "应用设置" }).click();
   await expect(page.getByRole("button", { name: "继续配置" })).toBeVisible({ timeout: 20000 });
   await expect(page.getByRole("button", { name: "取消配置并停用" })).toBeVisible();

@@ -24,7 +24,12 @@ type Role = {
 };
 type View = {
   roles: Role[];
-  legacy_roles: { id: string; name: string; version: number; published_revision: string | null }[];
+  legacy_roles: {
+    id: string;
+    name: string;
+    version: number;
+    published_revision: string | null;
+  }[];
   profiles: {
     id: string;
     name: string;
@@ -46,6 +51,7 @@ type Form = {
   profile_id: string;
   provider_key: string;
   enabled: boolean;
+  dialogue: boolean;
   memory_read: boolean;
   memory_write: boolean;
 };
@@ -54,6 +60,7 @@ const empty: Form = {
   profile_id: "",
   provider_key: "",
   enabled: false,
+  dialogue: true,
   memory_read: true,
   memory_write: true,
 };
@@ -73,7 +80,9 @@ const reason: Record<string, string> = {
 };
 
 function failure(code: string | null) {
-  return code ? reason[code] ?? "配置未完成，请检查设置或稍后重试。" : "正在核验服务。";
+  return code
+    ? (reason[code] ?? "配置未完成，请检查设置或稍后重试。")
+    : "正在核验服务。";
 }
 
 function existingName(item: { id: string; name: string }) {
@@ -88,6 +97,7 @@ function formFor(role: Role): Form {
       ? `${role.provider_id}@${role.provider_revision}`
       : "",
     enabled: role.enabled,
+    dialogue: role.capabilities.includes("dialogue"),
     memory_read: role.capabilities.includes("memory.read"),
     memory_write: role.capabilities.includes("memory.write"),
   };
@@ -105,15 +115,24 @@ export default function RoleManager() {
   const [mobileDetail, setMobileDetail] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const role = view?.roles.find((item) => item.actor_id === selected) ?? null;
-  const legacy = view?.legacy_roles.find((item) => item.id === selected) ?? null;
+  const legacy =
+    view?.legacy_roles.find((item) => item.id === selected) ?? null;
   const profiles = view?.profiles ?? [];
   const providers = view?.providers ?? [];
   const visible = useMemo(
     () =>
-      [...(view?.roles ?? []).map((item) => ({ id: item.actor_id, name: item.name,
-        label: status[item.state] })),
-      ...(view?.legacy_roles ?? []).map((item) => ({ id: item.id, name: existingName(item),
-        label: "待配置" }))].filter((item) =>
+      [
+        ...(view?.roles ?? []).map((item) => ({
+          id: item.actor_id,
+          name: item.name,
+          label: status[item.state],
+        })),
+        ...(view?.legacy_roles ?? []).map((item) => ({
+          id: item.id,
+          name: existingName(item),
+          label: "待配置",
+        })),
+      ].filter((item) =>
         `${item.name} ${item.id}`
           .toLocaleLowerCase()
           .includes(search.toLocaleLowerCase()),
@@ -147,9 +166,11 @@ export default function RoleManager() {
     const found = view?.roles.find((item) => item.actor_id === actor);
     const existing = view?.legacy_roles.find((item) => item.id === actor);
     setForm(
-      found ? formFor(found) : existing
-        ? { ...empty, name: existingName(existing), enabled: true }
-        : { ...empty },
+      found
+        ? formFor(found)
+        : existing
+          ? { ...empty, name: existingName(existing), enabled: true }
+          : { ...empty },
     );
     setMobileDetail(true);
     setNotice("");
@@ -165,11 +186,17 @@ export default function RoleManager() {
     const provider = providers.find(
       (item) => `${item.id}@${item.revision}` === form.provider_key,
     );
-    const pinnedVersion = role && profile && role.profile_id === profile.id
-      && role.profile_revision === profile.revision
-      ? role.profile_version : profile?.version;
-    if ((form.profile_id && !profile?.revision) ||
-        (form.provider_key && !provider)) {
+    const pinnedVersion =
+      role &&
+      profile &&
+      role.profile_id === profile.id &&
+      role.profile_revision === profile.revision
+        ? role.profile_version
+        : profile?.version;
+    if (
+      (form.profile_id && !profile?.revision) ||
+      (form.provider_key && !provider)
+    ) {
       setError("请选择可用的人格档案与模型。");
       setBusy(false);
       return;
@@ -191,7 +218,7 @@ export default function RoleManager() {
           provider_revision: provider?.revision ?? null,
           enabled,
           capabilities: [
-            "dialogue",
+            ...(form.dialogue ? ["dialogue"] : []),
             ...(form.memory_read ? ["memory.read"] : []),
             ...(form.memory_write ? ["memory.write"] : []),
           ],
@@ -227,7 +254,9 @@ export default function RoleManager() {
         session.csrf,
       );
       await refresh();
-      setPendingId(result.role.state === "pending" ? result.role.client_id : null);
+      setPendingId(
+        result.role.state === "pending" ? result.role.client_id : null,
+      );
       setForm(formFor(result.role));
       setNotice(
         result.role.state === "pending"
@@ -253,18 +282,26 @@ export default function RoleManager() {
       const result = await request<{ role: Role }>(
         "roles/cancel",
         new AbortController().signal,
-        { actor_id: role.actor_id, expected_version: role.version, client_id: requestId() },
+        {
+          actor_id: role.actor_id,
+          expected_version: role.version,
+          client_id: requestId(),
+        },
         session.csrf,
       );
       await refresh();
       setPendingId(null);
       setForm(formFor(result.role));
-      setNotice(result.role.state === "disabled"
-        ? "角色已停用，历史记录保留。"
-        : "正在停用角色；完成授权核对前不会显示为已停用。");
+      setNotice(
+        result.role.state === "disabled"
+          ? "角色已停用，历史记录保留。"
+          : "正在停用角色；完成授权核对前不会显示为已停用。",
+      );
     } catch (cause) {
       await refresh();
-      setError(cause instanceof Error ? cause.message : "停用尚未完成，请刷新后继续。");
+      setError(
+        cause instanceof Error ? cause.message : "停用尚未完成，请刷新后继续。",
+      );
     } finally {
       setBusy(false);
     }
@@ -326,16 +363,15 @@ export default function RoleManager() {
                 </div>
                 {!profiles.length && (
                   <p className="muted">
-                    人格档案可选，可先创建角色，之后再到<a href="#/companion/2">人格</a>中建立档案。
+                    人格档案可选，可先创建角色，之后再到
+                    <a href="#/companion/2">人格</a>中建立档案。
                   </p>
                 )}
                 {visible.map((item) => (
                   <button
                     type="button"
                     className="role-list-item"
-                    aria-current={
-                      selected === item.id ? "true" : undefined
-                    }
+                    aria-current={selected === item.id ? "true" : undefined}
                     key={item.id}
                     onClick={() => select(item.id)}
                   >
@@ -352,11 +388,23 @@ export default function RoleManager() {
                   返回角色列表
                 </button>
                 <div className="role-detail-heading">
-                  <h3>{role?.name ?? (legacy ? existingName(legacy) : "新角色")}</h3>
-                  {(role || legacy) && <span>{role ? status[role.state] : "待配置"}</span>}
+                  <h3>
+                    {role?.name ?? (legacy ? existingName(legacy) : "新角色")}
+                  </h3>
+                  {(role || legacy) && (
+                    <span>{role ? status[role.state] : "待配置"}</span>
+                  )}
                 </div>
-                {legacy && <p className="role-notice">现有角色可在此选择自己的模型。保留原角色身份、人格和历史；应用设置后才由角色管理接管。</p>}
-                {role?.state === "disabled" && <p className="role-notice">此角色已停用，历史记录保留。重新启用后才会接收新消息。</p>}
+                {legacy && (
+                  <p className="role-notice">
+                    现有角色可在此选择自己的模型。保留原角色身份、人格和历史；应用设置后才由角色管理接管。
+                  </p>
+                )}
+                {role?.state === "disabled" && (
+                  <p className="role-notice">
+                    此角色已停用，历史记录保留。重新启用后才会接收新消息。
+                  </p>
+                )}
                 {role?.state === "pending" && (
                   <div className="role-pending">
                     <p>
@@ -369,20 +417,25 @@ export default function RoleManager() {
                       disabled={busy}
                       onClick={() => void retry()}
                     >
-                      {role.stage.startsWith("cancel_") ? "继续停用" : "继续配置"}
+                      {role.stage.startsWith("cancel_")
+                        ? "继续停用"
+                        : "继续配置"}
                     </button>
-                    {!role.stage.startsWith("cancel_") && <button
-                      className="button"
-                      disabled={busy}
-                      onClick={() => void cancelPending()}
-                    >
-                      取消配置并停用
-                    </button>}
+                    {!role.stage.startsWith("cancel_") && (
+                      <button
+                        className="button"
+                        disabled={busy}
+                        onClick={() => void cancelPending()}
+                      >
+                        取消配置并停用
+                      </button>
+                    )}
                   </div>
                 )}
                 {role?.state === "failed" && (
                   <p className="role-pending">
-                    此设置未生效。{failure(role.error_code)}更新设置后可重新应用。
+                    此设置未生效。{failure(role.error_code)}
+                    更新设置后可重新应用。
                   </p>
                 )}
                 <div className="role-form">
@@ -404,7 +457,11 @@ export default function RoleManager() {
                         setForm({ ...form, profile_id: e.target.value })
                       }
                     >
-                      <option value="">{legacy || role?.legacy ? "保留原角色人格" : "无（基础默认行为）"}</option>
+                      <option value="">
+                        {legacy || role?.legacy
+                          ? "保留原角色人格"
+                          : "无（基础默认行为）"}
+                      </option>
                       {profiles.map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.name}
@@ -413,9 +470,14 @@ export default function RoleManager() {
                     </select>
                   </label>
                   {role?.state === "active" && (
-                    <p className="muted">当前生效人格：{role.profile_id
-                      ? `${profiles.find((item) => item.id === role.profile_id)?.name ?? "所选档案"} · 第 ${role.profile_version} 版`
-                      : role.legacy ? "原角色人格 · 保留现有版本" : "无档案 · 基础默认行为"}</p>
+                    <p className="muted">
+                      当前生效人格：
+                      {role.profile_id
+                        ? `${profiles.find((item) => item.id === role.profile_id)?.name ?? "所选档案"} · 第 ${role.profile_version} 版`
+                        : role.legacy
+                          ? "原角色人格 · 保留现有版本"
+                          : "无档案 · 基础默认行为"}
+                    </p>
                   )}
                   <label>
                     模型
@@ -474,27 +536,46 @@ export default function RoleManager() {
                         setForm({ ...form, enabled: e.target.checked })
                       }
                     />
-                    启用对话
+                    启用角色
                   </label>
+                  <label className="role-check">
+                    <input
+                      type="checkbox"
+                      checked={form.dialogue}
+                      onChange={(e) =>
+                        setForm({ ...form, dialogue: e.target.checked })
+                      }
+                    />
+                    允许对话
+                  </label>
+                  <p className="muted">
+                    启用后，角色会独立安排日常。关闭对话仍保留生活推进；停用角色会暂停日常。
+                  </p>
                   <details>
                     <summary>可用能力</summary>
                     <p>
                       对话、记忆读取、记忆候选写入。机器人发言仍受各连接的观察与回复策略限制。
                     </p>
                   </details>
-                  {(role || legacy) && <details>
-                    <summary>诊断信息</summary>
-                    <p>角色标识：{role?.actor_id ?? legacy?.id}</p>
-                    {role?.profile_revision && <p>人格修订：{role.profile_revision}</p>}
-                    {role?.error_code && <p>错误代码：{role.error_code}；阶段：{role.stage}</p>}
-                  </details>}
+                  {(role || legacy) && (
+                    <details>
+                      <summary>诊断信息</summary>
+                      <p>角色标识：{role?.actor_id ?? legacy?.id}</p>
+                      {role?.profile_revision && (
+                        <p>人格修订：{role.profile_revision}</p>
+                      )}
+                      {role?.error_code && (
+                        <p>
+                          错误代码：{role.error_code}；阶段：{role.stage}
+                        </p>
+                      )}
+                    </details>
+                  )}
                   <div className="role-form-actions">
                     <button
                       className="button primary"
                       disabled={
-                        busy ||
-                        !form.name.trim() ||
-                        role?.state === "pending"
+                        busy || !form.name.trim() || role?.state === "pending"
                       }
                       onClick={() => void save()}
                     >

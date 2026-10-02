@@ -10,6 +10,7 @@ import {
 import { StatePanel } from "../components/StatePanel";
 import { resolveRoute } from "./modules";
 import type { Session } from "../features/companion/api";
+import { saveRolePreference } from "./rolePreference";
 import "./auth.css";
 
 export type WebSession = Session & {
@@ -114,8 +115,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!controller.signal.aborted) {
         setSession((before) => {
           if (before?.authenticated && !next.authenticated)
-            sessionStorage.removeItem(
+            saveRolePreference(
               `tianshu-memory-role:${encodeURIComponent(before.username || before.csrf)}`,
+              null,
             );
           return next;
         });
@@ -125,8 +127,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!controller.signal.aborted) {
         setSession((before) => {
           if (before?.authenticated)
-            sessionStorage.removeItem(
+            saveRolePreference(
               `tianshu-memory-role:${encodeURIComponent(before.username || before.csrf)}`,
+              null,
             );
           return null;
         });
@@ -169,8 +172,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     if (!session || exiting.current) return;
     exiting.current = true;
-    sessionStorage.removeItem(
+    saveRolePreference(
       `tianshu-memory-role:${encodeURIComponent(session.username || session.csrf)}`,
+      null,
     );
     active.current?.abort();
     setSession(null);

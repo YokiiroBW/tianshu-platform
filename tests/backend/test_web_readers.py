@@ -14,7 +14,7 @@ import aiohttp
 from aiohttp import web
 
 from fixtures import ENV, start_http
-from services.platform.contracts import Fault
+from services.platform.contracts import Contracts, Fault
 from services.platform.server import create_app
 from services.platform.service import Platform
 from services.platform.web_readers import WebReader, validate_readers
@@ -63,12 +63,19 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
         env.start()
         self.addCleanup(env.stop)
         self.config = {
+            "contract_directory": os.environ["TS012_CONTRACT_DIR"],
             "web_knowledge": {
                 "enabled": True,
                 "base_url": f"https://127.0.0.1:{self.port}",
                 "token_env": "TEST_KNOWLEDGE_READER",
                 "ca_file": self.cert,
-                "projects": [{"project_id": "alpha", "label": "Alpha", "checkouts": [{"id": "agent-a", "label": "Agent A"}]}],
+                "projects": [
+                    {
+                        "project_id": "alpha",
+                        "label": "Alpha",
+                        "checkouts": [{"id": "agent-a", "label": "Agent A"}],
+                    }
+                ],
             },
             "web_life": {
                 "enabled": True,
@@ -80,6 +87,7 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
         self.principal = {"actions": ["knowledge.read", "life.read"]}
         self.platform = SimpleNamespace(
             settings=self.config,
+            contracts=Contracts(os.environ["TS012_CONTRACT_DIR"]),
             auth=SimpleNamespace(principals={"admin": self.principal}),
             other_credentials=("OTHER_READER", "TEST_KNOWLEDGE_READER", "TEST_LIFE_READER"),
         )
@@ -105,30 +113,71 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
                 }
             )
         if body["operation"] == "lesson_query":
-            return web.json_response({"project_id": "alpha", "lessons": [{"lesson_id": "lesson:a"}], "omissions": [], "retrieval": "lexical", "trust": "operator_statement_with_source_evidence"})
+            return web.json_response(
+                {
+                    "project_id": "alpha",
+                    "lessons": [{"lesson_id": "lesson:a"}],
+                    "omissions": [],
+                    "retrieval": "lexical",
+                    "trust": "operator_statement_with_source_evidence",
+                }
+            )
         if body["operation"] == "experience_query":
-            return web.json_response({"project_id": "alpha", "entries": [{"entry_id": "experience:a"}], "omissions": [], "retrieval": "lexical", "trust": "approved_operator_rule_with_protected_citations"})
+            return web.json_response(
+                {
+                    "project_id": "alpha",
+                    "entries": [{"entry_id": "experience:a"}],
+                    "omissions": [],
+                    "retrieval": "lexical",
+                    "trust": "approved_operator_rule_with_protected_citations",
+                }
+            )
         if body["operation"] == "continuation_recover":
-            return web.json_response({
-                "project_id": "alpha", "status": "recovered", "seal": "a" * 64,
-                "worktree": {"id": "agent-a", "branch": "main", "head": "b" * 40,
-                             "dirty": False, "collected_at": "2026-09-27T00:00:00Z",
-                             "files": [{"locator": "private/path"}]},
-                "index": {"total": 1, "listed": 1, "truncated": False,
-                          "documents": [{"locator": "private/path"}]},
-                "state": {"version": 1, "current": True, "stale_evidence": False,
-                          "goal": "Test", "constraints": [], "unfinished": []},
-                "units": [], "omissions": [],
-                "budget": {"limit_bytes": 16384, "used_bytes": 1200, "over_budget": False},
-                "revision": 1,
-            })
+            return web.json_response(
+                {
+                    "project_id": "alpha",
+                    "status": "recovered",
+                    "seal": "a" * 64,
+                    "worktree": {
+                        "id": "agent-a",
+                        "branch": "main",
+                        "head": "b" * 40,
+                        "dirty": False,
+                        "collected_at": "2026-09-27T00:00:00Z",
+                        "files": [{"locator": "private/path"}],
+                    },
+                    "index": {
+                        "total": 1,
+                        "listed": 1,
+                        "truncated": False,
+                        "documents": [{"locator": "private/path"}],
+                    },
+                    "state": {
+                        "version": 1,
+                        "current": True,
+                        "stale_evidence": False,
+                        "goal": "Test",
+                        "constraints": [],
+                        "unfinished": [],
+                    },
+                    "units": [],
+                    "omissions": [],
+                    "budget": {"limit_bytes": 16384, "used_bytes": 1200, "over_budget": False},
+                    "revision": 1,
+                }
+            )
         if body["operation"] == "continuation_check":
-            return web.json_response({
-                "project_id": "alpha", "valid": True, "reason": "current",
-                "differences": [], "observed": True,
-                "worktree": {"id": body["arguments"]["package"]["worktree"]["id"]},
-                "checked_at": "2026-09-27T00:00:01Z",
-            })
+            return web.json_response(
+                {
+                    "project_id": "alpha",
+                    "valid": True,
+                    "reason": "current",
+                    "differences": [],
+                    "observed": True,
+                    "worktree": {"id": body["arguments"]["package"]["worktree"]["id"]},
+                    "checked_at": "2026-09-27T00:00:01Z",
+                }
+            )
         return web.json_response(
             {
                 "project_id": "alpha",
@@ -142,6 +191,45 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
     async def life(self, request):
         body = await request.json()
         self.calls.append((request.path, body, request.headers.get("Authorization")))
+        name = request.match_info["name"]
+        if name in {"today", "timeline"}:
+            common = {
+                "schema_version": 1,
+                "fictional": True,
+                "actor_id": "actor:a",
+                "state_basis": "last_persisted",
+            }
+            if name == "today":
+                return web.json_response(
+                    {
+                        **common,
+                        "day": "2026-10-03",
+                        "timezone": "Asia/Shanghai",
+                        "enabled": True,
+                        "observed_at": 1790985600,
+                        "plan": {
+                            "plan_id": "plan:a",
+                            "version": 1,
+                            "state": "active",
+                            "generation_state": "unavailable",
+                            "generated_by": "baseline",
+                            "entries": [
+                                {
+                                    "phase_id": "phase:a",
+                                    "minute": 540,
+                                    "activity": "reading",
+                                    "detail": None,
+                                    "state": "current",
+                                    "generation_state": "unavailable",
+                                }
+                            ],
+                            "current_phase_id": "phase:a",
+                        },
+                    }
+                )
+            return web.json_response(
+                {**common, "day": body["day"], "items": [], "next_after": None}
+            )
         return web.json_response(
             {"schema_version": 1, "fictional": True, "items": [], "next_after_actor_id": None}
         )
@@ -175,6 +263,59 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(life["items"], [])
         self.assertEqual(self.calls[-1][1], {"schema_version": 1, "limit": 20})
 
+    async def test_life_today_and_timeline_use_bounded_reader_and_recheck_identity(self):
+        today = await self.life_reader.route("/api/web/life/today", {"actor_id": "actor:a"}, {})
+        import json
+        from jsonschema import Draft202012Validator, FormatChecker
+
+        schema = json.loads(
+            (
+                Path(os.environ["TS012_CONTRACT_DIR"]).parents[1] / "life-read/v1/schemas/life.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        def validate(name, value):
+            Draft202012Validator(
+                {**schema, "$ref": "#/$defs/" + name}, format_checker=FormatChecker()
+            ).validate(value)
+
+        validate("today_request", self.calls[-1][1])
+        validate("today_response", today)
+        self.assertEqual(today["plan"]["generation_state"], "unavailable")
+        self.assertEqual(self.calls[-1][1], {"schema_version": 1, "actor_id": "actor:a"})
+        after = {"position": 1790985600, "known_id": "known:a"}
+        timeline = await self.life_reader.route(
+            "/api/web/life/timeline",
+            {"actor_id": "actor:a", "day": "2026-10-03", "limit": 20, "after": after},
+            {},
+        )
+        validate("timeline_request", self.calls[-1][1])
+        validate("timeline_response", timeline)
+        self.assertEqual(self.calls[-1][1]["after"], after)
+        self.assertEqual(self.calls[-1][2], "Bearer synthetic-life-reader-secret-0000001")
+        before = len(self.calls)
+        for invalid in (
+            {"actor_id": "actor:a", "day": "2026-02-30", "limit": 20, "after": None},
+            {"actor_id": "actor:a", "day": "2026-10-03", "limit": 51, "after": None},
+            {
+                "actor_id": "actor:a",
+                "day": "2026-10-03",
+                "limit": 20,
+                "after": {"position": True, "known_id": "known:a"},
+            },
+        ):
+            with self.assertRaises(Fault) as error:
+                await self.life_reader.route("/api/web/life/timeline", invalid, {})
+            self.assertEqual(error.exception.code, "invalid_input")
+        self.assertEqual(len(self.calls), before)
+        with self.assertRaises(Fault) as error:
+            await self.life_reader.route("/api/web/life/today", {"actor_id": "actor:b"}, {})
+        self.assertEqual(error.exception.code, "invalid_upstream")
+        self.principal["actions"].remove("life.read")
+        with self.assertRaises(Fault) as error:
+            await self.life_reader.route("/api/web/life/today", {"actor_id": "actor:a"}, {})
+        self.assertEqual(error.exception.code, "life_read_required")
+
     async def test_revocation_and_distinct_credentials(self):
         self.principal["actions"].remove("life.read")
         with self.assertRaises(Fault) as error:
@@ -193,22 +334,79 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(error.exception.code, "forbidden")
         self.assertEqual(self.calls, [])
 
+    async def test_generation_retry_proves_independent_read_scope_before_and_after(self):
+        from services.platform.web_life_management import WebLifeManagement
+
+        async def run(function, *args):
+            return function(*args)
+
+        self.config["core"] = {}
+        self.principal["actions"].append("role.manage")
+        self.console.life = self.life_reader
+        self.platform.local_work = SimpleNamespace(run=run)
+        management = WebLifeManagement(self.platform, self.console)
+        body = {"actor_id": "actor:a", "plan_id": "plan:a", "phase_id": None, "expected_version": 1}
+        receipt = {
+            "schema_version": 1,
+            "actor_id": "actor:a",
+            "plan_id": "plan:a",
+            "plan_version": 2,
+            "state": "queued",
+        }
+
+        async def accepted(*args):
+            self.assertEqual(len(self.calls), 1, "actor read must precede management")
+            return receipt
+
+        with mock.patch(
+            "services.platform.web_life_management.management_call", side_effect=accepted
+        ) as remote:
+            self.assertEqual(await management.retry(body, {}), receipt)
+            self.assertEqual(len(self.calls), 2)
+            remote.assert_awaited_once()
+
+        with mock.patch.object(self.life_reader, "route", side_effect=Fault("not_found", 404)):
+            with mock.patch("services.platform.web_life_management.management_call") as remote:
+                with self.assertRaises(Fault) as error:
+                    await management.retry(body, {})
+                self.assertEqual(error.exception.status, 404)
+                remote.assert_not_called()
+
+        async def revoked(*args):
+            self.principal["actions"].remove("life.read")
+            return receipt
+
+        with mock.patch(
+            "services.platform.web_life_management.management_call", side_effect=revoked
+        ):
+            with self.assertRaises(Fault) as error:
+                await management.retry(body, {})
+            self.assertEqual(error.exception.status, 403)
+
     async def test_lesson_experience_and_session_bound_continuation(self):
         session = {}
-        self.assertEqual(self.knowledge_reader.state()["projects"][0]["checkouts"][0]["id"], "agent-a")
+        self.assertEqual(
+            self.knowledge_reader.state()["projects"][0]["checkouts"][0]["id"], "agent-a"
+        )
         for name, operation, field in (
             ("lessons", "lesson_query", "lessons"),
             ("experiences", "experience_query", "entries"),
         ):
             answer = await self.knowledge_reader.route(
                 "/api/web/knowledge/" + name,
-                {"project_id": "alpha", "text": "receipt", "budget_bytes": 8192}, session,
+                {"project_id": "alpha", "text": "receipt", "budget_bytes": 8192},
+                session,
             )
             self.assertTrue(answer["result"][field])
             self.assertEqual(self.calls[-1][1]["operation"], operation)
         recovered = await self.knowledge_reader.route(
             "/api/web/knowledge/continuation",
-            {"project_id": "alpha", "checkout_id": "agent-a", "text": "receipt", "budget_bytes": 16384},
+            {
+                "project_id": "alpha",
+                "checkout_id": "agent-a",
+                "text": "receipt",
+                "budget_bytes": 16384,
+            },
             session,
         )
         self.assertNotIn("seal", str(recovered))
@@ -216,21 +414,24 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
         handle = recovered["result"]["handle"]
         checked = await self.knowledge_reader.route(
             "/api/web/knowledge/continuation-check",
-            {"project_id": "alpha", "handle": handle}, session,
+            {"project_id": "alpha", "handle": handle},
+            session,
         )
         self.assertTrue(checked["result"]["valid"])
         self.assertEqual(self.calls[-1][1]["arguments"]["package"]["seal"], "a" * 64)
         with self.assertRaises(Fault) as error:
             await self.knowledge_reader.route(
                 "/api/web/knowledge/continuation-check",
-                {"project_id": "alpha", "handle": handle}, {},
+                {"project_id": "alpha", "handle": handle},
+                {},
             )
         self.assertEqual(error.exception.code, "continuation_handle_expired")
         self.now += 901
         with self.assertRaises(Fault) as error:
             await self.knowledge_reader.route(
                 "/api/web/knowledge/continuation-check",
-                {"project_id": "alpha", "handle": handle}, session,
+                {"project_id": "alpha", "handle": handle},
+                session,
             )
         self.assertEqual(error.exception.code, "continuation_handle_expired")
 

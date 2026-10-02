@@ -347,9 +347,9 @@ class RelationshipTests(unittest.IsolatedAsyncioTestCase):
             validate_settings(config)
 
     async def test_cancelled_selection_discards_entry_created_after_cancellation(self):
-        from services.platform.relationships.routes import RelationshipConsole
+        from services.platform.web_console import WebConsole
 
-        console = RelationshipConsole(self.platform)
+        console = WebConsole(self.platform)
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
         temporary_ids = []
 
@@ -367,7 +367,8 @@ class RelationshipTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(self.platform.relationships, "gate", return_value="pin"),
             patch.object(self.platform.relationships, "people", side_effect=people),
-            patch.object(console.memory, "_role", return_value={"available": True}),
+            patch.object(console.memory, "prove_access", return_value=None),
+            patch.object(console.memory, "role_choice", return_value={"available": True}),
             patch.object(console.memory, "_selection", side_effect=late_selection),
         ):
             task = asyncio.create_task(

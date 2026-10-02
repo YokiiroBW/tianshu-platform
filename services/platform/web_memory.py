@@ -10,6 +10,7 @@ import copy
 import ssl
 import uuid
 from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 
 import aiohttp
 
@@ -98,7 +99,7 @@ class WebMemory(WebReader):
             )
         return result
 
-    def _role(self, actor, version):
+    def role_choice(self, actor, version):
         roles = {row["id"]: row for row in self._directory()}
         require(actor in roles, "forbidden", 403)
         row = roles[actor]
@@ -108,7 +109,7 @@ class WebMemory(WebReader):
 
     def _scope(self, actor, version):
         p, config = self.platform, self.config
-        self._role(actor, version)
+        self.role_choice(actor, version)
         principal_id = self.console.config["principal"]
         principal = p.auth.principals[principal_id]
         header = "Bearer " + (secret(principal["token_env"]) or "")
@@ -159,24 +160,19 @@ class WebMemory(WebReader):
             )
             require(context["allowed_scope"] == scope, "scope_changed", 409)
 
-    async def route(self, path, body, session):
-        name = path[len(PREFIX) :] if path.startswith(PREFIX) else ""
-        require(name == "state" or name in ROUTES, "not_found", 404)
-        require(isinstance(body, dict), "invalid_input", 400)
-        if name == "state":
-            require(body == {}, "invalid_input", 400)
-            return self.state()
-        self._prove(session)
-        request, actor, version = self._request(name, body)
+    @asynccontextmanager
+    async def scoped_origin(self, actor, version, session):
+        """Issue and recheck a selected role's origin, owning temporary entry cleanup."""
+        await self.platform.local_work.run(self.prove_access, session)
         require(self.active < 4, "too_many_requests", 429)
         self.active += 1
         default = self.platform.auth.entries[self.config["entry_id"]]["actor_id"]
-        temporary_entry = "memory-view-" + uuid.uuid4().hex if actor != default else None
+        temporary = "memory-view-" + uuid.uuid4().hex if actor != default else None
         try:
             async with self.slots:
-                self._prove(session)
+                await self.platform.local_work.run(self.prove_access, session)
                 selection = asyncio.create_task(
-                    self.platform.local_work.run(self._selection, actor, version, temporary_entry)
+                    self.platform.local_work.run(self._selection, actor, version, temporary)
                 )
                 try:
                     reference, scope = await asyncio.shield(selection)
@@ -185,35 +181,46 @@ class WebMemory(WebReader):
                     def discard_late(done):
                         if not done.cancelled():
                             done.exception()
-                        if temporary_entry is not None:
-                            self.platform.auth.entries.pop(temporary_entry, None)
+                        if temporary is not None:
+                            self.platform.auth.entries.pop(temporary, None)
 
                     selection.add_done_callback(discard_late)
                     raise
-                self._prove(session)
+                await self.platform.local_work.run(self.prove_access, session)
+                yield reference, scope
+                await self.platform.local_work.run(self.prove_access, session)
+                _, current, _ = await self.platform.local_work.run(self._scope, actor, version)
+                require(current == scope, "scope_changed", 409)
+                await self.platform.local_work.run(self._still_issued, reference, scope)
+        finally:
+            if temporary is not None:
+                self.platform.auth.entries.pop(temporary, None)
+            self.active -= 1
+
+    async def route(self, path, body, session):
+        name = path[len(PREFIX) :] if path.startswith(PREFIX) else ""
+        require(name == "state" or name in ROUTES, "not_found", 404)
+        require(isinstance(body, dict), "invalid_input", 400)
+        if name == "state":
+            require(body == {}, "invalid_input", 400)
+            return await self.platform.local_work.run(self.state)
+        await self.platform.local_work.run(self.prove_access, session)
+        request, actor, version = await self.platform.local_work.run(self._request, name, body)
+        try:
+            async with self.scoped_origin(actor, version, session) as (reference, scope):
                 request.update(
                     request_id="memory-web-" + uuid.uuid4().hex,
                     origin={"assertion_ref": reference},
                     scope=scope,
                 )
                 answer = await self._read(name, request)
-            self._prove(session)
-            _, current, _ = await self.platform.local_work.run(self._scope, actor, version)
-            require(current == scope, "scope_changed", 409)
-            await self.platform.local_work.run(self._still_issued, reference, scope)
             self.last = {"at": datetime.now(timezone.utc).isoformat(), "code": "ok"}
-            # The verified scope and assertion remain server-side. The browser receives only the
-            # read projection needed for a page; the peer's own response is proved before this point.
             return {
                 key: value for key, value in answer.items() if key not in {"scope", "request_id"}
             }
         except Fault as exc:
             self.last = {"at": datetime.now(timezone.utc).isoformat(), "code": exc.code}
             raise
-        finally:
-            if temporary_entry is not None:
-                self.platform.auth.entries.pop(temporary_entry, None)
-            self.active -= 1
 
     def _request(self, name, body):
         selected = "role_id" in body or "role_version" in body
@@ -225,7 +232,7 @@ class WebMemory(WebReader):
             chosen = _text(body["role_id"])
             version = body["role_version"]
             require(type(version) is int and version >= 0, "invalid_input", 400)
-        self._role(chosen, version)
+        self.role_choice(chosen, version)
         content = {
             key: value for key, value in body.items() if key not in {"role_id", "role_version"}
         }

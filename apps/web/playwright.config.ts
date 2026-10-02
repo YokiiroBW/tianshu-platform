@@ -9,6 +9,7 @@ export default defineConfig({
     "task-center-dev.spec.ts",
     "provider-manager.spec.ts",
     "provider-real.spec.ts",
+    "life-joint.spec.ts",
   ],
   outputDir: "./test-results",
   fullyParallel: true,

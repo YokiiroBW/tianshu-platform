@@ -32,6 +32,7 @@ from .provider_management import ProviderManagement
 from .web_personas import WebPersonas
 from .web_persona_author import WebPersonaAuthor
 from .web_readers import WebReader
+from .web_life_management import WebLifeManagement
 from .web_memory import WebMemory
 from .web_connections import view as connections_view
 from .web_external import WebExternal
@@ -191,6 +192,7 @@ class WebConsole:
         self.persona_author = WebPersonaAuthor(self, self.personas)
         self.knowledge = WebReader("knowledge", platform, self)
         self.life = WebReader("life", platform, self)
+        self.life_management = WebLifeManagement(platform, self)
         self.memory = WebMemory(platform, self)
         self.role_runtime = platform.role_runtime
         self.qq_admin = platform.qq_admin
@@ -677,6 +679,16 @@ class WebConsole:
                 401,
             )
             return web.json_response(result)
+        if request.path.startswith("/api/web/relationships/"):
+            result = await self.platform.relationships.route(
+                self, request.path[len("/api/web/relationships/") :], body, session
+            )
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
         if request.path.startswith("/api/web/roles/"):
             result = await self.role_runtime.route(self, request.path, body, session)
             require(
@@ -701,10 +713,10 @@ class WebConsole:
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith(HOME_PREFIX):
-            self.external.sync()
+            await self.platform.local_work.run(self.external.sync)
             external_revision = self.external.revision
             result = await self.home.route(request.path, body, session)
-            self.external.sync()
+            await self.platform.local_work.run(self.external.sync)
             # The same re-check: a session revoked while HA was being asked gets no reading.
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
@@ -725,12 +737,12 @@ class WebConsole:
             require(session["fingerprint"] == fingerprint, "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith(ASSETS_PREFIX):
-            self.external.sync()
+            await self.platform.local_work.run(self.external.sync)
             external_revision = self.external.revision
             # The asset page reads through the registered asset identity; the browser session is
             # only the local operator asking, and it is re-checked once the peer has answered.
             result = await self.assets.route(request.path, body, session)
-            self.external.sync()
+            await self.platform.local_work.run(self.external.sync)
             _, current = self.session(request)
             require(current is session, "session_expired", 401)
             fingerprint, _ = await self.platform.local_work.run(self.authority)
@@ -759,9 +771,23 @@ class WebConsole:
             )
             require(self.persona_read_authorised(), "persona_read_required", 403)
             return web.json_response(result)
+        if request.path == LIFE_PREFIX + "retry":
+            result = await self.life_management.retry(body, session)
+            return web.json_response(result)
         if request.path.startswith(KNOWLEDGE_PREFIX) or request.path.startswith(LIFE_PREFIX):
             reader = self.knowledge if request.path.startswith(KNOWLEDGE_PREFIX) else self.life
             result = await reader.route(request.path, body, session)
+            if reader is self.life and request.path == LIFE_PREFIX + "state":
+                result["can_retry"] = self.life_management.available()
+            if reader is self.life and request.path == LIFE_PREFIX + "actors":
+                roles = await self.platform.local_work.run(self.role_runtime.directory)
+                names = {row["actor_id"]: row["name"] for row in roles}
+                result["items"] = [
+                    {**item, "label": names[item["actor_id"]]}
+                    if item["actor_id"] in names
+                    else item
+                    for item in result["items"]
+                ]
             require(
                 await self.platform.local_work.run(self.session_valid, session),
                 "session_expired",
@@ -777,7 +803,7 @@ class WebConsole:
             )
             return web.json_response(result)
         if request.path == "/api/web/connections/view":
-            self.external.sync()
+            await self.platform.local_work.run(self.external.sync)
             result = connections_view(self, body)
             require(
                 await self.platform.local_work.run(self.session_valid, session),

@@ -233,20 +233,6 @@ function merge(current: TaskItem[], incoming: TaskItem[]) {
 }
 
 /**
- * A poll answers with the newest page, so a record the panel has never shown is newer than
- * everything already on screen: it belongs at the head, in the order the server returned it.
- * Records the panel already shows keep their place and take the fresher answer — a record is
- * never listed twice.
- */
-function absorb(current: TaskItem[], incoming: TaskItem[]) {
-  const seen = new Set(current.map((item) => item.task_id));
-  const fresh = incoming.filter((item) => !seen.has(item.task_id));
-  const latest = new Map(incoming.map((item) => [item.task_id, item]));
-  const shown = current.map((item) => latest.get(item.task_id) ?? item);
-  return [...fresh, ...shown];
-}
-
-/**
  * A rejected read is one of exactly two things, and they are never the same:
  *
  * * the session behind this panel is gone (expired, revoked in another tab, or refused because
@@ -424,6 +410,7 @@ export function TasksPanel() {
         setError(reason(failure));
       } finally {
         if (live("view", ticket)) setBusy(false);
+        if (tickets.current.view === ticket) tickets.current.view = null;
       }
     },
     [abortAll, begin, forget, live],
@@ -477,6 +464,7 @@ export function TasksPanel() {
         setStale(STALE);
       } finally {
         if (live("view", ticket)) setBusy(false);
+        if (tickets.current.view === ticket) tickets.current.view = null;
       }
     },
     [abortSlot, body, forget, live, lose, mine],
@@ -524,6 +512,8 @@ export function TasksPanel() {
     const tick = async () => {
       if (disposed || !alive.current) return;
       if (document.visibilityState !== "visible") return;
+      // A page being appended must finish before its cursor can be replaced.
+      if (tickets.current.view) return;
       const ticket = begin("poll", question.current);
       try {
         const result = await call<TasksView>(
@@ -535,7 +525,12 @@ export function TasksPanel() {
         if (!mine("poll", ticket)) return;
         const seen = new Set(known.current.map((item) => item.task_id));
         const added = result.items.filter((item) => !seen.has(item.task_id));
-        setItems((shown) => absorb(shown, result.items));
+        // Every successful poll starts a new snapshot and walk. Keeping an old cursor
+        // would skip the middle of a burst; retaining old rows would also retain
+        // records which no longer match this status filter.
+        cursor.current = result.page.next_cursor;
+        setItems(result.items);
+        setPage(result.page);
         setSources(result.sources);
         setGeneratedAt(result.generated_at);
         setStale("");
@@ -548,6 +543,8 @@ export function TasksPanel() {
         }
         // Offline or a failing connector: the snapshot stays, and it says that it is one.
         setStale(STALE);
+      } finally {
+        if (tickets.current.poll === ticket) tickets.current.poll = null;
       }
     };
     const timer = window.setInterval(() => void tick(), POLL_MS);
@@ -620,6 +617,7 @@ export function TasksPanel() {
     if (!session || !cursor.current) return;
     setBusy(true);
     setError("");
+    abortSlot("poll");
     const ticket = begin("view", question.current);
     try {
       const result = await call<TasksView>(
@@ -652,6 +650,7 @@ export function TasksPanel() {
       }
     } finally {
       if (mine("view", ticket)) setBusy(false);
+      if (tickets.current.view === ticket) tickets.current.view = null;
     }
   }
 

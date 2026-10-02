@@ -288,4 +288,9 @@ class MemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
             await abandoned
         self.peer_release.set()
         self.assertEqual((await retained)["items"], [])
+        # Cancelling the HTTP client closes its socket; the server may still be
+        # settling its independent peer read. Neither origin may survive settlement.
+        async with asyncio.timeout(2):
+            while any(key.startswith("memory-view-") for key in self.platform.auth.entries):
+                await asyncio.sleep(0.01)
         self.assertFalse(any(key.startswith("memory-view-") for key in self.platform.auth.entries))

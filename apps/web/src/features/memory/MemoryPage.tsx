@@ -8,6 +8,7 @@ import {
 } from "../../app/integrationApi";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
+import { readRolePreference, saveRolePreference } from "../../app/rolePreference";
 import "./memory.css";
 
 type SubjectKey =
@@ -168,7 +169,7 @@ export default function MemoryPage({ section }: { section: number }) {
   function chooseRole(next: string) {
     clearResults();
     setRoleId(next);
-    sessionStorage.setItem(storageKey, next);
+    saveRolePreference(storageKey, next);
   }
 
   function start() {
@@ -196,7 +197,7 @@ export default function MemoryPage({ section }: { section: number }) {
       );
       if (!controller.signal.aborted) {
         setState(next);
-        setRoleId(sessionStorage.getItem(storageKey) || next.actor_id);
+        setRoleId(readRolePreference(storageKey) || next.actor_id);
       }
     } catch (cause) {
       if (!controller.signal.aborted) setStateError(readFailure(cause));
@@ -207,7 +208,7 @@ export default function MemoryPage({ section }: { section: number }) {
 
   useEffect(() => {
     clearResults();
-    if (!csrf) sessionStorage.removeItem(storageKey);
+    if (!csrf) saveRolePreference(storageKey, null);
     void loadState();
     return () => current.current?.abort();
   }, [csrf, storageKey]);

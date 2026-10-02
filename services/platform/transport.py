@@ -19,6 +19,60 @@ class CoreFault(Fault):
         self.document = document
 
 
+async def management_call(settings, path, payload):
+    """Fixed role/life management ports over the registered owner's HTTPS identity."""
+    require(
+        path
+        in {
+            "/internal/v1/role-runtime/manage",
+            "/internal/v1/role-runtime/authorize",
+            "/internal/v1/life-generation/retry",
+        },
+        "invalid_input",
+        400,
+    )
+    _, timeout = core_settings(settings)
+    token = secret(settings["token_env"])
+    require(token is not None, "dependency_unavailable", 503)
+    tls = ssl.create_default_context(cafile=settings.get("ca_file"))
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=timeout),
+            trust_env=False,
+        ) as session:
+            async with session.post(
+                settings["base_url"].rstrip("/") + path,
+                json=payload,
+                headers={"Authorization": "Bearer " + token},
+                ssl=tls,
+                allow_redirects=False,
+            ) as response:
+                require(response.content_type == "application/json", "dependency_unavailable", 503)
+                raw = await response.content.read(65537)
+                require(len(raw) <= 65536, "dependency_unavailable", 503)
+                answer = loads(raw)
+                require(isinstance(answer, dict), "dependency_unavailable", 503)
+                if response.status != 200:
+                    code = answer.get("code")
+                    require(
+                        code
+                        in {
+                            "forbidden",
+                            "invalid_input",
+                            "version_conflict",
+                            "idempotency_conflict",
+                            "dependency_unavailable",
+                            "not_found",
+                        },
+                        "dependency_unavailable",
+                        503,
+                    )
+                    raise Fault(code, response.status)
+                return answer
+    except (aiohttp.ClientError, OSError, ssl.SSLError, TimeoutError, ValueError):
+        raise Fault("dependency_unavailable", 503) from None
+
+
 async def core_web_call(settings, path, payload, contracts, schema):
     require(path in {"web-snapshot", "cancel", "ingest-actors"}, "invalid_input", 400)
     _, timeout = core_settings(settings)

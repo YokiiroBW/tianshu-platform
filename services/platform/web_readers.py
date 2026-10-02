@@ -36,7 +36,7 @@ READ_ROUTES = {
             "continuation-check",
         }
     ),
-    "life": frozenset({"actors", "snapshot", "diaries", "revision"}),
+    "life": frozenset({"actors", "snapshot", "diaries", "revision", "today", "timeline"}),
 }
 
 
@@ -175,6 +175,10 @@ class WebReader:
         self.slots = asyncio.Semaphore(4)
         self.active = 0
         self.packages = {}
+        if name == "life" and self.config and self.config.get("enabled", False):
+            platform.contracts.load_life(
+                Path(platform.settings["contract_directory"]).parents[1] / "life-read/v1"
+            )
 
     def forget_session(self, session):
         self.packages = {
@@ -259,7 +263,7 @@ class WebReader:
             )
         return answer
 
-    def _prove(self, session):
+    def prove_access(self, session):
         require(self.console.session_valid(session), "session_expired", 401)
         code = self.code()
         require(code == "ready", code, 403 if code.endswith("_required") else 503)
@@ -282,13 +286,13 @@ class WebReader:
         if name == "state":
             require(body == {}, "invalid_input", 400)
             return self.state()
-        self._prove(session)
+        self.prove_access(session)
         payload = self._request(name, body, session)
         require(self.active < 4, "too_many_requests", 429)
         self.active += 1
         try:
             async with self.slots:
-                self._prove(session)
+                self.prove_access(session)
                 try:
                     result = await self._read(name, payload)
                 except Fault as exc:
@@ -296,7 +300,7 @@ class WebReader:
                     raise
         finally:
             self.active -= 1
-        self._prove(session)
+        self.prove_access(session)
         self.last = {"at": datetime.now(timezone.utc).isoformat(), "code": "ok"}
         if self.name == "knowledge":
             if name == "continuation":
@@ -442,16 +446,18 @@ class WebReader:
         shapes = {
             "actors": {"limit", "after_actor_id"},
             "snapshot": {"actor_id"},
+            "today": {"actor_id"},
+            "timeline": {"actor_id", "day", "limit", "after"},
             "diaries": {"actor_id", "limit", "after"},
             "revision": {"actor_id", "diary_id", "revision_id", "expected_diary_version"},
         }
         require(set(body) == shapes[name], "invalid_input", 400)
         result = {"schema_version": 1}
-        if name in {"actors", "diaries"}:
+        if name in {"actors", "diaries", "timeline"}:
             result["limit"] = _limit(body["limit"])
         for key in ("actor_id", "diary_id", "revision_id"):
             if key in body:
-                result[key] = _text(body[key])
+                result[key] = _text(body[key], 256 if name in {"today", "timeline"} else 128)
         if name == "actors":
             require(
                 body["after_actor_id"] is None or isinstance(body["after_actor_id"], str),
@@ -478,6 +484,40 @@ class WebReader:
                 result["after"] = {"day": after["day"], "diary_id": _text(after["diary_id"])}
         if name == "revision":
             result["expected_diary_version"] = _version(body["expected_diary_version"])
+        if name == "timeline":
+            from datetime import date
+
+            day = body["day"]
+            require(
+                isinstance(day, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", day),
+                "invalid_input",
+                400,
+            )
+            try:
+                date.fromisoformat(day)
+            except ValueError:
+                raise Fault("invalid_input", 400) from None
+            result["day"] = day
+            after = body["after"]
+            require(
+                after is None
+                or (
+                    isinstance(after, dict)
+                    and set(after) == {"position", "known_id"}
+                    and type(after["position"]) is int
+                    and after["position"] >= 0
+                    and isinstance(after["known_id"], str)
+                ),
+                "invalid_input",
+                400,
+            )
+            if after is not None:
+                result["after"] = {
+                    "position": after["position"],
+                    "known_id": _text(after["known_id"], 256),
+                }
+        if name in {"today", "timeline"}:
+            self.platform.contracts.check("life-read#" + name + "_request", result)
         return result
 
     async def _read(self, name, payload):
@@ -601,10 +641,22 @@ class WebReader:
             )
             if name in {"actors", "diaries"}:
                 require(isinstance(answer.get("items"), list), "invalid_upstream", 502)
-            if name in {"snapshot", "diaries", "revision"}:
+            if name in {"snapshot", "diaries", "revision", "today", "timeline"}:
                 require(answer.get("actor_id") == payload["actor_id"], "invalid_upstream", 502)
             if name == "snapshot":
                 require(answer.get("state_basis") == "last_persisted", "invalid_upstream", 502)
+            if name in {"today", "timeline"}:
+                try:
+                    self.platform.contracts.check("life-read#" + name + "_response", answer)
+                except Fault:
+                    raise Fault("invalid_upstream", 502) from None
+                if name == "timeline":
+                    require(
+                        answer.get("day") == payload["day"]
+                        and len(answer["items"]) <= payload["limit"],
+                        "invalid_upstream",
+                        502,
+                    )
             if name == "revision":
                 require(
                     answer.get("diary_id") == payload["diary_id"]

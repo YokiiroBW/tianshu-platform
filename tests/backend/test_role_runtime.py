@@ -540,3 +540,76 @@ def test_cancel_uncreated_dynamic_role_does_not_write_core_role(tmp_path):
         assert peers.grants[pending["actor_id"]]["enabled"] is False
 
     asyncio.run(scenario())
+
+
+def test_role_stage_sqlite_wait_keeps_loop_responsive_and_retryable(tmp_path):
+    import sqlite3
+    import threading
+    import time
+
+    from services.platform.local_work import LocalWork as RealLocalWork
+
+    async def scenario():
+        platform, manager, console, peers = fixture(tmp_path)
+        pool = RealLocalWork()
+        platform.local_work = pool
+        locked = threading.Event()
+        released = threading.Event()
+        writer = None
+
+        async def remote(settings, path, payload):
+            nonlocal writer
+            answer = await peers.call(settings, path, payload)
+            if payload.get("request_id", "").endswith(":pause"):
+
+                def hold_lock():
+                    with sqlite3.connect(manager.path) as db:
+                        db.execute("BEGIN IMMEDIATE")
+                        locked.set()
+                        time.sleep(0.3)
+                    released.set()
+
+                writer = threading.Thread(target=hold_lock)
+                writer.start()
+                assert await asyncio.to_thread(locked.wait, 2)
+            return answer
+
+        manager._remote = remote
+        request = body("provider-a")
+        task = asyncio.create_task(manager.route(console, "/api/web/roles/apply", request, {}))
+        try:
+            assert await asyncio.to_thread(locked.wait, 2)
+            pulses = 0
+            while not released.is_set():
+                await asyncio.sleep(0.01)
+                if not released.is_set():
+                    pulses += 1
+            assert pulses >= 5, "SQLite stage write blocked the event loop"
+            result = (await task)["role"]
+            assert result["state"] == "active"
+            assert manager.get(result["actor_id"])["state"] == "active"
+            assert (await manager.route(console, "/api/web/roles/apply", request, {}))[
+                "role"
+            ] == result
+        finally:
+            if writer:
+                await asyncio.to_thread(writer.join, 2)
+            pool.close()
+
+    asyncio.run(scenario())
+
+
+def test_running_role_without_dialogue_does_not_require_a_model_or_receive_web_binding(tmp_path):
+    async def scenario():
+        platform, manager, console, peers = fixture(tmp_path)
+        platform.provider_catalog.view = lambda: {"providers": [], "default": {"configured": False}}
+        request = body("provider-a")
+        request.update(capabilities=[], provider_id=None, provider_revision=None)
+        role = (await manager.route(console, "/api/web/roles/apply", request, {}))["role"]
+        assert role["state"] == "active"
+        assert peers.roles[role["actor_id"]]["capabilities"] == []
+        assert peers.roles[role["actor_id"]]["enabled"] is True
+        assert manager.active(role["actor_id"])
+        assert console.input_entries == ["web-input"]
+        assert not any(key.startswith("role-") for key in platform.auth.entries)
+    asyncio.run(scenario())

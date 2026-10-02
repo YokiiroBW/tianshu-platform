@@ -62,9 +62,9 @@ NATIVE_ERRORS = {
 
 
 def create_console(platform):
-    from .relationships.routes import RelationshipConsole
+    from .web_console import WebConsole
 
-    return RelationshipConsole(platform)
+    return WebConsole(platform)
 
 
 def create_app(platform, probe=None, *, console=None, public=False):

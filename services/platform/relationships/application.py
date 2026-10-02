@@ -1,6 +1,5 @@
 """Management use cases reuse current roles, confirmed QQ identities and origin issuance."""
 
-import asyncio
 import copy
 import uuid
 
@@ -39,16 +38,18 @@ class Relationships:
             "forbidden",
             403,
         )
-        console.memory._prove(session)
-        self.p.qq_admin._gate(console, session, "qq.admin.view")
+        console.memory.prove_access(session)
+        self.p.qq_admin.check_access(console, session, "qq.admin.view")
         return digest([self.config, self.client.credential(), principal])
 
     async def people(self, console, session, after):
-        pin = self.gate(console, session)
+        pin = await self.p.local_work.run(self.gate, console, session)
         answer = await self.p.qq_admin.route(
             console, "/api/web/qq-admin/profiles", {"limit": 100, "after": after}, session
         )
-        require(pin == self.gate(console, session), "scope_changed", 409)
+        require(
+            pin == await self.p.local_work.run(self.gate, console, session), "scope_changed", 409
+        )
         return {
             "items": [
                 {
@@ -63,11 +64,12 @@ class Relationships:
 
     async def route(self, console, name, body, session):
         require(type(body) is dict, "invalid_input", 400)
-        pin = self.gate(console, session)
+        pin = await self.p.local_work.run(self.gate, console, session)
         if name == "catalog":
             require(body == {}, "invalid_input", 400)
             people = await self.people(console, session, None)
-            return {"roles": console.memory.state()["roles"], **people}
+            state = await self.p.local_work.run(console.memory.state)
+            return {"roles": state["roles"], **people}
         if name == "people":
             require(set(body) == {"after"}, "invalid_input", 400)
             return await self.people(console, session, body["after"])
@@ -81,30 +83,19 @@ class Relationships:
             "invalid_input",
             400,
         )
-        roles = console.memory._role(body["role_id"], body["role_version"])
+        roles = await self.p.local_work.run(
+            console.memory.role_choice, body["role_id"], body["role_version"]
+        )
         require(roles["available"], "forbidden", 403)
         people = await self.people(console, session, body["people_after"])
         require(body["person_id"] in {item["id"] for item in people["items"]}, "forbidden", 403)
         actor, version = body["role_id"], body["role_version"]
-        default = self.p.auth.entries[console.memory.config["entry_id"]]["actor_id"]
-        temporary = "memory-view-" + uuid.uuid4().hex if actor != default else None
-        try:
-            selection_task = asyncio.create_task(
-                self.p.local_work.run(console.memory._selection, actor, version, temporary)
+        async with console.memory.scoped_origin(actor, version, session) as (reference, _):
+            require(
+                pin == await self.p.local_work.run(self.gate, console, session),
+                "scope_changed",
+                409,
             )
-            try:
-                reference, scope = await asyncio.shield(selection_task)
-            except BaseException:
-
-                def discard_late(done):
-                    if not done.cancelled():
-                        done.exception()
-                    if temporary is not None:
-                        self.p.auth.entries.pop(temporary, None)
-
-                selection_task.add_done_callback(discard_late)
-                raise
-            require(pin == self.gate(console, session), "scope_changed", 409)
             pair = {"actor_id": actor, "person_id": body["person_id"]}
             payload = {
                 "schema_version": 1,
@@ -130,11 +121,9 @@ class Relationships:
                 self.client.contract.check("RelationshipCommand", command)
                 payload.update(request_id=request_id, command=command)
                 result = {"projection": await self.client.call("manage", payload)}
-            require(pin == self.gate(console, session), "scope_changed", 409)
-            _, current, _ = await self.p.local_work.run(console.memory._scope, actor, version)
-            require(current == scope, "scope_changed", 409)
-            await self.p.local_work.run(console.memory._still_issued, reference, scope)
-            return result
-        finally:
-            if temporary is not None:
-                self.p.auth.entries.pop(temporary, None)
+            require(
+                pin == await self.p.local_work.run(self.gate, console, session),
+                "scope_changed",
+                409,
+            )
+        return result

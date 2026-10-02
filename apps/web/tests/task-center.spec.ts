@@ -172,10 +172,9 @@ test("任务中心：退出登录后不再显示任何操作记录", async ({ pa
 });
 
 /**
- * 另一标签页退出登录：打开的这一个标签页仍然停在旧记录上，它的下一次轮询拿到的是会话拒绝。
- * 被拒绝的轮询既不能留下记录、详情与分页，也不能在迟到回来时把过期的视图写回页面。
+ * 另一标签页退出登录：统一会话边界卸载任务面板，已经在途的旧轮询不能恢复过期视图。
  */
-test("任务中心：另一标签页退出登录后，被拒的轮询不再留下过期视图", async ({
+test("任务中心：另一标签页退出登录后，在途轮询不再留下过期视图", async ({
   page,
   context,
   request,
@@ -216,31 +215,22 @@ test("任务中心：另一标签页退出登录后，被拒的轮询不再留�
     await route.fulfill({ response, json: payload });
   });
 
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await holding;
   const second = await context.newPage();
   await second.goto("/#/companion");
   await second.getByRole("button", { name: "退出登录" }).click();
   await expect(second.getByLabel("管理员账号")).toBeVisible();
   await page.bringToFront();
 
-  await page.evaluate(() =>
-    document.dispatchEvent(new Event("visibilitychange")),
-  );
-  await holding;
-  // 第二次轮询真的打到后台：会话已经撤销，后台如实拒绝。
-  const refused = page.waitForResponse((row) =>
-    row.url().endsWith("/api/web/tasks/view"),
-  );
-  await page.evaluate(() =>
-    document.dispatchEvent(new Event("visibilitychange")),
-  );
-  expect([401, 403]).toContain((await refused).status());
-
   // 记录、详情、来源与分页都不属于已经失效的会话。
   await expect(page.locator("article.tasks-item")).toHaveCount(0);
   await expect(page.locator(".tasks-detail")).toHaveCount(0);
   await expect(page.getByLabel("操作来源")).toHaveCount(0);
   await expect(page.getByLabel("管理员账号")).toBeVisible();
-  await expect(page.locator(".tasks-error")).toContainText("登录已失效");
+  await expect(panel(page)).toHaveCount(0);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.screenshot({
     path: testInfo.outputPath("task-center-session-revoked.png"),
@@ -301,7 +291,7 @@ test("任务中心：会话过期后清空记录、详情与分页并给回登�
   await expect(page.locator("article.tasks-item")).toHaveCount(0);
   await expect(page.locator(".tasks-detail")).toHaveCount(0);
   await expect(page.getByLabel("操作来源")).toHaveCount(0);
-  await expect(page.locator(".tasks-error")).toContainText("登录已失效");
+  await expect(panel(page)).toHaveCount(0);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.screenshot({
     path: testInfo.outputPath("task-center-session-expired.png"),
@@ -310,8 +300,10 @@ test("任务中心：会话过期后清空记录、详情与分页并给回登�
 
   await page.unroute("**/api/web/session");
   await page.unroute("**/api/web/tasks/view");
-  // 替身只替换了后台的回答，真实会话并没有被销毁：面板重新读取后如实恢复。
+  // 替身只替换了后台的回答，真实会话没有销毁；回到任务页读取仍能恢复。
   await page.reload();
+  await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+  await page.goto("/#/settings/0");
   await expect(page.getByRole("button", { name: "重新读取" })).toBeVisible();
   await expect(item(page, "打开书房灯").first()).toBeVisible();
 });
@@ -353,14 +345,13 @@ test("任务中心：轮询带回的新记录出现在最新位置并如实提�
     .evaluateAll((rows) =>
       rows.map((row) => row.getAttribute("data-task-toggle")),
     );
-  // 新记录是位置最新的一条：它出现在最前面，原有记录的顺序不变，也不会被列两次。
-  const fresh = after.length - before.length;
-  expect(fresh).toBeGreaterThan(0);
+  // A poll opens a fresh first page and cursor. Older expanded pages may leave
+  // the view, but records retained on this page preserve the server's order.
   expect(new Set(after).size).toBe(after.length);
-  expect(after.slice(0, fresh).every((task) => !before.includes(task))).toBe(
-    true,
+  expect(before).not.toContain(after[0]);
+  expect(after.filter((task) => before.includes(task))).toEqual(
+    before.filter((task) => after.includes(task)),
   );
-  expect(after.slice(fresh)).toEqual(before);
   await expect(page.locator("article.tasks-item").first()).toContainText(
     "已受理",
   );

@@ -40,7 +40,11 @@ def _url(value, kind, allow_http=False):
         400,
     )
     if kind == "assets":
-        require(parsed.scheme == "https" and parsed.path == "/assetlink/v1/control", "invalid_input", 400)
+        require(
+            parsed.scheme == "https" and parsed.path == "/assetlink/v1/control",
+            "invalid_input",
+            400,
+        )
     else:
         require(
             parsed.scheme in ({"http", "https"} if allow_http else {"https"})
@@ -52,9 +56,17 @@ def _url(value, kind, allow_http=False):
 
 
 def _secret_change(value, *, ca=False):
-    require(isinstance(value, dict) and value.get("action") in {"keep", "replace", "clear"}, "invalid_input", 400)
+    require(
+        isinstance(value, dict) and value.get("action") in {"keep", "replace", "clear"},
+        "invalid_input",
+        400,
+    )
     action = value["action"]
-    require(set(value) == ({"action", "value"} if action == "replace" else {"action"}), "invalid_input", 400)
+    require(
+        set(value) == ({"action", "value"} if action == "replace" else {"action"}),
+        "invalid_input",
+        400,
+    )
     if action == "replace":
         text = value["value"]
         if ca:
@@ -91,13 +103,24 @@ def _value(kind, value):
             "invalid_input",
             400,
         )
-        require(type(value["enabled"]) is bool and type(value["allow_private_http"]) is bool, "invalid_input", 400)
+        require(
+            type(value["enabled"]) is bool and type(value["allow_private_http"]) is bool,
+            "invalid_input",
+            400,
+        )
         _url(value["base_url"], kind, value["allow_private_http"])
         items = value["entities"]
         require(isinstance(items, list) and 1 <= len(items) <= MAX_ENTITIES, "invalid_input", 400)
         ids = set()
         for item in items:
-            require(isinstance(item, dict) and {"entity_id", "label", "kind"} <= set(item) <= {"entity_id", "label", "kind", "unit"}, "invalid_input", 400)
+            require(
+                isinstance(item, dict)
+                and {"entity_id", "label", "kind"}
+                <= set(item)
+                <= {"entity_id", "label", "kind", "unit"},
+                "invalid_input",
+                400,
+            )
             entity_id = item["entity_id"]
             require(
                 isinstance(entity_id, str)
@@ -105,12 +128,24 @@ def _value(kind, value):
                 and item["kind"] in KINDS
                 and entity_id.split(".")[0] == item["kind"]
                 and entity_id not in ids,
-                "invalid_input", 400,
+                "invalid_input",
+                400,
             )
             ids.add(entity_id)
-            require(isinstance(item["label"], str) and 1 <= len(item["label"]) <= 64 and item["label"].isprintable(), "invalid_input", 400)
+            require(
+                isinstance(item["label"], str)
+                and 1 <= len(item["label"]) <= 64
+                and item["label"].isprintable(),
+                "invalid_input",
+                400,
+            )
             unit = item.get("unit")
-            require(unit is None or (isinstance(unit, str) and 1 <= len(unit) <= 16 and unit.isprintable()), "invalid_input", 400)
+            require(
+                unit is None
+                or (isinstance(unit, str) and 1 <= len(unit) <= 16 and unit.isprintable()),
+                "invalid_input",
+                400,
+            )
     return value
 
 
@@ -127,8 +162,10 @@ class WebExternal:
         require(self.console.session_valid(session), "session_expired", 401)
         principal = self.platform.auth.principals.get(self.console.config["principal"], {})
         require(
-            principal.get("kind") == "operator" and "external.manage" in principal.get("actions", []),
-            "external_manage_required", 403,
+            principal.get("kind") == "operator"
+            and "external.manage" in principal.get("actions", []),
+            "external_manage_required",
+            403,
         )
 
     def _unlocked(self, session):
@@ -183,7 +220,11 @@ class WebExternal:
             return None
         value = row["value"]
         return {
-            **{key: item for key, item in value.items() if key not in {"pins", "connection_revision"}},
+            **{
+                key: item
+                for key, item in value.items()
+                if key not in {"pins", "connection_revision"}
+            },
             "reviewed_addresses": value["pins"]["addresses"],
         }
 
@@ -226,12 +267,12 @@ class WebExternal:
         return result
 
     async def route(self, path, body, session):
-        self._gate(session)
+        await self.platform.local_work.run(self._gate, session)
         require(isinstance(body, dict), "invalid_input", 400)
         name = path.removeprefix(PREFIX)
         if name == "view":
             require(body == {}, "invalid_input", 400)
-            return self.view(session)
+            return await self.platform.local_work.run(self.view, session)
         if name == "unlock":
             require(set(body) == {"password"}, "invalid_input", 400)
             password = body["password"]
@@ -252,7 +293,12 @@ class WebExternal:
             return {"unlocked": False}
         require(self._unlocked(session), "external_locked", 403)
         if name == "save":
-            require(set(body) == {"kind", "expected_revision", "client_id", "value", "credential", "ca"}, "invalid_input", 400)
+            require(
+                set(body)
+                == {"kind", "expected_revision", "client_id", "value", "credential", "ca"},
+                "invalid_input",
+                400,
+            )
             kind = body["kind"]
             require(kind in {"assets", "home"}, "invalid_input", 400)
             value = _value(kind, body["value"])
@@ -260,7 +306,7 @@ class WebExternal:
             ca = _secret_change(body["ca"], ca=True)
             url = value["endpoint" if kind == "assets" else "base_url"]
             pins = await reviewed_pins(url, self.config["allowed_cidrs"])
-            self._gate(session)
+            await self.platform.local_work.run(self._gate, session)
             require(self._unlocked(session), "external_locked", 403)
             result = await self.platform.local_work.run(
                 self.catalog.save,
@@ -271,26 +317,37 @@ class WebExternal:
                 body["expected_revision"],
                 body["client_id"],
             )
-            require(self.catalog.snapshot()[0] == result["revision"], "revision_conflict", 409)
+            require(
+                (await self.platform.local_work.run(self.catalog.snapshot))[0]
+                == result["revision"],
+                "revision_conflict",
+                409,
+            )
             unlock = session["external_unlock"]
-            self.sync()
+            await self.platform.local_work.run(self.sync)
             session["external_unlock"] = unlock
             return {**result, "applied": True}
         if name == "test":
-            require(set(body) == {"kind"} and body["kind"] in {"assets", "home"}, "invalid_input", 400)
+            require(
+                set(body) == {"kind"} and body["kind"] in {"assets", "home"}, "invalid_input", 400
+            )
             return await self.test(body["kind"], session)
         raise Fault("not_found", 404)
 
     async def test(self, kind, session):
-        self.sync()
-        revision, row = self._row(kind)
+        await self.platform.local_work.run(self.sync)
+        revision, row = await self.platform.local_work.run(self._row, kind)
         require(row and row["value"]["enabled"], "external_not_configured", 503)
         require(row["credential"], "external_credential_missing", 503)
         try:
             if kind == "assets":
                 result = await self.platform.assets.read(
                     self.console.assets._header(),
-                    {"connection_id": self.config["assets_connection_id"], "operation": "libraries.list", "body": {"page_size": 1}},
+                    {
+                        "connection_id": self.config["assets_connection_id"],
+                        "operation": "libraries.list",
+                        "body": {"page_size": 1},
+                    },
                 )
                 if not result["ok"]:
                     raise Fault(result["code"], result["status"])
@@ -307,8 +364,12 @@ class WebExternal:
                 else "unavailable"
             )
             code = exc.code
-        self._gate(session)
-        require(self.catalog.snapshot()[0] == revision, "revision_conflict", 409)
+        await self.platform.local_work.run(self._gate, session)
+        require(
+            (await self.platform.local_work.run(self.catalog.snapshot))[0] == revision,
+            "revision_conflict",
+            409,
+        )
         result = {
             "kind": kind,
             "state": state,

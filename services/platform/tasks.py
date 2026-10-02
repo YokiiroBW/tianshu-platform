@@ -147,7 +147,14 @@ class Tasks:
             wanted = module["states"] if status is None else module["by_status"][status]
             if not wanted:
                 continue
-            page = self._page(name, cursor.get(name), size, wanted)
+            after = cursor.get(name)
+            # A stream which contributed no row to the prior merged page must
+            # also seek below that page's global watermark before applying LIMIT.
+            # Otherwise a newly inserted burst fills its page above the watermark
+            # and hides older records which this walk has not delivered yet.
+            if at is not None and (after is None or after > at):
+                after = at
+            page = self._page(name, after, size, wanted)
             readable[name] = page is not None
             if page is None:
                 # One unreadable ledger never erases the records the other one still holds.

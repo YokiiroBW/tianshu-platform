@@ -806,3 +806,56 @@ class TaskCentreTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     refusal["code"], "not_found" if expected == 404 else "invalid_input"
                 )
+
+
+class TaskWatermarkTests(unittest.TestCase):
+    def test_global_watermark_seeks_an_uncontributed_stream_before_limiting(self):
+        from types import SimpleNamespace
+        from services.platform.tasks import Tasks
+
+        records = {
+            "platform.home": [
+                {"task_id": "home-control:" + str(i), "created_at": i} for i in range(10, 15)
+            ],
+            "platform.models": [
+                {"task_id": "model-version:config:" + str(i), "created_at": i} for i in range(1, 6)
+            ],
+        }
+        tasks = Tasks(SimpleNamespace(models=SimpleNamespace(clock=lambda: 100)), None)
+
+        def page(name, after, size, states):
+            ordered = sorted(records[name], key=tasks._position, reverse=True)
+            selected = [row for row in ordered if after is None or tasks._position(row) < after]
+            return selected[:size], len(selected) > size
+
+        with (
+            patch.object(tasks, "_page", side_effect=page),
+            patch.object(tasks, "_task", side_effect=lambda row: row),
+            patch.object(tasks, "_summary", side_effect=lambda row: row),
+            patch.object(tasks, "_sources", return_value=[]),
+        ):
+            first = tasks.view({"page_size": 2}, {})
+            records["platform.models"].extend(
+                {"task_id": "model-version:config:" + str(i), "created_at": i}
+                for i in range(50, 65)
+            )
+            cursor = first["page"]["next_cursor"]
+            walked = [row["task_id"] for row in first["items"]]
+            while cursor:
+                following = tasks.view({"page_size": 2, "cursor": cursor}, {})
+                walked.extend(row["task_id"] for row in following["items"])
+                cursor = following["page"]["next_cursor"]
+            expected = [
+                row["task_id"]
+                for row in sorted(
+                    [
+                        row
+                        for stream in records.values()
+                        for row in stream
+                        if row["created_at"] < 50
+                    ],
+                    key=tasks._position,
+                    reverse=True,
+                )
+            ]
+            self.assertEqual(walked, expected)

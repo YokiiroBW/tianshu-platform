@@ -4,15 +4,11 @@ import asyncio
 import copy
 import json
 import sqlite3
-import ssl
 import uuid
 from contextlib import closing
 
-import aiohttp
-
-from .auth import secret
 from .contracts import Fault, canonical, digest, require
-from .transport import core_settings
+from .transport import core_settings, management_call
 
 
 PREFIX = "/api/web/roles/"
@@ -116,7 +112,7 @@ class RoleRuntime:
         return "role-" + digest([actor, source_id])[:32]
 
     def _install_web(self, row):
-        if not row["enabled"] or row["state"] != "active":
+        if not row["enabled"] or row["state"] != "active" or "dialogue" not in row["capabilities"]:
             return
         web = self.p.settings.get("web")
         if web is None:
@@ -158,50 +154,11 @@ class RoleRuntime:
                 web.input_entries.remove(new_id)
 
     async def _remote(self, settings, path, payload):
-        _, timeout = core_settings(settings)
-        token = secret(settings["token_env"])
-        require(token is not None, "dependency_unavailable", 503)
-        tls = ssl.create_default_context(cafile=settings.get("ca_file"))
-        try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=timeout), trust_env=False
-            ) as session:
-                async with session.post(
-                    settings["base_url"].rstrip("/") + path,
-                    json=payload,
-                    headers={"Authorization": "Bearer " + token},
-                    ssl=tls,
-                    allow_redirects=False,
-                ) as response:
-                    require(
-                        response.content_type == "application/json", "dependency_unavailable", 503
-                    )
-                    raw = await response.content.read(65537)
-                    require(len(raw) <= 65536, "dependency_unavailable", 503)
-                    answer = json.loads(raw)
-                    require(isinstance(answer, dict), "dependency_unavailable", 503)
-                    if response.status != 200:
-                        code = answer.get("code")
-                        require(
-                            code
-                            in {
-                                "forbidden",
-                                "invalid_input",
-                                "version_conflict",
-                                "idempotency_conflict",
-                                "dependency_unavailable",
-                                "not_found",
-                            },
-                            "dependency_unavailable",
-                            503,
-                        )
-                        raise Fault(code, response.status)
-                    return answer
-        except (aiohttp.ClientError, OSError, ssl.SSLError, TimeoutError, ValueError):
-            raise Fault("dependency_unavailable", 503) from None
+        # Kept as the coordinator's fault-injection seam for durable-stage tests.
+        return await management_call(settings, path, payload)
 
     def _provider(self, row):
-        if not row["enabled"]:
+        if not row["enabled"] or "dialogue" not in row["capabilities"]:
             return
         view = self.p.provider_catalog.view()
         if row["provider_id"] is None:
@@ -240,7 +197,7 @@ class RoleRuntime:
             }
 
         if row["stage"] == "verify":
-            self._provider(row)
+            await self.p.local_work.run(self._provider, row)
             companion = await self._remote(
                 core, "/internal/v1/role-runtime/manage", {"operation": "list"}
             )
@@ -263,9 +220,9 @@ class RoleRuntime:
                 503,
             )
             row["stage"] = "complete"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
         if row["stage"] == "start":
-            self._provider(row)
+            await self.p.local_work.run(self._provider, row)
             answer = await self._remote(
                 core,
                 "/internal/v1/role-runtime/manage",
@@ -274,7 +231,7 @@ class RoleRuntime:
             row["companion_version"] = answer["version"]
             row["profile_revision"] = answer["profile_revision"]
             row["stage"] = "core_paused"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
         if row["stage"] == "core_paused":
             answer = await self._remote(
                 memory,
@@ -289,11 +246,11 @@ class RoleRuntime:
             )
             row["memory_version"] = answer["version"]
             row["stage"] = "memory_applied"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
         if row["stage"] == "memory_applied":
-            self._provider(row)
+            await self.p.local_work.run(self._provider, row)
             row["stage"] = "provider_checked"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
         if row["stage"] == "provider_checked":
             if row["enabled"]:
                 answer = await self._remote(
@@ -303,10 +260,10 @@ class RoleRuntime:
                 )
                 row["companion_version"] = answer["version"]
             row["stage"] = "complete"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
         if row["stage"] == "complete":
             row["state"] = "active" if row["enabled"] else "disabled"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
             self._install_web(row)
         return row
 
@@ -354,7 +311,7 @@ class RoleRuntime:
                     "capabilities": current["capabilities"],
                 }
                 row["stage"] = "cancel_core"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
         if row["stage"] == "cancel_core":
             try:
                 answer = await self._remote(
@@ -364,13 +321,13 @@ class RoleRuntime:
                 if error.code == "version_conflict":
                     row["cancel_epoch"] += 1
                     row["stage"] = "cancel_reconcile"
-                    self._put(row)
+                    await self.p.local_work.run(self._put, row)
                     raise Fault("dependency_unavailable", 503) from None
                 raise
             row["companion_version"] = answer["version"]
             row["profile_revision"] = answer["profile_revision"]
             row["stage"] = "cancel_memory_prepare"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
         if row["stage"] == "cancel_memory_prepare":
             status = await self._remote(
                 memory,
@@ -385,7 +342,7 @@ class RoleRuntime:
                 "legacy": row["legacy"],
             }
             row["stage"] = "cancel_memory"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
         if row["stage"] == "cancel_memory":
             try:
                 answer = await self._remote(
@@ -395,30 +352,29 @@ class RoleRuntime:
                 if error.code == "version_conflict":
                     row["cancel_epoch"] += 1
                     row["stage"] = "cancel_memory_prepare"
-                    self._put(row)
+                    await self.p.local_work.run(self._put, row)
                     raise Fault("dependency_unavailable", 503) from None
                 raise
             row["memory_version"] = answer["version"]
             row["stage"] = "complete"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
         if row["stage"] == "complete":
             row["state"] = "disabled"
-            self._put(row)
+            await self.p.local_work.run(self._put, row)
         return row
 
     async def resume_pending(self):
         if self.config is None or not self.config["enabled"]:
             return
         async with self.lock:
-            with closing(self._db()) as db:
-                rows = [json.loads(r[0]) for r in db.execute("SELECT body FROM roles")]
+            rows = await self.p.local_work.run(self.directory)
             for row in rows:
                 if row["state"] != "pending":
                     continue
                 try:
                     await self._resume(row)
                 except Fault as error:
-                    self._record_error(row, error)
+                    await self.p.local_work.run(self._record_error, row, error)
 
     def _record_error(self, row, error):
         # A pre-apply conflict has changed no peer. A new intent can fix stale
@@ -486,7 +442,6 @@ class RoleRuntime:
             and all(isinstance(capability, str) for capability in body["capabilities"])
             and len(body["capabilities"]) == len(set(body["capabilities"]))
             and set(body["capabilities"]) <= {"dialogue", "memory.read", "memory.write"}
-            and (not body["enabled"] or "dialogue" in body["capabilities"])
             and (
                 body["provider_id"] is None
                 and body["provider_revision"] is None
@@ -617,7 +572,7 @@ class RoleRuntime:
         return row
 
     async def route(self, console, path, body, session):
-        self._gate(console, session)
+        await self.p.local_work.run(self._gate, console, session)
         name = path[len(PREFIX) :] if path.startswith(PREFIX) else ""
         require(name in {"view", "apply", "retry", "cancel"}, "not_found", 404)
         if name == "view":
@@ -625,11 +580,8 @@ class RoleRuntime:
             companion = await self._remote(
                 self.p.settings["core"], "/internal/v1/role-runtime/manage", {"operation": "list"}
             )
-            with closing(self._db()) as db:
-                rows = [
-                    json.loads(r[0]) for r in db.execute("SELECT body FROM roles ORDER BY actor_id")
-                ]
-            providers = self.p.provider_catalog.view()
+            rows = await self.p.local_work.run(self.directory)
+            providers = await self.p.local_work.run(self.p.provider_catalog.view)
             return {
                 "roles": rows,
                 "legacy_roles": companion.get("legacy_roles", []),
@@ -692,5 +644,7 @@ class RoleRuntime:
                     row = await self._resume(row)
                 except Fault as error:
                     await self.p.local_work.run(self._record_error, row, error)
-            require(console.session_valid(session), "session_expired", 401)
+            require(
+                await self.p.local_work.run(console.session_valid, session), "session_expired", 401
+            )
             return {"role": row}

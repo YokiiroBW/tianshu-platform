@@ -14,7 +14,7 @@ try {
   await page.getByRole("button", { name: "新建", exact: true }).click();
   const form = page.locator(".role-form");
   await expect(form.getByLabel("人格档案")).toHaveValue("");
-  await expect(form.getByLabel("启用对话")).not.toBeChecked();
+  await expect(form.getByLabel("启用角色", { exact: true })).not.toBeChecked();
   await expect(form.getByRole("button", { name: "应用设置" })).toBeDisabled();
   const name = profiles.length ? "Optional with profiles" : "Optional without profiles";
   await form.getByLabel("名称").fill(name);
@@ -23,7 +23,7 @@ try {
   await page.reload();
   await page.getByRole("button", { name: new RegExp(name) }).click();
   await expect(form.getByLabel("人格档案")).toHaveValue("");
-  await expect(form.getByLabel("启用对话")).not.toBeChecked();
+  await expect(form.getByLabel("启用角色", { exact: true })).not.toBeChecked();
   if (profiles.length) {
     await expect(form.locator(`option[value="${profiles[0]}"]`)).toHaveText("Optional source");
     await form.getByLabel("人格档案").selectOption(profiles[0]);

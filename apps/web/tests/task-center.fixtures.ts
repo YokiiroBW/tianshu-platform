@@ -5,6 +5,7 @@
  * 两者的登录与真实操作步骤是同一套，这里只留一份实现。
  */
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 
 export const ADMIN = "synthetic-admin";
 export const ADMIN_PASSWORD = "synthetic-local-password-014";
@@ -76,12 +77,31 @@ export async function publishVersion(page: Page) {
   await page.goto("/#/settings/2");
   await page.getByLabel("管理员密码").fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: "解锁模型管理" }).click();
-  await expect(page.getByText("管理已解锁", { exact: true })).toBeVisible();
-  await page.getByLabel("配置模板").selectOption("chat-local-text");
-  await page.getByRole("button", { name: "预览" }).click();
-  await expect(page.locator(".models-preview")).toBeVisible();
-  await page.getByRole("button", { name: /^发布版本 \d+$/ }).click();
-  await expect(page.locator(".models-notice")).toContainText("已发布版本");
+  await expect(page.locator(".models-notice")).toContainText("模型管理已解锁");
+  // ProviderModelsPanel is the current management surface. Task projection still
+  // consumes the durable model-publication ledger, whose reviewed-template API
+  // is exercised here with the browser's actual authenticated cookie and CSRF.
+  const session = await (await page.request.get("/api/web/session")).json();
+  const headers = {
+    Origin: new URL(page.url()).origin,
+    "X-CSRF-Token": session.csrf,
+  };
+  const preview = await page.request.post("/api/web/models/preview", {
+    headers,
+    data: { template_id: "chat-local-text" },
+  });
+  expect(preview.status()).toBe(200);
+  const prepared = await preview.json();
+  const published = await page.request.post("/api/web/models/publish", {
+    headers,
+    data: {
+      template_id: "chat-local-text",
+      expected_version: prepared.expected_version,
+      client_id: randomUUID(),
+    },
+  });
+  expect(published.status()).toBe(200);
+  expect((await published.json()).state).toBe("published");
 }
 
 /** 真的执行一次设备控制：回执只是受理，任务中心要如实分开显示。 */

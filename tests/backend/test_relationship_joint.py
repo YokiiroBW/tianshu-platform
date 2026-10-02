@@ -33,7 +33,7 @@ from make_tls_fixture import generate
 from test_relationships import settings, SYNTHETIC_ENV, SCHEMA
 from services.platform.contracts import canonical, utc
 from services.platform.provider_catalog import ProviderCatalog
-from services.platform.relationships.routes import RelationshipConsole
+from services.platform.web_console import WebConsole
 from services.platform.server import create_app as platform_app
 from services.platform.service import Platform
 from services.platform.transport import server_tls
@@ -42,7 +42,9 @@ from web_fixtures import PASSWORD
 MEMORY_SHA = "1f3121c9758faeb31fc9d0fe2a54974c72505d55"
 COMPANION_SHA = "21e4ff37f1d4f4e3e9db94f8c965031a8dcb9cd6"
 PLATFORM_BASE = "dffedb231ae884c97661056e2c5bcb90d9ea950b"
-ROOT = Path(os.environ["TS012_CONTRACT_DIR"]).parents[2]
+ROOT = Path(os.environ.get(
+    "TS_RELATIONSHIP_SOURCE_ROOT", Path(os.environ["TS012_CONTRACT_DIR"]).parents[2],
+))
 
 
 def export(repo, revision, destination, paths):
@@ -408,7 +410,7 @@ class Joint:
                     "capabilities": ["dialogue", "memory.read", "memory.write"],
                 }
             )
-        self.console = RelationshipConsole(self.p)
+        self.console = WebConsole(self.p)
         app = platform_app(self.p, console=self.console)
         self.control_enabled = False
 

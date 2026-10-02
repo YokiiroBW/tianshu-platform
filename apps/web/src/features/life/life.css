@@ -77,6 +77,43 @@
   display: grid;
   gap: var(--space-3);
 }
+.life-plan,
+.life-timeline {
+  display: grid;
+  gap: var(--space-3);
+  list-style: none;
+  margin: var(--space-4) 0;
+  padding: 0;
+}
+.life-plan li,
+.life-timeline li,
+.life-current {
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  overflow-wrap: anywhere;
+}
+.life-plan li[data-current] {
+  border-color: var(--color-accent);
+}
+.life-plan small,
+.life-timeline small {
+  display: block;
+  color: var(--color-muted);
+  margin-top: var(--space-1);
+}
+.life-daily input {
+  max-width: 100%;
+  min-height: var(--control-height);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  padding: var(--space-2);
+}
+.life-daily h3 {
+  margin-block: var(--space-3) var(--space-2);
+}
 .life-revision > p:nth-child(2) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

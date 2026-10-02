@@ -29,6 +29,10 @@ class RoleJoint(WebJoint):
     __test__ = True
     test_real_web_login_source_core_memory_gateway_and_persistent_sender = None
 
+    @property
+    def life_fixture(self):
+        return self._testMethodName == "test_new_runtime_role_life_reads_and_generation_without_dialogue"
+
     def make_platform_app(self):
         self.console = WebConsole(self.platform)
         app = create_app(self.platform, console=self.console)
@@ -39,6 +43,8 @@ class RoleJoint(WebJoint):
             response = await handler(request)
             if "provider" in request.path:
                 self.provider_calls.append((request.path, response.status))
+            if self.life_fixture and request.path == "/api/web/life/retry" and response.status == 200:
+                self.life_retry_unlocked = True
             return response
 
         app.middlewares.insert(0, record_provider)
@@ -106,6 +112,13 @@ class RoleJoint(WebJoint):
             "allowed_cidrs": ["127.0.0.0/8"],
             "actors": [{"id": "actor:a", "label": "Existing synthetic actor"}],
         }
+        if self.life_fixture:
+            self.set_env("TS_ROLE_LIFE_READ", "synthetic-life-" + secrets.token_urlsafe(30))
+            settings["principals"]["operator"]["actions"].append("life.read")
+            settings["web_life"] = {
+                "enabled": True, "base_url": self.core_url,
+                "token_env": "TS_ROLE_LIFE_READ", "ca_file": str(self.ca),
+            }
         return settings
 
     def make_memory_config(self):
@@ -129,6 +142,21 @@ class RoleJoint(WebJoint):
             "token_env": "TS050_SOURCE_CORE_PLATFORM",
             "ca_file": str(self.ca),
         }
+        # Other role scenarios isolate their existing chat/model assertions from
+        # the independent background life worker. The life scenario uses normal
+        # default generation through the configured provider selector.
+        if self.life_fixture:
+            config["roles"] = {}
+            config["bindings"] = {}
+            config["bot_binding_management_enabled"] = False
+            config["callers"]["platform_life"] = {"token_env": "TS_ROLE_LIFE_READ"}
+            config["life_readers"] = {
+                "platform_life": {
+                    "reader_id": "reader:platform-life", "actor_ids": [], "runtime_roles": True,
+                },
+            }
+        else:
+            config["life_writing"] = False
         return config
 
     async def start_gateway(self):
@@ -199,7 +227,46 @@ class RoleJoint(WebJoint):
                     await asyncio.sleep(0.05)
 
     async def record_model(self, request):
+        if self.life_fixture:
+            self.assertEqual(request.headers.get("Authorization"), self.bearer("MODEL"))
+            body = await request.json()
+            material = json.loads(body["messages"][-1]["content"])
+            plan = body["messages"][0]["content"].startswith("Create today's fictional intentions")
+            content = json.dumps({"entries": [
+                {"minute": entry["minute"], "activity": entry["activity"],
+                 "detail": "按自己的节奏在虚构小屋里安排这一阶段。"}
+                for entry in material["schedule"]
+            ]}, ensure_ascii=False) if plan else "我在书桌前整理今天的想法，翻开笔记本记下一段温和的感受。"
+            if plan and body["model"] == "role-model-B" and not getattr(self, "life_retry_unlocked", False):
+                content = '{"entries":[]}'
+            self.model_requests.append({"body": body, "kind": "plan" if plan else "stage"})
+            return web.json_response({
+                "id": "synthetic-life-model", "object": "chat.completion", "created": 1,
+                "model": body["model"],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+            })
         return await super(WebJoint, self).record_model(request)
+
+    async def test_new_runtime_role_life_reads_and_generation_without_dialogue(self):
+        await self.browser_roles([], "role_life_browser.mjs")
+        actor = self.trace["browser"]["actor"]
+        role = self.platform.role_runtime.get(actor)
+        self.assertEqual(role["state"], "disabled")
+        self.assertEqual(role["capabilities"], [])
+        self.assertFalse(self.core._role_allows(actor, "dialogue"))
+        self.assertTrue(self.life_retry_unlocked, "real UI retry was never accepted")
+        self.assertTrue(any(
+            row["body"]["model"] == "role-model-B" and row["kind"] == "plan"
+            for row in self.model_requests
+        ))
+        self.assertTrue(any(
+            row["body"]["model"] == "role-model-B" and row["kind"] == "stage"
+            for row in self.model_requests
+        ))
+        for name in ("role-life-desktop.png", "role-life-mobile.png"):
+            shutil.copy2(self.directory / name, Path(os.environ["TS050_RUNTIME"]) / "results" / name)
 
     async def test_real_role_apply_and_model_routing(self):
         profiles = []
@@ -583,9 +650,14 @@ class RoleJoint(WebJoint):
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=120,
+            timeout=150 if self.life_fixture else 120,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        if self.life_fixture and result.returncode:
+            result.stderr += "\nlife model requests: " + json.dumps([
+                {"kind": row["kind"], "model": row["body"]["model"]}
+                for row in self.model_requests
+            ])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.trace["browser"] = json.loads(result.stdout)
 
