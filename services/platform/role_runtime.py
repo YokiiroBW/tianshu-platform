@@ -476,7 +476,6 @@ class RoleRuntime:
             and (
                 body["profile_id"] is None
                 and body["profile_version"] is None
-                and body["actor_id"] is not None
                 or isinstance(body["profile_id"], str)
                 and body["profile_id"].startswith("persona-profile:")
                 and type(body["profile_version"]) is int

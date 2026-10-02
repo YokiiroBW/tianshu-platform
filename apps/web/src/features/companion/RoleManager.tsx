@@ -20,6 +20,7 @@ type Role = {
   stage: string;
   error_code: string | null;
   client_id: string;
+  legacy: boolean;
 };
 type View = {
   roles: Role[];
@@ -148,7 +149,7 @@ export default function RoleManager() {
     setForm(
       found ? formFor(found) : existing
         ? { ...empty, name: existingName(existing), enabled: true }
-        : { ...empty, profile_id: profiles[0]?.id ?? "" },
+        : { ...empty },
     );
     setMobileDetail(true);
     setNotice("");
@@ -167,8 +168,7 @@ export default function RoleManager() {
     const pinnedVersion = role && profile && role.profile_id === profile.id
       && role.profile_revision === profile.revision
       ? role.profile_version : profile?.version;
-    if ((!legacy && role?.profile_id !== null && !profile?.revision) ||
-        (form.profile_id && !profile?.revision) ||
+    if ((form.profile_id && !profile?.revision) ||
         (form.provider_key && !provider)) {
       setError("请选择可用的人格档案与模型。");
       setBusy(false);
@@ -319,14 +319,14 @@ export default function RoleManager() {
                   <button
                     className="button"
                     onClick={() => select(null)}
-                    disabled={busy || !profiles.length}
+                    disabled={busy}
                   >
                     <Plus aria-hidden="true" /> 新建
                   </button>
                 </div>
                 {!profiles.length && (
                   <p className="muted">
-                    先在<a href="#/companion/2">人格</a>中建立档案。
+                    人格档案可选，可先创建角色，之后再到<a href="#/companion/2">人格</a>中建立档案。
                   </p>
                 )}
                 {visible.map((item) => (
@@ -404,7 +404,7 @@ export default function RoleManager() {
                         setForm({ ...form, profile_id: e.target.value })
                       }
                     >
-                      <option value="">{legacy || role?.profile_id === null ? "保留原角色人格" : "选择档案"}</option>
+                      <option value="">{legacy || role?.legacy ? "保留原角色人格" : "无（基础默认行为）"}</option>
                       {profiles.map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.name} · 第 {item.version} 版
@@ -415,7 +415,7 @@ export default function RoleManager() {
                   {role?.state === "active" && (
                     <p className="muted">当前生效人格：{role.profile_id
                       ? `${profiles.find((item) => item.id === role.profile_id)?.name ?? "所选档案"} · 第 ${role.profile_version} 版`
-                      : "原角色人格 · 保留现有版本"}</p>
+                      : role.legacy ? "原角色人格 · 保留现有版本" : "无档案 · 基础默认行为"}</p>
                   )}
                   <label>
                     模型
@@ -494,7 +494,6 @@ export default function RoleManager() {
                       disabled={
                         busy ||
                         !form.name.trim() ||
-                        (!form.profile_id && !legacy && role?.profile_id !== null) ||
                         role?.state === "pending"
                       }
                       onClick={() => void save()}

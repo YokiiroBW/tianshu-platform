@@ -91,7 +91,7 @@ class RoleJoint(WebJoint):
             },
         }
         settings["principals"]["operator"]["actions"].append("role.manage")
-        settings["principals"]["core"]["actions"].append("config.select")
+        settings["principals"]["core"]["actions"].extend(["config.select", "qq.admin.check"])
         settings["principals"]["gateway"]["actions"].append("provider.runtime")
         settings["principals"]["operator"]["actions"].append("bot.manage")
         settings["principals"]["bot-admin"] = {
@@ -121,6 +121,7 @@ class RoleJoint(WebJoint):
     def make_core_config(self):
         config = super().make_core_config()
         config["personas"] = {"admin_token_env": "TS_ROLE_PERSONA"}
+        config["services"]["qq_admin"] = dict(config["services"]["platform"])
         config["provider_self_service"] = True
         config["bot_binding_management_enabled"] = True
         config["services"]["provider_selector"] = {
@@ -540,6 +541,25 @@ class RoleJoint(WebJoint):
             {"operation": "status", "actor_id": actor},
         )
         self.assertFalse(grant["enabled"])
+
+    async def test_optional_persona_browser_and_real_owners(self):
+        await self.browser_roles([], "optional_persona_browser.mjs")
+        profile = self.core.personas.manage({
+            "operation": "create_profile", "request_id": str(uuid.uuid4()),
+            "operator": "joint-test", "reason": "synthetic", "name": "Optional source",
+            "description": "", "content": {"persona": "Distinct profile", "tone": "warm"},
+        })["item"]
+        await self.browser_roles([profile], "optional_persona_browser.mjs")
+        roles = self.core.role_runtime.list()
+        self.assertEqual(len(roles), 2)
+        for role in roles:
+            self.assertFalse(role["enabled"])
+            self.assertIsNone(role["profile_id"])
+            self.assertEqual(self.core.personas._revision(role["persona_revision"])["content"],
+                             {"persona": "Respond to the user's request clearly and accurately."})
+            self.assertNotIn(role["actor_id"], self.core.roles)
+        self.assertEqual(self.platform.role_runtime.active_actors(), [])
+        self.assertEqual(len(self.model_requests), 0)
 
     async def browser_roles(self, profiles, script="role_joint_browser.mjs"):
         env = dict(
