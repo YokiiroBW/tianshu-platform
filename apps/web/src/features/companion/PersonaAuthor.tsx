@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Copy, MoreHorizontal, Plus } from "lucide-react";
 import { author, PersonaError, reason, type SessionState } from "./personaApi";
+import { requestId } from "../../app/requestId";
 
 type Content = {
   persona: string;
@@ -286,7 +287,7 @@ export default function PersonaAuthor({ session }: { session: SessionState }) {
         Object.assign(body, { target, target_expected: targetVersion });
       const signature = JSON.stringify([path, body]);
       if (request.current?.body !== signature)
-        request.current = { body: signature, id: crypto.randomUUID() };
+        request.current = { body: signature, id: requestId() };
       body.client_id = request.current.id;
       const result = await call<{ item: Item; target?: Item }>(path, body);
       request.current = null;
