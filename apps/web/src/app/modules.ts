@@ -6,7 +6,7 @@ import {
   House,
   LayoutDashboard,
   MessageCircle,
-  Network,
+  UsersRound,
   Settings,
 } from "lucide-react";
 
@@ -38,11 +38,11 @@ export const modules = [
   },
   {
     id: "memory",
-    label: "记忆",
-    icon: Network,
+    label: "用户",
+    icon: UsersRound,
     group: "个人空间",
-    description: "人物与共同经历",
-    sections: ["记忆概览", "人物与群画像", "账号关联", "本人记忆"],
+    description: "从一个人开始，了解彼此的共同经历",
+    sections: ["用户档案", "群画像", "账号关联", "本人记忆"],
   },
   {
     id: "resources",
@@ -82,7 +82,7 @@ export const modules = [
       "资产库接入",
       "家庭设备接入",
       "访问与域名",
-      "QQ 用户与管理员",
+      "QQ 管理身份",
     ],
   },
 ] as const;
@@ -103,7 +103,7 @@ export const pages = {
   knowledge: lazy(() => import("../features/knowledge/KnowledgePage")),
   experience: lazy(() => import("../features/projects/ExperiencePage")),
   life: lazy(() => import("../features/life/LifePage")),
-  memory: lazy(() => import("../features/memory/MemoryPage")),
+  memory: lazy(() => import("../features/memory/PeopleWorkspace")),
 };
 
 export function resolveRoute(hash: string) {

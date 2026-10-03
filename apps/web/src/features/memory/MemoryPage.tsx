@@ -8,7 +8,10 @@ import {
 } from "../../app/integrationApi";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
-import { readRolePreference, saveRolePreference } from "../../app/rolePreference";
+import {
+  readRolePreference,
+  saveRolePreference,
+} from "../../app/rolePreference";
 import "./memory.css";
 
 type SubjectKey =
@@ -92,13 +95,18 @@ function roleReason(code: string | null) {
 }
 
 /** A scoped, read-only view; no approval/forget controls are exposed to a service reader. */
-export default function MemoryPage({ section }: { section: number }) {
+export default function MemoryPage({
+  section,
+  groupsOnly = false,
+}: {
+  section: number;
+  groupsOnly?: boolean;
+}) {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
   const storageKey = `tianshu-memory-role:${encodeURIComponent(session?.username || csrf)}`;
   const [state, setState] = useState<Connection | null>(null);
   const [roleId, setRoleId] = useState<string | null>(null);
-  const [overview, setOverview] = useState<Overview | null>(null);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [subjectsCursor, setSubjectsCursor] = useState<string | null>(null);
   const [selected, setSelected] = useState<SubjectKey | null>(null);
@@ -112,11 +120,13 @@ export default function MemoryPage({ section }: { section: number }) {
   const current = useRef<AbortController | null>(null);
   const generation = useRef(0);
   const role = state?.roles.find((item) => item.id === roleId);
+  const visibleSubjects = groupsOnly
+    ? subjects.filter((item) => item.subject.kind === "group")
+    : subjects;
 
   function clearResults() {
     generation.current++;
     current.current?.abort();
-    setOverview(null);
     setSubjects([]);
     setSubjectsCursor(null);
     setSelected(null);
@@ -213,29 +223,6 @@ export default function MemoryPage({ section }: { section: number }) {
     return () => current.current?.abort();
   }, [csrf, storageKey]);
 
-  async function readOverview() {
-    const selection = roleRequest();
-    if (!csrf || !selection) return;
-    const controller = start();
-    const mark = generation.current;
-    setOverview(null);
-    try {
-      const answer = await integrationPost<Overview>(
-        "memory/overview",
-        selection,
-        csrf,
-        controller.signal,
-      );
-      if (!controller.signal.aborted && mark === generation.current)
-        setOverview(answer);
-    } catch (cause) {
-      if (!controller.signal.aborted && mark === generation.current)
-        failRead(cause);
-    } finally {
-      if (!controller.signal.aborted) setBusy(false);
-    }
-  }
-
   async function listSubjects(cursor: string | null = null) {
     const selection = roleRequest();
     if (!csrf || !selection) return;
@@ -305,8 +292,7 @@ export default function MemoryPage({ section }: { section: number }) {
     if (!state) return;
     clearResults();
     if (!state?.available || !role?.available) return;
-    if (section === 0) void readOverview();
-    else if (section === 1) void listSubjects();
+    if (section === 1) void listSubjects();
     else if (section === 3) void listRecords(null);
   }, [state, roleId, section, csrf]);
 
@@ -320,7 +306,7 @@ export default function MemoryPage({ section }: { section: number }) {
       const mark = generation.current;
       pending = controller;
       try {
-        const answer = await integrationPost<Overview>(
+        await integrationPost<Overview>(
           "memory/overview",
           selection,
           csrf,
@@ -332,8 +318,7 @@ export default function MemoryPage({ section }: { section: number }) {
           !resumed
         )
           return;
-        if (section === 0) setOverview(answer);
-        else if (section === 1) await listSubjects();
+        if (section === 1) await listSubjects();
         else if (section === 3) await listRecords(null);
       } catch (cause) {
         if (!controller.signal.aborted && mark === generation.current)
@@ -495,11 +480,7 @@ export default function MemoryPage({ section }: { section: number }) {
           <button
             className="button"
             onClick={() =>
-              section === 0
-                ? void readOverview()
-                : section === 1
-                  ? void listSubjects()
-                  : void listRecords(null)
+              section === 1 ? void listSubjects() : void listRecords(null)
             }
             disabled={busy}
           >
@@ -522,11 +503,9 @@ export default function MemoryPage({ section }: { section: number }) {
             <button
               className="button"
               onClick={() =>
-                section === 0
-                  ? void readOverview()
-                  : section === 1 && !selected
-                    ? void listSubjects()
-                    : void listRecords(selected)
+                section === 1 && !selected
+                  ? void listSubjects()
+                  : void listRecords(selected)
               }
             >
               从第一页重读
@@ -537,54 +516,19 @@ export default function MemoryPage({ section }: { section: number }) {
           <p>失败没有被当作空记忆。</p>
         </StatePanel>
       )}
-      {section === 0 && (
-        <section className="panel">
-          <h2>记忆概览</h2>
-          {!overview && !error ? (
-            <StatePanel kind="loading" title="正在读取记忆概览">
-              <p>请稍候。</p>
-            </StatePanel>
-          ) : (
-            overview && (
-              <>
-                <dl className="memory-counts">
-                  <div>
-                    <dt>本人有效记忆组</dt>
-                    <dd>
-                      {overview.counts_truncated
-                        ? `至少 ${overview.memory_group_count}`
-                        : overview.memory_group_count}
-                    </dd>
-                  </div>
-                </dl>
-                <p className="muted">
-                  读取于 {overview.verified_at} · 范围版本{" "}
-                  {overview.scope_version}。计数只覆盖本人当前有效的记忆组
-                  {overview.counts_truncated ? "，已达到本次计数上限" : ""}
-                  ；人物与群请打开目录分页查看。
-                </p>
-                <div className="memory-actions">
-                  <a className="button" href="#/memory/1">
-                    查看人物与群
-                  </a>
-                  <a className="button" href="#/memory/3">
-                    查看本人记忆
-                  </a>
-                </div>
-              </>
-            )
-          )}
-        </section>
-      )}
       {section === 1 && (
         <div className="memory-columns">
           <section className="panel">
-            <h2>人物与群</h2>
-            {subjects.length === 0 && !busy && !error ? (
+            <h2>{groupsOnly ? "群画像" : "人物与群"}</h2>
+            {visibleSubjects.length === 0 && !busy && !error ? (
               <StatePanel
                 kind="empty"
                 title={
-                  subjectsCursor ? "本页没有可见人物或群" : "没有可见人物或群"
+                  groupsOnly
+                    ? "暂无可见群画像"
+                    : subjectsCursor
+                      ? "本页没有可见人物或群"
+                      : "没有可见人物或群"
                 }
               >
                 <p>
@@ -595,7 +539,7 @@ export default function MemoryPage({ section }: { section: number }) {
               </StatePanel>
             ) : (
               <ul className="memory-list">
-                {subjects.map((row) => (
+                {visibleSubjects.map((row) => (
                   <li key={subjectText(row.subject)}>
                     <button
                       type="button"
@@ -624,7 +568,7 @@ export default function MemoryPage({ section }: { section: number }) {
                 disabled={busy}
                 onClick={() => void listSubjects(subjectsCursor)}
               >
-                继续读取人物与群
+                {groupsOnly ? "继续读取群画像" : "继续读取人物与群"}
               </button>
             )}
           </section>
@@ -641,7 +585,9 @@ export default function MemoryPage({ section }: { section: number }) {
               />
             ) : (
               <p className="muted">
-                选择人物或群后读取当前可见的共享画像。不会显示对方私有记忆。
+                {groupsOnly
+                  ? "选择群后查看当前角色可读取的群画像。用户身份与个人画像请在用户档案中查看。"
+                  : "选择人物或群后读取当前可见的共享画像。不会显示对方私有记忆。"}
               </p>
             )}
           </section>

@@ -432,6 +432,15 @@ class BotObservation:
             )
             async with self.lock:
                 return {"connection": self._project(await self.policy(body))}
+        if path == PREFIX + "private-access":
+            require(
+                set(body)
+                == {"id", "qq_id", "expected_revision", "enabled", "actor_id", "client_id"},
+                "invalid_input",
+                400,
+            )
+            async with self.lock:
+                return {"connection": self._project(await self.private_access(body))}
         if path == PREFIX + "discovered":
             require(set(body) == {"id", "limit", "cursor"}, "invalid_input", 400)
             return await self.discovered(body)
@@ -547,9 +556,68 @@ class BotObservation:
         self.adapters.drafts.pop(body["draft_id"], None)
         return await self._apply(row)
 
-    async def policy(self, body):
+    async def private_access(self, body):
+        """Change one discovered private contact without replacing account-wide routing."""
+        target = _qq(body["qq_id"])
+        require(type(body["enabled"]) is bool, "invalid_input", 400)
+        actor = body["actor_id"]
+        require(
+            actor is None or isinstance(actor, str) and 1 <= len(actor) <= 128,
+            "invalid_input",
+            400,
+        )
+        require(
+            isinstance(body["client_id"], str) and 1 <= len(body["client_id"]) <= 128,
+            "invalid_input",
+            400,
+        )
+        fingerprint = digest(["observation-private-access", body])
+        receipt = self.catalog.receipt(body["client_id"], fingerprint)
+        if receipt:
+            return self.get(receipt["id"])
+        row = self.get(body["id"])
+        require(row is not None, "not_found", 404)
+        require(row["read_enabled"], "forbidden", 403)
+        require(
+            type(body["expected_revision"]) is int and body["expected_revision"] == row["revision"],
+            "version_conflict",
+            409,
+        )
+        with closing(self._db()) as db:
+            found = db.execute(
+                "SELECT 1 FROM discovered WHERE connection_id=? AND archive_epoch=? "
+                "AND conversation=? AND author=?",
+                (row["id"], row["archive_epoch"], "private:" + target, target),
+            ).fetchone()
+        require(found is not None, "private_contact_not_found", 404)
+        private = dict(row["private_policy"])
+        names = list(private["list"])
+        if private["mode"] == "observe_only":
+            if body["enabled"]:
+                require(actor is not None, "reply_role_required", 400)
+                private.update(mode="whitelist", list=[target], actor_id=actor)
+        else:
+            require(actor is None or actor == private["actor_id"], "reply_role_conflict", 409)
+            listed = body["enabled"] == (private["mode"] == "whitelist")
+            if listed and target not in names:
+                names.append(target)
+            elif not listed and target in names:
+                names.remove(target)
+            private["list"] = names
+        return await self.policy(
+            {
+                "id": row["id"],
+                "expected_revision": body["expected_revision"],
+                "group_policy": row["group_policy"],
+                "private_policy": private,
+                "client_id": body["client_id"],
+            },
+            intent_fingerprint=fingerprint,
+        )
+
+    async def policy(self, body, *, intent_fingerprint=None):
         key = body["client_id"]
-        fingerprint = digest(["observation-policy", body])
+        fingerprint = intent_fingerprint or digest(["observation-policy", body])
         receipt = self.catalog.receipt(key, fingerprint)
         if receipt:
             return self.get(receipt["id"])

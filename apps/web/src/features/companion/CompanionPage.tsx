@@ -1,21 +1,16 @@
 import { LoginLink, useSessionGuard } from "../../app/Auth";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import "./companion.css";
 
 import { request, type Session } from "./api";
 import { DialoguePanel } from "./DialoguePanel";
 
-const RelationshipPanel = lazy(
-  () => import("./relationships/RelationshipPanel"),
-);
-
 export default function CompanionPage() {
   const [session, setSession] = useState<Session | null>(null);
   useSessionGuard(session);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
-  const [relationshipsOpen, setRelationshipsOpen] = useState(false);
   const [conversationId, setConversationId] = useState("");
   const [actorId, setActorId] = useState("");
   const active = useRef<AbortController | null>(null);
@@ -76,14 +71,11 @@ export default function CompanionPage() {
           </h2>
         </div>
         <div className="chat-actions">
-          <button
-            className="button"
-            disabled={!session?.authenticated || busy}
-            onClick={() => setRelationshipsOpen((value) => !value)}
-            aria-expanded={relationshipsOpen}
-          >
-            {relationshipsOpen ? "返回对话" : "关系管理"}
-          </button>
+          {session?.authenticated && (
+            <a className="button" href="#/memory/0">
+              用户档案与关系
+            </a>
+          )}
           <button
             className="button"
             onClick={() => void connect()}
@@ -110,59 +102,51 @@ export default function CompanionPage() {
         <LoginLink />
       ) : (
         <>
-          {relationshipsOpen ? (
-            <Suspense fallback={<p role="status">正在打开关系管理…</p>}>
-              <RelationshipPanel key={session.csrf} csrf={session.csrf} />
-            </Suspense>
-          ) : (
-            <>
-              <div className="chat-selectors">
-                <label>
-                  会话
-                  <select
-                    value={conversation?.id ?? ""}
-                    disabled={busy || !conversations.length}
-                    onChange={(event) => {
-                      setConversationId(event.target.value);
-                      setActorId("");
-                    }}
-                  >
-                    {!conversations.length && (
-                      <option value="">没有已授权会话</option>
-                    )}
-                    {conversations.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  角色
-                  <select
-                    value={actor}
-                    disabled={busy || !actors.length}
-                    onChange={(event) => {
-                      setActorId(event.target.value);
-                    }}
-                  >
-                    {!actors.length && <option value="">没有已授权角色</option>}
-                    {actors.map((id) => (
-                      <option key={id} value={id}>
-                        {id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <DialoguePanel
-                key={`${conversation?.id}:${actor}:${session.csrf}`}
-                session={session}
-                conversation={conversation?.id ?? ""}
-                actor={actor}
-              />
-            </>
-          )}
+          <div className="chat-selectors">
+            <label>
+              会话
+              <select
+                value={conversation?.id ?? ""}
+                disabled={busy || !conversations.length}
+                onChange={(event) => {
+                  setConversationId(event.target.value);
+                  setActorId("");
+                }}
+              >
+                {!conversations.length && (
+                  <option value="">没有已授权会话</option>
+                )}
+                {conversations.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              角色
+              <select
+                value={actor}
+                disabled={busy || !actors.length}
+                onChange={(event) => {
+                  setActorId(event.target.value);
+                }}
+              >
+                {!actors.length && <option value="">没有已授权角色</option>}
+                {actors.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <DialoguePanel
+            key={`${conversation?.id}:${actor}:${session.csrf}`}
+            session={session}
+            conversation={conversation?.id ?? ""}
+            actor={actor}
+          />
         </>
       )}
     </section>

@@ -323,7 +323,7 @@ test("life reads last persisted state and only opens a published diary", async (
   await expect(page.locator(".life-revision")).toContainText("2026-09-27");
 });
 
-test("memory separates overview, shared subjects and own records", async ({
+test("memory separates shared group portraits and own records", async ({
   page,
 }) => {
   await session(page);
@@ -361,7 +361,7 @@ test("memory separates overview, shared subjects and own records", async ({
         scope_version: 2,
         items: [
           {
-            subject: { kind: "person", person_id: "person-a" },
+            subject: { kind: "group", conversation_id: "group-a" },
             categories: ["偏好"],
             group_count: 1,
             group_count_truncated: false,
@@ -401,9 +401,7 @@ test("memory separates overview, shared subjects and own records", async ({
     }
     throw new Error(`unexpected ${path}`);
   });
-  await page.goto("/#/memory/0");
-  await expect(page.getByText("4", { exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "查看人物与群" }).click();
+  await page.goto("/#/memory/1");
   await expect(page.locator(".memory-list button")).toHaveCount(1);
   await page.locator(".memory-list button").click();
   await expect(page.getByText("共享的喜好")).toBeVisible();
@@ -414,7 +412,7 @@ test("memory separates overview, shared subjects and own records", async ({
       {
         role_id: "actor-a",
         role_version: 0,
-        subject: { kind: "person", person_id: "person-a" },
+        subject: { kind: "group", conversation_id: "group-a" },
         limit: 20,
         cursor: null,
       },

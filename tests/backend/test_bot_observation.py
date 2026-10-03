@@ -5,7 +5,8 @@ import tempfile
 import unittest
 from contextlib import closing, contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from services.platform.bot_adapter_catalog import BotAdapterCatalog
 from services.platform.bot_observation import BotObservation, decision
@@ -105,6 +106,142 @@ class ObservationTests(unittest.TestCase):
         assert decision(policy(mode="blacklist"), "20002", True, "group")["reply_triggered"]
         assert not decision(policy(mode="blacklist"), "20002", False, "group")["reply_triggered"]
         assert decision(policy(mode="blacklist"), "30003", False, "private")["reply_triggered"]
+
+    def private_request(self, *, current=None, enabled=True, actor="actor:a"):
+        self.platform.role_runtime = SimpleNamespace(active_actors=lambda: [])
+        self.manager.adapters._gate = Mock()
+        self.manager._disable_invalid_replies = Mock()
+
+        async def applied(row):
+            row["state"] = "ready"
+            row["pending"] = None
+            self.manager.catalog.put(row)
+            return row
+
+        self.manager._apply = applied
+        self.row["group_policy"] = policy(mode="whitelist", names=["20002"], actor="actor:a")
+        if current is not None:
+            self.row["private_policy"] = current
+        self.manager.catalog.put(self.row)
+        event = self.event(conversation="private:30003")
+        event["mentioned"] = False
+        self.manager.record(self.row, event)
+        return {
+            "id": self.row["id"],
+            "qq_id": "30003",
+            "expected_revision": 1,
+            "enabled": enabled,
+            "actor_id": actor,
+            "client_id": "private-access:1",
+        }
+
+    def private_route(self, body):
+        return self.manager.route(None, "/api/web/bot-observation/private-access", body, {})
+
+    def test_private_access_starts_only_selected_contact_and_replays(self):
+        request = self.private_request(current=policy(names=["40004"], observe=False))
+        result = asyncio.run(self.private_route(request))["connection"]
+        self.assertEqual(
+            result["private_policy"],
+            policy(observe=False, mode="whitelist", names=["30003"], actor="actor:a"),
+        )
+        self.assertEqual(result["group_policy"], self.row["group_policy"])
+        self.assertEqual(result["observation_epoch"], self.row["observation_epoch"])
+        self.assertEqual(asyncio.run(self.private_route(request))["connection"], result)
+        with self.assertRaises(Fault) as raised:
+            asyncio.run(self.private_route(dict(request, enabled=False)))
+        self.assertEqual(raised.exception.code, "idempotency_conflict")
+
+    def test_private_access_whitelist_changes_do_not_affect_other_people(self):
+        request = self.private_request(
+            current=policy(mode="whitelist", names=["40004"], actor="actor:a"), actor=None
+        )
+        added = asyncio.run(self.private_route(request))["connection"]
+        self.assertEqual(added["private_policy"]["list"], ["40004", "30003"])
+        removed = asyncio.run(
+            self.private_route(
+                dict(request, enabled=False, expected_revision=2, client_id="private-access:2")
+            )
+        )["connection"]
+        self.assertEqual(removed["private_policy"]["list"], ["40004"])
+        self.assertEqual(removed["private_policy"]["actor_id"], "actor:a")
+        self.assertEqual(removed["group_policy"], self.row["group_policy"])
+
+    def test_private_access_blacklist_preserves_other_blocks_and_default_role(self):
+        request = self.private_request(
+            current=policy(mode="blacklist", names=["40004", "30003"], actor="actor:a")
+        )
+        allowed = asyncio.run(self.private_route(request))["connection"]
+        self.assertEqual(allowed["private_policy"]["list"], ["40004"])
+        blocked = asyncio.run(
+            self.private_route(
+                dict(request, enabled=False, expected_revision=2, client_id="private-access:2")
+            )
+        )["connection"]
+        self.assertEqual(blocked["private_policy"]["list"], ["40004", "30003"])
+        self.assertEqual(blocked["private_policy"]["actor_id"], "actor:a")
+
+    def test_private_access_cannot_silently_change_account_role(self):
+        request = self.private_request(
+            current=policy(mode="whitelist", names=["40004"], actor="actor:a"), actor="actor:b"
+        )
+        with self.assertRaises(Fault) as raised:
+            asyncio.run(self.private_route(request))
+        self.assertEqual(raised.exception.code, "reply_role_conflict")
+        self.assertEqual(self.manager.get(self.row["id"]), self.row)
+
+    def test_private_access_requires_private_contact_in_current_archive(self):
+        request = self.private_request()
+        for body, expected in (
+            (dict(request, qq_id="40004"), "private_contact_not_found"),
+            (dict(request, actor_id=None), "reply_role_required"),
+            (dict(request, expected_revision=0), "version_conflict"),
+        ):
+            with self.subTest(expected=expected), self.assertRaises(Fault) as raised:
+                asyncio.run(self.private_route(body))
+            self.assertEqual(raised.exception.code, expected)
+        self.manager.catalog.put(dict(self.row, archive_epoch=2))
+        with self.assertRaises(Fault) as raised:
+            asyncio.run(self.private_route(request))
+        self.assertEqual(raised.exception.code, "private_contact_not_found")
+        self.assertEqual(self.manager.get(self.row["id"])["revision"], 1)
+
+    def test_private_access_uses_existing_management_gate(self):
+        request = self.private_request()
+        self.manager.adapters._gate.side_effect = Fault("management_locked", 403)
+        with self.assertRaises(Fault) as raised:
+            asyncio.run(self.private_route(request))
+        self.assertEqual(
+            (raised.exception.code, raised.exception.status), ("management_locked", 403)
+        )
+        self.assertEqual(self.manager.get(self.row["id"]), self.row)
+
+    def test_private_access_serializes_concurrent_updates(self):
+        request = self.private_request()
+
+        async def run():
+            entered, release = asyncio.Event(), asyncio.Event()
+            apply = self.manager._apply
+
+            async def slow_apply(row):
+                entered.set()
+                await release.wait()
+                return await apply(row)
+
+            self.manager._apply = slow_apply
+            first = asyncio.create_task(self.private_route(request))
+            await entered.wait()
+            second = asyncio.create_task(
+                self.private_route(dict(request, enabled=False, client_id="private-access:2"))
+            )
+            release.set()
+            await first
+            with self.assertRaises(Fault) as raised:
+                await second
+            self.assertEqual(raised.exception.code, "version_conflict")
+
+        asyncio.run(run())
+        self.assertEqual(self.manager.get(self.row["id"])["private_policy"]["list"], ["30003"])
 
     def test_pause_finishes_old_source_but_revocation_denies_read(self):
         first = self.manager.record(self.row, self.event())

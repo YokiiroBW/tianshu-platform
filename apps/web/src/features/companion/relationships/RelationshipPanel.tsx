@@ -1,6 +1,6 @@
 import { History } from "./History";
 import { RelationshipForm, types } from "./RelationshipForm";
-import { useRelationships } from "./useRelationships";
+import { useRelationships, type RelationshipTarget } from "./useRelationships";
 import "./relationships.css";
 
 const stages: Record<string, string> = {
@@ -14,8 +14,19 @@ const stages: Record<string, string> = {
   deeply_intimate: "深度亲密",
 };
 
-export default function RelationshipPanel({ csrf }: { csrf: string }) {
-  const state = useRelationships(csrf);
+type Props = { csrf: string; selection?: RelationshipTarget };
+
+export default function RelationshipPanel(props: Props) {
+  return (
+    <RelationshipContent
+      key={`${props.csrf}:${props.selection?.roleId ?? ""}:${props.selection?.personId ?? ""}`}
+      {...props}
+    />
+  );
+}
+
+function RelationshipContent({ csrf, selection }: Props) {
+  const state = useRelationships(csrf, selection);
   const projection = state.view?.projection;
   return (
     <section
@@ -24,47 +35,51 @@ export default function RelationshipPanel({ csrf }: { csrf: string }) {
       aria-busy={state.busy || state.saving}
     >
       <h3>关系与好感</h3>
-      <p>
-        先选择角色与已确认人物。关系类型和好感不会授予管理员、工具或聊天权限。
-      </p>
+      <p>关系类型、称呼和好感只影响角色表达，回复权限在用户档案中单独设置。</p>
       <p>私聊可使用关系与称呼；群聊不公开私聊关系、称呼或分数。</p>
-      <div className="relationship-selectors">
-        <label>
-          关系角色
-          <select
-            value={state.roleId}
-            onChange={(event) => state.chooseRole(event.target.value)}
-            disabled={state.busy && !state.catalog}
-          >
-            <option value="">请选择角色</option>
-            {state.catalog?.roles.map((role) => (
-              <option key={role.id} value={role.id} disabled={!role.available}>
-                {role.label}
-                {role.available ? "" : "（暂不可用）"}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          关系人物
-          <select
-            value={state.personId}
-            onChange={(event) => state.choosePerson(event.target.value)}
-            disabled={!state.roleId}
-          >
-            <option value="">请选择人物</option>
-            {state.catalog?.items.map((person) => (
-              <option key={person.id} value={person.id}>
-                {person.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      {!selection && (
+        <div className="relationship-selectors">
+          <label>
+            关系角色
+            <select
+              value={state.roleId}
+              onChange={(event) => state.chooseRole(event.target.value)}
+              disabled={state.busy && !state.catalog}
+            >
+              <option value="">请选择角色</option>
+              {state.catalog?.roles.map((role) => (
+                <option
+                  key={role.id}
+                  value={role.id}
+                  disabled={!role.available}
+                >
+                  {role.label}
+                  {role.available ? "" : "（暂不可用）"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            关系人物
+            <select
+              value={state.personId}
+              onChange={(event) => state.choosePerson(event.target.value)}
+              disabled={!state.roleId}
+            >
+              <option value="">请选择人物</option>
+              {state.catalog?.items.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
       {state.catalog && !state.catalog.items.length && (
         <p>尚无已确认人物。观察归档建立身份后才能选择。</p>
       )}
-      {state.catalog?.next_after && (
+      {!selection && state.catalog?.next_after && (
         <button
           className="button"
           onClick={() => void state.morePeople()}

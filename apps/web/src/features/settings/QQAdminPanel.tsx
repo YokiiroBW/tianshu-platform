@@ -16,20 +16,6 @@ type View = {
   alias_pending: number;
   roles: { id: string; label: string }[];
 };
-type Profile = {
-  qq_id: string;
-  person_id: string;
-  display_name: string;
-  aliases: {
-    kind: string;
-    bot_id: string;
-    group_id: string;
-    value: string;
-    observed_at: string;
-  }[];
-};
-type Profiles = { items: Profile[]; next_cursor: string | null };
-
 const split = (value: string) =>
   value
     .split(/[\n,，]/)
@@ -39,7 +25,6 @@ const split = (value: string) =>
 export function QQAdminPanel() {
   const [csrf, setCsrf] = useState("");
   const [view, setView] = useState<View | null>(null);
-  const [profiles, setProfiles] = useState<Profiles | null>(null);
   const [qq, setQq] = useState("");
   const [note, setNote] = useState("");
   const [actors, setActors] = useState("");
@@ -63,18 +48,6 @@ export function QQAdminPanel() {
           controller.signal,
         );
         setView(current);
-        try {
-          setProfiles(
-            await call<Profiles>(
-              "qq-admin/profiles",
-              { limit: 50, after: null },
-              login.csrf,
-              controller.signal,
-            ),
-          );
-        } catch {
-          setProfiles(null);
-        }
       } catch (cause) {
         if (!controller.signal.aborted)
           setError(
@@ -88,28 +61,6 @@ export function QQAdminPanel() {
   async function refresh() {
     const controller = new AbortController();
     setView(await call<View>("qq-admin/view", {}, csrf, controller.signal));
-  }
-
-  async function moreProfiles() {
-    if (!profiles?.next_cursor || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      const next = await call<Profiles>(
-        "qq-admin/profiles",
-        { limit: 50, after: profiles.next_cursor },
-        csrf,
-        new AbortController().signal,
-      );
-      setProfiles({
-        items: [...profiles.items, ...next.items],
-        next_cursor: next.next_cursor,
-      });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "读取更多档案失败。");
-    } finally {
-      setBusy(false);
-    }
   }
 
   async function save(event: FormEvent) {
@@ -185,53 +136,16 @@ export function QQAdminPanel() {
     <div className="qq-admin-page">
       <section className="panel">
         <div className="section-heading">
-          <h2>QQ 用户档案</h2>
-        </div>
-        <p>
-          QQ
-          号确定账号身份。昵称只用于称呼；同号在不同机器人和群私会话中保留同一档案。
-        </p>
-        {profiles ? (
-          <>
-            <ul className="qq-admin-list">
-              {profiles.items.map((item) => (
-                <li key={item.qq_id}>
-                  <strong>{item.display_name}</strong>
-                  <span>QQ {item.qq_id}</span>
-                  {item.aliases.map((alias) => (
-                    <small
-                      key={`${alias.kind}:${alias.bot_id}:${alias.group_id}`}
-                    >
-                      {alias.kind === "group_card"
-                        ? `群 ${alias.group_id} 名片`
-                        : "昵称"}
-                      ：{alias.value}
-                    </small>
-                  ))}
-                </li>
-              ))}
-            </ul>
-            {profiles.next_cursor && (
-              <button
-                className="button"
-                type="button"
-                disabled={busy}
-                onClick={() => void moreProfiles()}
-              >
-                加载更多档案
-              </button>
-            )}
-          </>
-        ) : (
-          <p>档案服务暂时不可读取；管理员设置仍由平台独立保存。</p>
-        )}
-      </section>
-      <section className="panel">
-        <div className="section-heading">
           <h2>QQ 管理身份</h2>
+          <a className="button" href="#/memory/0">
+            前往用户档案
+          </a>
         </div>
         <p>
-          初始没有任何授权。这里的设置只允许对话说明身份，不会开启数据删除、导出或设备控制。
+          设置和撤销对话中的管理身份。用户档案、画像、记忆与回复设置统一在用户页面管理。
+        </p>
+        <p>
+          此授权仅允许对话说明管理身份。回复白名单单独设置，数据删除、导出和设备控制均不包含在内。
         </p>
         {error && <p role="alert">{error}</p>}
         {notice && <p role="status">{notice}</p>}

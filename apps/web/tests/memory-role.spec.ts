@@ -93,8 +93,11 @@ test("memory role selection persists and late responses cannot replace the new r
         items: [
           {
             subject: {
-              kind: "person",
-              person_id: body.role_id === "actor:a" ? "person-a" : "person-b",
+              kind: "group",
+              conversation_id:
+                body.role_id === "actor:a"
+                  ? "conversation-a"
+                  : "conversation-b",
             },
             categories: ["偏好"],
             group_count: 1,
@@ -105,7 +108,9 @@ test("memory role selection persists and late responses cannot replace the new r
         verified_at: "2026-09-30T00:00:00Z",
         scope_version: 1,
       });
-    if (path === "records")
+    if (path === "records") {
+      if (body.role_id === "actor:a" && delayA)
+        await new Promise((resolve) => setTimeout(resolve, 650));
       return answer(route, {
         items: [
           {
@@ -132,22 +137,23 @@ test("memory role selection persists and late responses cannot replace the new r
         verified_at: "2026-09-30T00:00:00Z",
         scope_version: 1,
       });
+    }
     throw new Error(`unexpected memory path ${path}`);
   });
 
-  await page.goto("/#/memory/0");
+  await page.goto("/#/memory/3");
   await expect(page.getByLabel("查看哪位角色的记忆")).toHaveValue("actor:a");
-  await expect(page.locator(".memory-counts dd")).toHaveText("1");
+  await expect(page.getByText("甲的记忆")).toBeVisible();
   await page.getByLabel("查看哪位角色的记忆").selectOption("actor:b");
-  await expect(page.locator(".memory-counts dd")).toHaveText("2");
+  await expect(page.getByText("乙的记忆")).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath(
       `memory-role-active-${testInfo.project.name}.png`,
     ),
     fullPage: true,
   });
-  await page.getByRole("link", { name: "查看人物与群" }).click();
-  await expect(page.getByText("人物 person-b")).toBeVisible();
+  await page.getByRole("link", { name: "群画像", exact: true }).click();
+  await expect(page.getByText("群 conversation-b")).toBeVisible();
   await page.locator(".memory-list button").click();
   await expect(page.getByText("乙的记忆")).toBeVisible();
   await page.getByRole("link", { name: "本人记忆", exact: true }).click();
@@ -200,26 +206,26 @@ test("memory role selection persists and late responses cannot replace the new r
   await page.getByRole("button", { name: "刷新角色" }).click();
   await expect(page.getByText("乙的记忆")).toBeVisible();
 
-  await page.goto("/#/memory/0");
+  await page.goto("/#/memory/3");
   delayA = true;
   await page.getByLabel("查看哪位角色的记忆").selectOption("actor:a");
   await expect
     .poll(
       () =>
         requests.filter(
-          (item) => item.path === "overview" && item.role === "actor:a",
+          (item) => item.path === "records" && item.role === "actor:a",
         ).length,
     )
     .toBeGreaterThan(1);
   await page.getByLabel("查看哪位角色的记忆").selectOption("actor:b");
-  await expect(page.locator(".memory-counts dd")).toHaveText("2");
+  await expect(page.getByText("乙的记忆")).toBeVisible();
   await page.waitForTimeout(700);
-  await expect(page.locator(".memory-counts dd")).toHaveText("2");
+  await expect(page.getByText("乙的记忆")).toBeVisible();
 
   currentRoles = [roles[0]];
   await page.getByRole("button", { name: "刷新角色" }).click();
   await expect(page.getByText("原角色已不在授权列表").last()).toBeVisible();
-  await expect(page.locator(".memory-counts dd")).toHaveCount(0);
+  await expect(page.getByText("乙的记忆")).toHaveCount(0);
   await page.screenshot({
     path: testInfo.outputPath(`memory-role-${testInfo.project.name}.png`),
     fullPage: true,

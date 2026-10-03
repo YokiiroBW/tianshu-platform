@@ -10,7 +10,9 @@ import {
   type View,
 } from "./api";
 
-export function useRelationships(csrf: string) {
+export type RelationshipTarget = { roleId: string; personId: string };
+
+export function useRelationships(csrf: string, target?: RelationshipTarget) {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [roleId, setRoleId] = useState("");
   const [personId, setPersonId] = useState("");
@@ -76,8 +78,38 @@ export function useRelationships(csrf: string) {
         controller.signal,
       );
       if (!current(serial, controller)) return;
+      // The user directory and relationship catalog paginate independently. Resolve
+      // the selected identity using the existing catalog instead of guessing a cursor.
+      while (
+        target &&
+        !result.items.some((item) => item.id === target.personId) &&
+        result.next_after
+      ) {
+        const page = await call<{ items: Person[]; next_after: string | null }>(
+          "people",
+          { after: result.next_after },
+          csrf,
+          controller.signal,
+        );
+        if (!current(serial, controller)) return;
+        result.items.push(...page.items);
+        result.next_after = page.next_after;
+      }
       setCatalog(result);
-      setRoleId(result.roles.find((item) => item.available)?.id ?? "");
+      if (target) {
+        const chosenRole = result.roles.find(
+          (item) => item.id === target.roleId,
+        );
+        const chosenPerson = result.items.find(
+          (item) => item.id === target.personId,
+        );
+        setRoleId(chosenRole?.available ? chosenRole.id : "");
+        setPersonId(chosenPerson?.id ?? "");
+        if (!chosenRole?.available || !chosenPerson)
+          setError("当前人物或角色暂不可管理关系，请刷新核对。");
+      } else {
+        setRoleId(result.roles.find((item) => item.available)?.id ?? "");
+      }
     } catch (cause) {
       if (current(serial, controller)) {
         setCatalog(null);

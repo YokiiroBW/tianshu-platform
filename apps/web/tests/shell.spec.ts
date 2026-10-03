@@ -162,12 +162,12 @@ test("mobile menu closes after keyboard navigation and route focus moves", async
   await page.goto("/");
   await page.getByRole("button", { name: "打开导航" }).click();
   const dialog = page.getByRole("dialog", { name: "导航", exact: true });
-  await dialog.getByRole("link", { name: "记忆", exact: true }).focus();
+  await dialog.getByRole("link", { name: "用户", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(dialog).not.toBeVisible();
   await expect(page.locator("main")).toBeFocused();
   await expect(
-    page.getByRole("heading", { name: "记忆", exact: true }),
+    page.getByRole("heading", { name: "用户", exact: true }),
   ).toBeVisible();
 });
 

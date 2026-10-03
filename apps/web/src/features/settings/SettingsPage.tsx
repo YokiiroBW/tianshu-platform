@@ -35,8 +35,8 @@ const setupLinks = [
   },
   {
     href: "#/settings/7",
-    title: "QQ 用户与管理员",
-    detail: "查看 QQ 档案，设置和撤销对话中的管理身份。",
+    title: "QQ 管理身份",
+    detail: "设置和撤销对话中的管理身份；回复权限在用户档案中管理。",
   },
 ];
 

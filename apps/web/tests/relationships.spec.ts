@@ -7,15 +7,14 @@ async function control(page: Page, action: string, values: object = {}) {
   });
 }
 async function signIn(page: Page) {
-  await page.goto("/#/companion");
+  await page.goto("/#/memory/0");
   await page.getByLabel("管理员账号").fill("synthetic-admin");
   await page
     .getByLabel("密码", { exact: true })
     .fill("synthetic-local-password-014");
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await page.getByRole("button", { name: "关系管理", exact: true }).click();
   await expect(
-    page.getByRole("combobox", { name: "关系角色", exact: true }),
+    page.getByRole("combobox", { name: "查看角色", exact: true }),
   ).toBeEnabled();
 }
 async function personId(page: Page, account: string) {
@@ -37,14 +36,20 @@ async function personId(page: Page, account: string) {
   expect(registered).toBeDefined();
   return registered.person_id as string;
 }
+async function choosePerson(page: Page, account: string) {
+  await page
+    .getByLabel("用户目录", { exact: true })
+    .getByRole("button")
+    .filter({ has: page.getByText(`QQ ${account}`, { exact: true }) })
+    .click();
+  await page.getByRole("tab", { name: "关系", exact: true }).click();
+}
 async function select(page: Page, role = "actor:a", account = "10001") {
-  const person = await personId(page, account);
+  await personId(page, account);
   await page
-    .getByRole("combobox", { name: "关系角色", exact: true })
+    .getByRole("combobox", { name: "查看角色", exact: true })
     .selectOption(role);
-  await page
-    .getByRole("combobox", { name: "关系人物", exact: true })
-    .selectOption(person);
+  await choosePerson(page, account);
   await expect(page.getByLabel("当前好感", { exact: true })).toBeVisible();
   await expect(page.getByLabel("称呼", { exact: true })).toBeEnabled();
 }
@@ -85,8 +90,8 @@ test("private relation, reason history, draft cancel and rapid role/person switc
   await expect(page.getByLabel("称呼", { exact: true })).toHaveValue(
     "合成甲私聊称呼",
   );
-  await page.getByRole("button", { name: "返回对话", exact: true }).click();
-  await page.getByRole("button", { name: "关系管理", exact: true }).click();
+  await page.goto("/#/companion");
+  await page.goto("/#/memory/0");
   await select(page);
   await expect(page.getByLabel("当前关系", { exact: true })).toContainText(
     "合成甲私聊称呼",
@@ -102,20 +107,14 @@ test("private relation, reason history, draft cancel and rapid role/person switc
   const secondPerson = await personId(page, "10002");
   expect(firstPerson).not.toBe(secondPerson);
   await control(page, "delay", { seconds: 0.35 });
-  await page
-    .getByRole("combobox", { name: "关系人物", exact: true })
-    .selectOption(secondPerson);
+  await choosePerson(page, "10002");
   await expect(page.getByLabel("当前关系", { exact: true })).not.toBeVisible();
   await expect(page.getByLabel("好感原因历史")).not.toBeVisible();
   await page
-    .getByRole("combobox", { name: "关系角色", exact: true })
+    .getByRole("combobox", { name: "查看角色", exact: true })
     .selectOption("actor:b");
-  await page
-    .getByRole("combobox", { name: "关系人物", exact: true })
-    .selectOption(firstPerson);
-  await page
-    .getByRole("combobox", { name: "关系人物", exact: true })
-    .selectOption(secondPerson);
+  await choosePerson(page, "10001");
+  await choosePerson(page, "10002");
   await expect(page.getByLabel("称呼", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("好感原因历史")).not.toContainText(
     "仅甲与一号的合成原因",
@@ -140,13 +139,16 @@ test("concurrent save conflict requires refresh and never claims success", async
   context,
 }, info) => {
   const other = await context.newPage();
-  await other.goto("/#/companion");
-  await other.getByRole("button", { name: "关系管理", exact: true }).click();
+  await other.goto("/#/memory/0");
   await select(other);
   await saveLabel(page, "合成较新关系");
   await other.getByLabel("称呼", { exact: true }).fill("合成陈旧修改");
   await other.getByRole("button", { name: "保存关系", exact: true }).click();
-  await expect(other.getByRole("alert")).toContainText("已被其他操作更新");
+  await expect(
+    other
+      .getByRole("region", { name: "角色人物关系管理", exact: true })
+      .getByRole("alert"),
+  ).toContainText("已被其他操作更新");
   await expect(
     other.getByRole("button", { name: "保存关系", exact: true }),
   ).toBeDisabled();
@@ -211,7 +213,11 @@ test("unknown write is not replayed; explicit readback permits a reviewed retry"
   await control(page, "error");
   await page.getByLabel("称呼", { exact: true }).fill("合成失败重试");
   await page.getByRole("button", { name: "保存关系", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("提交结果尚未确认");
+  await expect(
+    page
+      .getByRole("region", { name: "角色人物关系管理", exact: true })
+      .getByRole("alert"),
+  ).toContainText("提交结果尚未确认");
   await expect(
     page.getByRole("button", { name: "保存关系", exact: true }),
   ).toBeDisabled();

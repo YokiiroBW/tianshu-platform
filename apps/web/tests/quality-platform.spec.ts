@@ -65,6 +65,13 @@ test("blocked browser storage keeps memory selection and two server logouts usab
           reason: null,
         })),
       });
+    if (route.request().url().endsWith("/records"))
+      return reply(route, {
+        items: [],
+        next_cursor: null,
+        verified_at: "2026-10-03T00:00:00Z",
+        scope_version: 1,
+      });
     return reply(route, {
       memory_group_count:
         route.request().postDataJSON().role_id === "actor:a" ? 1 : 2,
@@ -84,10 +91,10 @@ test("blocked browser storage keeps memory selection and two server logouts usab
         page.getByRole("button", { name: "退出登录" }),
       ).toBeVisible();
     }
-    await page.goto("/#/memory/0");
+    await page.goto("/#/memory/3");
     await expect(page.getByLabel("查看哪位角色的记忆")).toHaveValue("actor:a");
     await page.getByLabel("查看哪位角色的记忆").selectOption("actor:b");
-    await expect(page.locator(".memory-counts dd")).toHaveText("2");
+    await expect(page.getByLabel("查看哪位角色的记忆")).toHaveValue("actor:b");
     await page.getByRole("button", { name: "退出登录" }).click();
     await expect(page.getByLabel("管理员账号")).toBeVisible();
     await expect.poll(() => logouts).toBe(turn);
