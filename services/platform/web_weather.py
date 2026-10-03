@@ -25,14 +25,17 @@ def host_url(value):
         raise Fault("invalid_weather_host", 400) from None
     require(
         parsed.scheme == "https"
-        and re.fullmatch(r"[a-z0-9][a-z0-9-]*\.qweatherapi\.com", parsed.netloc)
+        and re.fullmatch(
+            r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+qweatherapi\.com",
+            parsed.netloc.lower(),
+        )
         and not parsed.path
         and not parsed.query
         and not parsed.fragment,
         "invalid_weather_host",
         400,
     )
-    return value
+    return "https://" + parsed.netloc.lower()
 
 
 def location_view(row):

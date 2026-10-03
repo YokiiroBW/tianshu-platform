@@ -216,7 +216,7 @@ test("completed daily plans refresh in the background without unmounting weather
   const settings = page.getByRole("dialog", { name: "位置与天气" });
   await settings
     .getByLabel("和风天气 API Host")
-    .fill("fixture.qweatherapi.com");
+    .fill("fixture.re.qweatherapi.com");
   await settings
     .getByLabel("API Key", { exact: true })
     .fill("unsaved-key-during-background-refresh");
@@ -225,7 +225,7 @@ test("completed daily plans refresh in the background without unmounting weather
   await expect.poll(todayReads).toBeGreaterThan(before);
   await expect(settings).toBeVisible();
   await expect(settings.getByLabel("和风天气 API Host")).toHaveValue(
-    "fixture.qweatherapi.com",
+    "fixture.re.qweatherapi.com",
   );
   await expect(settings.getByLabel("API Key", { exact: true })).toHaveValue(
     "unsaved-key-during-background-refresh",
@@ -256,7 +256,7 @@ test("QWeather setup keeps credentials private, respects location time and marks
     can_manage: true,
     configured: revision > 0,
     credential_configured: revision > 0,
-    host: revision > 0 ? "fixture.qweatherapi.com" : null,
+    host: revision > 0 ? "fixture.re.qweatherapi.com" : null,
     location: selected && actor === "actor:chengxi" ? location : null,
     server_time: at,
     code:
@@ -308,7 +308,7 @@ test("QWeather setup keeps credentials private, respects location time and marks
   const settings = page.getByRole("dialog", { name: "位置与天气" });
   await settings
     .getByLabel("和风天气 API Host")
-    .fill("fixture.qweatherapi.com");
+    .fill("fixture.re.qweatherapi.com");
   await settings
     .getByLabel("API Key", { exact: true })
     .fill("synthetic-key-only-for-ui-test");
@@ -320,7 +320,7 @@ test("QWeather setup keeps credentials private, respects location time and marks
   expect(configured).toHaveLength(1);
   expect(configured[0].body).toMatchObject({
     actor_id: "actor:chengxi",
-    host: "fixture.qweatherapi.com",
+    host: "fixture.re.qweatherapi.com",
     expected_revision: 0,
     client_id: expect.any(String),
     credential: { action: "replace", value: "synthetic-key-only-for-ui-test" },

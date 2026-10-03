@@ -69,7 +69,7 @@ class WeatherTests(unittest.IsolatedAsyncioTestCase):
         return await self.call(
             "configure",
             **{
-                "host": "example.qweatherapi.com",
+                "host": "example.re.qweatherapi.com",
                 "credential": {"action": "replace", "value": KEY},
                 "expected_revision": self.catalog.snapshot()[0],
                 "client_id": str(uuid.uuid4()),
@@ -213,7 +213,19 @@ class WeatherTests(unittest.IsolatedAsyncioTestCase):
                 await self.weather.lookup(row, "北京")
 
     def test_only_official_https_hosts_and_valid_coordinates(self):
+        for host in ["example.qweatherapi.com", "example.re.qweatherapi.com"]:
+            with self.subTest(valid_host=host):
+                self.assertEqual(host_url(host), "https://" + host)
+                self.assertEqual(host_url(" HTTPS://" + host.upper() + "/ "), "https://" + host)
         for host in [
+            "qweatherapi.com",
+            "example..re.qweatherapi.com",
+            "-example.re.qweatherapi.com",
+            "example-.re.qweatherapi.com",
+            "x" * 64 + ".re.qweatherapi.com",
+            "example.re.qweatherapi.com.evil.test",
+            "example.re.qweatherapi.com?key=secret",
+            "example.re.qweatherapi.com#fragment",
             "http://example.qweatherapi.com",
             "example.qweatherapi.com.evil.test",
             "https://evil@example.qweatherapi.com",

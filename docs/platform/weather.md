@@ -2,7 +2,7 @@
 
 生活页的天气配置使用平台现有 `web_external` 加密目录。API Host、API Key 和各角色的位置写入 `external.sqlite` 的 `weather` 记录；凭据复用 AES-GCM 存储，网页只得到 `credential_configured`，不会回传 Key。备份仍是原目录中的数据库和密钥文件，没有新增 sidecar 或生产数据库迁移。旧版本平台不识别 `weather` 记录，配置后回滚必须同时恢复部署前的 external 目录备份。
 
-网页的天气设置中填写和风控制台的专属 API Host 与 API Key，再搜索和选择城市。无需把密钥发到聊天中。Host 仅允许 `https://<专属名称>.qweatherapi.com`，API Key 使用 `X-QW-Api-Key` 标头；不跟随重定向，不从环境代理转发凭据。API Key 模式已实现，JWT 签发/自动续期不在本轮范围。
+网页的天气设置中填写和风控制台的专属 API Host 与 API Key，再搜索和选择城市。无需把密钥发到聊天中。Host 支持和风分配的多层专属域名（例如 `https://abcxyz.re.qweatherapi.com`），仍仅允许 HTTPS 与 `qweatherapi.com` 下有效的 DNS 子域名，不允许端口、用户信息、接口路径或查询参数，API Key 使用 `X-QW-Api-Key` 标头；不跟随重定向，不从环境代理转发凭据。API Key 模式已实现，JWT 签发/自动续期不在本轮范围。
 
 所有天气接口复用网页登录、同源、CSRF 和生活服务的逐角色 `life.read` 核验。配置与位置变更额外复用已有 `external.manage` 管理员权限，没有新解锁步骤。外部目录尚未安装时返回 `weather_store_unavailable`，不会在请求中另建明文存储。
 

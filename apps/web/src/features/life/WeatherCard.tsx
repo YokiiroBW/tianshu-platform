@@ -56,6 +56,8 @@ export type WeatherClock = {
   receivedAt: number;
 };
 const problems: Record<string, string> = {
+  invalid_weather_host:
+    "请填写和风控制台的 API Host，例如 abcxyz.re.qweatherapi.com，不要附带接口路径或参数。",
   weather_store_unavailable: "服务端尚未启用天气连接存储。",
   weather_unauthorized: "和风天气凭据未通过验证，请检查 API Key 和 API Host。",
   weather_unavailable: "和风天气暂时无法连接，请稍后刷新。",
@@ -421,7 +423,7 @@ export function WeatherCard({
               value={host}
               required
               maxLength={255}
-              placeholder="例如 abcxyz.qweatherapi.com"
+              placeholder="例如 abcxyz.re.qweatherapi.com"
               autoComplete="off"
               onChange={(event) => setHost(event.target.value)}
             />
