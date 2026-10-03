@@ -244,3 +244,20 @@
     flex: 1;
   }
 }
+
+.room-illustrated .room-stage {
+  aspect-ratio: 1.5;
+  min-height: 0;
+}
+.room-illustration-options {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+.room-illustration-options label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 44px;
+}
