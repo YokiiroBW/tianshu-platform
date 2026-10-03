@@ -66,15 +66,15 @@ async function lifeFixture(page: Page, configureWeather?: () => Promise<void>) {
             actor_id: "actor:chengxi",
             label: "橙汐",
             actor_version: 1,
-            world_id: "world",
-            room_id: "room",
+            world_id: `world:life:${"a".repeat(64)}`,
+            room_id: `room:life:${"a".repeat(64)}`,
           },
           {
             actor_id: "actor:xuese",
             label: "雪色",
             actor_version: 1,
-            world_id: "world",
-            room_id: "room",
+            world_id: `world:life:${"a".repeat(64)}`,
+            room_id: `room:life:${"a".repeat(64)}`,
           },
         ],
         next_after_actor_id: null,
@@ -83,8 +83,8 @@ async function lifeFixture(page: Page, configureWeather?: () => Promise<void>) {
       result = {
         ...common,
         actor_version: 1,
-        world_id: "world",
-        room_id: "room",
+        world_id: `world:life:${"a".repeat(64)}`,
+        room_id: `room:life:${"a".repeat(64)}`,
         timezone: "Asia/Shanghai",
         activity: "晚间放松",
         mood: "放松 · 微微愉悦",
@@ -187,6 +187,9 @@ test("life overview and timeline remain readable on desktop and touch screens", 
   const { errors } = await lifeFixture(page);
   await expect(page.getByText("放松 · 微微愉悦").first()).toBeVisible();
   await expect(page.getByText("天气未连接", { exact: true })).toBeVisible();
+  await expect(page.getByText("角色生活空间", { exact: true })).toHaveCount(2);
+  await expect(page.locator(".life-place")).not.toContainText("world:life:");
+  await expect(page.locator("body")).not.toContainText("room:life:");
   const future = page
     .locator(".life-plan > li")
     .filter({ hasText: "夜间散步" });

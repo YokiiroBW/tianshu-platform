@@ -270,9 +270,8 @@ export function DailyLife({
     )[snapshot?.mood ?? ""] ??
     snapshot?.mood ??
     "暂无心情记录";
-  const location = snapshot?.room_id
-    ? `${snapshot.world_id} · ${snapshot.room_id}`
-    : "暂无位置记录";
+  // The projection exposes opaque references, not human-readable place names.
+  const location = snapshot?.room_id ? "角色生活空间" : "暂无位置记录";
   const currentIndex =
     today?.plan.entries.findIndex(
       (phase) => phase.phase_id === current?.phase_id,
@@ -463,7 +462,7 @@ export function DailyLife({
                 <div className="life-now-footer">
                   <span>
                     <MapPin aria-hidden="true" size={16} />
-                    {snapshot?.room_id || "位置未记录"}
+                    {location}
                   </span>
                   <span>
                     <Smile aria-hidden="true" size={16} />
