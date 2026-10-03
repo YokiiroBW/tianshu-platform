@@ -35,7 +35,7 @@ test("route boundaries reject unknown and malformed addresses", () => {
     expect(resolveRoute(hash)).toBeNull();
 });
 
-test("unconfigured shell, lazy room, only session discovery and no business media", async ({
+test("anonymous entry gates every workspace without loading business media", async ({
   page,
 }) => {
   await page.route("**/api/web/session", (route) =>
@@ -45,27 +45,21 @@ test("unconfigured shell, lazy room, only session discovery and no business medi
   );
   const requests: string[] = [];
   page.on("request", (request) => requests.push(request.url()));
-  await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "开始使用天枢" }),
-  ).toBeVisible();
+  for (const path of ["/", "/#/room", "/#/workbench", "/#/companion/1"]) {
+    await page.goto(path);
+    await expect(page.getByRole("heading", { name: "登录天枢" })).toBeVisible();
+    await expect(
+      page.locator(".app-shell, .sidebar, canvas, video, audio"),
+    ).toHaveCount(0);
+    await expect(page.getByRole("navigation")).toHaveCount(0);
+    await expect(page.locator('a[href="#/room"]')).toHaveCount(0);
+  }
   expect(requests.some((url) => /RoomPage-/.test(url))).toBe(false);
-  await expect(page.locator("canvas, video, audio")).toHaveCount(0);
-  await page.goto("/#/room");
-  await expect(
-    page.getByRole("heading", { name: "小屋环境预览" }),
-  ).toBeVisible();
-  expect(requests.some((url) => /RoomPage-/.test(url))).toBe(true);
   expect(
     requests.filter(
       (url) => /\/api\/|^https:/.test(url) && !url.endsWith("/api/web/session"),
     ),
   ).toEqual([]);
-  await page.getByRole("link", { name: "前往陪伴" }).click();
-  await expect(page.getByRole("heading", { name: "登录天枢" })).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: /实时语音|共同观影/ }),
-  ).toHaveCount(0);
 });
 
 test("connection summary distinguishes configured, failed and absent capabilities", async ({
@@ -283,4 +277,15 @@ test("representative light/dark layout, 200% text and accessibility", async ({
       document.documentElement.style.fontSize = "";
     });
   }
+});
+
+test("signed-in login entry returns to a valid destination and rejects external targets", async ({
+  page,
+}) => {
+  await page.goto("/#/login?next=" + encodeURIComponent("#/home/1"));
+  await expect(page).toHaveURL(/#\/home\/1$/);
+  await expect(page.locator(".app-shell")).toBeVisible();
+  await page.goto("/#/login?next=" + encodeURIComponent("https://example.com"));
+  await expect(page).toHaveURL(/#\/workbench$/);
+  await expect(page.locator(".auth-screen")).toHaveCount(0);
 });

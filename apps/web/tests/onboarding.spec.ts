@@ -149,7 +149,11 @@ test("deployment account uses one login and returns to deep link across pages", 
   await fillAccount(page);
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await expect(page).toHaveURL(/#\/settings\/1$/);
-  await expect(page.locator(".connection-list li")).toHaveCount(5);
+  await expect(
+    page.getByRole("heading", { name: "连接设置入口" }),
+  ).toBeVisible();
+  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(page.locator(".auth-screen")).toHaveCount(0);
   await page.goto("/#/companion");
   await expect(
     page.getByRole("heading", { name: "留一点时间，慢慢聊" }),

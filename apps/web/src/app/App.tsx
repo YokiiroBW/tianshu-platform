@@ -4,7 +4,6 @@ import { modules, pages, resolveRoute } from "./modules";
 import {
   AuthProvider,
   AccountPage,
-  SessionStatus,
   authRoute,
   loginHref,
   returnTarget,
@@ -66,36 +65,20 @@ function AppShell() {
   const section = route?.section ?? 0;
   const account = authRoute(hash);
   const accountTitle = hash.startsWith("#/setup") ? "首次设置" : "登录";
-  const protectedPage =
-    !!current &&
-    [
-      "companion",
-      "home",
-      "resources",
-      "settings",
-      "memory",
-      "projects",
-    ].includes(current.id);
   const setupNeeded =
     auth.session?.onboarding?.state === "create_admin" ||
     (auth.session?.authenticated &&
       auth.session.onboarding?.state === "claim_admin");
   useEffect(() => {
     if (auth.loading || auth.error || !auth.session) return;
-    if (setupNeeded && current?.id !== "room" && !hash.startsWith("#/setup")) {
-      window.location.hash = `#/setup?next=${encodeURIComponent(account ? returnTarget() : hash || "#/workbench")}`;
-    } else if (protectedPage && !auth.session.authenticated)
+    if (setupNeeded && !hash.startsWith("#/setup")) {
+      window.location.hash = `#/setup?next=${encodeURIComponent(account ? returnTarget(hash) : hash || "#/workbench")}`;
+    } else if (!auth.session.authenticated && !account) {
       window.location.hash = loginHref(hash);
-  }, [
-    auth.loading,
-    auth.error,
-    auth.session,
-    setupNeeded,
-    protectedPage,
-    current,
-    hash,
-    account,
-  ]);
+    } else if (auth.session.authenticated && !setupNeeded && account) {
+      window.location.hash = returnTarget(hash);
+    }
+  }, [auth.loading, auth.error, auth.session, setupNeeded, hash, account]);
 
   useEffect(() => {
     const change = () => {
@@ -166,6 +149,32 @@ function AppShell() {
     return () => media.removeEventListener("change", apply);
   }, [preferences]);
 
+  if (
+    auth.loading ||
+    auth.error ||
+    !auth.session?.authenticated ||
+    setupNeeded ||
+    account
+  ) {
+    return (
+      <main className="auth-screen" id="main" ref={main} tabIndex={-1}>
+        <div className="auth-entry">
+          <header className="auth-brand">
+            <span className="brand-symbol">
+              <Sparkles aria-hidden="true" />
+            </span>
+            <h1>天枢</h1>
+            <p>属于你的陪伴与生活空间</p>
+          </header>
+          <PageBoundary>
+            <AccountPage />
+          </PageBoundary>
+          <p className="auth-footer">天枢 · 个人空间</p>
+        </div>
+      </main>
+    );
+  }
+
   const navigation = (
     <nav aria-label="工作区导航">
       {["个人空间", "工作空间", "管理"].map((group) => (
@@ -190,17 +199,7 @@ function AppShell() {
     </nav>
   );
   let page;
-  if (account) page = <AccountPage />;
-  else if (
-    (protectedPage || setupNeeded) &&
-    (auth.loading ||
-      auth.error ||
-      !auth.session?.authenticated ||
-      setupNeeded) &&
-    current?.id !== "room"
-  )
-    page = <SessionStatus />;
-  else if (!current)
+  if (!current)
     page = (
       <StatePanel
         kind="empty"

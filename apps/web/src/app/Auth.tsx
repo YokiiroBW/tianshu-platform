@@ -40,10 +40,9 @@ function target(hash: string) {
 export function loginHref(hash = window.location.hash) {
   return `#/login?next=${encodeURIComponent(target(hash))}`;
 }
-export function returnTarget() {
+export function returnTarget(hash = window.location.hash) {
   return target(
-    new URLSearchParams(window.location.hash.split("?")[1]).get("next") ??
-      "#/workbench",
+    new URLSearchParams(hash.split("?")[1]).get("next") ?? "#/workbench",
   );
 }
 
@@ -222,12 +221,6 @@ export function SessionStatus() {
           ? "请稍候，正在安全读取本次会话。"
           : error || "请重新连接后继续。"}
       </p>
-      {!loading && (
-        <p>
-          连接恢复前无法确认是否需要创建账号。你仍可查看
-          <a href="#/room">小屋本地预览</a>。
-        </p>
-      )}
     </StatePanel>
   );
 }
@@ -302,12 +295,7 @@ export function AccountPage() {
         controller.signal,
       );
       form.reset();
-      const next = await refresh();
-      if (!controller.signal.aborted && next?.authenticated)
-        window.location.hash =
-          next.onboarding?.state === "claim_admin"
-            ? `#/setup?next=${encodeURIComponent(returnTarget())}`
-            : returnTarget();
+      await refresh();
     } catch (cause) {
       if (!controller.signal.aborted)
         setFailure(
@@ -446,9 +434,6 @@ export function AccountPage() {
                 : "登录"}
         </button>
       </form>
-      <a className="text-link" href="#/room">
-        先看看小屋本地预览
-      </a>
     </section>
   );
 }
@@ -462,7 +447,7 @@ export function GettingStarted() {
         <h2>开始使用天枢</h2>
         <p>先登录账号，再配置模型，最后选择角色开始对话。</p>
         <LoginLink />
-        <p className="muted">小屋本地预览无需登录。</p>
+        <p className="muted">登录后即可进入个人空间。</p>
       </section>
     );
   const modelMissing = session.dialogue?.model === "not_configured";
