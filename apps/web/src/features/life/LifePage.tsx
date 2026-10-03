@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Sparkles, BookOpen } from "lucide-react";
 import { useAuth } from "../../app/Auth";
 import { integrationPost, readFailure } from "../../app/integrationApi";
 import { StatePanel } from "../../components/StatePanel";
-import { StatusRail } from "../../components/StatusRail";
 import { DailyLife } from "./DailyLife";
 import "./life.css";
 
@@ -92,7 +91,6 @@ export default function LifePage() {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
   const [state, setState] = useState<Connection | null>(null);
-  const [observedHere, setObservedHere] = useState(false);
   const [actors, setActors] = useState<Actor[]>([]);
   const [actorCursor, setActorCursor] = useState<string | null>(null);
   const [actor, setActor] = useState("");
@@ -121,7 +119,7 @@ export default function LifePage() {
     const controller = start();
     generation.current++;
     setState(null);
-    setObservedHere(false);
+
     setStateError("");
     setActors([]);
     setActorCursor(null);
@@ -174,7 +172,7 @@ export default function LifePage() {
         controller.signal,
       );
       if (controller.signal.aborted || generation.current !== mark) return;
-      setObservedHere(true);
+
       setActors((before) =>
         after_actor_id ? [...before, ...answer.items] : answer.items,
       );
@@ -222,7 +220,7 @@ export default function LifePage() {
         ),
       ]);
       if (controller.signal.aborted || generation.current !== mark) return;
-      setObservedHere(true);
+
       setSnapshot(life);
       setDiaries(list.items);
       setDiaryCursor(list.next_after);
@@ -256,7 +254,7 @@ export default function LifePage() {
     setRevision(null);
     setError("");
     setBusy(false);
-    setObservedHere(false);
+
     setActor(next);
   }
 
@@ -272,7 +270,7 @@ export default function LifePage() {
         controller.signal,
       );
       if (controller.signal.aborted || generation.current !== mark) return;
-      setObservedHere(true);
+
       setDiaries((before) => [...before, ...answer.items]);
       setDiaryCursor(answer.next_after);
     } catch (cause) {
@@ -302,7 +300,6 @@ export default function LifePage() {
         controller.signal,
       );
       if (!controller.signal.aborted && generation.current === mark) {
-        setObservedHere(true);
         setRevision(answer);
       }
     } catch (cause) {
@@ -359,60 +356,40 @@ export default function LifePage() {
 
   return (
     <div className="life-page">
-      <section className="panel">
-        <div className="section-heading">
-          <h2>角色生活与已发布日记</h2>
-          <button
-            className="button"
-            onClick={() => void listActors()}
-            disabled={busy}
-          >
-            <RefreshCw aria-hidden="true" />
-            重新读取角色
-          </button>
+      <header className="life-toolbar">
+        <div className="life-identity">
+          <span className="life-avatar">
+            <Sparkles aria-hidden="true" />
+          </span>
+          {actors.length > 0 && (
+            <label className="life-actor">
+              <span className="sr-only">选择角色</span>
+              <select
+                value={actor}
+                onChange={(event) => changeActor(event.target.value)}
+              >
+                {actors.map((row) => (
+                  <option key={row.actor_id} value={row.actor_id}>
+                    {row.label || row.actor_id}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
-        <StatusRail
-          tone={
-            observedHere || state.peer.code === "ok"
-              ? "blue"
-              : state.peer.code === "unverified"
-                ? "yellow"
-                : "red"
-          }
-          label={
-            observedHere
-              ? "本页本次读取成功"
-              : state.peer.code === "unverified"
-                ? "已配置，尚未验证"
-                : state.peer.code === "ok"
-                  ? "最近有真实读取"
-                  : "最近读取失败"
-          }
+        <div className="life-page-title">
+          <h2>今天的生活</h2>
+          <p className="muted">在平凡的日子里，发现值得珍藏的瞬间。</p>
+        </div>
+        <button
+          className="button life-icon-button"
+          aria-label="重新读取角色"
+          title="重新读取角色"
+          disabled={busy}
+          onClick={() => void listActors()}
         >
-          <p>
-            这里展示角色最后一次持久化的虚构生活状态，不会触发生活时钟。
-            {observedHere
-              ? "本页已从角色生活服务实际读取。"
-              : state.peer.code === "unverified"
-                ? "尚无真实读取记录。"
-                : `最近一次读取状态：${state.peer.code}${state.peer.verified_at ? `，成功于 ${state.peer.verified_at}` : ""}。`}
-          </p>
-        </StatusRail>
-        {actors.length > 0 && (
-          <label className="life-actor">
-            选择角色{" "}
-            <select
-              value={actor}
-              onChange={(event) => changeActor(event.target.value)}
-            >
-              {actors.map((row) => (
-                <option key={row.actor_id} value={row.actor_id}>
-                  {row.label || row.actor_id}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+          <RefreshCw aria-hidden="true" />
+        </button>
         {actorCursor && (
           <button
             className="button"
@@ -422,7 +399,7 @@ export default function LifePage() {
             继续读取角色
           </button>
         )}
-      </section>
+      </header>
       {error && (
         <StatePanel
           kind="error"
@@ -458,126 +435,73 @@ export default function LifePage() {
             actor={actor}
             csrf={csrf}
             canRetry={state.can_retry === true}
+            snapshot={snapshot?.actor_id === actor ? snapshot : null}
           />
-          <section className="panel">
-            <div className="section-heading">
-              <h2>最近一次生活状态</h2>
-              <button
-                className="button"
-                disabled={busy}
-                onClick={() => void readActor(actor)}
-              >
-                <RefreshCw aria-hidden="true" />
-                重新读取
-              </button>
+          <details id="life-diaries" className="life-diary-section">
+            <summary>
+              <BookOpen aria-hidden="true" /> 生活日记{" "}
+              <span className="muted">
+                {diaries.length
+                  ? `${diaries.length}${diaryCursor ? "+" : ""} 篇已发布`
+                  : "记录生活的片刻"}
+              </span>
+            </summary>
+            <div className="life-columns">
+              <section className="panel">
+                <h2>已发布日记</h2>
+
+                {!busy && !error && snapshot && diaries.length === 0 ? (
+                  <StatePanel kind="empty" title="还没有已发布日记">
+                    <p>这位角色当前没有可读取的已发布日记。</p>
+                  </StatePanel>
+                ) : (
+                  <ul className="life-list">
+                    {diaries.map((row) => (
+                      <li key={row.diary_id}>
+                        <button
+                          type="button"
+                          data-selected={
+                            selected?.diary_id === row.diary_id || undefined
+                          }
+                          onClick={() => void readRevision(row)}
+                        >
+                          <strong>{row.day}</strong>
+                          <small>已发布 · 点击阅读</small>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {diaryCursor && (
+                  <button
+                    className="button"
+                    disabled={busy}
+                    onClick={() => void moreDiaries()}
+                  >
+                    继续读取日记
+                  </button>
+                )}
+              </section>
+              <section className="panel">
+                <h2>日记正文</h2>
+                {!selected ? (
+                  <p className="muted">选择一篇已发布日记。</p>
+                ) : !revision && !error ? (
+                  <StatePanel kind="loading" title="正在核对发布版本">
+                    <p>请稍候。</p>
+                  </StatePanel>
+                ) : (
+                  revision && (
+                    <article className="life-revision">
+                      <p className="muted">{selected.day}</p>
+                      <p>{revision.content}</p>
+                      <small>正文记录于 {dateText(revision.created_at)}</small>
+                    </article>
+                  )
+                )}
+              </section>
             </div>
-            {!snapshot && !error ? (
-              <StatePanel kind="loading" title="正在读取角色状态">
-                <p>请稍候。</p>
-              </StatePanel>
-            ) : (
-              snapshot && (
-                <>
-                  <p className="muted">
-                    角色{" "}
-                    {actors.find((row) => row.actor_id === snapshot.actor_id)
-                      ?.label || snapshot.actor_id}{" "}
-                    ·{" "}
-                    {snapshot.state_basis === "last_persisted"
-                      ? "最后持久化状态"
-                      : "状态依据未知"}{" "}
-                    · 记录于 {dateText(snapshot.changed_at)}
-                  </p>
-                  <dl className="life-facts">
-                    <div>
-                      <dt>活动</dt>
-                      <dd>{snapshot.activity ?? "尚无持久化记录"}</dd>
-                    </div>
-                    <div>
-                      <dt>心情</dt>
-                      <dd>{snapshot.mood}</dd>
-                    </div>
-                    <div>
-                      <dt>服装引用</dt>
-                      <dd>{snapshot.outfit_ref ?? "尚无持久化记录"}</dd>
-                    </div>
-                    <div>
-                      <dt>场景</dt>
-                      <dd>
-                        {snapshot.world_id} / {snapshot.room_id}
-                      </dd>
-                    </div>
-                  </dl>
-                </>
-              )
-            )}
-          </section>
-          <div className="life-columns">
-            <section className="panel">
-              <h2>已发布日记</h2>
-              <p className="muted">
-                列表只显示已发布版本的指针，打开后再次核对版本才读取正文。
-              </p>
-              {!busy && !error && snapshot && diaries.length === 0 ? (
-                <StatePanel kind="empty" title="还没有已发布日记">
-                  <p>这位角色当前没有可读取的已发布日记。</p>
-                </StatePanel>
-              ) : (
-                <ul className="life-list">
-                  {diaries.map((row) => (
-                    <li key={row.diary_id}>
-                      <button
-                        type="button"
-                        data-selected={
-                          selected?.diary_id === row.diary_id || undefined
-                        }
-                        onClick={() => void readRevision(row)}
-                      >
-                        <strong>{row.day}</strong>
-                        <small>
-                          版本 {row.version} · 配方 {row.captured.recipe_id} v
-                          {row.captured.recipe_version}
-                        </small>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {diaryCursor && (
-                <button
-                  className="button"
-                  disabled={busy}
-                  onClick={() => void moreDiaries()}
-                >
-                  继续读取日记
-                </button>
-              )}
-            </section>
-            <section className="panel">
-              <h2>日记正文</h2>
-              {!selected ? (
-                <p className="muted">选择一篇已发布日记。</p>
-              ) : !revision && !error ? (
-                <StatePanel kind="loading" title="正在核对发布版本">
-                  <p>请稍候。</p>
-                </StatePanel>
-              ) : (
-                revision && (
-                  <article className="life-revision">
-                    <p className="muted">
-                      {selected.day} · 发布版本 {revision.revision_id} ·
-                      写作配置 v{revision.captured.config_version}
-                    </p>
-                    <p>{revision.content}</p>
-                    <small>
-                      正文记录于 {dateText(revision.created_at)}
-                      ；仅显示已发布指针指向的版本。
-                    </small>
-                  </article>
-                )
-              )}
-            </section>
-          </div>
+          </details>
         </>
       )}
     </div>

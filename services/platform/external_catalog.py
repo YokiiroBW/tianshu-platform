@@ -118,7 +118,7 @@ class ExternalCatalog:
             with self._read() as db:
                 self._revision(db)
                 for kind, document, credential, ca, test, mac in db.execute("SELECT * FROM connections"):
-                    require(kind in {"assets", "home"}, "external_store_unavailable", 503)
+                    require(kind in {"assets", "home", "weather"}, "external_store_unavailable", 503)
                     require(
                         hmac.compare_digest(mac, self._mac(kind, document, credential, ca, test)),
                         "external_store_unavailable", 503,
@@ -219,7 +219,7 @@ class ExternalCatalog:
             return revision, rows
 
     def save(self, kind, value, credential, ca, expected_revision, client_id):
-        require(kind in {"assets", "home"}, "invalid_input", 400)
+        require(kind in {"assets", "home", "weather"}, "invalid_input", 400)
         require(type(expected_revision) is int and expected_revision >= 0, "invalid_input", 400)
         try:
             require(str(uuid.UUID(client_id)) == client_id, "invalid_input", 400)

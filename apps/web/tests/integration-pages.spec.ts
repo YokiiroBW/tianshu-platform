@@ -179,6 +179,21 @@ test("life reads last persisted state and only opens a published diary", async (
   page,
 }) => {
   await session(page);
+  await page.route("**/api/web/weather/current", (route) =>
+    answer(route, {
+      revision: 0,
+      can_manage: false,
+      configured: false,
+      credential_configured: false,
+      host: null,
+      location: null,
+      server_time: 1790471000,
+      weather: null,
+      fetched_at: null,
+      stale: false,
+      code: "weather_not_configured",
+    }),
+  );
   await page.route("**/api/web/life/*", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/state"))
@@ -298,17 +313,14 @@ test("life reads last persisted state and only opens a published diary", async (
     throw new Error(`unexpected ${path}`);
   });
   await page.goto("/#/companion/1");
-  await expect(page.getByText("尚无持久化记录").first()).toBeVisible();
-  await expect(page.getByText("本页本次读取成功")).toBeVisible();
-  await expect(page.getByText("尚无真实读取记录。")).toHaveCount(0);
+  await expect(page.getByLabel("选择角色")).toHaveValue("actor-a");
+  await page.locator("#life-diaries > summary").click();
   await expect(
     page.getByRole("heading", { name: "已发布日记", exact: true }),
   ).toBeVisible();
   await page.locator(".life-list button").click();
   await expect(page.getByText("这是一篇已发布的日记。")).toBeVisible();
-  await expect(
-    page.getByText("仅显示已发布指针指向的版本。", { exact: false }),
-  ).toBeVisible();
+  await expect(page.locator(".life-revision")).toContainText("2026-09-27");
 });
 
 test("memory separates overview, shared subjects and own records", async ({

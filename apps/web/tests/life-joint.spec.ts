@@ -15,7 +15,7 @@ test("real Platform and Companion persist and display today's plan and paged exp
   await page.getByRole("button", { name: "登录", exact: true }).click();
   const daily = page.getByRole("region", { name: "角色日常", exact: true });
   await expect(page.getByLabel("选择角色")).toHaveValue("actor:a");
-  await expect(daily).toContainText("生活正在运行");
+  await expect(daily).toContainText("生活进行中");
   await expect(daily.locator(".life-plan li")).toHaveCount(2);
   await expect(daily.locator(".life-plan li[data-current]")).toHaveCount(1);
   await expect(daily).toContainText("模型尚未可用");
@@ -43,7 +43,5 @@ test("real Platform and Companion persist and display today's plan and paged exp
   await page.reload();
   await expect(daily.locator(".life-plan li")).toHaveCount(2);
   await expect(daily.locator(".life-timeline li")).toHaveCount(20);
-  await expect(
-    page.getByText("本页本次读取成功", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByLabel("选择角色")).toHaveValue("actor:a");
 });

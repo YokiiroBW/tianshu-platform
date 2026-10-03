@@ -114,6 +114,21 @@ test("changing actors clears an in-flight published revision from the old actor"
   let markStarted!: () => void;
   const held = new Promise<void>((resolve) => (release = resolve));
   const started = new Promise<void>((resolve) => (markStarted = resolve));
+  await page.route("**/api/web/weather/current", (route) =>
+    answer(route, {
+      revision: 0,
+      can_manage: true,
+      configured: false,
+      credential_configured: false,
+      host: null,
+      location: null,
+      server_time: 1790471000,
+      weather: null,
+      fetched_at: null,
+      stale: false,
+      code: "weather_not_configured",
+    }),
+  );
   await page.route("**/api/web/life/*", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const body = route.request().postDataJSON() as Record<string, unknown>;
@@ -150,6 +165,36 @@ test("changing actors clears an in-flight published revision from the old actor"
         changed_at: 1790470000,
         observed_at: 1790471000,
         state_basis: "last_persisted",
+      });
+    if (path.endsWith("/today"))
+      return answer(route, {
+        schema_version: 1,
+        fictional: true,
+        actor_id: body.actor_id,
+        day: "2026-09-27",
+        timezone: "Asia/Shanghai",
+        enabled: true,
+        observed_at: 1790471000,
+        state_basis: "last_persisted",
+        plan: {
+          plan_id: `plan:${body.actor_id}`,
+          version: 1,
+          state: "active",
+          generation_state: "completed",
+          generated_by: "gateway",
+          current_phase_id: null,
+          entries: [],
+        },
+      });
+    if (path.endsWith("/timeline"))
+      return answer(route, {
+        schema_version: 1,
+        fictional: true,
+        actor_id: body.actor_id,
+        day: body.day,
+        state_basis: "last_persisted",
+        items: [],
+        next_after: null,
       });
     if (path.endsWith("/diaries"))
       return answer(route, {
@@ -200,10 +245,11 @@ test("changing actors clears an in-flight published revision from the old actor"
   });
   await page.goto("/#/companion/1");
   await expect(page.locator(".life-list button")).toHaveCount(1);
+  await page.locator("#life-diaries > summary").click();
   await page.locator(".life-list button").click();
   await started;
   await page.getByLabel("选择角色").selectOption("actor-b");
-  await expect(page.getByText("愉快")).toBeVisible();
+  await expect(page.getByText("愉快", { exact: true }).first()).toBeVisible();
   release();
   await expect(page.getByText("仅属于角色 A 的日记正文")).toHaveCount(0);
   await expect(page.locator(".life-list button")).toHaveCount(0);

@@ -234,6 +234,21 @@ test("life plan and history page through the same role and discard a late former
   page,
 }, testInfo) => {
   await loggedSession(page);
+  await page.route("**/api/web/weather/current", (route) =>
+    reply(route, {
+      revision: 0,
+      can_manage: false,
+      configured: false,
+      credential_configured: false,
+      host: null,
+      location: null,
+      server_time: at,
+      weather: null,
+      fetched_at: null,
+      stale: false,
+      code: "weather_not_configured",
+    }),
+  );
   let delayA = false;
   let releaseA: (() => void) | undefined;
   let enteredA = false;
@@ -359,10 +374,18 @@ test("life plan and history page through the same role and discard a late former
     throw new Error(`unexpected life request ${name}`);
   });
   await page.goto("/#/companion/1");
-  await expect(page.getByText("actor:a 上午经历")).toBeVisible();
+  await expect(
+    page
+      .locator(".life-timeline .life-summary")
+      .filter({ hasText: "actor:a 上午经历" }),
+  ).toBeVisible();
   await expect(page.locator(".life-plan")).toContainText("尚未发生");
   await page.getByRole("button", { name: "继续读取经历" }).click();
-  await expect(page.getByText("actor:a 清晨经历")).toBeVisible();
+  await expect(
+    page
+      .locator(".life-timeline .life-summary")
+      .filter({ hasText: "actor:a 清晨经历" }),
+  ).toBeVisible();
   expect(timelineRequests.at(-1)?.after).toEqual({
     position: at,
     known_id: "actor:a:2",
@@ -371,10 +394,18 @@ test("life plan and history page through the same role and discard a late former
   await page.getByRole("button", { name: "刷新日常", exact: true }).click();
   await expect.poll(() => enteredA).toBe(true);
   await page.getByLabel("选择角色").selectOption("actor:b");
-  await expect(page.getByText("actor:b 上午经历")).toBeVisible();
+  await expect(
+    page
+      .locator(".life-timeline .life-summary")
+      .filter({ hasText: "actor:b 上午经历" }),
+  ).toBeVisible();
   releaseA?.();
-  await expect(page.getByText("actor:a 上午经历")).toHaveCount(0);
-  await expect(page.locator(".life-current")).toContainText("actor:b 阅读");
+  await expect(
+    page
+      .locator(".life-timeline .life-summary")
+      .filter({ hasText: "actor:a 上午经历" }),
+  ).toHaveCount(0);
+  await expect(page.locator(".life-now")).toContainText("actor:b 阅读");
   await page.screenshot({
     path: testInfo.outputPath("life-daily.png"),
     fullPage: true,

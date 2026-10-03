@@ -8,7 +8,7 @@ import unittest
 import uuid
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import aiohttp
 
@@ -92,6 +92,37 @@ class ExternalTests(unittest.IsolatedAsyncioTestCase):
 
     async def unlock(self):
         await self.call("external/unlock", {"password": PASSWORD})
+
+    async def test_weather_routes_keep_session_csrf_and_external_store_boundaries(self):
+        from test_web_weather import CITY, CURRENT, KEY
+
+        actor = {"actor_id": "actor:one"}
+        with patch.object(self.console.life, "route", AsyncMock(return_value={})):
+            await self.call("weather/state", actor, csrf="wrong-csrf", expected=403)
+            state = await self.call("weather/state", actor)
+            self.assertEqual(state["code"], "weather_not_configured")
+            configured = await self.call("weather/configure", {
+                **actor, "host": "example.qweatherapi.com",
+                "credential": {"action": "replace", "value": KEY},
+                "expected_revision": state["revision"], "client_id": str(uuid.uuid4()),
+            })
+            self.assertNotIn(KEY, str(configured))
+            with patch.object(self.console.weather, "request", AsyncMock(return_value={
+                "code": "200", "location": [CITY],
+            })):
+                await self.call("weather/location", {
+                    **actor, "location_id": CITY["id"],
+                    "expected_revision": configured["revision"], "client_id": str(uuid.uuid4()),
+                })
+            with patch.object(self.console.weather, "request", AsyncMock(return_value=CURRENT)):
+                current = await self.call("weather/current", actor)
+            self.assertEqual(current["weather"]["temp"], "22.3")
+            self.assertEqual(current["location"]["tz"], "Asia/Shanghai")
+            self.assertNotIn(KEY, str(current))
+            # Existing connectors remain readable after reopening a catalog containing weather.
+            ExternalCatalog.verify_existing(self.directory)
+            view = await self.call("external/view", {})
+            self.assertFalse(view["assets"]["configured"])
 
     def save_body(self, kind, revision, value, credential, ca=None):
         return {

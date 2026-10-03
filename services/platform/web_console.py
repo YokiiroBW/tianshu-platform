@@ -33,6 +33,7 @@ from .web_personas import WebPersonas
 from .web_persona_author import WebPersonaAuthor
 from .web_readers import WebReader
 from .web_life_management import WebLifeManagement
+from .web_weather import WebWeather
 from .web_memory import WebMemory
 from .web_connections import view as connections_view
 from .web_external import WebExternal
@@ -193,6 +194,7 @@ class WebConsole:
         self.knowledge = WebReader("knowledge", platform, self)
         self.life = WebReader("life", platform, self)
         self.life_management = WebLifeManagement(platform, self)
+        self.weather = WebWeather(platform, self)
         self.memory = WebMemory(platform, self)
         self.role_runtime = platform.role_runtime
         self.qq_admin = platform.qq_admin
@@ -770,6 +772,10 @@ class WebConsole:
                 401,
             )
             require(self.persona_read_authorised(), "persona_read_required", 403)
+            return web.json_response(result)
+        if request.path.startswith("/api/web/weather/"):
+            result = await self.weather.route(request.path, body, session)
+            require(self.session_valid(session), "session_expired", 401)
             return web.json_response(result)
         if request.path == LIFE_PREFIX + "retry":
             result = await self.life_management.retry(body, session)
