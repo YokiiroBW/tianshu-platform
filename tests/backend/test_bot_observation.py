@@ -167,6 +167,19 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(removed["private_policy"]["actor_id"], "actor:a")
         self.assertEqual(removed["group_policy"], self.row["group_policy"])
 
+    def test_private_access_observe_only_preserves_existing_default_role(self):
+        request = self.private_request(current=policy(names=["40004"], actor="actor:a"), actor=None)
+        with self.assertRaises(Fault) as raised:
+            asyncio.run(self.private_route(dict(request, actor_id="actor:b")))
+        self.assertEqual(raised.exception.code, "reply_role_conflict")
+        self.assertEqual(self.manager.get(self.row["id"]), self.row)
+        result = asyncio.run(self.private_route(request))["connection"]
+        self.assertEqual(
+            result["private_policy"],
+            policy(mode="whitelist", names=["30003"], actor="actor:a"),
+        )
+        self.assertEqual(result["group_policy"], self.row["group_policy"])
+
     def test_private_access_blacklist_preserves_other_blocks_and_default_role(self):
         request = self.private_request(
             current=policy(mode="blacklist", names=["40004", "30003"], actor="actor:a")

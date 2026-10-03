@@ -594,6 +594,11 @@ class BotObservation:
         names = list(private["list"])
         if private["mode"] == "observe_only":
             if body["enabled"]:
+                if private["actor_id"] is not None:
+                    require(
+                        actor is None or actor == private["actor_id"], "reply_role_conflict", 409
+                    )
+                    actor = private["actor_id"]
                 require(actor is not None, "reply_role_required", 400)
                 private.update(mode="whitelist", list=[target], actor_id=actor)
         else:
