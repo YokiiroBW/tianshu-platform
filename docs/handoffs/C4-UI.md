@@ -50,3 +50,7 @@ node node_modules/@playwright/test/cli.js test --config apps/web/playwright.runt
 真实生图后端/模型尚缺实际配置，本 UI 候选不声称已真实生图；生图状态/原图展示的 fixture 与真实 Knowledge 图片上传明确区分。未操作真实 QQ、用户数据、模型或 NAS，未推送/部署。原件下载仍要求当前真实 owner/share 权限，不把角色读取或 QQ 附件发送当成用户网页库授权。账号关联真实双作者 proof/CAS 联合由 C4 后端验证，UI 浏览器状态 fixture 只验证恢复/反馈/重试呈现。
 
 下一步：协调者将本固定候选串行合入以 Platform `e2e4795f71729fdbfb03e48ae3a9247b3f382a6e` 为基线的独占 release checkout，整批候选镜像构建与生产验收仍由协调者负责。没有当前未关闭的 UI 业务失败。
+
+## 图片呈现 follow-up
+
+只对 ContentViewer 的 image kind 隐藏字节起止输入和字节进度，使用原 readContent 的完整 coverage 读取；按钮改为“查看图片”“下载原图”，真实图片、缩放/缺口说明和拒绝读取后的隐藏保留。文本/文章、视频/音频继续原有实际范围，读取权限/版本/保存逻辑不变。同步图片浏览器选择器，补图片整图请求/拒绝/原图下载定向用例；桌面/手机图片与媒体共 4/4，TypeScript/build/diff check 通过。按协调者收口指示不再重建完整夹具补截图，既有真实原件链证据继续适用；最终新 UI 图片由后续 NAS/clone 验收观察。
