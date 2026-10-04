@@ -78,9 +78,8 @@ svg {
   display: grid;
   grid-template-columns: var(--layout-sidebar) minmax(0, 1fr);
   gap: var(--space-5);
-  max-width: var(--layout-max);
+  width: 100%;
   padding: var(--space-5);
-  margin: auto;
   align-items: start;
 }
 .sidebar {
