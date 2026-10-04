@@ -212,19 +212,31 @@ export function ProviderModelsPanel() {
       return result.models;
     },
     test: async (provider, signal) => {
-      const result = await invoke<{
-        provider_id: string;
-        revision: number;
-        outcome: string;
-      }>(
-        "test",
-        {
-          client_id: requestId(),
-          provider_id: provider.providerId,
-          expected_revision: provider.revision,
-        },
-        signal,
-      );
+      let result: { provider_id: string; revision: number; outcome: string };
+      try {
+        result = await invoke<{
+          provider_id: string;
+          revision: number;
+          outcome: string;
+        }>(
+          "test",
+          {
+            client_id: requestId(),
+            provider_id: provider.providerId,
+            expected_revision: provider.revision,
+          },
+          signal,
+        );
+      } catch (cause) {
+        if (!signal.aborted) {
+          try {
+            await reloadProviders(signal);
+          } catch {
+            // Preserve the test failure if the follow-up read also loses its connection.
+          }
+        }
+        throw cause;
+      }
       if (
         result.provider_id !== provider.providerId ||
         result.revision !== provider.revision ||

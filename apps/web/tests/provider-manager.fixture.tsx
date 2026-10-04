@@ -8,6 +8,8 @@ import {
 import "../src/design/tokens.css";
 import "../src/app/app.css";
 import "../src/features/settings/models.css";
+import { mapProviderView } from "../src/features/settings/providerApi";
+import { openCodePreset } from "../src/features/settings/providerPresets";
 
 declare global {
   interface Window {
@@ -17,7 +19,36 @@ declare global {
 window.providerEvents = [];
 
 function Fixture() {
-  const [providers, setProviders] = useState<Provider[]>([]);
+  const [providers, setProviders] = useState<Provider[]>(() =>
+    new URLSearchParams(location.search).has("rejected")
+      ? mapProviderView({
+          providers: [
+            {
+              provider_id: "synthetic-provider",
+              name: "Rejected provider",
+              protocol: "openai-chat-completions",
+              base_url: "https://opencode.ai/zen/go/v1",
+              model_id: "deepseek-v4.1-flash",
+              enabled: true,
+              revision: 3,
+              has_key: true,
+              test: {
+                revision: 3,
+                outcome: "unknown",
+                tested_at: 1800000000,
+                error_code: "upstream_rejected",
+              },
+            },
+          ],
+          default: {
+            provider_id: null,
+            revision: 0,
+            provider_revision: null,
+            configured: false,
+          },
+        }).providers
+      : [],
+  );
   const [error, setError] = useState("");
   const [defaultRevision, setDefaultRevision] = useState(0);
   const update = (id: string, change: (provider: Provider) => Provider) =>
@@ -49,7 +80,9 @@ function Fixture() {
     },
     async listModels(provider) {
       window.providerEvents.push(`models:${provider.revision}`);
-      return ["synthetic-small", "synthetic-large"];
+      return openCodePreset(provider.baseUrl)
+        ? ["deepseek-v4.1-flash", "gpt-6-luna", "minimax-m3"]
+        : ["synthetic-small", "synthetic-large"];
     },
     async test(provider) {
       window.providerEvents.push(`test:${provider.revision}`);

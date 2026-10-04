@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { StatusRail } from "../../components/StatusRail";
+import {
+  compatibleModels,
+  openCodePreset,
+  providerPresets as presets,
+} from "./providerPresets";
 
 /** Public, redacted fields only. The secret is never part of a provider view. */
 export type Provider = {
@@ -46,12 +51,6 @@ export type ProviderActions = {
   remove: (provider: Provider, signal: AbortSignal) => Promise<void>;
 };
 
-const presets = [
-  { id: "custom", name: "自定义兼容服务", baseUrl: "" },
-  { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1" },
-  { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com" },
-] as const;
-
 const empty: ProviderDraft = {
   name: "",
   protocol: "openai-chat-completions",
@@ -78,6 +77,11 @@ function tested(provider: Provider) {
 function testLabel(provider: Provider) {
   if (tested(provider)) return "测试通过";
   if (
+    provider.test.revision === provider.revision &&
+    provider.test.code === "upstream_rejected"
+  )
+    return "服务拒绝请求";
+  if (
     provider.test.state === "unknown" &&
     provider.test.revision === provider.revision
   )
@@ -96,6 +100,8 @@ const testHelp: Record<string, string> = {
   model_not_found: "请检查模型 ID，或重新读取列表。",
   timed_out: "测试超时，结果可能未知；请检查服务状态后再决定是否手动重试。",
   connection_failed: "请检查模型服务是否可连接。",
+  upstream_rejected:
+    "服务已返回拒绝响应。请检查账号权限和模型支持范围；OpenCode 接入会话标识由天枢自动提供。",
   cancelled: "已取消等待；如果服务已收到请求，仍可能继续执行。",
   unknown:
     "本次测试结果未知，可能已调用模型；请人工核对后台状态，避免重复计费。页面不会自动重试。",
@@ -147,7 +153,9 @@ export function ProviderManager({
           }
         : empty,
     );
-    setPreset("custom");
+    setPreset(
+      provider ? (openCodePreset(provider.baseUrl) ?? "custom") : "custom",
+    );
     setModels(null);
     setConfirmId(null);
     setMessage("");
@@ -222,7 +230,10 @@ export function ProviderManager({
       async (signal) => {
         const items = await actions.listModels(provider, signal);
         if (!signal.aborted)
-          setModels({ providerId: provider.providerId, items });
+          setModels({
+            providerId: provider.providerId,
+            items: compatibleModels(provider.baseUrl, items),
+          });
       },
       "已读取模型列表；这不代表模型能生成回复。请选择模型后保存，再单独测试。",
     );
@@ -310,6 +321,12 @@ export function ProviderManager({
               </div>
             </div>
             <p className="muted">Chat Completions 兼容 · {provider.baseUrl}</p>
+            {openCodePreset(provider.baseUrl) && (
+              <p className="muted">
+                仅支持 Chat Completions
+                模型；天枢自动提供客户端标识与稳定会话参数。
+              </p>
+            )}
             <dl className="models-facts">
               <div>
                 <dt>模型</dt>
@@ -521,8 +538,9 @@ export function ProviderManager({
             </button>
           </div>
           <p className="muted">
-            目前支持使用 HTTPS 的 OpenAI Chat Completions
-            兼容服务。地址预设只填写服务地址，模型和密钥由你选择。
+            目前支持使用 HTTPS 的 OpenAI Chat Completions 兼容服务。OpenCode
+            预设已填写地址与默认 DeepSeek 模型，只需输入 API
+            Key；可保存后获取支持的模型列表。
           </p>
           {original?.isDefault && (
             <p className="models-transport">
@@ -550,6 +568,7 @@ export function ProviderManager({
                       ...current,
                       name: item.name,
                       baseUrl: item.baseUrl,
+                      modelId: item.modelId || current.modelId,
                     }));
                 }}
               >

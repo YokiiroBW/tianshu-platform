@@ -1,0 +1,11 @@
+# OpenCode provider presets and refusal diagnosis — local candidate
+
+Base: `a9e466f800fe4e61b0db082e4f0a4a9b4b164e69`. The coordinator reproduced a single OpenCode Go test refusal: HTTP 400 `MissingSessionID`.
+
+Provider management reuses the existing private test-attempt receipt to preserve bounded gateway diagnostics. The public view derives optional fixed `test.error_code` from the same revision receipt; it does not expose HTTP status or provider-specific text. Explicit refusal is visible immediately and after reload while `unknown` retains its execution meaning. A failed test cannot enable default selection.
+
+The existing form now offers OpenCode Zen and OpenCode Go with their exact API addresses and default `deepseek-v4.1-flash`, so a new provider needs only its key. Save remains distinct from model enumeration, paid testing and default selection. Fetched options are restricted to each endpoint's documented Chat Completions models; custom services and manual model entry remain available. Responses/Messages models are not advertised as compatible. Sources checked on 2026-10-04: [Zen](https://opencode.ai/docs/zen/) and [Go](https://opencode.ai/docs/go/).
+
+Verification: 21 catalog tests, 4 candidate-product joint tests, 1 contract/example test, and 5 provider-manager Playwright tests passed. Playwright covers both key-only presets, distinct Chat model lists, preserved custom entry, refusal after reload, default blocking, and the existing synthetic flow/accessibility/mobile checks. Targeted Ruff and Prettier checks, TypeScript, production Vite build and `git diff --check` passed; build reports its existing large renderer chunk warning. The final follow-up-read error preservation change passed TypeScript; it does not change the rendered component flow.
+
+No live browser session, actual model success, default switch or QQ delivery was verified by this implementation task. The coordinator owns serial deployment and one installed-adapter probe; an authenticated user must click the UI test again to persist a successful revision verdict. No migration or new dependency was added. The additive public contract lives in the coordinator candidate `contracts/provider-self-service/v1`.

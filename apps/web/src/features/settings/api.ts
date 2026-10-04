@@ -156,7 +156,8 @@ const messages: Record<string, string> = {
   connection_failed: "无法连接模型服务。请检查服务地址和网络连通性。",
   upstream_invalid:
     "模型服务返回了无法识别的内容。请确认其兼容 Chat Completions。",
-  upstream_rejected: "模型服务拒绝了请求。请检查账号权限和模型 ID。",
+  upstream_rejected:
+    "模型服务已返回拒绝响应。请检查账号权限和模型支持范围；OpenCode 会话接入由天枢自动处理。",
   provider_unavailable:
     "供应商已停用、缺少密钥或配置已变化。请重新读取并检查。",
   provider_not_tested: "当前配置尚未通过短回复测试，不能设为默认。",

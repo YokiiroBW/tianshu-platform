@@ -10,7 +10,12 @@ type WireProvider = {
   enabled: boolean;
   revision: number;
   has_key: boolean;
-  test: { revision: number; outcome: string; tested_at: number } | null;
+  test: {
+    revision: number;
+    outcome: string;
+    tested_at: number;
+    error_code?: string;
+  } | null;
 };
 
 type WireView = {
@@ -22,6 +27,18 @@ type WireView = {
     configured: boolean;
   };
 };
+
+const testErrors = [
+  "authentication_failed",
+  "endpoint_failed",
+  "model_not_found",
+  "enumeration_unsupported",
+  "connection_failed",
+  "timed_out",
+  "upstream_invalid",
+  "upstream_rejected",
+  "dependency_unavailable",
+];
 
 function validProvider(item: WireProvider): boolean {
   return (
@@ -39,6 +56,8 @@ function validProvider(item: WireProvider): boolean {
       (!!item.test &&
         Number.isInteger(item.test.revision) &&
         typeof item.test.outcome === "string" &&
+        (item.test.error_code === undefined ||
+          testErrors.includes(item.test.error_code)) &&
         Number.isFinite(item.test.tested_at) &&
         !Number.isNaN(new Date(item.test.tested_at * 1000).getTime())))
   );
@@ -94,7 +113,10 @@ export function mapProviderView(wire: WireView): {
                     ].includes(item.test.outcome)
                   ? ("unknown" as const)
                   : ("failed" as const),
-            code: item.test.outcome === "succeeded" ? null : item.test.outcome,
+            code:
+              item.test.outcome === "succeeded"
+                ? null
+                : (item.test.error_code ?? item.test.outcome),
             revision: item.test.revision,
             at: new Date(item.test.tested_at * 1000).toISOString(),
           }

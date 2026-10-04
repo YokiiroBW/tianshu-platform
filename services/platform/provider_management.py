@@ -10,6 +10,13 @@ import aiohttp
 
 from .auth import secret
 from .contracts import Fault, require
+from .provider_catalog import validate_test_diagnostic
+
+
+class ProviderTestFault(Fault):
+    def __init__(self, code, status, diagnostic=None):
+        super().__init__(code, status)
+        self.diagnostic = validate_test_diagnostic(diagnostic)
 
 
 def validate_configuration(config, *, existing=True):
@@ -176,6 +183,7 @@ class ProviderManagement:
                         outcome=outcome,
                         error=fault.code,
                         status=fault.status,
+                        diagnostic=getattr(fault, "diagnostic", None),
                     )
                 raise
             await self.platform.local_work.run(self._gate, session)
@@ -243,9 +251,10 @@ class ProviderManagement:
                             "upstream_invalid",
                             "upstream_rejected",
                         }
-                        raise Fault(
+                        raise ProviderTestFault(
                             code if code in allowed else "dependency_unavailable",
                             response.status if code in allowed else 503,
+                            document.get("provider_diagnostic") if code in allowed else None,
                         )
                     if operation == "test":
                         require(document == {"outcome": "succeeded"}, "dependency_unavailable", 503)

@@ -388,6 +388,33 @@ class ProviderCatalogTests(unittest.TestCase):
             self.assert_fault("provider_store_unavailable", lambda: self.create())
         self.assertEqual([], self.catalog.view()["providers"])
 
+    def test_refusal_code_is_projected_from_same_revision_receipt_after_restart(self):
+        provider = self.create()
+        identity = provider["provider_id"]
+        self.catalog.claim_test(
+            client_id="rejected-probe", provider_id=identity, expected_revision=1
+        )
+        result = self.catalog.finish_test(
+            client_id="rejected-probe",
+            provider_id=identity,
+            expected_revision=1,
+            outcome="unknown",
+            error="upstream_rejected",
+            status=502,
+            diagnostic={"http_status": 400, "reason": "missing_session_id"},
+        )
+        self.assertEqual(result["diagnostic"], {"http_status": 400, "reason": "missing_session_id"})
+        restarted = ProviderCatalog(self.directory, clock=lambda: 1234567)
+        view = restarted.view()
+        self.assertEqual(view["providers"][0]["test"]["error_code"], "upstream_rejected")
+        self.assertEqual(view["providers"][0]["test"]["outcome"], "unknown")
+        self.assertNotIn("http_status", json.dumps(view))
+        self.assertNotIn("missing_session_id", json.dumps(view))
+        self.assertFalse(view["default"]["configured"])
+        changed = self.edit(provider)
+        self.assertIsNone(changed["test"])
+        self.assertIsNone(restarted.view()["providers"][0]["test"])
+
     def test_url_syntax_normalization_is_not_a_network_authorization(self):
         self.assertEqual(
             "https://example.invalid/v1", normalize_base_url("https://EXAMPLE.invalid:443/v1/")

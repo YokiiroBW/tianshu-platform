@@ -34,6 +34,33 @@ TEST_CODES = frozenset(
         "unknown",
     }
 )
+TEST_ERROR_CODES = frozenset(
+    {
+        "authentication_failed",
+        "endpoint_failed",
+        "model_not_found",
+        "enumeration_unsupported",
+        "connection_failed",
+        "timed_out",
+        "upstream_invalid",
+        "upstream_rejected",
+        "dependency_unavailable",
+    }
+)
+
+
+def validate_test_diagnostic(diagnostic):
+    if diagnostic is not None:
+        require(
+            isinstance(diagnostic, dict)
+            and set(diagnostic) == {"http_status", "reason"}
+            and type(diagnostic["http_status"]) is int
+            and 100 <= diagnostic["http_status"] <= 599
+            and diagnostic["reason"] in {None, "missing_session_id"},
+            "upstream_invalid",
+            502,
+        )
+    return diagnostic
 
 
 @dataclass(frozen=True)
@@ -474,33 +501,27 @@ class ProviderCatalog:
             return {"state": "new", "result": None}
 
     def finish_test(
-        self, *, client_id, provider_id, expected_revision, outcome, error=None, status=None
+        self,
+        *,
+        client_id,
+        provider_id,
+        expected_revision,
+        outcome,
+        error=None,
+        status=None,
+        diagnostic=None,
     ):
         """Commit catalog verdict and replay receipt together after one claimed call."""
         require(
             outcome in TEST_CODES
             and (
                 (error is None and status is None and outcome == "succeeded")
-                or (
-                    error
-                    in {
-                        "authentication_failed",
-                        "endpoint_failed",
-                        "model_not_found",
-                        "enumeration_unsupported",
-                        "connection_failed",
-                        "timed_out",
-                        "upstream_invalid",
-                        "upstream_rejected",
-                        "dependency_unavailable",
-                    }
-                    and type(status) is int
-                    and 400 <= status <= 504
-                )
+                or (error in TEST_ERROR_CODES and type(status) is int and 400 <= status <= 504)
             ),
             "invalid_input",
             400,
         )
+        validate_test_diagnostic(diagnostic)
         with self._transaction() as db:
             row = db.execute(
                 "SELECT fingerprint,state,result FROM test_attempts WHERE id=?", (client_id,)
@@ -516,7 +537,12 @@ class ProviderCatalog:
             result = (
                 {"provider_id": provider_id, "revision": expected_revision, **document["test"]}
                 if error is None
-                else {"error": error, "status": status}
+                else {
+                    "error": error,
+                    "status": status,
+                    "tested_at": document["test"]["tested_at"],
+                    **({"diagnostic": diagnostic} if diagnostic is not None else {}),
+                }
             )
             db.execute(
                 "UPDATE test_attempts SET state='settled',result=? WHERE id=?",
@@ -568,6 +594,25 @@ class ProviderCatalog:
                 json.loads(row[0])
                 for row in db.execute("SELECT document FROM providers ORDER BY id")
             ]
+            for document in documents:
+                test = document["test"]
+                if test is None or test["outcome"] == "succeeded":
+                    continue
+                fingerprint = hmac.new(
+                    self._key,
+                    canonical([document["provider_id"], test["revision"]]).encode(),
+                    hashlib.sha256,
+                ).hexdigest()
+                row = db.execute(
+                    "SELECT result FROM test_attempts WHERE fingerprint=? AND state='settled' "
+                    "AND (json_extract(result,'$.tested_at')=? OR "
+                    "json_extract(result,'$.tested_at') IS NULL) ORDER BY rowid DESC LIMIT 1",
+                    (fingerprint, test["tested_at"]),
+                ).fetchone()
+                if row is not None:
+                    error = json.loads(row[0]).get("error")
+                    if error in TEST_ERROR_CODES:
+                        test["error_code"] = error
             identity, revision = db.execute(
                 "SELECT default_id, default_revision FROM metadata WHERE id=1"
             ).fetchone()

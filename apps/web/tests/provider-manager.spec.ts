@@ -1,6 +1,62 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
+for (const [preset, label, base] of [
+  ["opencode", "OpenCode Zen", "https://opencode.ai/zen/v1"],
+  ["opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1"],
+]) {
+  test(`${label} preset needs only a key and lists Chat models`, async ({
+    page,
+  }) => {
+    await page.goto("/tests/provider-manager.fixture.html");
+    await page.getByRole("button", { name: "添加供应商" }).click();
+    await page.getByLabel("服务预设").selectOption(preset);
+    await expect(page.getByLabel("名称")).toHaveValue(label);
+    await expect(page.getByLabel("API 基础地址")).toHaveValue(base);
+    await expect(page.getByLabel("模型 ID（可稍后选择）")).toHaveValue(
+      "deepseek-v4.1-flash",
+    );
+    await page.getByLabel("API Key").fill("synthetic-opencode-key");
+    await page.getByRole("button", { name: "保存供应商" }).click();
+    await expect(
+      page.getByRole("heading", { name: label, exact: true }),
+    ).toBeVisible();
+    expect(await page.evaluate(() => window.providerEvents)).toEqual(["save"]);
+    await expect(page.getByRole("button", { name: "设为默认" })).toBeDisabled();
+    await page.getByRole("button", { name: "获取模型" }).click();
+    await expect(
+      page.getByRole("button", { name: "deepseek-v4.1-flash", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "gpt-6-luna", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "minimax-m3", exact: true }),
+    ).toHaveCount(preset === "opencode" ? 1 : 0);
+    await page.getByRole("button", { name: "编辑" }).click();
+    await page.getByLabel("服务预设").selectOption("custom");
+    await page.getByLabel("模型 ID（可稍后选择）").fill("future-manual-model");
+    await expect(page.getByLabel("模型 ID（可稍后选择）")).toHaveValue(
+      "future-manual-model",
+    );
+  });
+}
+
+test("persisted upstream refusal stays clear after reload", async ({
+  page,
+}) => {
+  await page.goto("/tests/provider-manager.fixture.html?rejected=1");
+  await expect(
+    page.locator(".provider-card dd").filter({ hasText: /^服务拒绝请求/ }),
+  ).toBeVisible();
+  await expect(page.getByText(/服务已返回拒绝响应/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "设为默认" })).toBeDisabled();
+  await page.reload();
+  await expect(
+    page.locator(".provider-card dd").filter({ hasText: /^服务拒绝请求/ }),
+  ).toBeVisible();
+});
+
 test("synthetic component flow keeps save, enumeration, test and default distinct", async ({
   page,
 }, testInfo) => {
