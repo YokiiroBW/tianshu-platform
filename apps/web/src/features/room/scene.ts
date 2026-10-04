@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { daylight, type RoomValues } from "./environment";
+import { daylight, type RoomValues, type PreviewInput } from "./environment";
 
 // Scene asset colors are material albedos, separate from the shared UI tokens.
 export function buildRoom() {
@@ -211,27 +211,34 @@ export function buildRoom() {
       box(0.075, 0.3, 0.075, x, 0.17, z, wood, reader);
   }
   const skin = material(0xe3c1ac);
+  const chair = reader;
+  const person = new THREE.Group();
+  chair.add(person);
+  const garmentMaterial = cloth.clone();
+  materials.add(garmentMaterial);
+  let garmentSource: HTMLImageElement | null = null;
+  let garmentTexture: THREE.Texture | null = null;
   const hair = material(0x574d50);
-  sphere(0.24, 0, 1.48, -0.08, hair, reader).scale.set(1, 1.2, 1);
-  sphere(0.19, 0, 1.45, 0.02, skin, reader).scale.set(0.92, 1.13, 0.85);
-  const fringe = sphere(0.22, 0, 1.59, -0.02, hair, reader);
+  sphere(0.24, 0, 1.48, -0.08, hair, person).scale.set(1, 1.2, 1);
+  sphere(0.19, 0, 1.45, 0.02, skin, person).scale.set(0.92, 1.13, 0.85);
+  const fringe = sphere(0.22, 0, 1.59, -0.02, hair, person);
   fringe.scale.set(1, 0.53, 0.94);
   for (const x of [-0.19, 0.19])
-    sphere(0.11, x, 1.36, -0.05, hair, reader).scale.set(0.6, 2.3, 1);
-  const torso = sphere(0.26, 0, 1.05, -0.03, cloth, reader);
+    sphere(0.11, x, 1.36, -0.05, hair, person).scale.set(0.6, 2.3, 1);
+  const torso = sphere(0.26, 0, 1.05, -0.03, garmentMaterial, person);
   torso.scale.set(0.95, 1.23, 0.73);
-  rod([-0.2, 1.15, 0], [-0.24, 0.95, 0.3], 0.077, cloth, reader);
-  rod([0.2, 1.15, 0], [0.24, 0.95, 0.3], 0.077, cloth, reader);
-  for (const x of [-0.23, 0.23]) sphere(0.068, x, 1.02, 0.39, skin, reader);
-  const skirt = mesh(new THREE.ConeGeometry(0.35, 0.68, 16), dark, reader);
+  rod([-0.2, 1.15, 0], [-0.24, 0.95, 0.3], 0.077, garmentMaterial, person);
+  rod([0.2, 1.15, 0], [0.24, 0.95, 0.3], 0.077, garmentMaterial, person);
+  for (const x of [-0.23, 0.23]) sphere(0.068, x, 1.02, 0.39, skin, person);
+  const skirt = mesh(new THREE.ConeGeometry(0.35, 0.68, 16), dark, person);
   skirt.position.set(0, 0.58, 0.25);
   skirt.scale.set(1, 1, 1.3);
   for (const x of [-0.14, 0.14]) {
-    rod([x, 0.44, 0.45], [x, 0.14, 0.55], 0.065, skin, reader);
-    sphere(0.1, x, 0.1, 0.64, trim, reader).scale.set(0.8, 0.65, 1.5);
+    rod([x, 0.44, 0.45], [x, 0.14, 0.55], 0.065, skin, person);
+    sphere(0.1, x, 0.1, 0.64, trim, person).scale.set(0.8, 0.65, 1.5);
   }
   for (const side of [-1, 1]) {
-    const book = box(0.23, 0.035, 0.32, side * 0.12, 1.025, 0.34, trim, reader);
+    const book = box(0.23, 0.035, 0.32, side * 0.12, 1.025, 0.34, trim, person);
     book.rotation.set(-0.4, 0, side * 0.17);
   }
   box(2.15, 0.11, 0.87, -0.05, 0.94, 1.83);
@@ -410,12 +417,34 @@ export function buildRoom() {
       );
     });
   }
+  function appearance(input: PreviewInput) {
+    const pose = input.pose ?? "reading";
+    person.visible = pose !== "away";
+    person.rotation.z = pose === "resting" ? -Math.PI / 2 : 0;
+    person.position.set(
+      pose === "resting" ? 2.5 : pose === "idle" ? 1.5 : 0,
+      pose === "resting" ? 0.4 : 0,
+      pose === "resting" ? -1.8 : pose === "idle" ? 0.8 : 0,
+    );
+    if ((input.garment ?? null) !== garmentSource) {
+      garmentTexture?.dispose();
+      garmentSource = input.garment ?? null;
+      garmentTexture = garmentSource ? new THREE.Texture(garmentSource) : null;
+      if (garmentTexture) {
+        garmentTexture.colorSpace = THREE.SRGBColorSpace;
+        garmentTexture.needsUpdate = true;
+      }
+      garmentMaterial.map = garmentTexture;
+      garmentMaterial.needsUpdate = true;
+    }
+  }
   function dispose() {
+    garmentTexture?.dispose();
     for (const geometry of geometries) geometry.dispose();
     for (const mat of materials) mat.dispose();
     for (const light of [sun, ...lamps.map(({ light }) => light)])
       light.dispose();
     scene.clear();
   }
-  return { scene, update, quality, dispose };
+  return { scene, update, quality, appearance, dispose };
 }

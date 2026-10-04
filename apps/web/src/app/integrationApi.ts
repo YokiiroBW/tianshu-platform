@@ -23,7 +23,7 @@ const descriptions: Record<string, string> = {
   external_not_configured: "此部署尚未开放外部连接管理。",
   external_locked: "请先用管理员密码解锁连接管理。",
   revision_conflict: "连接设置已在其它页面改变，请刷新后重新检查。",
-  invalid_input: "输入不符合服务端规则，请检查地址、实体与凭据。",
+  invalid_input: "输入不符合服务端规则，请检查填写内容。",
   upstream_forbidden: "上游服务拒绝了读取授权，请由部署管理员检查。",
   unauthorized: "登录已失效，请重新登录。",
   session_expired: "登录已过期，请重新登录。",
@@ -48,12 +48,23 @@ const descriptions: Record<string, string> = {
   budget_too_small: "本次读取预算无法容纳一个完整结果。",
   budget_exceeded: "结果超出服务端读取预算。",
   not_found: "该条目不存在，或当前身份不能读取。",
+  unsupported: "此文件格式暂时不能解析；原件保存结果请查询上传状态。",
+  unsupported_format: "此文件格式暂时不能解析。",
+  source_time_unavailable: "来源缺少实际发生时间，范围覆盖尚未确认。",
+  upload_expired: "上传的有效期已过，请重新选择文件。",
+  content_unavailable: "原件已不可读取，请重新核对来源与版本。",
+  source_retracted: "来源已撤回，不能继续读取旧原件。",
+  scope_required: "此内容需要原账号的精确读取范围。",
+  role_manage_required: "当前账号没有这位角色的管理权限。",
+  operation_in_progress: "原操作仍在处理，请查询原任务。",
+  publication_unverified: "发布结果尚未确认，请查询当前版本。",
 };
 
 export class IntegrationError extends Error {
   constructor(
     readonly code: string,
     readonly status: number,
+    readonly executionState?: string,
   ) {
     super(`${descriptions[code] ?? "读取失败，请重试。"}（${code}）`);
   }
@@ -80,6 +91,9 @@ export async function integrationPost<T>(
     throw new IntegrationError(
       String(result?.code ?? "invalid_upstream"),
       response.status,
+      typeof result?.execution_state === "string"
+        ? result.execution_state
+        : undefined,
     );
   return result as T;
 }
@@ -87,6 +101,13 @@ export async function integrationPost<T>(
 export function readFailure(cause: unknown) {
   if (cause instanceof Error) return cause.message;
   return "连接中断；本次没有取得数据。";
+}
+
+export function writeFailure(cause: unknown) {
+  return !(cause instanceof IntegrationError) ||
+    cause.executionState === "unknown"
+    ? `写入结果尚未确认，请先查询原任务或实际版本；同内容重试会核对原操作。${readFailure(cause)}`
+    : readFailure(cause);
 }
 
 export function deploymentFailure(code: string) {

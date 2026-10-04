@@ -261,3 +261,33 @@
   align-items: center;
   min-height: 44px;
 }
+.room-live {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  padding: 16px;
+  border-radius: 18px;
+  background: var(--surface-soft, #f7f5fc);
+}
+.room-live label {
+  display: grid;
+  gap: 7px;
+  min-width: 180px;
+  flex: 1;
+}
+.room-live-details {
+  flex-basis: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.room-live-details p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .room-live-details {
+    grid-template-columns: 1fr;
+  }
+}

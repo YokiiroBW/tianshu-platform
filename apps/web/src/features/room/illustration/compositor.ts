@@ -154,7 +154,7 @@ export function mountIllustration(
     input: IllustrationInput,
     moving: boolean,
   ) {
-    if (!assets || !input.character) return;
+    if (!assets || !input.character || input.pose === "away") return;
     ctx.save();
     ctx.filter = `brightness(${0.43 + state.day * 0.57}) saturate(${0.72 + state.day * 0.28})`;
     const breathe = moving ? Math.sin(elapsed * 1.55) * 0.002 : 0;
@@ -164,7 +164,20 @@ export function mountIllustration(
     ctx.translate(550, 663);
     ctx.scale(1, 1 + breathe);
     ctx.translate(-550, -663);
+    // Reuse the painted seated actor for the finite locations. Rest is a bedside
+    // seated projection; idle remains at the chair. Neither invents a new sprite
+    // or claims walking, sleep animation, or a different skeletal pose.
+    if (input.pose === "resting") ctx.translate(690, 55);
+    else if (input.pose === "idle") ctx.translate(5, 6);
     ctx.drawImage(assets.character, 423, 292, 424, 526, 427, 359, 246, 304);
+    if (input.garment) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(550, 507, 54, 65, 0, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(input.garment, 496, 442, 108, 130);
+      ctx.restore();
+    }
     ctx.restore();
   }
   function drawForeground(state: VisualState) {

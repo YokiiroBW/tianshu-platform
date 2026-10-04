@@ -42,6 +42,14 @@ type View = {
     model: string;
     revision: number;
     available: boolean;
+    protocol?: string;
+    model_capabilities?: {
+      verification_source: string;
+      capabilities: Record<
+        string,
+        { native: boolean; verification: "verified" | "unverified" }
+      >;
+    };
   }[];
   default_available: boolean;
   capabilities: string[];
@@ -119,6 +127,9 @@ export default function RoleManager() {
     view?.legacy_roles.find((item) => item.id === selected) ?? null;
   const profiles = view?.profiles ?? [];
   const providers = view?.providers ?? [];
+  const selectedProvider = providers.find(
+    (item) => `${item.id}@${item.revision}` === form.provider_key,
+  );
   const visible = useMemo(
     () =>
       [
@@ -504,6 +515,38 @@ export default function RoleManager() {
                   </label>
                   <fieldset>
                     <legend>记忆</legend>
+                    {selectedProvider?.model_capabilities && (
+                      <div className="role-model-capabilities">
+                        <h4>所选模型能力</h4>
+                        <ul>
+                          {Object.entries(
+                            selectedProvider.model_capabilities.capabilities,
+                          ).map(([name, capability]) => (
+                            <li key={name}>
+                              {(
+                                {
+                                  text: "文字",
+                                  dialogue: "对话",
+                                  vision: "图片理解",
+                                  tools: "工具调用",
+                                  reasoning: "推理",
+                                  streaming: "增量输出",
+                                  cancellation: "取消",
+                                  audio: "音频",
+                                } as Record<string, string>
+                              )[name] ?? name}{" "}
+                              ·{" "}
+                              {capability.verification === "verified"
+                                ? "已核验"
+                                : "尚未核验，可尝试"}
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="muted">
+                          一次文字测试只核验文字通道，其他能力按实际运行结果显示。
+                        </p>
+                      </div>
+                    )}
                     <label className="role-check">
                       <input
                         type="checkbox"

@@ -26,6 +26,15 @@ const errors: Record<string, string> = {
   budget_exceeded: "对话内容超过当前读取预算。",
 };
 
+export class ConversationError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export async function request<T = Session>(
   path: string,
   signal: AbortSignal,
@@ -48,7 +57,8 @@ export async function request<T = Session>(
     );
   const result = await response.json();
   if (!response.ok)
-    throw new Error(
+    throw new ConversationError(
+      String(result.code ?? "invalid_upstream"),
       `${errors[result.code] ?? "请求失败，请重新连接。"}（${result.code}${result.current_version ? `，当前版本 ${result.current_version}` : ""}）`,
     );
   return result as T;

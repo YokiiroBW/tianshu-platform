@@ -4,6 +4,11 @@ import { useAuth } from "../../app/Auth";
 import { integrationPost, readFailure } from "../../app/integrationApi";
 import { StatePanel } from "../../components/StatePanel";
 import { DailyLife } from "./DailyLife";
+import { LifeWorkspace } from "./LifeWorkspace";
+import {
+  readRolePreference,
+  saveRolePreference,
+} from "../../app/rolePreference";
 import "./life.css";
 
 type Connection = {
@@ -90,6 +95,7 @@ function unavailableTitle(code: string) {
 export default function LifePage() {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
+  const rolePreference = `tianshu-life-role:${encodeURIComponent(session?.username || csrf)}`;
   const [state, setState] = useState<Connection | null>(null);
   const [actors, setActors] = useState<Actor[]>([]);
   const [actorCursor, setActorCursor] = useState<string | null>(null);
@@ -181,7 +187,11 @@ export default function LifePage() {
         setActor((before) =>
           answer.items.some((row) => row.actor_id === before)
             ? before
-            : (answer.items[0]?.actor_id ?? ""),
+            : (answer.items.find(
+                (row) => row.actor_id === readRolePreference(rolePreference),
+              )?.actor_id ??
+              answer.items[0]?.actor_id ??
+              ""),
         );
     } catch (cause) {
       if (!controller.signal.aborted && generation.current === mark)
@@ -256,6 +266,7 @@ export default function LifePage() {
     setBusy(false);
 
     setActor(next);
+    saveRolePreference(rolePreference, next);
   }
 
   async function moreDiaries() {
@@ -436,6 +447,10 @@ export default function LifePage() {
             csrf={csrf}
             canRetry={state.can_retry === true}
             snapshot={snapshot?.actor_id === actor ? snapshot : null}
+          />
+          <LifeWorkspace
+            key={`workspace:${csrf}:${actor}`}
+            access={{ actor, csrf }}
           />
           <details id="life-diaries" className="life-diary-section">
             <summary>

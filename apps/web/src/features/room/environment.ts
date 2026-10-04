@@ -12,6 +12,8 @@ export type Overrides = Partial<RoomValues>;
 export type PreviewInput = {
   hour: number | null;
   overrides: Overrides;
+  pose?: "reading" | "idle" | "resting" | "away";
+  garment?: HTMLImageElement | null;
 };
 
 const clock = new Intl.DateTimeFormat("en-GB", {
@@ -21,8 +23,18 @@ const clock = new Intl.DateTimeFormat("en-GB", {
   second: "2-digit",
   hourCycle: "h23",
 });
-export function localHour(now = new Date()) {
-  const [h, m, s] = clock.format(now).split(":").map(Number);
+export function localHour(now = new Date(), timezone = "Asia/Shanghai") {
+  const formatter =
+    timezone === "Asia/Shanghai"
+      ? clock
+      : new Intl.DateTimeFormat("en-GB", {
+          timeZone: timezone,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hourCycle: "h23",
+        });
+  const [h, m, s] = formatter.format(now).split(":").map(Number);
   return h + m / 60 + s / 3600 + now.getMilliseconds() / 3600000;
 }
 export function formatHour(hour: number) {

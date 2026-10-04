@@ -358,3 +358,215 @@ test("portrait scope revalidation hides revoked records and rechecks when visibl
   expect(state.overviewReads()).toBeGreaterThan(previous);
   expect(state.errors).toEqual([]);
 });
+
+test("account link resumes only through current status and retries revoke with its actual version", async ({
+  page,
+}) => {
+  const fixtureState = await fixture(page);
+  const writes: Record<string, any>[] = [];
+  let consented = false,
+    linked = false,
+    revoked = false;
+  const association = () => ({
+    association_id: "association:fixture",
+    version: revoked ? 5 : 4,
+    state: revoked ? "revoked" : "linked",
+    scopes: [],
+  });
+  await page.route("**/api/web/memory-links/*", async (route) => {
+    const name = route.request().url().split("/").at(-1);
+    const body = route.request().postDataJSON();
+    let result;
+    if (name === "begin")
+      result = {
+        challenge_id: "challenge:fixture",
+        state: "pending",
+        expires_at: "2030-01-01T00:00:00Z",
+        consent_sentence: "仅用于合成界面测试的本人确认句",
+      };
+    else if (name === "status")
+      result = {
+        challenge_id: "challenge:fixture",
+        state: linked
+          ? revoked
+            ? "revoked"
+            : "linked"
+          : consented
+            ? "consented"
+            : "pending",
+        association: linked ? association() : null,
+      };
+    else if (name === "complete") {
+      linked = true;
+      result = association();
+    } else {
+      writes.push(body);
+      if (writes.length === 1)
+        return route.fulfill({
+          status: 503,
+          json: { code: "dependency_unavailable", execution_state: "unknown" },
+        });
+      revoked = true;
+      result = association();
+    }
+    return route.fulfill({ json: result });
+  });
+  await page
+    .getByRole("complementary", { name: "用户目录" })
+    .getByRole("button")
+    .filter({ hasText: "QQ 10002" })
+    .click();
+  await page.getByRole("tab", { name: "账号关联", exact: true }).click();
+  await page.getByRole("button", { name: "开始账号关联", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "完成账号关联", exact: true }),
+  ).toBeDisabled();
+  await expect(page.locator(".life-consent-sentence")).toContainText(
+    "本人确认句",
+  );
+  consented = true;
+  await page.getByRole("button", { name: "查询确认状态", exact: true }).click();
+  await page.getByRole("button", { name: "完成账号关联", exact: true }).click();
+  await expect(
+    page.getByText("关联已由记忆服务确认", { exact: false }),
+  ).toBeVisible();
+  await page.getByRole("tab", { name: "概览", exact: true }).click();
+  await page.getByRole("tab", { name: "账号关联", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "撤销关联读取", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "撤销关联读取", exact: true }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "写入结果尚未确认" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "撤销关联读取", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "撤销关联读取", exact: true }),
+  ).toHaveCount(0);
+  expect(writes).toHaveLength(2);
+  expect(writes[1]).toEqual(writes[0]);
+  expect(writes[1]).toMatchObject({
+    actor_id: "role:a",
+    challenge_id: "challenge:fixture",
+    expected_version: 4,
+  });
+  expect(fixtureState.errors).toEqual([]);
+});
+
+test("proactive preferences preserve failed operation identity and show partial or unknown delivery accurately", async ({
+  page,
+}) => {
+  const fixtureState = await fixture(page);
+  const writes: Record<string, any>[] = [];
+  let subscription: Record<string, any> | null = null;
+  await page.route("**/api/web/people-life/*", async (route) => {
+    const name = route.request().url().split("/").at(-1);
+    const body = route.request().postDataJSON();
+    let value;
+    if (name === "view")
+      value = {
+        control: {
+          schema_version: 2,
+          request_id: "control:fixture",
+          actor_id: "role:a",
+          subscriptions: subscription ? [subscription] : [],
+          motives: [],
+        },
+        delivery: {
+          available: true,
+          items: [
+            {
+              expression_id: "delivery:partial",
+              kind: "text",
+              state: "partial",
+              final: true,
+              created_at: 1791104400,
+              sent_segments: 1,
+              total_segments: 2,
+            },
+            {
+              expression_id: "delivery:unknown",
+              kind: "text",
+              state: "unknown",
+              final: true,
+              created_at: 1791104401,
+              sent_segments: 0,
+              total_segments: 2,
+            },
+          ],
+        },
+        private_life: { available: false, code: "scope_required" },
+      };
+    else {
+      writes.push(body);
+      if (writes.length === 1)
+        return route.fulfill({
+          status: 503,
+          json: { code: "dependency_unavailable", execution_state: "unknown" },
+        });
+      subscription =
+        name === "subscription"
+          ? {
+              ...body.value,
+              id: "subscription:fixture",
+              state: "active",
+              version: 1,
+            }
+          : { ...subscription, state: body.value.state, version: 2 };
+      value = {
+        schema_version: 2,
+        request_id: body.client_id,
+        actor_id: body.actor_id,
+        operation:
+          name === "subscription"
+            ? "proactive.subscription"
+            : "proactive.subscription.state",
+        result: {
+          object_id: subscription!.id,
+          version: subscription!.version,
+          state: subscription!.state,
+          replayed: false,
+        },
+      };
+    }
+    return route.fulfill({ json: value });
+  });
+  await page
+    .getByRole("complementary", { name: "用户目录" })
+    .getByRole("button")
+    .filter({ hasText: "QQ 10002" })
+    .click();
+  await page.getByRole("tab", { name: "主动偏好", exact: true }).click();
+  await expect(
+    page.getByText("结果未确认，不能视作失败或再次发送。", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(/已送 1\/2 段/)).toBeVisible();
+  await page.getByLabel("每天次数", { exact: true }).fill("5");
+  await page.getByRole("button", { name: "保存主动偏好", exact: true }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "写入结果尚未确认" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "保存主动偏好", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "暂停主动联系", exact: true }),
+  ).toBeVisible();
+  expect(writes[1]).toEqual(writes[0]);
+  expect(writes[0]).toMatchObject({
+    actor_id: "role:a",
+    qq_id: "10002",
+    conversation: "private:10002",
+    expected_version: 0,
+    value: { daily_quota: 5 },
+  });
+  expect(writes[0].value).not.toHaveProperty("person_id");
+  expect(writes[0].value).not.toHaveProperty("scope");
+  await page.getByRole("button", { name: "暂停主动联系", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "恢复主动联系", exact: true }),
+  ).toBeVisible();
+  expect(writes[2]).toMatchObject({
+    expected_version: 1,
+    value: { id: "subscription:fixture", state: "paused" },
+  });
+  expect(fixtureState.errors).toEqual([]);
+});
