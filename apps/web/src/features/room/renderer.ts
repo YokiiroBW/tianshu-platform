@@ -70,6 +70,7 @@ export function mountRoom(
     wind = reduced ? 0 : approach(wind, current.window, dt, 1.5);
     if (!reduced) elapsed += dt;
     room.update(hour, current, wind, elapsed);
+    room.appearance(input);
     try {
       renderer.render(room.scene, camera);
       rendered++;

@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-10-04T06:00:00Z"));
   await page.route("**/api/web/session", (route) =>
     route.fulfill({
       json: {
@@ -16,6 +17,50 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   );
+  await page.route("**/api/web/life/actors", (route) =>
+    route.fulfill({
+      json: {
+        schema_version: 1,
+        fictional: true,
+        items: [
+          {
+            actor_id: "actor:room",
+            actor_version: 1,
+            world_id: "world:room",
+            room_id: "room:room",
+            label: "小屋角色",
+          },
+        ],
+        next_after_actor_id: null,
+      },
+    }),
+  );
+  await page.route("**/api/web/life/runtime/read", (route) => {
+    const resource = route.request().postDataJSON().resource;
+    return route.fulfill({
+      json: {
+        schema_version: 2,
+        request_id: "room-state",
+        actor_id: "actor:room",
+        resource,
+        items:
+          resource === "state"
+            ? [
+                {
+                  actor_id: "actor:room",
+                  activity: "正在阅读",
+                  mood: "平静",
+                  timezone: "Asia/Shanghai",
+                  outfit_ref: null,
+                  changed_at: 1791093600,
+                },
+              ]
+            : [],
+        next_cursor: null,
+        fictional: true,
+      },
+    });
+  });
 });
 
 test("illustration loads in authenticated room, controls change pixels and state survives mode switch", async ({
@@ -60,7 +105,7 @@ test("illustration loads in authenticated room, controls change pixels and state
     .poll(() => canvas.screenshot().then((b) => b.equals(curtains)))
     .toBe(false);
   const character = await canvas.screenshot();
-  await page.getByLabel("显示阅读人物", { exact: true }).uncheck();
+  await page.getByLabel("显示角色姿态", { exact: true }).uncheck();
   await expect
     .poll(() => canvas.screenshot().then((b) => b.equals(character)))
     .toBe(false);

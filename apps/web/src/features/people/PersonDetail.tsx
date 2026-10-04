@@ -13,6 +13,9 @@ import RelationshipPanel from "../companion/relationships/RelationshipPanel";
 import { SharedPortrait } from "./SharedPortrait";
 import { Interactions } from "./Interactions";
 import { ReplyPermissions } from "./ReplyPermissions";
+import { ProactivePanel } from "./ProactivePanel";
+import { AccountLinkPanel } from "./AccountLinkPanel";
+import "../life/life.css";
 import {
   dateText,
   personName,
@@ -26,6 +29,8 @@ const tabs = [
   { id: "messages", label: "最近互动", icon: MessageCircle },
   { id: "permissions", label: "回复权限", icon: ShieldCheck },
   { id: "relationship", label: "关系", icon: Heart },
+  { id: "proactive", label: "主动偏好", icon: Clock3 },
+  { id: "accounts", label: "账号关联", icon: Fingerprint },
 ];
 export function PersonDetail({
   person,
@@ -206,6 +211,28 @@ export function PersonDetail({
           />
         )}
         {tab === "messages" && <Interactions person={person} csrf={csrf} />}
+        {tab === "proactive" &&
+          (role ? (
+            <ProactivePanel
+              key={`${csrf}:${role.id}:${person.qqId}`}
+              person={person}
+              role={role}
+              csrf={csrf}
+            />
+          ) : (
+            <p>请选择查看角色。</p>
+          ))}
+        {tab === "accounts" &&
+          (role ? (
+            <AccountLinkPanel
+              key={`${csrf}:${role.id}:${person.qqId}`}
+              actor={role.id}
+              qqId={person.qqId}
+              csrf={csrf}
+            />
+          ) : (
+            <p>请选择要关联的角色。</p>
+          ))}
         {tab === "permissions" && (
           <ReplyPermissions
             person={person}

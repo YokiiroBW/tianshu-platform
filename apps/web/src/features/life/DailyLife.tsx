@@ -16,6 +16,7 @@ import { DetailTrigger, LifeDetailDialog, type LifeDetail } from "./LifeDetail";
 import { WeatherCard } from "./WeatherCard";
 import { integrationPost, readFailure } from "../../app/integrationApi";
 import { StatePanel } from "../../components/StatePanel";
+import { showMood } from "./lifeLabels";
 
 type Phase = {
   phase_id: string;
@@ -255,21 +256,7 @@ export function DailyLife({
     today?.enabled === true &&
     today.plan.state === "active" &&
     ["failed", "unavailable", "interrupted"].includes(state);
-  const mood =
-    (
-      {
-        calm: "平静",
-        neutral: "平稳",
-        happy: "愉悦",
-        relaxed: "放松",
-        focused: "专注",
-        sad: "低落",
-        tired: "疲倦",
-        anxious: "不安",
-      } as Record<string, string>
-    )[snapshot?.mood ?? ""] ??
-    snapshot?.mood ??
-    "暂无心情记录";
+  const mood = showMood(snapshot?.mood);
   // The projection exposes opaque references, not human-readable place names.
   const location = snapshot?.room_id ? "角色生活空间" : "暂无位置记录";
   const currentIndex =

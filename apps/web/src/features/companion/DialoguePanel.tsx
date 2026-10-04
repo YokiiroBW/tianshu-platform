@@ -1,7 +1,10 @@
 import { requestId } from "../../app/requestId";
 import { useEffect, useRef, useState } from "react";
 import { MessageCircle } from "lucide-react";
-import { request, type Session } from "./api";
+import { request, ConversationError, type Session } from "./api";
+import { ContentViewer, contentLabel } from "../life/ContentViewer";
+import type { content_ref } from "../life/runtimeTypes";
+import "../life/life.css";
 
 type Message = {
   message_id: string;
@@ -28,6 +31,7 @@ type TurnView = {
     state: string;
     content_state: string;
     text: string | null;
+    content_refs?: content_ref[];
   }[];
 };
 type Snapshot = {
@@ -118,6 +122,7 @@ export function DialoguePanel({
   const [refresh, setRefresh] = useState(0);
   const alive = useRef(true);
   const mutations = useRef(new Set<AbortController>());
+  const readIdentity = useRef("");
   const available = Boolean(
     session.dialogue?.available && conversation && actor,
   );
@@ -138,7 +143,17 @@ export function DialoguePanel({
     if (!available) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
-    setRead(null);
+    const identity = JSON.stringify([
+      session.csrf,
+      conversation,
+      actor,
+      before,
+    ]);
+    if (readIdentity.current !== identity) {
+      setRead(null);
+      setError("");
+      readIdentity.current = identity;
+    }
     async function poll() {
       if (document.hidden) {
         timer = setTimeout(poll, 2000);
@@ -157,7 +172,18 @@ export function DialoguePanel({
         }
       } catch (cause) {
         if (!controller.signal.aborted) {
-          setRead(null);
+          if (
+            cause instanceof ConversationError &&
+            [
+              "forbidden",
+              "upstream_forbidden",
+              "scope_changed",
+              "not_found",
+              "session_expired",
+              "unauthorized",
+            ].includes(cause.code)
+          )
+            setRead(null);
           setError(cause instanceof Error ? cause.message : "连接中断");
         }
       }
@@ -308,6 +334,11 @@ export function DialoguePanel({
                     第 {turn.turn_sequence} 轮 ·{" "}
                     {states[turn.phase] ?? "状态待确认"}
                   </h3>
+                  <span className="status-pill">
+                    {states[turn.delivery_state] ?? "送达待确认"} · 已送{" "}
+                    {replies.filter((reply) => reply.state === "sent").length}{" "}
+                    段
+                  </span>
                   <details className="muted">
                     <summary>状态详情</summary>
                     <p>
@@ -346,12 +377,28 @@ export function DialoguePanel({
                       {states[reply.state] ?? "状态待确认"}
                     </span>
                     {reply.content_state === "available" &&
-                    reply.state === "sent" &&
                     reply.text !== null ? (
                       <p>{reply.text}</p>
                     ) : (
                       <p className="muted">正文暂不可展示</p>
                     )}
+                    {reply.content_state === "available" &&
+                      reply.content_refs?.map((ref) => (
+                        <details
+                          key={`${ref.owner}:${ref.object_id}:${ref.version}`}
+                          className="chat-content-reference"
+                        >
+                          <summary>
+                            打开引用原件 · {contentLabel(ref.kind)} · 版本{" "}
+                            {ref.version}
+                          </summary>
+                          <ContentViewer
+                            key={`${ref.object_id}:${ref.version}`}
+                            access={{ actor, csrf: session.csrf }}
+                            contentRef={ref}
+                          />
+                        </details>
+                      ))}
                   </div>
                 ))}
                 {turn.unresolved_delivery && (

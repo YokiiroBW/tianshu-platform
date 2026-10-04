@@ -13,6 +13,8 @@ import {
   type IllustrationInput,
 } from "./illustration/compositor";
 import "./room.css";
+import { useRoomLife } from "./useRoomLife";
+import { showState } from "../life/runtimeApi";
 
 const objects = [
   { key: "window", label: "窗户", hint: "向外开启 · 关闭仍透光", icon: Wind },
@@ -28,10 +30,11 @@ const objects = [
 ] as const;
 
 export default function RoomPage() {
+  const life = useRoomLife();
   const [illustrated, setIllustrated] = useState(true);
   const [motion, setMotion] = useState(true);
   const [character, setCharacter] = useState(true);
-  const [hour, setHour] = useState<number | null>(14);
+  const [hour, setHour] = useState<number | null>(null);
   const [clockHour, setClockHour] = useState(localHour);
   const [overrides, setOverrides] = useState<Overrides>({});
   const [simple, setSimple] = useState(false);
@@ -47,13 +50,22 @@ export default function RoomPage() {
     motion,
     character,
   });
-  const shownHour = hour ?? clockHour;
+  const shownHour =
+    hour ??
+    (life.current ? localHour(new Date(), life.current.timezone) : clockHour);
   const values = resolveRoom(shownHour, overrides);
   const unavailable = status === "error" || status === "lost";
   useEffect(() => {
-    input.current = { hour, overrides, motion, character };
+    input.current = {
+      hour: hour ?? shownHour,
+      overrides,
+      motion,
+      character,
+      pose: life.pose,
+      garment: life.garment,
+    };
     renderer.current?.update();
-  }, [hour, overrides, motion, character]);
+  }, [hour, shownHour, overrides, motion, character, life.pose, life.garment]);
   useEffect(() => {
     if (!canvasHost.current) return;
     // The effect owns its canvas as well as the GPU context. StrictMode's
@@ -146,8 +158,63 @@ export default function RoomPage() {
           {illustrated ? "原环境预览" : "返回插画小屋"}
         </button>
       </header>
+      <div className="room-live">
+        <label>
+          小屋角色
+          <select
+            value={life.actor}
+            onChange={(e) => life.choose(e.target.value)}
+          >
+            <option value="">选择已授权角色</option>
+            {life.actors.map((row) => (
+              <option key={row.actor_id} value={row.actor_id}>
+                {row.label ?? row.actor_id}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          className="button"
+          onClick={life.refresh}
+          disabled={!life.actor}
+        >
+          刷新角色状态
+        </button>
+        {life.error && (
+          <p className="error-text" role="alert">
+            {life.error}
+          </p>
+        )}
+        {life.loading && !life.current && (
+          <p role="status">正在读取角色生活…</p>
+        )}
+        {life.current && (
+          <div className="room-live-details">
+            <p>
+              <strong>{life.current.activity ?? "暂无已记录活动"}</strong>
+              {life.activity && ` · ${showState(life.activity.state)}`}
+            </p>
+            <p>
+              当前穿搭：{life.outfit?.description ?? "尚未选择"} ·{" "}
+              {life.current.timezone}
+            </p>
+            <p>进度：{life.activity?.checkpoint.note || "尚未记录"}</p>
+            <p>
+              姿态投影：
+              {
+                {
+                  reading: "坐在阅读角",
+                  idle: "室内待机",
+                  resting: "床边休息",
+                  away: "当前不在室内",
+                }[life.pose]
+              }
+            </p>
+          </div>
+        )}
+      </div>
       <p className="room-boundary">
-        虚构场景，调整仅在当前页面生效。人物当前为阅读姿态，尚不随真实日程走动。
+        角色虚构生活的已保存状态驱动画面姿态与当前穿搭参考；环境控件只调整本页预览，不推进日程。
       </p>
       <figure className="room-figure">
         <div className="room-stage" aria-busy={status === "loading"}>
@@ -188,9 +255,15 @@ export default function RoomPage() {
         </div>
         <figcaption id="room-caption">
           <span>
-            {illustrated
-              ? "窗边阅读 · 轻微呼吸与帘动"
-              : "阅读姿态 · 静态几何占位"}
+            {life.current
+              ? {
+                  reading: "阅读角",
+                  idle: "室内待机",
+                  resting: "休息",
+                  away: "外出",
+                }[life.pose]
+              : "生活状态尚未取得"}{" "}
+            · {illustrated ? "插画投影" : "几何投影"}
           </span>
           <span>{formatHour(shownHour)} · 晴天曲线示意</span>
         </figcaption>
@@ -202,7 +275,7 @@ export default function RoomPage() {
           </label>
           <span className="muted">
             {hour === null
-              ? "跟随本机时钟 · 上海时区"
+              ? `跟随角色时钟 · ${life.current?.timezone ?? "Asia/Shanghai"}`
               : "时间已固定 · 不推进生活事件"}
           </span>
         </div>
@@ -385,7 +458,7 @@ export default function RoomPage() {
                 checked={character}
                 onChange={(e) => setCharacter(e.target.checked)}
               />
-              显示阅读人物
+              显示角色姿态
             </label>
           </div>
         )}
@@ -394,19 +467,19 @@ export default function RoomPage() {
         <summary>关于此预览与素材</summary>
         {illustrated ? (
           <p>
-            使用分层插画呈现昼夜、阅读人物与纱帘。人物目前仅有呼吸微动，没有走动、翻页或换装；床头灯仅在夜间显示。窗扇、遮光帘和书桌灯可在“原环境预览”中操作。画面不是实际天气或角色实时活动。
+            分层插画呈现昼夜与纱帘；读取角色活动后投影阅读、待机、休息或外出。穿搭参考来自当前服装的授权原件，画面使用有限姿态，不是连续走动动画。床头灯仅在夜间显示，天气请以生活页实际天气卡为准。
           </p>
         ) : (
           <>
             <p>
-              房间、家具、角色与衣物均为本项目程序生成的几何占位。阅读姿态固定；未实现角色待机、行走、换装或衣物动画。窗扇开合、双层帘开合和风摆、日光与两灯局部光照已实现。
+              房间和人物使用现有几何模型，角色已保存状态选择有限姿态；当前服装的授权参考图投影在衣着模型上。窗扇、双层帘和风摆、日光与两灯局部光照保留。
             </p>
             <p>
               昼夜为虚构的 06:00–19:00
               晴天曲线，无地点、真实天气或精确天文数据。纱帘采用简化透光和网格形变，不是布料或全局光照物理模拟。减少动态遵循系统与外观设置，停止风摆和开合过渡，保留目标状态。
             </p>
             <p>
-              尚未验证关闭网页后持续生活、跨浏览器一致性或真实核心状态。这里不会保存房间状态、发送生活命令或操作
+              当前活动与穿搭读取同一生活服务；这里不会保存房间预览参数、发送生活命令或操作
               HA 设备。
             </p>
           </>
