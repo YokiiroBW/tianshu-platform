@@ -406,3 +406,119 @@ test("sampled media keeps coverage gaps visible and original images never imply 
   expect(fixture.writes).toHaveLength(0);
   expect(fixture.errors).toEqual([]);
 });
+
+test("image preview reads its full coverage without exposing byte offsets and preserves owner refusal", async ({
+  page,
+}) => {
+  const fixture = await runtimeFixture(page);
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const ref = {
+    owner: "memory",
+    object_id: "image:preview",
+    version: 1,
+    sha256: "6b1048f8a6d40bac0b2954c18fefa40c4ea7a96120fc2e54b7317c0e43c2bbec",
+    kind: "image",
+    sources: [],
+    coverage: { unit: "bytes", start: 0, end: png.length, total: png.length },
+  };
+  let reads = 0,
+    downloads = 0,
+    refused = false;
+  await page.route("**/api/web/life/runtime/read", (route) => {
+    const body = route.request().postDataJSON();
+    return route.fulfill({
+      json: {
+        schema_version: 2,
+        request_id: "image-preview",
+        actor_id: body.actor_id,
+        resource: body.resource,
+        items:
+          body.resource === "image_reference"
+            ? [
+                {
+                  id: "reference:preview",
+                  version: 2,
+                  actor_id: body.actor_id,
+                  content_ref: ref,
+                  scope: {},
+                  state: "configured",
+                },
+              ]
+            : [],
+        next_cursor: null,
+      },
+    });
+  });
+  await page.route("**/api/web/life/runtime/content", (route) => {
+    reads++;
+    expect(route.request().postDataJSON()).toMatchObject({
+      content_ref: ref,
+      reading_id: null,
+      range: { unit: "bytes", start: 0, end: png.length },
+    });
+    if (refused)
+      return route.fulfill({ status: 403, json: { code: "forbidden" } });
+    return route.fulfill({
+      json: {
+        schema_version: 2,
+        request_id: "image-preview",
+        content_ref: ref,
+        coverage: { unit: "bytes", start: 0, end: png.length },
+        complete: false,
+        text: null,
+        gaps: ["image_resized"],
+        representations: [
+          {
+            kind: "image",
+            media_type: "image/png",
+            sha256: ref.sha256,
+            source_sha256: ref.sha256,
+            data_base64: png.toString("base64"),
+            at_seconds: null,
+            coverage: { unit: "bytes", start: 0, end: png.length },
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/api/web/content/original", (route) => {
+    downloads++;
+    expect(route.request().postDataJSON().value).toEqual({
+      content_ref: ref,
+      range: null,
+    });
+    return route.fulfill({ contentType: "image/png", body: png });
+  });
+  await page.getByRole("tab", { name: "衣柜与相册", exact: true }).click();
+  const viewer = page
+    .getByRole("heading", { name: "角色形象参考", exact: true })
+    .locator("..")
+    .locator(".life-content-reader");
+  await expect(
+    viewer.getByRole("button", { name: "查看图片", exact: true }),
+  ).toBeVisible();
+  await expect(viewer.locator('input[type="number"]')).toHaveCount(0);
+  await expect(viewer).not.toContainText("字节");
+  expect(reads).toBe(0);
+  await viewer.getByRole("button", { name: "查看图片", exact: true }).click();
+  await expect(
+    viewer.getByRole("img", { name: "原件图片", exact: true }),
+  ).toBeVisible();
+  await expect(viewer).toContainText("已取得图片预览（预览有缺口）");
+  await expect(viewer).toContainText("图片展示已缩放");
+  await expect(viewer).not.toContainText("字节");
+  const download = page.waitForEvent("download");
+  await viewer.getByRole("button", { name: "下载原图", exact: true }).click();
+  expect((await download).suggestedFilename()).toContain("原图-版本1");
+  expect(downloads).toBe(1);
+  refused = true;
+  await viewer.getByRole("button", { name: "查看图片", exact: true }).click();
+  await expect(viewer.getByRole("alert")).toContainText("forbidden");
+  await expect(viewer.getByRole("img")).toHaveCount(0);
+  await expect(viewer.getByText(/已取得图片预览/)).toHaveCount(0);
+  expect(reads).toBe(2);
+  expect(fixture.errors).toEqual([]);
+});

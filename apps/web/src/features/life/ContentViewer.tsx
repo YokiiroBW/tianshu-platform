@@ -35,6 +35,7 @@ export function ContentViewer({
   onRead?: () => void;
 }) {
   const unit = contentRef.coverage.unit;
+  const imagePreview = contentRef.kind === "image";
   const [start, setStart] = useState(
       initialRange?.start ?? contentRef.coverage.start,
     ),
@@ -66,7 +67,13 @@ export function ContentViewer({
       const result = await readContent(
         access,
         contentRef,
-        { unit, start, end },
+        imagePreview
+          ? {
+              unit,
+              start: contentRef.coverage.start,
+              end: contentRef.coverage.end,
+            }
+          : { unit, start, end },
         control.signal,
         readingId,
       );
@@ -92,7 +99,7 @@ export function ContentViewer({
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `原件-版本${contentRef.version}`;
+      link.download = `${imagePreview ? "原图" : "原件"}-版本${contentRef.version}`;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (cause) {
@@ -104,30 +111,43 @@ export function ContentViewer({
   return (
     <div className="life-content-reader">
       <p className="muted">
-        {contentNames[contentRef.kind]} · 原件版本 {contentRef.version} ·
-        可取范围 {rangeText(contentRef.coverage)}
+        {contentNames[contentRef.kind]} · 原件版本 {contentRef.version}
+        {!imagePreview && ` · 可取范围 ${rangeText(contentRef.coverage)}`}
       </p>
       <form className="life-form-row" onSubmit={read}>
-        <label>
-          从
-          <input
-            type="number"
-            min={0}
-            value={start}
-            onChange={(e) => setStart(Number(e.target.value))}
-          />
-        </label>
-        <label>
-          到
-          <input
-            type="number"
-            min={start + 1}
-            value={end}
-            onChange={(e) => setEnd(Number(e.target.value))}
-          />
-        </label>
-        <button className="button primary" disabled={busy || end <= start}>
-          {busy ? "正在实读…" : "读取此范围"}
+        {!imagePreview && (
+          <>
+            <label>
+              从
+              <input
+                type="number"
+                min={0}
+                value={start}
+                onChange={(e) => setStart(Number(e.target.value))}
+              />
+            </label>
+            <label>
+              到
+              <input
+                type="number"
+                min={start + 1}
+                value={end}
+                onChange={(e) => setEnd(Number(e.target.value))}
+              />
+            </label>
+          </>
+        )}
+        <button
+          className="button primary"
+          disabled={busy || (!imagePreview && end <= start)}
+        >
+          {imagePreview
+            ? busy
+              ? "正在查看图片…"
+              : "查看图片"
+            : busy
+              ? "正在实读…"
+              : "读取此范围"}
         </button>
       </form>
       <button
@@ -135,7 +155,7 @@ export function ContentViewer({
         disabled={busy}
         onClick={() => void download()}
       >
-        下载授权原件
+        {imagePreview ? "下载原图" : "下载授权原件"}
       </button>
       {error && (
         <p className="error-text" role="alert">
@@ -145,13 +165,27 @@ export function ContentViewer({
       {answer && (
         <article>
           <p role="status">
-            实际取得 {rangeText(answer.coverage)} ·{" "}
-            {answer.complete ? "本次范围完整" : "本次范围有缺口"}
+            {imagePreview ? (
+              answer.representations.some((item) => item.kind === "image") ? (
+                `已取得图片预览${answer.complete ? "" : "（预览有缺口）"}`
+              ) : (
+                "本次未取得可展示的图片。"
+              )
+            ) : (
+              <>
+                实际取得 {rangeText(answer.coverage)} ·{" "}
+                {answer.complete ? "本次范围完整" : "本次范围有缺口"}
+              </>
+            )}
           </p>
           {answer.gaps.length > 0 && (
             <ul className="life-coverage-gaps">
               {answer.gaps.map((gap) => (
-                <li key={gap}>{gapNames[gap] ?? gap}</li>
+                <li key={gap}>
+                  {imagePreview && gap === "range_truncated"
+                    ? "图片预览尚未完整取得"
+                    : (gapNames[gap] ?? gap)}
+                </li>
               ))}
             </ul>
           )}
@@ -184,9 +218,11 @@ export function ContentViewer({
               </figure>
             ))}
           </div>
-          {answer.text === null && !answer.representations.length && (
-            <p>此范围没有取得可展示的正文或媒体。</p>
-          )}
+          {!imagePreview &&
+            answer.text === null &&
+            !answer.representations.length && (
+              <p>此范围没有取得可展示的正文或媒体。</p>
+            )}
         </article>
       )}
     </div>

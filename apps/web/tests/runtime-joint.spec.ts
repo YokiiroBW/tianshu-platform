@@ -42,9 +42,7 @@ test("real identity image reference persists and exposes readable workspace and 
   await page.reload();
   await page.getByRole("tab", { name: "衣柜与相册", exact: true }).click();
   await expect(identity).toContainText("当前参考：已配置");
-  await identity
-    .getByRole("button", { name: "读取此范围", exact: true })
-    .click();
+  await identity.getByRole("button", { name: "查看图片", exact: true }).click();
   await expect(
     identity.getByRole("img", { name: "原件图片", exact: true }),
   ).toBeVisible();
