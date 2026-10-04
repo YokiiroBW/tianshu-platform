@@ -450,6 +450,43 @@ class LivenessTests(ProbeTestCase):
 
 @unittest.skipUnless(runtime_available(), "TS013_TLS_PYTHON is not configured")
 class ReadinessTests(ProbeTestCase):
+    async def test_current_bot_delivery_queue_is_ready(self):
+        self.settings["principals"]["health-bot"] = {
+            "kind": "service",
+            "service": "platform",
+            "token_env": "TS100_HEALTH_BOT",
+            "actions": ["source.register", "source.dispatch", "mapping.prepare"],
+        }
+        self.settings["bot_connections"] = {"principal": "health-bot", "slots": {}}
+        with patch.dict(os.environ, {"TS100_HEALTH_BOT": "synthetic-health-bot-token"}):
+            await self.boot()
+            database = sqlite3.connect(self.platform.bots.path)
+            try:
+                self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertIsNotNone(
+                    database.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='expression_segments'"
+                    ).fetchone()
+                )
+            finally:
+                database.close()
+            response, document = await self.probe(READY)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(document["checks"]["sidecars"], "ok")
+        self.assertEqual(document["status"], "ready")
+
+    async def test_other_sidecars_do_not_accept_bot_queue_version(self):
+        await self.boot()
+        database = sqlite3.connect(self.settings["database_path"] + ".web-inputs.sqlite")
+        try:
+            database.execute("PRAGMA user_version=2")
+        finally:
+            database.close()
+        response, document = await self.probe(READY)
+        self.assertEqual(response.status, 503)
+        self.assertEqual(document["checks"]["sidecars"], "failed")
+        self.assertEqual(document["status"], "not_ready")
+
     async def test_readiness_requires_its_own_credential(self):
         await self.boot()
         missing, body = await self.probe(READY, token=None)
