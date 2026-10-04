@@ -20,24 +20,27 @@ from .auth import secret
 from .contracts import Fault, digest, loads, require
 from .diagnostics import AUTH_SUCCEEDED
 from .home import Home
+from .provider_management import ProviderManagement
 from .tasks import Tasks
 from .transport import CoreFault
 from .web_access import WebAccess
 from .web_access_settings import WebAccessSettings
 from .web_account import WebAccount, password_hash, validate_hash, verify_password
 from .web_assets import WebAssets
-from .web_dialogue import WebDialogue
-from .web_models import WebModels
-from .provider_management import ProviderManagement
-from .web_personas import WebPersonas
-from .web_persona_author import WebPersonaAuthor
-from .web_readers import WebReader
-from .web_life_management import WebLifeManagement
-from .web_weather import WebWeather
-from .web_memory import WebMemory
 from .web_connections import view as connections_view
+from .web_content import WebContent
+from .web_dialogue import WebDialogue
 from .web_external import WebExternal
+from .web_life_management import WebLifeManagement
+from .web_memory import WebMemory
+from .web_memory_links import WebMemoryLinks
+from .web_models import WebModels
+from .web_people_life import WebPeopleLife
+from .web_persona_author import WebPersonaAuthor
+from .web_personas import WebPersonas
+from .web_readers import WebReader
 from .web_sender import WebSender
+from .web_weather import WebWeather
 
 COOKIE = "tianshu_session"
 SESSION_TTL = 8 * 3600
@@ -194,6 +197,9 @@ class WebConsole:
         self.knowledge = WebReader("knowledge", platform, self)
         self.life = WebReader("life", platform, self)
         self.life_management = WebLifeManagement(platform, self)
+        self.content = WebContent(platform, self)
+        self.memory_links = WebMemoryLinks(platform, self)
+        self.people_life = WebPeopleLife(platform, self)
         self.weather = WebWeather(platform, self)
         self.memory = WebMemory(platform, self)
         self.role_runtime = platform.role_runtime
@@ -255,6 +261,12 @@ class WebConsole:
                     for actor_entry in entry["actor_entries"]:
                         try:
                             actor = p.auth.entry(db, actor_entry)
+                            role = p.role_runtime.get(actor["actor_id"])
+                            if role is not None and (
+                                not p.role_runtime.active(actor["actor_id"])
+                                or "dialogue" not in role["capabilities"]
+                            ):
+                                continue
                             p.auth.route(actor, "platform", "companion", "dialogue")
                             p.auth.route(actor, "companion", "memory", "dialogue")
                             actors.append(actor["actor_id"])
@@ -521,6 +533,11 @@ class WebConsole:
         require(session is not None, "session_expired", 401)
         csrf = request.headers.get("X-CSRF-Token", "")
         require(csrf.isascii() and hmac.compare_digest(csrf, session["csrf"]), "forbidden", 403)
+        if request.path.startswith("/api/web/content/upload/"):
+            require(await self.platform.local_work.run(self.session_valid, session), "session_expired", 401)
+            request[CONSOLE_AUTH] = AUTH_SUCCEEDED
+            result = await self.content.upload(request, session)
+            return web.json_response(result, headers={"Cache-Control": "no-store"})
         require(
             request.content_type == "application/json"
             and request.headers.get("Content-Encoding", "identity") == "identity",
@@ -534,7 +551,8 @@ class WebConsole:
                     data.extend(chunk)
                     require(
                         len(data)
-                        <= (262144 if request.path.startswith(PERSONAS_PREFIX) else 16384),
+                        <= (1048576 if request.path.startswith((LIFE_PREFIX + "runtime/", "/api/web/content/"))
+                            else 262144 if request.path.startswith(PERSONAS_PREFIX) else 16384),
                         "budget_exceeded",
                         413,
                     )
@@ -780,6 +798,32 @@ class WebConsole:
         if request.path == LIFE_PREFIX + "retry":
             result = await self.life_management.retry(body, session)
             return web.json_response(result)
+        if request.path.startswith(LIFE_PREFIX + "image-backend/"):
+            name = request.path[len(LIFE_PREFIX + "image-backend/"):]
+            result = await self.life_management.image_backend(name, body, session)
+            return web.json_response(result, headers={"Cache-Control": "no-store"})
+        if request.path.startswith("/api/web/content/"):
+            name = request.path[len("/api/web/content/"):]
+            result = await self.content.route(name, body, session)
+            if name == "original":
+                data, headers = result
+                return web.Response(body=data, headers=headers)
+            return web.json_response(result, headers={"Cache-Control": "no-store"})
+        if request.path.startswith("/api/web/memory-links/"):
+            result = await self.memory_links.route(request.path[len("/api/web/memory-links/"):], body, session)
+            return web.json_response(result, headers={"Cache-Control": "no-store"})
+        if request.path.startswith("/api/web/people-life/"):
+            result = await self.people_life.route(request.path[len("/api/web/people-life/"):], body, session)
+            return web.json_response(result, headers={"Cache-Control": "no-store"})
+        if request.path.startswith(LIFE_PREFIX + "runtime/"):
+            name = request.path[len(LIFE_PREFIX + "runtime/"):]
+            require(name in {"read", "manage", "media", "content"}, "not_found", 404)
+            result = await self.life_management.runtime(name, body, session)
+            if name == "media":
+                data, content_type, checksum = result
+                return web.Response(body=data, content_type=content_type,
+                                    headers={"Cache-Control": "no-store", "X-Content-SHA256": checksum})
+            return web.json_response(result, headers={"Cache-Control": "no-store"})
         if request.path.startswith(KNOWLEDGE_PREFIX) or request.path.startswith(LIFE_PREFIX):
             reader = self.knowledge if request.path.startswith(KNOWLEDGE_PREFIX) else self.life
             result = await reader.route(request.path, body, session)

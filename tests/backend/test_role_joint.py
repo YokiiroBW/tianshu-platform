@@ -180,6 +180,9 @@ class RoleJoint(WebJoint):
             provider_self_service=True,
         )
         path = self.directory / "gateway-settings.json"
+        configure = getattr(self, "configure_gateway", None)
+        if configure is not None:
+            configure(settings)
         path.write_text(json.dumps(asdict(settings)), "utf-8")
         sock = reserve()
         port = sock.getsockname()[1]

@@ -64,7 +64,7 @@ class WebDialogue:
             for r in rows
         ]
 
-    def selection(self, body):
+    def selection(self, body, *, dialogue=True):
         p = self.p
         c = p.settings["web"]
         require(body.get("conversation") in self.input_entries)
@@ -83,6 +83,11 @@ class WebDialogue:
             )
             require(actor_entry is not None)
             actor = p.auth.entry(db, actor_entry)
+            role = p.role_runtime.get(actor["actor_id"])
+            if dialogue and role is not None:
+                require(
+                    p.role_runtime.active(actor["actor_id"]) and "dialogue" in role["capabilities"]
+                )
             p.auth.route(actor, "platform", "companion", "dialogue")
             p.auth.route(actor, "companion", "memory", "dialogue")
             scope = p.origins.scope(db, actor)

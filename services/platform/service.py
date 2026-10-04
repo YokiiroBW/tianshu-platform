@@ -4,25 +4,25 @@ import hmac
 import time
 
 from . import diagnostics, diagnostics_config, runtime_health
-from .auth import Auth, secret
 from .assets import Assets, validate_connections, validate_page
+from .auth import Auth, secret
+from .bot_adapter_catalog import validate_configuration as validate_bot_adapter_configuration
+from .bots import Bots, validate_bot_settings
 from .contracts import Contracts, Fault, require
-from .models import Models, validate_max_lifetime
+from .external_catalog import validate_configuration as validate_external_configuration
 from .model_origin_renewal import enabled as model_origin_renewal_enabled
+from .models import Models, validate_max_lifetime
 from .origins import Origins
 from .persona_client import PersonaClient
 from .persona_page_config import connections as persona_connections
 from .persona_page_config import page_configuration
 from .projections import Projections
+from .sources import Sources
 from .storage import Store
 from .web_access import WebAccess
-from .external_catalog import validate_configuration as validate_external_configuration
 from .web_account import WebAccount
-from .web_readers import validate_readers
 from .web_memory import validate_memory_binding
-from .sources import Sources
-from .bots import Bots, validate_bot_settings
-from .bot_adapter_catalog import validate_configuration as validate_bot_adapter_configuration
+from .web_readers import validate_readers
 
 
 def log_state():
@@ -242,7 +242,7 @@ def validate_settings(settings):
 
         require(
             isinstance(role_runtime, dict)
-            and set(role_runtime) == {"enabled", "memory"}
+            and {"enabled", "memory"} <= set(role_runtime) <= {"enabled", "memory", "knowledge"}
             and type(role_runtime["enabled"]) is bool
             and settings.get("core") is not None
             and settings.get("web") is not None
@@ -251,6 +251,8 @@ def validate_settings(settings):
             400,
         )
         core_settings(role_runtime["memory"])
+        if role_runtime.get("knowledge") is not None:
+            core_settings(role_runtime["knowledge"])
     connections = persona_connections(
         settings.get("persona_connections"), contracts.check, credentials
     )
@@ -277,6 +279,12 @@ class Platform:
         self.sources = Sources(self.store, self.auth, self.contracts, self.origins, settings, clock)
         self.origins.input_entries = self.sources.entries
         self.settings = settings
+        from .memory_proofs import MemoryProofs
+
+        self.memory_proofs = MemoryProofs(self)
+        from .service_credentials import ServiceCredentials
+
+        self.service_credentials = ServiceCredentials(self)
         self.bots = Bots(self)
         self.models = Models(self.store, self.auth, self.contracts, self.origins, settings, clock)
         from .provider_catalog import ProviderCatalog

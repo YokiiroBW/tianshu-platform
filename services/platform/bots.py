@@ -93,14 +93,20 @@ class Bots:
             )
         )
         self.path = platform.store.path + ".bots.sqlite"
-        if config is None:
+        if config is None and not platform.settings.get("web"):
             return
         with closing(sqlite3.connect(self.path, timeout=5)) as db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
             require(
-                db.execute("PRAGMA user_version").fetchone()[0] in (0, 1),
+                version in (0, 1, 2),
                 "dependency_unavailable",
                 503,
             )
+            if version == 1:
+                with closing(
+                    sqlite3.connect(self.path + ".pre-delivery-" + uuid.uuid4().hex + ".sqlite")
+                ) as backup:
+                    db.backup(backup)
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS connections (
@@ -128,11 +134,17 @@ class Bots:
                     unknown_origin TEXT,
                     UNIQUE(conversation_id,actor_id,turn_id,segment_sequence)
                 );
-                PRAGMA user_version=1;
             """)
+        from .bot_delivery import Delivery
+
+        self.delivery = Delivery(self)
 
     def _db(self):
-        require(self.config is not None, "dependency_unavailable", 503)
+        require(
+            self.config is not None or self.p.settings.get("web") is not None,
+            "dependency_unavailable",
+            503,
+        )
         db = sqlite3.connect(self.path, timeout=5)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA synchronous=FULL")
@@ -458,9 +470,18 @@ class Bots:
     async def event(self, header, body):
         version = body.get("schema_version")
         base_fields = {
-            "schema_version", "connection_id", "platform_id", "self_id", "event_id",
-            "revision", "namespace", "conversation_id", "thread_id", "account_id",
-            "sent_at", "text",
+            "schema_version",
+            "connection_id",
+            "platform_id",
+            "self_id",
+            "event_id",
+            "revision",
+            "namespace",
+            "conversation_id",
+            "thread_id",
+            "account_id",
+            "sent_at",
+            "text",
         }
         require(
             set(body) == base_fields | ({"nickname", "group_card"} if version == 2 else set()),
@@ -482,14 +503,37 @@ class Bots:
         qq_id(body["account_id"])
         qq_id(body["self_id"])
         conversation = body["conversation_id"].split(":", 1)
-        require(len(conversation) == 2 and conversation[0] in {"group", "private"}, "invalid_input", 400)
+        require(
+            len(conversation) == 2 and conversation[0] in {"group", "private"}, "invalid_input", 400
+        )
         qq_id(conversation[1])
-        require(conversation[0] != "private" or conversation[1] == body["account_id"], "invalid_input", 400)
+        require(
+            conversation[0] != "private" or conversation[1] == body["account_id"],
+            "invalid_input",
+            400,
+        )
         if version == 2:
             require(conversation[0] == "group" or body["group_card"] is None, "invalid_input", 400)
             for value in (body["nickname"], body["group_card"]):
-                require(value is None or (type(value) is str and 1 <= len(value.strip()) <= 80 and all(ord(c) >= 32 and ord(c) != 127 and not 0x202A <= ord(c) <= 0x202E and not 0x2066 <= ord(c) <= 0x2069 for c in value)), "invalid_input", 400)
-            require(body["nickname"] is not None or body["group_card"] is not None, "invalid_input", 400)
+                require(
+                    value is None
+                    or (
+                        type(value) is str
+                        and 1 <= len(value.strip()) <= 80
+                        and all(
+                            ord(c) >= 32
+                            and ord(c) != 127
+                            and not 0x202A <= ord(c) <= 0x202E
+                            and not 0x2066 <= ord(c) <= 0x2069
+                            for c in value
+                        )
+                    ),
+                    "invalid_input",
+                    400,
+                )
+            require(
+                body["nickname"] is not None or body["group_card"] is not None, "invalid_input", 400
+            )
         require(
             isinstance(body["text"], str)
             and 1 <= len(body["text"].strip()) <= 8000
@@ -848,14 +892,26 @@ class Bots:
                 "UPDATE replies SET state='unknown',unknown_origin='lease',observed_at=? WHERE connection_id=? AND state='claimed' AND claimed_at<?",
                 (now, row["id"], now - 60),
             )
+            if db.execute(
+                "SELECT 1 FROM replies WHERE connection_id=? AND state='claimed' LIMIT 1",
+                (row["id"],),
+            ).fetchone():
+                # A second adapter poll cannot overtake an already claimed output batch.
+                db.commit()
+                return {"deliveries": []}
             pending = list(
                 db.execute(
-                    "SELECT * FROM replies WHERE connection_id=? AND state='pending' ORDER BY observed_at,reply_id LIMIT ?",
+                    "SELECT * FROM replies WHERE connection_id=? AND state='pending' ORDER BY observed_at,rowid LIMIT ?",
                     (row["id"], body["limit"]),
                 )
             )
             deliveries = []
+            batch_bytes = 0
             for reply in pending:
+                size = len(reply["request"].encode())
+                if deliveries and batch_bytes + size > 45 * 1024 * 1024:
+                    break
+                batch_bytes += size
                 db.execute(
                     "UPDATE replies SET state='claimed',claimed_at=? WHERE reply_id=? AND state='pending'",
                     (now, reply["reply_id"]),
@@ -874,6 +930,10 @@ class Bots:
                         "segment_sequence": request["segment_sequence"],
                     }
                 )
+                if request.get("content_refs"):
+                    deliveries[-1]["content_refs"] = request["content_refs"]
+                if request.get("media"):
+                    deliveries[-1]["media"] = request["media"]
             db.execute("UPDATE connections SET last_seen_at=? WHERE id=?", (now, row["id"]))
             db.commit()
         return {"deliveries": deliveries}
@@ -914,6 +974,12 @@ class Bots:
         require((body["state"] == "sent") == bool(ids), "invalid_input", 400)
         with closing(self._db()) as db:
             db.execute("BEGIN IMMEDIATE")
+            if db.execute(
+                "SELECT 1 FROM expression_segments WHERE reply_id=?", (body["reply_id"],)
+            ).fetchone():
+                require(
+                    len(ids) <= 16 and all(len(item) <= 128 for item in ids), "invalid_input", 400
+                )
             self._authenticate(db, header, body["connection_id"], settlement=True)
             row = db.execute(
                 "SELECT * FROM replies WHERE reply_id=? AND connection_id=?",

@@ -20,7 +20,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .contracts import Fault, canonical, require
 
-
 PROTOCOL = "openai-chat-completions"
 TEST_CODES = frozenset(
     {
@@ -47,6 +46,24 @@ TEST_ERROR_CODES = frozenset(
         "dependency_unavailable",
     }
 )
+
+
+def model_capabilities(document):
+    """What this exact catalog revision proved; unknown capabilities remain usable."""
+    test = document.get("test")
+    tested = bool(
+        test and test["revision"] == document["revision"] and test["outcome"] == "succeeded"
+    )
+    return {
+        "verification_source": "provider_test" if tested else "not_verified",
+        "capabilities": {
+            name: {
+                "native": True,
+                "verification": "verified" if tested and name == "text" else "unverified",
+            }
+            for name in ("text", "stream", "tools", "vision", "reasoning")
+        },
+    }
 
 
 def validate_test_diagnostic(diagnostic):

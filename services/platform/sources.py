@@ -16,6 +16,7 @@ class Sources:
     def __init__(self, store, auth, contracts, origins, settings, clock):
         self.store, self.auth, self.contracts = store, auth, contracts
         self.origins, self.clock = origins, clock
+        self.association_consent = None
         self.entries = copy.deepcopy(settings.get("input_entries", {}))
         self.core = copy.deepcopy(settings.get("core"))
         if self.core is not None:
@@ -151,6 +152,8 @@ class Sources:
                     expires,
                 ),
             )
+            if self.association_consent is not None:
+                self.association_consent(db, entry_id, entry, data)
             return {
                 "assertion_ref": ref,
                 "expires_at": utc(expires),

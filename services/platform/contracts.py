@@ -10,11 +10,17 @@ from pathlib import Path
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 from referencing import Registry, Resource
 
-MANIFEST_SHA256 = "81e6cc4ddef7c6f82e055d4cb04b090db036dd5c52763473ce697aa02db478a1"
-SOURCE_SHA256 = "178d0ce66210bdfad4cfb85d8b5f0905b0b67f834e2a530efe5636ff0373633d"
-NATIVE_SHA256 = "52711a71de56dbceebd1d5d96b2baf59a2d9551168029972d59111480f815141"
-WEB_SHA256 = "e493a1b5d0f4cec8d55995553faf84042f4c33a59365d15423e57f4dc70a6c09"
+MANIFEST_SHA256 = "90697e6ecbb587d3db8c8e4682f7f8f43a8b1a98f70d8835c8282b03828d2d3a"
+SOURCE_SHA256 = "6d5c417c2e407aaf055151c1a3639d3b4e2ce4ad7da999f95273b6fcbf487370"
+NATIVE_SHA256 = "832abdbfbbb49d71bffc0aabdd816f4de92d892680f26cc5f05402e397d34262"
+WEB_SHA256 = "3ccb44c13f5969ce4cd279c51d14f58d95c9cd4e75ca85cd8d6af286b3db0417"
 LIFE_SHA256 = "7be7507d58f897a739b269de3c096ba948c92b25266888a91fa50130d342c551"
+RUNTIME_PACKAGES = {
+    "life-runtime/v2": "ff7cbaf5bb9cf1330a11821c0e5f0eefb728a934e9fb8698c9b644e09f43042c",
+    "bot-delivery/v2": "fee57c68771631eba45bb4d7a9e4666c00209adf61786616968f7ac680c9f295",
+    "memory-context/v1": "d44a23ac674d5fd3f8e9325c80884dc1426305055b873be1da239f126056e570",
+    "knowledge-content/v1": "beecd2f75b09df089f7d20c10c1ba39cdaa79c5ba78b8db702ef5005129e9199",
+}
 
 
 class Fault(Exception):
@@ -135,6 +141,47 @@ class Contracts:
             self.rules.__dict__,
         )
         self.registry = Registry().with_resources(resources)
+        self.root = root.parents[1]
+        self.loaded_packages = set()
+
+    def load_runtime(self, package):
+        """Load each formally published extension once; no candidate or remote schemas."""
+        if package in self.loaded_packages:
+            return
+        root = self.root / package
+        manifest_raw = (root / "manifest.json").read_bytes().replace(b"\r\n", b"\n")
+        require(
+            hashlib.sha256(manifest_raw).hexdigest() == RUNTIME_PACKAGES[package],
+            "dependency_unavailable",
+            503,
+        )
+        manifest = loads(manifest_raw)
+        for dependency, expected in manifest.get("dependencies", {}).items():
+            dependency = {"text-dialogue": "text-dialogue/v1", "source-sync": "source-sync/v1"}.get(dependency, dependency)
+            raw = (self.root / dependency / "manifest.json").read_bytes().replace(b"\r\n", b"\n")
+            require(hashlib.sha256(raw).hexdigest() == expected, "dependency_unavailable", 503)
+            if dependency in RUNTIME_PACKAGES:
+                self.load_runtime(dependency)
+        for name, expected in manifest["sha256"].items():
+            raw = (root / name).read_bytes().replace(b"\r\n", b"\n")
+            require(hashlib.sha256(raw).hexdigest() == expected, "dependency_unavailable", 503)
+            if name.startswith("schemas/") or name == "schema.json":
+                schema = loads(raw)
+                self.registry = self.registry.with_resource(
+                    schema["$id"], Resource.from_contents(schema)
+                )
+            elif name == "dependencies/platform-credential.json":
+                self.image_credential_schema = loads(raw)
+        self.loaded_packages.add(package)
+
+    def check_image_credential(self, kind, document):
+        self.load_runtime("life-runtime/v2")
+        try:
+            Draft202012Validator(
+                self.image_credential_schema[kind], format_checker=FormatChecker()
+            ).validate(document)
+        except ValidationError:
+            raise Fault() from None
 
     def load_life(self, directory):
         root = Path(directory)
@@ -175,6 +222,14 @@ class Contracts:
             package, file = "model-protocol/v1", "model"
         if family == "life-read":
             package, file = "life-read/v1", "life"
+        if family in {"life-runtime", "bot-delivery", "memory-context", "knowledge-content"}:
+            package, file = {
+                "life-runtime": ("life-runtime/v2", "life"),
+                "bot-delivery": ("bot-delivery/v2", "delivery"),
+                "memory-context": ("memory-context/v1", "schema"),
+                "knowledge-content": ("knowledge-content/v1", "schema"),
+            }[family]
+            self.load_runtime(package)
         try:
             Draft202012Validator(
                 {"$ref": f"https://contracts.tianshu.invalid/{package}/{file}.json#/$defs/{kind}"},

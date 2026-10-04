@@ -33,8 +33,8 @@ class Catalog:
     def view(self):
         return {
             "providers": [
-                {"provider_id": "provider-a", "name": "Provider A", "revision": 2, "model_id": "model-a", "ready": True},
-                {"provider_id": "provider-b", "name": "Provider B", "revision": 4, "model_id": "model-b", "ready": True},
+                {"provider_id": "provider-a", "name": "Provider A", "revision": 2, "model_id": "model-a", "ready": True, "protocol": "openai-chat-completions"},
+                {"provider_id": "provider-b", "name": "Provider B", "revision": 4, "model_id": "model-b", "ready": True, "protocol": "openai-chat-completions"},
             ],
             "default": {"configured": True, "provider_id": "provider-a", "provider_revision": 2},
         }
@@ -599,7 +599,7 @@ def test_role_stage_sqlite_wait_keeps_loop_responsive_and_retryable(tmp_path):
     asyncio.run(scenario())
 
 
-def test_running_role_without_dialogue_does_not_require_a_model_or_receive_web_binding(tmp_path):
+def test_running_role_without_dialogue_has_stable_life_source_without_a_model(tmp_path):
     async def scenario():
         platform, manager, console, peers = fixture(tmp_path)
         platform.provider_catalog.view = lambda: {"providers": [], "default": {"configured": False}}
@@ -610,6 +610,11 @@ def test_running_role_without_dialogue_does_not_require_a_model_or_receive_web_b
         assert peers.roles[role["actor_id"]]["capabilities"] == []
         assert peers.roles[role["actor_id"]]["enabled"] is True
         assert manager.active(role["actor_id"])
-        assert console.input_entries == ["web-input"]
-        assert not any(key.startswith("role-") for key in platform.auth.entries)
+        derived = [key for key in platform.auth.entries if key.startswith("role-")]
+        assert len(derived) == 1
+        assert platform.auth.entries[derived[0]]["actor_id"] == role["actor_id"]
+        assert any(
+            derived[0] in platform.sources.entries[source]["actor_entries"]
+            for source in console.input_entries
+        )
     asyncio.run(scenario())

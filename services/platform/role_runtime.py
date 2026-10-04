@@ -10,7 +10,6 @@ from contextlib import closing
 from .contracts import Fault, canonical, digest, require
 from .transport import core_settings, management_call
 
-
 PREFIX = "/api/web/roles/"
 CAPABILITIES = frozenset({"dialogue", "memory.read", "memory.write", "direct"})
 
@@ -25,12 +24,14 @@ class RoleRuntime:
             return
         require(
             isinstance(self.config, dict)
-            and set(self.config) == {"enabled", "memory"}
+            and {"enabled", "memory"} <= set(self.config) <= {"enabled", "memory", "knowledge"}
             and type(self.config["enabled"]) is bool,
             "invalid_input",
             400,
         )
         core_settings(self.config["memory"])
+        if self.config.get("knowledge") is not None:
+            core_settings(self.config["knowledge"])
         require(platform.settings.get("core") is not None, "invalid_input", 400)
         require(platform.provider_catalog is not None, "invalid_input", 400)
         with closing(self._db()) as db, db:
@@ -44,7 +45,11 @@ class RoleRuntime:
             rows = db.execute("SELECT actor_id,body FROM roles").fetchall()
             for actor, document in rows:
                 row = json.loads(document)
-                if row["state"] == "active":
+                if row["state"] == "active" or (
+                    row["state"] == "disabled"
+                    and self.config.get("knowledge") is not None
+                    and row.get("knowledge_version") is None
+                ):
                     row["state"] = "pending"
                     row["stage"] = "verify"
                     db.execute("UPDATE roles SET body=? WHERE actor_id=?", (canonical(row), actor))
@@ -112,7 +117,7 @@ class RoleRuntime:
         return "role-" + digest([actor, source_id])[:32]
 
     def _install_web(self, row):
-        if not row["enabled"] or row["state"] != "active" or "dialogue" not in row["capabilities"]:
+        if not row["enabled"] or row["state"] != "active":
             return
         web = self.p.settings.get("web")
         if web is None:
@@ -156,6 +161,38 @@ class RoleRuntime:
     async def _remote(self, settings, path, payload):
         # Kept as the coordinator's fault-injection seam for durable-stage tests.
         return await management_call(settings, path, payload)
+
+    async def _knowledge_apply(self, row, *, enabled, cancelling=False):
+        """Synchronize the independent original owner's existing RoleGrants journal."""
+        settings = self.config.get("knowledge")
+        if settings is None:
+            return
+        key = "cancel_knowledge_body" if cancelling else "knowledge_body"
+        if key not in row:
+            status = await self._remote(
+                settings,
+                "/internal/v1/role-runtime/authorize",
+                {"operation": "status", "actor_id": row["actor_id"]},
+            )
+            row[key] = {
+                "request_id": row["client_id"]
+                + (f":cancel-knowledge:{row['cancel_epoch']}" if cancelling else ":knowledge"),
+                "actor_id": row["actor_id"],
+                "expected_version": status["version"],
+                "enabled": enabled,
+                "legacy": row["legacy"],
+            }
+            await self.p.local_work.run(self._put, row)
+        try:
+            answer = await self._remote(settings, "/internal/v1/role-runtime/authorize", row[key])
+        except Fault as error:
+            if cancelling and error.code == "version_conflict":
+                row.pop(key)
+                row["cancel_epoch"] += 1
+                await self.p.local_work.run(self._put, row)
+            raise
+        row["knowledge_version"] = answer["version"]
+        await self.p.local_work.run(self._put, row)
 
     def _provider(self, row):
         if not row["enabled"] or "dialogue" not in row["capabilities"]:
@@ -219,6 +256,21 @@ class RoleRuntime:
                 "dependency_unavailable",
                 503,
             )
+            if self.config.get("knowledge") is not None:
+                if row.get("knowledge_version") is None:
+                    # Existing roles are enrolled in the separately deployed owner once.
+                    await self._knowledge_apply(row, enabled=row["enabled"])
+                status = await self._remote(
+                    self.config["knowledge"],
+                    "/internal/v1/role-runtime/authorize",
+                    {"operation": "status", "actor_id": actor},
+                )
+                require(
+                    status["version"] == row["knowledge_version"]
+                    and status["enabled"] == row["enabled"],
+                    "dependency_unavailable",
+                    503,
+                )
             row["stage"] = "complete"
             await self.p.local_work.run(self._put, row)
         if row["stage"] == "start":
@@ -248,6 +300,7 @@ class RoleRuntime:
             row["stage"] = "memory_applied"
             await self.p.local_work.run(self._put, row)
         if row["stage"] == "memory_applied":
+            await self._knowledge_apply(row, enabled=row["enabled"])
             await self.p.local_work.run(self._provider, row)
             row["stage"] = "provider_checked"
             await self.p.local_work.run(self._put, row)
@@ -356,6 +409,10 @@ class RoleRuntime:
                     raise Fault("dependency_unavailable", 503) from None
                 raise
             row["memory_version"] = answer["version"]
+            row["stage"] = "cancel_knowledge"
+            await self.p.local_work.run(self._put, row)
+        if row["stage"] == "cancel_knowledge":
+            await self._knowledge_apply(row, enabled=False, cancelling=True)
             row["stage"] = "complete"
             await self.p.local_work.run(self._put, row)
         if row["stage"] == "complete":
@@ -492,6 +549,7 @@ class RoleRuntime:
                 "profile_revision": old.get("profile_revision") if old else None,
                 "companion_version": old["companion_version"] if old else 0,
                 "memory_version": old["memory_version"] if old else 0,
+                "knowledge_version": old.get("knowledge_version") if old else None,
                 "legacy": old["legacy"] if old else body["actor_id"] is not None,
             }
             if old is not None and old["state"] == "active" and not body["enabled"]:
@@ -576,6 +634,8 @@ class RoleRuntime:
         name = path[len(PREFIX) :] if path.startswith(PREFIX) else ""
         require(name in {"view", "apply", "retry", "cancel"}, "not_found", 404)
         if name == "view":
+            from .provider_catalog import model_capabilities
+
             require(body == {}, "invalid_input", 400)
             companion = await self._remote(
                 self.p.settings["core"], "/internal/v1/role-runtime/manage", {"operation": "list"}
@@ -601,10 +661,14 @@ class RoleRuntime:
                         "model": p["model_id"],
                         "revision": p["revision"],
                         "available": self.p.provider_catalog._selectable(p),
+                        "protocol": p["protocol"],
+                        "model_capabilities": model_capabilities(p),
                     }
                     for p in providers["providers"]
                 ],
                 "default_available": providers["default"]["configured"],
+                "default_provider_id": providers["default"].get("provider_id"),
+                "default_provider_revision": providers["default"].get("provider_revision"),
                 "capabilities": ["dialogue", "memory.read", "memory.write"],
             }
         async with self.lock:

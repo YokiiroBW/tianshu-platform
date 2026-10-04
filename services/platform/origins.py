@@ -23,20 +23,19 @@ class Origins:
             identity, _ = self.auth.authenticate(header, db, "origin.issue")
             entry = self.auth.entry(db, entry_id)
             require(entry["owner"] == identity)
-            ref = "origin:" + uuid.uuid4().hex
-            expires = min(
-                self.clock() + entry["ttl_seconds"],
-                epoch(entry["expires_at"]) if "expires_at" in entry else float("inf"),
-            )
-            db.execute(
-                "INSERT INTO origins(ref,entry_id,entry_digest,expires_at) VALUES(?,?,?,?)",
-                (ref, entry_id, digest(entry), expires),
-            )
-            db.execute(
-                "INSERT INTO audit(principal,operation,object_id,observed_at) VALUES(?,?,?,?)",
-                (identity, "origin.issue", ref, self.clock()),
-            )
-            return {"assertion_ref": ref, "expires_at": utc(expires), "mode": self.auth.mode}
+            return self.issue_registered(db, identity, entry_id, entry)
+
+    def issue_registered(self, db, issuer, entry_id, entry):
+        """Persist a currently authorized registration; callers own the specific admission."""
+        ref = "origin:" + uuid.uuid4().hex
+        expires = min(self.clock() + entry["ttl_seconds"],
+                      epoch(entry["expires_at"]) if "expires_at" in entry else float("inf"))
+        require(expires > self.clock())
+        db.execute("INSERT INTO origins(ref,entry_id,entry_digest,expires_at) VALUES(?,?,?,?)",
+                   (ref, entry_id, digest(entry), expires))
+        db.execute("INSERT INTO audit(principal,operation,object_id,observed_at) VALUES(?,?,?,?)",
+                   (issuer, "origin.issue", ref, self.clock()))
+        return {"assertion_ref": ref, "expires_at": utc(expires), "mode": self.auth.mode}
 
     def scope(self, db, entry):
         identity = db.execute(

@@ -19,6 +19,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from .contracts import Fault, canonical, require
 
 
+def supported_kind(kind):
+    return kind in {"assets", "home", "weather"} or (
+        isinstance(kind, str) and kind.startswith("images:") and 1 <= len(kind[7:]) <= 128
+    )
+
+
 def validate_configuration(config, settings, *, existing=True):
     if config is None:
         return
@@ -40,7 +46,10 @@ def validate_configuration(config, settings, *, existing=True):
     except (ValueError, TypeError):
         raise Fault("invalid_input", 400) from None
     require(
-        all(network.is_private and not network.is_multicast and not network.is_link_local for network in networks),
+        all(
+            network.is_private and not network.is_multicast and not network.is_link_local
+            for network in networks
+        ),
         "invalid_input",
         400,
     )
@@ -117,11 +126,14 @@ class ExternalCatalog:
             self.cipher = AESGCM(self.key)
             with self._read() as db:
                 self._revision(db)
-                for kind, document, credential, ca, test, mac in db.execute("SELECT * FROM connections"):
-                    require(kind in {"assets", "home", "weather"}, "external_store_unavailable", 503)
+                for kind, document, credential, ca, test, mac in db.execute(
+                    "SELECT * FROM connections"
+                ):
+                    require(supported_kind(kind), "external_store_unavailable", 503)
                     require(
                         hmac.compare_digest(mac, self._mac(kind, document, credential, ca, test)),
-                        "external_store_unavailable", 503,
+                        "external_store_unavailable",
+                        503,
                     )
                     if credential is not None:
                         self._decrypt(credential, kind + ":credential")
@@ -145,8 +157,15 @@ class ExternalCatalog:
     def _mac(self, kind, document, credential, ca, test):
         return hmac.new(
             self.key,
-            canonical([kind, document, credential.hex() if credential else None,
-                       ca.hex() if ca else None, test]).encode(),
+            canonical(
+                [
+                    kind,
+                    document,
+                    credential.hex() if credential else None,
+                    ca.hex() if ca else None,
+                    test,
+                ]
+            ).encode(),
             hashlib.sha256,
         ).hexdigest()
 
@@ -157,7 +176,8 @@ class ExternalCatalog:
             and type(row[0]) is int
             and row[0] >= 0
             and self._decrypt(row[1], "seal") == f"external-catalog-v1:{row[0]}",
-            "external_store_unavailable", 503,
+            "external_store_unavailable",
+            503,
         )
         return row[0]
 
@@ -191,7 +211,8 @@ class ExternalCatalog:
                 self.key_file.is_file()
                 and not self.key_file.is_symlink()
                 and hmac.compare_digest(self.key_file.read_bytes(), self.key),
-                "external_store_unavailable", 503,
+                "external_store_unavailable",
+                503,
             )
             db = sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True, timeout=5)
             yield db
@@ -205,37 +226,48 @@ class ExternalCatalog:
         with self._read() as db:
             revision = self._revision(db)
             rows = {}
-            for kind, document, credential, ca, test, mac in db.execute("SELECT * FROM connections"):
+            for kind, document, credential, ca, test, mac in db.execute(
+                "SELECT * FROM connections"
+            ):
                 require(
                     hmac.compare_digest(mac, self._mac(kind, document, credential, ca, test)),
-                    "external_store_unavailable", 503,
+                    "external_store_unavailable",
+                    503,
                 )
                 rows[kind] = {
                     "value": json.loads(document),
-                    "credential": self._decrypt(credential, kind + ":credential") if credential else None,
+                    "credential": self._decrypt(credential, kind + ":credential")
+                    if credential
+                    else None,
                     "ca_pem": self._decrypt(ca, kind + ":ca") if ca else None,
                     "last_test": json.loads(test) if test else None,
                 }
             return revision, rows
 
     def save(self, kind, value, credential, ca, expected_revision, client_id):
-        require(kind in {"assets", "home", "weather"}, "invalid_input", 400)
+        require(supported_kind(kind), "invalid_input", 400)
         require(type(expected_revision) is int and expected_revision >= 0, "invalid_input", 400)
         try:
             require(str(uuid.UUID(client_id)) == client_id, "invalid_input", 400)
         except (ValueError, TypeError):
             raise Fault("invalid_input", 400) from None
         fingerprint = hmac.new(
-            self.key, canonical([kind, value, credential, ca, expected_revision]).encode(), hashlib.sha256
+            self.key,
+            canonical([kind, value, credential, ca, expected_revision]).encode(),
+            hashlib.sha256,
         ).hexdigest()
         with self._transaction() as db:
-            previous = db.execute("SELECT fingerprint,result FROM receipts WHERE id=?", (client_id,)).fetchone()
+            previous = db.execute(
+                "SELECT fingerprint,result FROM receipts WHERE id=?", (client_id,)
+            ).fetchone()
             if previous:
                 require(hmac.compare_digest(previous[0], fingerprint), "idempotency_conflict", 409)
                 return json.loads(previous[1])
             revision = self._revision(db)
             require(revision == expected_revision, "revision_conflict", 409)
-            row = db.execute("SELECT credential,ca FROM connections WHERE kind=?", (kind,)).fetchone()
+            row = db.execute(
+                "SELECT credential,ca FROM connections WHERE kind=?", (kind,)
+            ).fetchone()
 
             def selected(spec, index, identity):
                 action = spec["action"]
@@ -251,8 +283,13 @@ class ExternalCatalog:
             document = canonical({**value, "connection_revision": revision})
             db.execute(
                 "INSERT OR REPLACE INTO connections VALUES(?,?,?,?,NULL,?)",
-                (kind, document, chosen_credential, chosen_ca,
-                 self._mac(kind, document, chosen_credential, chosen_ca, None)),
+                (
+                    kind,
+                    document,
+                    chosen_credential,
+                    chosen_ca,
+                    self._mac(kind, document, chosen_credential, chosen_ca, None),
+                ),
             )
             db.execute(
                 "UPDATE metadata SET revision=?,seal=? WHERE id=1",
@@ -260,8 +297,15 @@ class ExternalCatalog:
             )
             # The catalog commit and the live adapter swap are separate steps. Only the web
             # route may claim applied after its sync succeeds.
-            result = {"revision": revision, "state": "saved_unverified", "applied": False, "kind": kind}
-            db.execute("INSERT INTO receipts VALUES(?,?,?)", (client_id, fingerprint, canonical(result)))
+            result = {
+                "revision": revision,
+                "state": "saved_unverified",
+                "applied": False,
+                "kind": kind,
+            }
+            db.execute(
+                "INSERT INTO receipts VALUES(?,?,?)", (client_id, fingerprint, canonical(result))
+            )
             return result
 
     def record_test(self, kind, revision, result):

@@ -10,12 +10,16 @@ import uuid
 
 from aiohttp import web
 
-from . import diagnostics, diagnostics_config, runtime_health
+from . import diagnostics, diagnostics_config, model_origin_renewal, runtime_health
+from .bot_delivery import PREFIX as DELIVERY_PREFIX
+from .bot_delivery import ROUTES as DELIVERY_ROUTES
 from .contracts import Fault, loads, require
-from . import model_origin_renewal
-from .service import registered_credentials
-from .web_console import CONSOLE_AUTH
+from .memory_proofs import ISSUE as PROOF_ISSUE
+from .memory_proofs import VERIFY as PROOF_VERIFY
 from .qq_admin import CHECK_PATH as QQ_ADMIN_CHECK
+from .service import registered_credentials
+from .service_credentials import PATH as SERVICE_CREDENTIALS
+from .web_console import CONSOLE_AUTH
 
 PLATFORM = web.AppKey("platform", object)
 BODY = web.RequestKey("body", dict)
@@ -165,7 +169,25 @@ def create_app(platform, probe=None, *, console=None, public=False):
             )
             try:
                 async with asyncio.timeout(5):
-                    raw = await request.read()
+                    limit = (
+                        45 * 1024 * 1024
+                        if request.path == DELIVERY_PREFIX + "send"
+                        else 1024 * 1024
+                    )
+                    if request.path == DELIVERY_PREFIX + "send":
+                        with platform.store.connect() as db:
+                            _, principal = platform.auth.authenticate(
+                                request.headers["Authorization"], db, "dialogue.send"
+                            )
+                            require(
+                                principal["kind"] == "service"
+                                and principal["service"] == "companion"
+                            )
+                    chunks = bytearray()
+                    async for chunk in request.content.iter_chunked(65536):
+                        chunks.extend(chunk)
+                        require(len(chunks) <= limit, "budget_exceeded", 413)
+                    raw = bytes(chunks)
             except TimeoutError:
                 raise Fault("timeout", 408) from None
             body = loads(raw)
@@ -176,7 +198,22 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 "/internal/v1/model-config/snapshot": "model#config_request",
                 "/internal/v1/conversation/send": "conversation#send_request",
                 REPLY_STATUS: "conversation#send_request",
+                PROOF_ISSUE: "memory-context#issue_request",
+                PROOF_VERIFY: "memory-context#proof_request",
             }.get(request.path)
+            delivery_call = request.path in DELIVERY_ROUTES and hasattr(platform.bots, "delivery")
+            if delivery_call:
+                operation = request.path[len(DELIVERY_PREFIX) :]
+                schema = (
+                    "bot-delivery#"
+                    + {
+                        "send": "send_request",
+                        "query": "lookup_request",
+                        "cancel": "lookup_request",
+                        "finalize": "finalize_request",
+                        "context": "context_request",
+                    }[operation]
+                )
             if request.path == "/internal/v1/source-access/read":
                 schema = {
                     "input": "sources#input_access_request",
@@ -196,6 +233,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 OBSERVATION_ADMIN_ENROLL,
             }
             qq_admin_call = request.path == QQ_ADMIN_CHECK
+            credential_call = request.path == SERVICE_CREDENTIALS
             require(
                 request.method == "POST"
                 and (
@@ -205,6 +243,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                     or bot_call
                     or observation_call
                     or qq_admin_call
+                    or credential_call
                 ),
                 "not_found",
                 404,
@@ -228,6 +267,9 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 require(len(raw) <= 4096, "budget_exceeded", 413)
             elif qq_admin_call:
                 require(len(raw) <= 4096, "budget_exceeded", 413)
+            elif credential_call:
+                require(len(raw) <= 4096, "budget_exceeded", 413)
+                platform.contracts.check_image_credential("request", body)
             else:
                 platform.contracts.check(schema, body)
             if not provider_call and not bot_call:
@@ -508,7 +550,41 @@ def create_app(platform, probe=None, *, console=None, public=False):
         }[path]
         return web.json_response(await platform.local_work.run(operation, header, body))
 
-    app = web.Application(middlewares=[boundary], client_max_size=1_048_576)
+    async def delivery_route(request):
+        operation = request.path[len(DELIVERY_PREFIX) :]
+        delivery = platform.bots.delivery
+        if operation == "send":
+            result = await platform.local_work.run(
+                delivery.send, request.headers["Authorization"], request[BODY]
+            )
+        elif operation == "context":
+            result = await platform.local_work.run(
+                delivery.context, request.headers["Authorization"], request[BODY]
+            )
+        else:
+            result = await platform.local_work.run(
+                delivery.control, request.headers["Authorization"], request[BODY], operation
+            )
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+    async def proof_route(request):
+        operation = (
+            platform.memory_proofs.issue
+            if request.path == PROOF_ISSUE
+            else platform.memory_proofs.verify
+        )
+        result = await platform.local_work.run(
+            operation, request.headers["Authorization"], request[BODY]
+        )
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+    async def credential_route(request):
+        result = await platform.local_work.run(
+            platform.service_credentials.resolve, request.headers["Authorization"], request[BODY]
+        )
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+    app = web.Application(middlewares=[boundary], client_max_size=45 * 1024 * 1024)
     app[PLATFORM] = platform
 
     if not public and platform.bot_adapters.catalog is not None:
@@ -589,6 +665,12 @@ def create_app(platform, probe=None, *, console=None, public=False):
             app.router.add_post(OBSERVATION_ADMIN_STATUS, observation_admin_status)
             app.router.add_post(OBSERVATION_ADMIN_ENROLL, observation_admin_enroll)
         app.router.add_post("/internal/v1/conversation/send", send)
+        app.router.add_post(PROOF_ISSUE, proof_route)
+        app.router.add_post(PROOF_VERIFY, proof_route)
+        app.router.add_post(SERVICE_CREDENTIALS, credential_route)
+        if hasattr(platform.bots, "delivery"):
+            for path in DELIVERY_ROUTES:
+                app.router.add_post(path, delivery_route)
         if platform.bots.config is not None:
             app.router.add_post(REPLY_STATUS, reply_status)
             for path in BOT_PATHS:
