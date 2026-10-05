@@ -5,6 +5,7 @@ import { ConnectionsPanel } from "./ConnectionsPanel";
 import { ExternalConnectionsPanel } from "./ExternalConnectionsPanel";
 import { BotAdapterPanel } from "./BotAdapterPanel";
 import { QQAdminPanel } from "./QQAdminPanel";
+import { SkillsPanel } from "./skills/SkillsPanel";
 import "./settings.css";
 
 const setupLinks = [
@@ -37,6 +38,11 @@ const setupLinks = [
     href: "#/settings/7",
     title: "QQ 管理身份",
     detail: "设置和撤销对话中的管理身份；回复权限在用户档案中管理。",
+  },
+  {
+    href: "#/settings/8",
+    title: "角色技能",
+    detail: "查看可用能力、技能来源与逐角色启停设置。",
   },
 ];
 
@@ -80,5 +86,6 @@ export default function SettingsPage({ section }: { section: number }) {
     return <ExternalConnectionsPanel key="assets" kind="assets" />;
   if (section === 5) return <ExternalConnectionsPanel key="home" kind="home" />;
   if (section === 7) return <QQAdminPanel />;
+  if (section === 8) return <SkillsPanel />;
   return <AccessPanel />;
 }

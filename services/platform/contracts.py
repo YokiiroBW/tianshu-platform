@@ -16,6 +16,7 @@ NATIVE_SHA256 = "832abdbfbbb49d71bffc0aabdd816f4de92d892680f26cc5f05402e397d3426
 WEB_SHA256 = "3ccb44c13f5969ce4cd279c51d14f58d95c9cd4e75ca85cd8d6af286b3db0417"
 LIFE_SHA256 = "7be7507d58f897a739b269de3c096ba948c92b25266888a91fa50130d342c551"
 RUNTIME_PACKAGES = {
+    "skills/v1": "0ad3a444e8bff26721c14664260d08b463feb3288a556364e1af35f3e277d0f2",
     "life-runtime/v2": "85aff438f91cb96876e259204b5a198e2fedaead56db64a2265aa520a59ea7e3",
     "image-backend/v1": "62e71dd2f42fb5b1376c439c362a555619da41cb7f7ae26d07acc1182b80ffbd",
     "bot-delivery/v2": "edec27d83b8b9427656096d45818d9db3665d8d7bd82cc796805e21ba35b757b",
@@ -158,7 +159,9 @@ class Contracts:
         )
         manifest = loads(manifest_raw)
         for dependency, expected in manifest.get("dependencies", {}).items():
-            dependency = {"text-dialogue": "text-dialogue/v1", "source-sync": "source-sync/v1"}.get(dependency, dependency)
+            dependency = {"text-dialogue": "text-dialogue/v1", "source-sync": "source-sync/v1"}.get(
+                dependency, dependency
+            )
             raw = (self.root / dependency / "manifest.json").read_bytes().replace(b"\r\n", b"\n")
             require(hashlib.sha256(raw).hexdigest() == expected, "dependency_unavailable", 503)
             if dependency in RUNTIME_PACKAGES:
@@ -172,7 +175,10 @@ class Contracts:
                     schema["$id"], Resource.from_contents(schema)
                 )
             elif name == "dependencies/platform-credential.json":
-                self.image_credential_schema = loads(raw)
+                if package == "skills/v1":
+                    self.skill_credential_schema = loads(raw)
+                else:
+                    self.image_credential_schema = loads(raw)
         self.loaded_packages.add(package)
 
     def check_image_credential(self, kind, document):
@@ -180,6 +186,15 @@ class Contracts:
         try:
             Draft202012Validator(
                 self.image_credential_schema[kind], format_checker=FormatChecker()
+            ).validate(document)
+        except ValidationError:
+            raise Fault() from None
+
+    def check_skill_credential(self, kind, document):
+        self.load_runtime("skills/v1")
+        try:
+            Draft202012Validator(
+                self.skill_credential_schema[kind], format_checker=FormatChecker()
             ).validate(document)
         except ValidationError:
             raise Fault() from None
@@ -223,13 +238,21 @@ class Contracts:
             package, file = "model-protocol/v1", "model"
         if family == "life-read":
             package, file = "life-read/v1", "life"
-        if family in {"life-runtime", "bot-delivery", "memory-context", "knowledge-content", "image-backend"}:
+        if family in {
+            "life-runtime",
+            "bot-delivery",
+            "memory-context",
+            "knowledge-content",
+            "image-backend",
+            "skills",
+        }:
             package, file = {
                 "life-runtime": ("life-runtime/v2", "life"),
                 "bot-delivery": ("bot-delivery/v2", "delivery"),
                 "memory-context": ("memory-context/v1", "schema"),
                 "knowledge-content": ("knowledge-content/v1", "schema"),
                 "image-backend": ("image-backend/v1", "image-backend"),
+                "skills": ("skills/v1", "schemas/skills"),
             }[family]
             self.load_runtime(package)
         try:

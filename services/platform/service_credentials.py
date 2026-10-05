@@ -6,7 +6,7 @@ configuration status and opaque references, never token-bearing catalog snapshot
 
 from urllib.parse import urlsplit
 
-from .contracts import require
+from .contracts import Fault, require
 from .external_catalog import ExternalCatalog
 from .web_external import _secret_change
 
@@ -35,6 +35,32 @@ def backend_origin(value):
     return value.rstrip("/")
 
 
+def skill_origin(value):
+    """Skills may fetch a manifest path; credentials remain bound to its origin."""
+    require(isinstance(value, str) and 1 <= len(value) <= 2048, "invalid_input", 400)
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        raise Fault("invalid_input", 400) from None
+    require(
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+        and "\\" not in value
+        and all(ord(char) > 32 for char in value)
+        and (port is None or 0 < port <= 65535),
+        "invalid_input",
+        400,
+    )
+    host = parsed.hostname.lower()
+    host = "[" + host + "]" if ":" in host else host
+    return parsed.scheme + "://" + host + (":" + str(port) if port is not None else "")
+
+
 class ServiceCredentials:
     def __init__(self, platform):
         self.p = platform
@@ -42,7 +68,14 @@ class ServiceCredentials:
         self.catalog = ExternalCatalog(config["directory"]) if config else None
 
     def resolve(self, header, request):
-        self.p.contracts.check_image_credential("request", request)
+        require(isinstance(request, dict), "invalid_input", 400)
+        skills = request.get("purpose") == "companion.skills"
+        check = (
+            self.p.contracts.check_skill_credential
+            if skills
+            else self.p.contracts.check_image_credential
+        )
+        check("request", request)
         with self.p.store.connect() as db:
             _, principal = self.p.auth.authenticate(header, db, "source.input")
             require(principal["kind"] == "service" and principal["service"] == "companion")
@@ -52,7 +85,7 @@ class ServiceCredentials:
             (
                 row
                 for kind, row in rows.items()
-                if kind.startswith("images:")
+                if kind.startswith("skills:" if skills else "images:")
                 and row["value"].get("credential_ref") == request["credential_ref"]
             ),
             None,
@@ -73,8 +106,87 @@ class ServiceCredentials:
             "credential_ref": request["credential_ref"],
             "token": row["credential"],
         }
-        self.p.contracts.check_image_credential("response", answer)
+        check("response", answer)
         return answer
+
+    @staticmethod
+    def _skill_key(actor, target, origin):
+        from .contracts import digest
+
+        return "skills:" + digest([actor, target, origin])
+
+    def view_skill(self, actor, target, current):
+        if self.catalog is None:
+            return {"credential_configured": False, "revision": None}
+        revision, rows = self.catalog.snapshot()
+        url = current.get("base_url") or current.get("manifest_url")
+        row = rows.get(self._skill_key(actor, target, skill_origin(url))) if url else None
+        configured = bool(
+            current.get("credential_configured")
+            and url
+            and row
+            and row["credential"]
+            and row["value"].get("base_url") == skill_origin(url)
+        )
+        return {"credential_configured": configured, "revision": revision}
+
+    def skill_reference(self, actor, target, url, credential, current):
+        """Reconstruct an owner replay without editing the credential catalog."""
+        from .contracts import digest
+
+        origin = skill_origin(url)
+        spec = _secret_change(credential)
+        if spec["action"] == "replace":
+            return "companion-skills:" + digest([actor, target, origin])[:40]
+        if spec["action"] == "clear" or self.catalog is None:
+            return None
+        _, rows = self.catalog.snapshot()
+        row = rows.get(self._skill_key(actor, target, origin))
+        old_url = current.get("base_url") or current.get("manifest_url")
+        if (
+            current.get("credential_configured")
+            and old_url
+            and skill_origin(old_url) == origin
+            and row
+            and row["credential"]
+            and row["value"].get("base_url") == origin
+        ):
+            return row["value"].get("credential_ref")
+        return None
+
+    def save_skill(self, actor, target, url, credential, revision, client_id, current):
+        """Use the existing catalog CAS; another actor or origin never supplies a token."""
+        require(self.catalog is not None, "external_store_unavailable", 503)
+        origin = skill_origin(url)
+        spec = _secret_change(credential)
+        reference = self.skill_reference(actor, target, url, credential, current)
+        current_revision, rows = self.catalog.snapshot()
+        row = rows.get(self._skill_key(actor, target, origin))
+        if spec["action"] == "keep":
+            if reference and row and row["credential"]:
+                spec = {"action": "replace", "value": row["credential"]}
+            elif row and row["credential"]:
+                # Keep encrypted bytes for explicit recovery; this new connection
+                # receives no reference and cannot consume the previous origin's key.
+                require(current_revision == revision, "revision_conflict", 409)
+                return None
+        self.catalog.save(
+            self._skill_key(actor, target, origin),
+            {
+                "base_url": origin,
+                # Registry owns role/source enablement. Existing operations must
+                # retain their credential after the skill stops accepting new calls.
+                "enabled": True,
+                "consumer": "companion",
+                "purpose": "companion.skills",
+                "credential_ref": reference,
+            },
+            spec,
+            {"action": "clear"},
+            revision,
+            client_id,
+        )
+        return reference
 
     def view(self, actor):
         if self.catalog is None:

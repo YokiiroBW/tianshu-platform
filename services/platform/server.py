@@ -269,7 +269,12 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 require(len(raw) <= 4096, "budget_exceeded", 413)
             elif credential_call:
                 require(len(raw) <= 4096, "budget_exceeded", 413)
-                platform.contracts.check_image_credential("request", body)
+                check = (
+                    platform.contracts.check_skill_credential
+                    if body.get("purpose") == "companion.skills"
+                    else platform.contracts.check_image_credential
+                )
+                check("request", body)
             else:
                 platform.contracts.check(schema, body)
             if not provider_call and not bot_call:

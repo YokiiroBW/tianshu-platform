@@ -153,6 +153,8 @@ class WebLifeManagement:
                 "image-backend/read",
                 "image-backend/manage",
                 "image-backend/compile",
+                "skills/read",
+                "skills/manage",
             },
             "invalid_input",
             400,
@@ -165,10 +167,9 @@ class WebLifeManagement:
         # Eight representations may each contain 2 MiB of decoded bytes. Base64
         # expands them by 4/3; retain the complete response or reject explicitly.
         image_backend = path.startswith("image-backend/")
+        skills = path.startswith("skills/")
         image_request = path == "manage" and payload.get("operation") == "image.request"
-        assisted = (
-            path == "image-backend/compile" and payload.get("assist_model") is True
-        ) or (
+        assisted = (path == "image-backend/compile" and payload.get("assist_model") is True) or (
             path == "image-backend/manage"
             and payload.get("operation") == "workflow.analyze"
             and payload.get("value", {}).get("assist_model") is True
@@ -180,7 +181,7 @@ class WebLifeManagement:
             32 * 1024 * 1024
             if binary or path == "content/read"
             else 4 * 1024 * 1024
-            if image_backend
+            if image_backend or skills
             else 1024 * 1024
         )
         try:
@@ -191,7 +192,7 @@ class WebLifeManagement:
             ) as client:
                 async with client.post(
                     config["base_url"].rstrip("/")
-                    + ("/internal/v1/" if image_backend else "/internal/v2/life/")
+                    + ("/internal/v1/" if image_backend or skills else "/internal/v2/life/")
                     + path,
                     json=payload,
                     headers={"Authorization": "Bearer " + token},
@@ -236,9 +237,11 @@ class WebLifeManagement:
                         )
                         return bytes(data), content_type, digest
                     answer = loads(bytes(data))
-                    if image_backend:
+                    if image_backend or skills:
                         try:
-                            self.p.contracts.check("image-backend#response", answer)
+                            self.p.contracts.check(
+                                ("skills" if skills else "image-backend") + "#response", answer
+                            )
                         except Fault:
                             raise Fault("invalid_upstream", 502) from None
                         require(

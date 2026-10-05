@@ -83,6 +83,7 @@ export const modules = [
       "家庭设备接入",
       "访问与域名",
       "QQ 管理身份",
+      "角色技能",
     ],
   },
 ] as const;
