@@ -146,6 +146,8 @@ export const stateNames: Record<string, string> = {
   not_configured: "未配置",
   disabled: "已停用",
   unreachable: "无法连接",
+  workflow_required: "等待选择工作流",
+  unsupported: "工作流暂不支持",
   sent: "已送达",
   sending: "发送中",
   partial: "部分送达",

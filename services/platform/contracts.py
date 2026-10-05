@@ -16,10 +16,11 @@ NATIVE_SHA256 = "832abdbfbbb49d71bffc0aabdd816f4de92d892680f26cc5f05402e397d3426
 WEB_SHA256 = "3ccb44c13f5969ce4cd279c51d14f58d95c9cd4e75ca85cd8d6af286b3db0417"
 LIFE_SHA256 = "7be7507d58f897a739b269de3c096ba948c92b25266888a91fa50130d342c551"
 RUNTIME_PACKAGES = {
-    "life-runtime/v2": "ff7cbaf5bb9cf1330a11821c0e5f0eefb728a934e9fb8698c9b644e09f43042c",
-    "bot-delivery/v2": "fee57c68771631eba45bb4d7a9e4666c00209adf61786616968f7ac680c9f295",
+    "life-runtime/v2": "85aff438f91cb96876e259204b5a198e2fedaead56db64a2265aa520a59ea7e3",
+    "image-backend/v1": "62e71dd2f42fb5b1376c439c362a555619da41cb7f7ae26d07acc1182b80ffbd",
+    "bot-delivery/v2": "edec27d83b8b9427656096d45818d9db3665d8d7bd82cc796805e21ba35b757b",
     "memory-context/v1": "d44a23ac674d5fd3f8e9325c80884dc1426305055b873be1da239f126056e570",
-    "knowledge-content/v1": "beecd2f75b09df089f7d20c10c1ba39cdaa79c5ba78b8db702ef5005129e9199",
+    "knowledge-content/v1": "75d210454102af5af505ec1f72d69cc7dfd344550f7cf90e70125c082fdf4cd7",
 }
 
 
@@ -222,12 +223,13 @@ class Contracts:
             package, file = "model-protocol/v1", "model"
         if family == "life-read":
             package, file = "life-read/v1", "life"
-        if family in {"life-runtime", "bot-delivery", "memory-context", "knowledge-content"}:
+        if family in {"life-runtime", "bot-delivery", "memory-context", "knowledge-content", "image-backend"}:
             package, file = {
                 "life-runtime": ("life-runtime/v2", "life"),
                 "bot-delivery": ("bot-delivery/v2", "delivery"),
                 "memory-context": ("memory-context/v1", "schema"),
                 "knowledge-content": ("knowledge-content/v1", "schema"),
+                "image-backend": ("image-backend/v1", "image-backend"),
             }[family]
             self.load_runtime(package)
         try:

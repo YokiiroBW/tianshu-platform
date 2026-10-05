@@ -1173,6 +1173,45 @@
 .life-chapter {
   margin-top: 20px;
 }
+.comfy-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+.comfy-bindings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.comfy-binding {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.comfy-binding label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.comfy-backend select,
+.comfy-backend input,
+.comfy-backend textarea {
+  min-width: 0;
+  max-width: 100%;
+}
+.comfy-backend pre,
+.comfy-preview pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 440px;
+  overflow: auto;
+}
+.comfy-character {
+  margin-top: 24px;
+}
+.comfy-change-list {
+  padding-left: 20px;
+}
 .life-content-reader {
   display: grid;
   gap: 14px;
@@ -1188,6 +1227,11 @@
   outline-offset: 3px;
 }
 @media (max-width: 720px) {
+  .comfy-sections,
+  .comfy-bindings,
+  .comfy-binding {
+    grid-template-columns: 1fr;
+  }
   .life-runtime-grid {
     grid-template-columns: 1fr;
   }

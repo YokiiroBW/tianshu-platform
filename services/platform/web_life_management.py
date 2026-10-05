@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import aiohttp
 
 from .contracts import Fault, loads, require
-from .transport import management_call
+from .transport import CoreFault, management_call
 
 
 class WebLifeManagement:
@@ -150,6 +150,9 @@ class WebLifeManagement:
                 "content/read",
                 "conversation/ensure",
                 "proactive/control",
+                "image-backend/read",
+                "image-backend/manage",
+                "image-backend/compile",
             },
             "invalid_input",
             400,
@@ -161,15 +164,35 @@ class WebLifeManagement:
         require(token is not None, "dependency_unavailable", 503)
         # Eight representations may each contain 2 MiB of decoded bytes. Base64
         # expands them by 4/3; retain the complete response or reject explicitly.
-        limit = 32 * 1024 * 1024 if binary or path == "content/read" else 1024 * 1024
+        image_backend = path.startswith("image-backend/")
+        image_request = path == "manage" and payload.get("operation") == "image.request"
+        assisted = (
+            path == "image-backend/compile" and payload.get("assist_model") is True
+        ) or (
+            path == "image-backend/manage"
+            and payload.get("operation") == "workflow.analyze"
+            and payload.get("value", {}).get("assist_model") is True
+        )
+        # One total budget covers the complete owner request, including any
+        # sequential model selection/adaptation inside it. There is no retry.
+        timeout = 120 if image_request or assisted else config.get("timeout_seconds", 10)
+        limit = (
+            32 * 1024 * 1024
+            if binary or path == "content/read"
+            else 4 * 1024 * 1024
+            if image_backend
+            else 1024 * 1024
+        )
         try:
             tls = ssl.create_default_context(cafile=config.get("ca_file"))
             async with aiohttp.ClientSession(
                 trust_env=False,
-                timeout=aiohttp.ClientTimeout(total=config.get("timeout_seconds", 10)),
+                timeout=aiohttp.ClientTimeout(total=timeout),
             ) as client:
                 async with client.post(
-                    config["base_url"].rstrip("/") + "/internal/v2/life/" + path,
+                    config["base_url"].rstrip("/")
+                    + ("/internal/v1/" if image_backend else "/internal/v2/life/")
+                    + path,
                     json=payload,
                     headers={"Authorization": "Bearer " + token},
                     ssl=tls,
@@ -213,6 +236,18 @@ class WebLifeManagement:
                         )
                         return bytes(data), content_type, digest
                     answer = loads(bytes(data))
+                    if image_backend:
+                        try:
+                            self.p.contracts.check("image-backend#response", answer)
+                        except Fault:
+                            raise Fault("invalid_upstream", 502) from None
+                        require(
+                            answer["request_id"] == payload["request_id"]
+                            and answer["actor_id"] == payload["actor_id"],
+                            "invalid_upstream",
+                            502,
+                        )
+                        return answer
                     schema = {
                         "read": "read_response",
                         "manage": "manage_response",
@@ -235,6 +270,10 @@ class WebLifeManagement:
                             item["credential_ref"] = None
                     return answer
         except (aiohttp.ClientError, ssl.SSLError, OSError, TimeoutError):
+            if image_request:
+                raise CoreFault(
+                    {"code": "dependency_unavailable", "execution_state": "unknown"}, 503
+                ) from None
             raise Fault("dependency_unavailable", 503) from None
 
     async def runtime(self, name, body, session):
@@ -356,15 +395,21 @@ class WebLifeManagement:
             return answer
 
     async def image_backend(self, name, body, session):
+        from .web_image_backend import WebImageBackend
+
+        if name in {"read", "manage", "compile", "status"} or (
+            name == "save"
+            and isinstance(body, dict)
+            and isinstance(body.get("value"), dict)
+            and set(body["value"]) == {"base_url", "enabled"}
+        ):
+            return await WebImageBackend(self).route(name, body, session)
         require(
             isinstance(body, dict) and isinstance(body.get("actor_id"), str), "invalid_input", 400
         )
         async with self.scoped_actor(body["actor_id"], session):
             await self.p.local_work.run(self.guard, session)
             credentials = self.p.service_credentials
-            if name == "status":
-                require(set(body) == {"actor_id"}, "invalid_input", 400)
-                return await self.p.local_work.run(credentials.view, body["actor_id"])
             require(
                 name == "save"
                 and set(body)

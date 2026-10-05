@@ -87,6 +87,94 @@ class ServiceCredentials:
             "revision": revision,
         }
 
+    @staticmethod
+    def _connection_row(rows, connection):
+        reference = connection.get("credential_ref")
+        if not reference or not connection.get("base_url"):
+            return None
+        return next(
+            (
+                row
+                for kind, row in rows.items()
+                if kind.startswith("images:")
+                and row["value"].get("credential_ref") == reference
+                and row["value"].get("base_url") == connection["base_url"]
+                and row["value"].get("consumer") == "companion"
+                and row["value"].get("purpose") == "companion.images"
+            ),
+            None,
+        )
+
+    def view_connection(self, connection):
+        if self.catalog is None:
+            return {"configured": False, "credential_configured": False, "revision": None}
+        revision, rows = self.catalog.snapshot()
+        row = self._connection_row(rows, connection)
+        return {
+            "configured": bool(connection.get("base_url")),
+            "credential_configured": bool(row and row["credential"]),
+            "revision": revision,
+        }
+
+    def save_connection(self, value, credential, expected_revision, client_id, connection):
+        """A shared connection keeps only the owner's exact current origin-bound secret."""
+        require(self.catalog is not None, "external_store_unavailable", 503)
+        from .contracts import digest
+
+        base_url = backend_origin(value["base_url"])
+        spec = _secret_change(credential)
+        revision, rows = self.catalog.snapshot()
+        current = self._connection_row(rows, connection)
+        shared = rows.get("images:connection")
+        if spec["action"] == "keep":
+            if current and current["credential"] and connection["base_url"] == base_url:
+                # The same conversion on replay keeps the catalog's durable receipt
+                # stable, including migration from an old actor-owned reference.
+                spec = {"action": "replace", "value": current["credential"]}
+            elif shared and shared["credential"]:
+                # A new origin must never receive the previous origin's token.
+                # Keep those encrypted bytes until an explicit replace/clear; the
+                # authoritative new connection uses no credential reference.
+                require(revision == expected_revision, "revision_conflict", 409)
+                return None
+        reference = (
+            "companion-images:" + digest(["connection", base_url])[:40]
+            if spec["action"] == "replace"
+            else None
+        )
+        self.catalog.save(
+            "images:connection",
+            {
+                "base_url": base_url,
+                "enabled": value["enabled"],
+                "consumer": "companion",
+                "purpose": "companion.images",
+                "credential_ref": reference,
+            },
+            spec,
+            {"action": "clear"},
+            expected_revision,
+            client_id,
+        )
+        return reference
+
+    def connection_reference(self, value, credential):
+        """Reconstruct only an existing request's reference, without mutating any secret."""
+        require(self.catalog is not None, "external_store_unavailable", 503)
+        from .contracts import digest
+
+        base_url = backend_origin(value["base_url"])
+        spec = _secret_change(credential)
+        if spec["action"] == "replace":
+            return "companion-images:" + digest(["connection", base_url])[:40]
+        if spec["action"] == "clear":
+            return None
+        _, rows = self.catalog.snapshot()
+        row = rows.get("images:connection")
+        if row and row["value"].get("base_url") == base_url and row["credential"]:
+            return row["value"].get("credential_ref")
+        return None
+
     def save(self, actor, value, credential, expected_revision, client_id):
         require(self.catalog is not None, "external_store_unavailable", 503)
         from .contracts import digest

@@ -1,12 +1,13 @@
 import { requestId } from "../../app/requestId";
 import { useEffect, useRef, useState } from "react";
-import {
-  integrationPost,
-  readFailure,
-  writeFailure,
-} from "../../app/integrationApi";
+import { readFailure } from "../../app/integrationApi";
 import { useDraftId, useLifeAction, useLifeResource } from "./useLifeRuntime";
 import { ContentAcquire } from "./ContentAcquire";
+import { ComfyBackendPanel } from "./ComfyBackendPanel";
+import { ImageDimensions } from "./ImageDimensions";
+import { compileComfy } from "./comfyApi";
+import { ComfyCompilePreview } from "./ComfyCompilePreview";
+import type { ComfyCompile } from "./comfyTypes";
 import { ContentViewer } from "./ContentViewer";
 import { ResourceFeedback, RuntimeFeedback } from "./RuntimeFeedback";
 import { originalImage, showState, type LifeAccess } from "./runtimeApi";
@@ -302,7 +303,8 @@ function ImageStudio({
 }) {
   const album = useLifeResource(access, "album"),
     jobs = useLifeResource(access, "image_jobs"),
-    backend = useLifeResource(access, "image_backend");
+    backend = useLifeResource(access, "image_backend"),
+    activities = useLifeResource(access, "activities");
   const action = useLifeAction(access, () => {
     jobs.refresh();
     album.refresh();
@@ -311,11 +313,49 @@ function ImageStudio({
   const albumDrafts = useRef(new Map<string, string>());
   const [scene, setScene] = useState(""),
     [outfit, setOutfit] = useState(""),
-    [reference, setReference] = useState("");
+    [reference, setReference] = useState(""),
+    [activity, setActivity] = useState("");
   const [width, setWidth] = useState(768),
     [height, setHeight] = useState(1024),
     [steps, setSteps] = useState(20),
-    [negative, setNegative] = useState("");
+    [negative, setNegative] = useState(""),
+    [pose, setPose] = useState(""),
+    [camera, setCamera] = useState(""),
+    [positive, setPositive] = useState(""),
+    [assist, setAssist] = useState(false);
+  const [preview, setPreview] = useState<ComfyCompile | null>(null),
+    [previewBusy, setPreviewBusy] = useState(false),
+    [previewError, setPreviewError] = useState("");
+  const previewRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => previewRequest.current?.abort(), []);
+  useEffect(() => {
+    setPreview(null);
+    setPreviewError("");
+    previewRequest.current?.abort();
+    setPreviewBusy(false);
+  }, [
+    scene,
+    outfit,
+    activity,
+    width,
+    height,
+    steps,
+    negative,
+    pose,
+    camera,
+    positive,
+    assist,
+  ]);
+  const intent = {
+    background: scene,
+    pose,
+    camera,
+    positive,
+    negative,
+    ...(outfit
+      ? { outfit: outfits.find((item) => item.id === outfit)?.prompt ?? "" }
+      : {}),
+  };
   useEffect(() => {
     if (!jobs.items.some((row) => ["queued", "running"].includes(row.state)))
       return;
@@ -329,13 +369,15 @@ function ImageStudio({
     const source = album.items.find((x) => x.id === reference);
     const answer = await action.run("image.request", {
       id: draft.id,
-      activity_id: null,
+      activity_id: activity || null,
       outfit_id: outfit || null,
       scene: scene || null,
       edit_source_id: null,
       scope: source?.scope ?? null,
       ...(source ? { edit_source_ref: source.content_ref, query: {} } : {}),
       parameters: { width, height, steps, negative },
+      intent,
+      assist_model: assist,
     });
     if (answer && answer.result.state !== "unknown") draft.reset();
   }
@@ -358,6 +400,22 @@ function ImageStudio({
               onChange={(e) => setScene(e.target.value)}
               maxLength={2000}
             />
+          </label>
+          <label>
+            关联日程或活动
+            <select
+              value={activity}
+              onChange={(e) => setActivity(e.target.value)}
+            >
+              <option value="">自由拍照</option>
+              {activities.items
+                .filter((item) => item.state !== "cancelled")
+                .map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+            </select>
           </label>
           <label>
             此次服装
@@ -386,35 +444,47 @@ function ImageStudio({
                 ))}
             </select>
           </label>
+          <label>
+            姿态与动作
+            <input
+              value={pose}
+              onChange={(e) => setPose(e.target.value)}
+              maxLength={2000}
+              placeholder="自然站立、坐在窗边阅读等"
+            />
+          </label>
+          <label>
+            镜头与构图
+            <input
+              value={camera}
+              onChange={(e) => setCamera(e.target.value)}
+              maxLength={2000}
+              placeholder="全身、半身、特写等"
+            />
+          </label>
+          <label>
+            补充细节
+            <input
+              value={positive}
+              onChange={(e) => setPositive(e.target.value)}
+              maxLength={2000}
+            />
+          </label>
+          <ImageDimensions
+            width={width}
+            height={height}
+            onChange={(w, h) => {
+              setWidth(w);
+              setHeight(h);
+            }}
+          />
           <div className="life-form-row">
-            <label>
-              宽度
-              <input
-                type="number"
-                min={256}
-                max={2048}
-                step={64}
-                value={width}
-                onChange={(e) => setWidth(Number(e.target.value))}
-              />
-            </label>
-            <label>
-              高度
-              <input
-                type="number"
-                min={256}
-                max={2048}
-                step={64}
-                value={height}
-                onChange={(e) => setHeight(Number(e.target.value))}
-              />
-            </label>
             <label>
               步数
               <input
                 type="number"
                 min={1}
-                max={100}
+                max={150}
                 value={steps}
                 onChange={(e) => setSteps(Number(e.target.value))}
               />
@@ -428,10 +498,55 @@ function ImageStudio({
               maxLength={4000}
             />
           </label>
+          <label className="life-check">
+            <input
+              type="checkbox"
+              checked={assist}
+              onChange={(e) => setAssist(e.target.checked)}
+            />
+            使用角色模型转译拍摄提示词
+          </label>
+          <button
+            type="button"
+            className="button"
+            disabled={previewBusy}
+            onClick={() => {
+              const control = new AbortController();
+              previewRequest.current?.abort();
+              previewRequest.current = control;
+              setPreviewBusy(true);
+              setPreviewError("");
+              void compileComfy(
+                access,
+                intent,
+                { width, height, steps },
+                assist,
+                control.signal,
+              )
+                .then((result) => {
+                  if (!control.signal.aborted) setPreview(result);
+                })
+                .catch((cause) => {
+                  if (!control.signal.aborted)
+                    setPreviewError(readFailure(cause));
+                })
+                .finally(() => {
+                  if (!control.signal.aborted) setPreviewBusy(false);
+                });
+            }}
+          >
+            {previewBusy ? "正在编译…" : "预览本次提示词与节点"}
+          </button>
           <button className="button primary" disabled={action.busy}>
             提交{reference ? "原图续作" : "创作"}
           </button>
         </form>
+        {previewError && (
+          <p role="alert" className="error-text">
+            {previewError}
+          </p>
+        )}
+        {preview && <ComfyCompilePreview result={preview} />}
         <RuntimeFeedback {...action} />
       </section>
       <section className="panel">
@@ -551,172 +666,7 @@ function ImageStudio({
           </button>
         )}
       </section>
-      <ImageBackend
-        access={access}
-        backend={backend.items[0] ?? null}
-        refreshed={backend.refresh}
-      />
+      <ComfyBackendPanel access={access} refreshed={backend.refresh} />
     </div>
-  );
-}
-
-function ImageBackend({
-  access,
-  backend,
-  refreshed,
-}: {
-  access: LifeAccess;
-  backend: import("./runtimeTypes").image_backend_record | null;
-  refreshed: () => void;
-}) {
-  const [url, setUrl] = useState(""),
-    [checkpoint, setCheckpoint] = useState(""),
-    [enabled, setEnabled] = useState(true),
-    [token, setToken] = useState("");
-  const [status, setStatus] = useState<{
-      revision: number | null;
-      credential_configured: boolean;
-    } | null>(null),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
-  const current = useRef<AbortController | null>(null),
-    pending = useRef<{ semantic: string; id: string } | null>(null);
-  useEffect(() => () => current.current?.abort(), []);
-  useEffect(() => {
-    setUrl(backend?.base_url ?? "");
-    setCheckpoint(backend?.checkpoint ?? "");
-    setEnabled(backend?.state !== "disabled");
-  }, [backend]);
-  useEffect(() => {
-    const control = new AbortController();
-    setToken("");
-    setStatus(null);
-    void integrationPost<typeof status>(
-      "life/image-backend/status",
-      { actor_id: access.actor },
-      access.csrf,
-      control.signal,
-    )
-      .then(setStatus)
-      .catch((cause) => {
-        if (!control.signal.aborted) setError(readFailure(cause));
-      });
-    return () => control.abort();
-  }, [access.actor, access.csrf]);
-  async function save(event: React.FormEvent) {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    const control = new AbortController();
-    current.current = control;
-    const body = {
-      actor_id: access.actor,
-      value: { base_url: url, profile: "standard_sd", checkpoint, enabled },
-      credential: token
-        ? { action: "replace", value: token }
-        : { action: "keep" },
-      catalog_revision: status?.revision ?? 0,
-      expected_version: backend?.version ?? 0,
-    };
-    const semantic = JSON.stringify(body);
-    if (pending.current?.semantic !== semantic)
-      pending.current = { semantic, id: requestId() };
-    try {
-      await integrationPost(
-        "life/image-backend/save",
-        { ...body, client_id: pending.current.id },
-        access.csrf,
-        control.signal,
-      );
-      if (control.signal.aborted) return;
-      pending.current = null;
-      setToken("");
-      setStatus(
-        await integrationPost<typeof status>(
-          "life/image-backend/status",
-          { actor_id: access.actor },
-          access.csrf,
-          control.signal,
-        ),
-      );
-      refreshed();
-    } catch (cause) {
-      if (!control.signal.aborted) setError(writeFailure(cause));
-    } finally {
-      if (!control.signal.aborted) setBusy(false);
-    }
-  }
-  return (
-    <section className="panel">
-      <h3>图像后端配置</h3>
-      <p className="muted">
-        使用现有 ComfyUI
-        的标准工作流。保存后查询实际模型列表；未安装服务时保持未配置状态。
-      </p>
-      <form className="life-form" onSubmit={save}>
-        <label>
-          后端地址
-          <input
-            type="url"
-            required
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="http://服务器:8188"
-          />
-        </label>
-        <label>
-          模型检查点
-          <input
-            required
-            list="image-checkpoints"
-            maxLength={128}
-            value={checkpoint}
-            onChange={(e) => setCheckpoint(e.target.value)}
-          />
-        </label>
-        <datalist id="image-checkpoints">
-          {backend?.models.map((model) => (
-            <option key={model} value={model} />
-          ))}
-        </datalist>
-        <label>
-          访问凭据
-          <input
-            type="password"
-            autoComplete="new-password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder={
-              status?.credential_configured
-                ? "已保存，留空保留"
-                : "无认证的后端可留空"
-            }
-          />
-        </label>
-        <label className="life-check">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />
-          启用此后端
-        </label>
-        <button className="button primary" disabled={busy}>
-          保存并应用配置
-        </button>
-        <button className="button" type="button" onClick={refreshed}>
-          查询实际后端
-        </button>
-      </form>
-      {error && (
-        <p role="alert" className="error-text">
-          {error}
-        </p>
-      )}
-      {backend?.error_code && (
-        <p className="error-text">后端查询：{backend.error_code}</p>
-      )}
-    </section>
   );
 }
