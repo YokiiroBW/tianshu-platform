@@ -25,7 +25,39 @@
   stroke-width: 1.5;
   filter: drop-shadow(0 5px 4px #eeb56330);
 }
-.life-weather-art.is-empty {
+.life-weather-art[data-night] {
+  background: radial-gradient(
+    circle at 40% 35%,
+    #e6eaff,
+    #d9ddf7 50%,
+    transparent 73%
+  );
+  color: #8382bd;
+}
+.life-weather-art[data-condition="fog"],
+.life-weather-art[data-condition="haze"],
+.life-weather-art[data-condition="overcast"] {
+  background: radial-gradient(
+    circle at 40% 35%,
+    #eef1f6,
+    #dce1ee 50%,
+    transparent 73%
+  );
+  color: #97a1b8;
+}
+.life-weather-art[data-condition="rain"],
+.life-weather-art[data-condition="sleet"],
+.life-weather-art[data-condition="snow"],
+.life-weather-art[data-condition="thunder"] {
+  background: radial-gradient(
+    circle at 40% 35%,
+    #edf2ff,
+    #dce6ff 50%,
+    transparent 73%
+  );
+  color: #879fc8;
+}
+.life-weather-art[data-condition="unknown"] {
   background: var(--color-selection);
   color: var(--color-muted);
 }
@@ -84,32 +116,7 @@
   color: var(--color-yellow);
   font-size: 13px;
 }
-.life-weather-dialog {
-  width: min(560px, calc(100vw - 32px));
-  max-height: calc(100dvh - 40px);
-  overflow: auto;
-  box-sizing: border-box;
-  border: 1px solid var(--color-line);
-  border-radius: 24px;
-  padding: 28px;
-  background: var(--color-surface);
-  color: var(--color-text);
-  box-shadow: 0 30px 100px #25264740;
-}
-.life-weather-dialog::backdrop {
-  background: var(--color-backdrop);
-  backdrop-filter: blur(5px);
-}
-.life-weather-dialog header {
-  display: flex;
-  justify-content: space-between;
-  align-items: start;
-  gap: 16px;
-}
-.life-weather-dialog h2 {
-  margin: 8px 0 0;
-}
-.life-weather-dialog > p {
+.weather-settings > p {
   line-height: 1.7;
   font-size: 14px;
 }
@@ -183,14 +190,26 @@
   font-size: 12px;
   color: var(--color-muted);
 }
-.life-weather-dialog > a {
+.weather-settings-sources {
+  border-top: 1px solid var(--color-line);
+  padding-top: 18px;
+  margin-top: 18px;
+  overflow-wrap: anywhere;
+}
+.weather-settings-sources a,
+.weather-settings-sources button {
   font-size: 12px;
   color: var(--color-accent-text);
 }
+.weather-settings-sources button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
 @media (max-width: 600px) {
-  .life-weather-dialog {
-    padding: 20px;
-  }
   .life-weather-search {
     flex-wrap: wrap;
   }
@@ -222,11 +241,6 @@
 .life-overview .life-weather-reading strong.life-weather-empty {
   font-size: 1rem;
   white-space: normal;
-}
-.life-weather-copy .life-weather-attribution {
-  font-size: 10px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
 }
 @media (max-width: 600px) {
   .life-page .life-overview > .life-weather {

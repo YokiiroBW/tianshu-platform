@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { DetailTrigger, LifeDetailDialog, type LifeDetail } from "./LifeDetail";
 import { WeatherCard } from "./WeatherCard";
+import { DayPeriodArt } from "./DayPeriodArt";
+import { displayTime } from "./dayPeriod";
 import { integrationPost, readFailure } from "../../app/integrationApi";
 import { StatePanel } from "../../components/StatePanel";
 import { showMood } from "./lifeLabels";
@@ -344,25 +346,28 @@ export function DailyLife({
               actor={actor}
               csrf={csrf}
               onClockChange={setWeatherClock}
+              date={clockDate}
+              timezone={clockZone}
             />
             <div className="life-clock">
-              <strong>
-                {clockDate.toLocaleTimeString("zh-CN", {
-                  timeZone: clockZone,
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  hourCycle: "h23",
-                })}
-              </strong>
-              <small>
-                {clockDate.toLocaleDateString("zh-CN", {
-                  timeZone: clockZone,
-                  month: "long",
-                  day: "numeric",
-                  weekday: "long",
-                })}
-              </small>
-              <span className="life-clock-caption">{clockZone}</span>
+              <DayPeriodArt date={clockDate} timezone={clockZone} />
+              <div className="life-clock-copy">
+                <strong>
+                  {displayTime(clockDate, clockZone, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hourCycle: "h23",
+                  })}
+                </strong>
+                <small>
+                  {displayTime(clockDate, clockZone, {
+                    month: "long",
+                    day: "numeric",
+                    weekday: "long",
+                  })}
+                </small>
+                <span className="life-clock-caption">{clockZone}</span>
+              </div>
             </div>
             <div className="life-mood-overview">
               <span className="life-round-icon">

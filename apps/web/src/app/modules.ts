@@ -84,6 +84,7 @@ export const modules = [
       "访问与域名",
       "QQ 管理身份",
       "角色技能",
+      "位置与天气",
     ],
   },
 ] as const;

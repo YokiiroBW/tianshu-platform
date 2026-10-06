@@ -6,6 +6,7 @@ import { ExternalConnectionsPanel } from "./ExternalConnectionsPanel";
 import { BotAdapterPanel } from "./BotAdapterPanel";
 import { QQAdminPanel } from "./QQAdminPanel";
 import { SkillsPanel } from "./skills/SkillsPanel";
+import { WeatherPanel } from "./WeatherPanel";
 import "./settings.css";
 
 const setupLinks = [
@@ -43,6 +44,11 @@ const setupLinks = [
     href: "#/settings/8",
     title: "角色技能",
     detail: "查看可用能力、技能来源与逐角色启停设置。",
+  },
+  {
+    href: "#/settings/9",
+    title: "位置与天气",
+    detail: "配置天气连接，为角色选择天气位置和显示时区。",
   },
 ];
 
@@ -87,5 +93,6 @@ export default function SettingsPage({ section }: { section: number }) {
   if (section === 5) return <ExternalConnectionsPanel key="home" kind="home" />;
   if (section === 7) return <QQAdminPanel />;
   if (section === 8) return <SkillsPanel />;
+  if (section === 9) return <WeatherPanel />;
   return <AccessPanel />;
 }

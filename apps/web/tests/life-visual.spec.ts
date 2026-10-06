@@ -207,29 +207,16 @@ test("life overview and timeline remain readable on desktop and touch screens", 
   expect(errors).toEqual([]);
 });
 
-test("completed daily plans refresh in the background without unmounting weather settings", async ({
+test("completed daily plans refresh in the background while keeping the local clock", async ({
   page,
 }) => {
   await page.clock.install({ time: now });
   const { todayReads, errors } = await lifeFixture(page);
-  await page.getByRole("button", { name: "设置天气", exact: true }).click();
-  const settings = page.getByRole("dialog", { name: "位置与天气" });
-  await settings
-    .getByLabel("和风天气 API Host")
-    .fill("fixture.re.qweatherapi.com");
-  await settings
-    .getByLabel("API Key", { exact: true })
-    .fill("unsaved-key-during-background-refresh");
   const before = todayReads();
   await page.clock.runFor(31_000);
   await expect.poll(todayReads).toBeGreaterThan(before);
-  await expect(settings).toBeVisible();
-  await expect(settings.getByLabel("和风天气 API Host")).toHaveValue(
-    "fixture.re.qweatherapi.com",
-  );
-  await expect(settings.getByLabel("API Key", { exact: true })).toHaveValue(
-    "unsaved-key-during-background-refresh",
-  );
+  await expect(page.locator(".life-clock-copy > strong")).toHaveText("19:35");
+  await expect(page.locator(".life-weather")).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -274,7 +261,7 @@ test("QWeather setup keeps credentials private, respects location time and marks
             icon: "101",
             wind_scale: "2",
             observed_at: null,
-            attributions: ["QWeather"],
+            attributions: ["QWeather", "https://www.qweather.com/"],
           }
         : null,
     fetched_at: withWeather && selected ? now.toISOString() : null,
@@ -304,8 +291,12 @@ test("QWeather setup keeps credentials private, respects location time and marks
       return route.fulfill({ json: view(body.actor_id, name === "current") });
     });
   });
-  await page.getByRole("button", { name: "设置天气", exact: true }).click();
-  const settings = page.getByRole("dialog", { name: "位置与天气" });
+  await expect(page.locator(".life-weather a")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "设置天气", exact: true }),
+  ).toHaveCount(0);
+  await page.goto("/#/settings/9");
+  const settings = page.getByRole("region", { name: "位置与天气" });
   await settings
     .getByLabel("和风天气 API Host")
     .fill("fixture.re.qweatherapi.com");
@@ -331,7 +322,7 @@ test("QWeather setup keeps credentials private, respects location time and marks
   await settings
     .getByRole("button", { name: /纽约.*美国.*America\/New_York/ })
     .click();
-  await expect(settings).not.toBeVisible();
+  await expect(settings.getByRole("status")).toHaveText("天气位置已保存。");
   expect(calls.find((call) => call.name === "locations")?.body).toEqual({
     actor_id: "actor:chengxi",
     query: "纽约",
@@ -342,14 +333,23 @@ test("QWeather setup keeps credentials private, respects location time and marks
     expected_revision: 1,
     client_id: expect.any(String),
   });
+  await expect(settings.getByText(/数据归因：QWeather/)).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("weather-settings.png"),
+    fullPage: true,
+  });
+  await page.goto("/#/companion/1");
   const weather = page.locator(".life-weather");
+  await expect(weather.locator("a")).toHaveCount(0);
+  await expect(weather).not.toContainText("https://");
+  await expect(weather).not.toContainText("QWeather");
   await expect(weather.locator(".life-weather-reading")).toContainText("22°C");
   await expect(weather).toContainText("体感 20°C · 风力 2 级");
   await expect(weather).toContainText("多云");
   await expect(weather.locator(".life-weather-place")).toContainText(
     "10/03 07:35",
   );
-  await expect(page.locator(".life-clock > strong")).toHaveText("07:35");
+  await expect(page.locator(".life-clock-copy > strong")).toHaveText("07:35");
   await expect(page.locator(".life-clock-caption")).toHaveText(
     "America/New_York",
   );
@@ -364,21 +364,19 @@ test("QWeather setup keeps credentials private, respects location time and marks
     fullPage: true,
   });
 
-  // Closing an unsaved replacement must clear it; persisted keys are never read back.
-  await page.getByRole("button", { name: "位置与天气", exact: true }).click();
+  // Leaving settings clears an unsaved replacement; persisted keys are never read back.
+  await page.goto("/#/settings/9");
   await settings
     .getByLabel("API Key", { exact: true })
     .fill("discard-this-unsaved-key");
-  await settings.getByRole("button", { name: "关闭天气设置" }).click();
-  await page.getByRole("button", { name: "位置与天气", exact: true }).click();
+  await page.goto("/#/companion/1");
+  await page.goto("/#/settings/9");
   await expect(settings.getByLabel("API Key", { exact: true })).toHaveValue("");
-  await settings.getByRole("button", { name: "关闭天气设置" }).click();
+  await page.goto("/#/companion/1");
   expect(calls.filter((call) => call.name === "configure")).toHaveLength(1);
 
+  await expect(weather.locator(".life-weather-reading")).toContainText("22°C");
   failCurrent = true;
-  // Native dialog.close fires its close event asynchronously. Allow the React
-  // effect to resume background reads before simulating a later tab resume.
-  await expect(settings).not.toBeVisible();
   await page.evaluate(
     () =>
       new Promise<void>((resolve) =>
@@ -396,11 +394,149 @@ test("QWeather setup keeps credentials private, respects location time and marks
     "天气服务暂时无法连接",
   );
   await page.getByLabel("选择角色").selectOption("actor:xuese");
-  await expect(weather).toContainText("选择天气位置");
+  await expect(weather).toContainText("尚无天气位置");
   await expect(weather).not.toContainText("22°C");
-  await expect(page.locator(".life-clock > strong")).toHaveText("19:35");
+  await expect(page.locator(".life-clock-copy > strong")).toHaveText("19:35");
   await expect(page.locator(".life-clock-caption")).toHaveText("Asia/Shanghai");
   expect(errors).toEqual([]);
+});
+
+test.describe("server location display independent of browser timezone", () => {
+  test.use({ timezoneId: "America/Los_Angeles" });
+  test("weather conditions and seven periods follow the displayed local clock", async ({
+    page,
+  }, testInfo) => {
+    const location = {
+      id: "fixture-city",
+      name: "上海",
+      adm1: "上海",
+      adm2: "上海",
+      country: "中国",
+      tz: "Asia/Shanghai",
+      utc_offset: "+08:00",
+    };
+    let serverTime = Date.UTC(2026, 9, 3, 15, 35) / 1000;
+    let icon: string | undefined = "100";
+    let text = "晴";
+    const { errors } = await lifeFixture(page, async () => {
+      await page.route("**/api/web/weather/current", (route) =>
+        route.fulfill({
+          json: {
+            revision: 2,
+            can_manage: true,
+            configured: true,
+            credential_configured: true,
+            host: "fixture.re.qweatherapi.com",
+            location,
+            server_time: serverTime,
+            code: "ready",
+            weather: {
+              temp: "22",
+              feels_like: "20",
+              text,
+              icon,
+              wind_scale: "2",
+              observed_at: null,
+              attributions: ["https://www.qweather.com/"],
+            },
+            fetched_at: now.toISOString(),
+            stale: false,
+          },
+        }),
+      );
+    });
+    const clock = page.locator(".life-clock-copy > strong");
+    const weather = page.locator(".life-weather-art");
+    async function update(
+      hour: number,
+      code: string | null = "100",
+      condition = "晴",
+    ) {
+      serverTime = Date.UTC(2026, 9, 3, hour - 8, 35) / 1000;
+      icon = code ?? undefined;
+      text = condition;
+      const response = page.waitForResponse((item) =>
+        item.url().endsWith("weather/current"),
+      );
+      await page.evaluate(() =>
+        document.dispatchEvent(new Event("visibilitychange")),
+      );
+      await response;
+      await expect(clock).toHaveText(`${String(hour).padStart(2, "0")}:35`);
+    }
+    for (const [hour, period] of [
+      [0, "late-night"],
+      [5, "dawn"],
+      [7, "morning"],
+      [11, "noon"],
+      [13, "afternoon"],
+      [17, "dusk"],
+      [19, "night"],
+    ] as const) {
+      await update(hour);
+      await expect(page.locator(".life-period-art")).toHaveAttribute(
+        "data-period",
+        period,
+      );
+    }
+    await update(23);
+    await expect(weather.locator("svg")).toHaveClass(/lucide-moon/);
+    await expect(page.locator(".life-weather a")).toHaveCount(0);
+    await page.screenshot({
+      path: testInfo.outputPath("life-weather-night.png"),
+      fullPage: true,
+    });
+    for (const code of ["101", "102", "103", "151", "152", "153"]) {
+      await update(23, code, "多云");
+      await expect(weather.locator("svg")).toHaveClass(/lucide-cloud-moon/);
+    }
+    for (const code of ["101", "102", "103"]) {
+      await update(12, code, "多云");
+      await expect(weather.locator("svg")).toHaveClass(/lucide-cloud-sun/);
+    }
+    for (const [code, kind] of [
+      ["150", "clear"],
+      ["104", "overcast"],
+      ["305", "rain"],
+      ["304", "thunder"],
+      ["404", "sleet"],
+      ["405", "sleet"],
+      ["406", "snow"],
+      ["456", "snow"],
+      ["500", "fog"],
+      ["502", "haze"],
+      ["503", "dust"],
+      ["999", "unknown"],
+    ] as const) {
+      await update(23, code); // A known code takes priority even over conflicting text.
+      await expect(weather).toHaveAttribute("data-condition", kind);
+    }
+    await update(23, null, "雨夹雪");
+    await expect(weather).toHaveAttribute("data-condition", "sleet");
+    await update(23, null, "没有天气条件");
+    await expect(weather).toHaveAttribute("data-condition", "unknown");
+    // Bad IANA names can still display a valid provider offset, with the same art/time basis.
+    location.tz = "Invalid/Fixture";
+    location.utc_offset = "+09:30";
+    serverTime = at;
+    const response = page.waitForResponse((item) =>
+      item.url().endsWith("weather/current"),
+    );
+    await page.evaluate(() =>
+      document.dispatchEvent(new Event("visibilitychange")),
+    );
+    await response;
+    await expect(clock).toHaveText("21:05");
+    await expect(page.locator(".life-clock-caption")).toHaveText("UTC+09:30");
+    await expect(page.locator(".life-period-art")).toHaveAttribute(
+      "data-period",
+      "night",
+    );
+    await expect(page.locator(".life-schedule-heading")).toContainText(
+      "日程时区 Asia/Shanghai",
+    );
+    expect(errors).toEqual([]);
+  });
 });
 
 test("compact phase opens full source text by keyboard or touch and restores focus", async ({

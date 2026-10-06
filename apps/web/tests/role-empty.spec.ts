@@ -74,6 +74,10 @@ test("empty role directories stay blank without actor business requests", async 
   ).toBeVisible();
   await expect(page.getByLabel("选择角色")).toHaveValue("");
   await expect(page.getByLabel("选择角色")).toBeDisabled();
+  await page.goto("/#/settings/9");
+  await expect(page.getByLabel("选择角色")).toHaveValue("");
+  await expect(page.getByLabel("选择角色")).toBeDisabled();
+  await expect(page.getByLabel("和风天气 API Host")).toHaveCount(0);
   await page.goto("/#/memory/0");
   await expect(page.getByLabel("查看角色")).toHaveValue("");
   await expect(page.getByLabel("查看角色").locator("option")).toHaveText([""]);
