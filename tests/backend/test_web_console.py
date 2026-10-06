@@ -1,14 +1,15 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import aiohttp
 
 from fixtures import ENV, bearer, start_http
 from services.platform.server import create_app
 from services.platform.service import Platform
-from services.platform.web_console import COOKIE
+from services.platform.web_console import COOKIE, WebConsole
+from services.platform.web_memory import WebMemory
 from web_fixtures import PASSWORD, web_settings
 
 
@@ -21,7 +22,8 @@ class WebConsoleTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(env.stop)
         self.config = web_settings(self.temp.name)
         self.platform = Platform(self.config)
-        self.app = create_app(self.platform)
+        self.console = WebConsole(self.platform)
+        self.app = create_app(self.platform, console=self.console)
         self.runner, self.url = await start_http(self.app)
         self.config["web"]["origin"] = self.url
         self.addAsyncCleanup(self.runner.cleanup)
@@ -48,6 +50,109 @@ class WebConsoleTests(unittest.IsolatedAsyncioTestCase):
         return await self.post(
             "login", {"username": "synthetic-admin", "password": PASSWORD}, session["csrf"]
         )
+
+    async def test_bootstrap_role_is_not_a_browser_choice_but_other_static_roles_remain(self):
+        console = self.console
+        self.platform.auth.entries["actor-a"]["actor_id"] = "actor:household"
+        self.platform.sources.entries["input-entry"]["default_actor_ids"] = ["actor:household"]
+        await self.login()
+        session = (await self.get())[1]
+        self.assertEqual(session["conversations"][0]["actors"], ["actor:b"])
+        self.assertEqual(self.platform.auth.entries["actor-a"]["actor_id"], "actor:household")
+
+        self.platform.settings["web_memory"] = {"entry_id": "actor-a", "runtime_roles": True}
+        self.platform.auth.principals["admin"]["actions"].append("memory.read")
+        memory = WebMemory(self.platform, console)
+        self.assertEqual(memory.state()["roles"], [])
+        self.assertIsNone(memory.state()["actor_id"])
+        self.platform.auth.entries["actor-a"]["actor_id"] = "actor:ascii-no-label"
+        self.assertEqual(memory.state()["roles"][0]["label"], "actor:ascii-no-label")
+        self.assertEqual(memory.state()["actor_id"], "actor:ascii-no-label")
+
+    async def test_explicitly_adopted_bootstrap_role_remains_selectable(self):
+        self.platform.auth.entries["actor-a"]["actor_id"] = "actor:household"
+        role = {
+            "actor_id": "actor:household",
+            "name": "Chosen character",
+            "version": 1,
+            "operator": "admin",
+            "state": "active",
+            "enabled": True,
+            "capabilities": ["dialogue", "memory.read"],
+        }
+        self.platform.role_runtime.get = lambda actor: role if actor == role["actor_id"] else None
+        self.platform.role_runtime.active = lambda actor: actor == role["actor_id"]
+        self.platform.role_runtime.directory = lambda: [role]
+        self.platform.role_runtime.config = {"enabled": True}
+        self.console.dialogue.model_configured = lambda actor_id=None: False
+        await self.login()
+        self.assertEqual(
+            (await self.get())[1]["conversations"][0]["actors"], ["actor:household", "actor:b"]
+        )
+        self.platform.settings["web_memory"] = {"entry_id": "actor-a", "runtime_roles": True}
+        self.platform.auth.principals["admin"]["actions"].append("memory.read")
+        memory = WebMemory(self.platform, self.console)
+        self.assertEqual(memory.state()["roles"][0]["label"], "Chosen character")
+
+    async def test_life_role_directory_skips_a_bootstrap_only_first_page(self):
+        logged = await self.login()
+        reader = self.console.life
+        reader.route = AsyncMock(
+            side_effect=[
+                {
+                    "items": [{"actor_id": "actor:household"}],
+                    "next_after_actor_id": "actor:household",
+                },
+                {"items": [{"actor_id": "actor:role-a"}], "next_after_actor_id": "actor:role-a"},
+            ]
+        )
+        self.platform.role_runtime.directory = lambda: [
+            {"actor_id": "actor:role-a", "name": "Role A"}
+        ]
+        result = await self.post(
+            "life/actors", {"limit": 1, "after_actor_id": None}, logged["csrf"]
+        )
+        self.assertEqual(result["items"], [{"actor_id": "actor:role-a", "label": "Role A"}])
+        self.assertEqual(result["next_after_actor_id"], "actor:role-a")
+        self.assertEqual(
+            reader.route.await_args_list[1].args[1],
+            {"limit": 1, "after_actor_id": "actor:household"},
+        )
+        self.assertEqual(reader.route.await_count, 2)
+
+    async def test_empty_life_and_memory_directories_have_no_default_business_actor(self):
+        logged = await self.login()
+        reader = self.console.life
+        reader.route = AsyncMock(
+            return_value={"items": [{"actor_id": "actor:household"}], "next_after_actor_id": None}
+        )
+        result = await self.post(
+            "life/actors", {"limit": 20, "after_actor_id": None}, logged["csrf"]
+        )
+        self.assertEqual(result["items"], [])
+        self.assertEqual(reader.route.await_count, 1)
+        self.platform.auth.entries["actor-a"]["actor_id"] = "actor:household"
+        self.platform.settings["web_memory"] = {"entry_id": "actor-a", "runtime_roles": True}
+        memory = WebMemory(self.platform, self.console)
+        self.platform.auth.principals["admin"]["actions"].append("memory.read")
+        from services.platform.contracts import Fault
+
+        with self.assertRaises(Fault) as error:
+            memory._request("overview", {})
+        self.assertEqual(error.exception.code, "role_unavailable")
+        role = {
+            "actor_id": "actor:role-b",
+            "name": "Real role",
+            "operator": "admin",
+            "version": 2,
+            "state": "active",
+            "enabled": True,
+            "capabilities": ["memory.read"],
+        }
+        self.platform.role_runtime.directory = lambda: [role]
+        self.platform.role_runtime.config = {"enabled": True}
+        self.assertEqual(memory.state()["actor_id"], "actor:role-b")
+        self.assertEqual(memory._request("overview", {})[1:], ("actor:role-b", 2))
 
     async def test_real_login_rotation_static_and_logout(self):
         async with self.client.get(self.url + "/") as r:

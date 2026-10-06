@@ -21,6 +21,7 @@ from .contracts import Fault, digest, loads, require
 from .diagnostics import AUTH_SUCCEEDED
 from .home import Home
 from .provider_management import ProviderManagement
+from .role_runtime import is_placeholder_actor
 from .tasks import Tasks
 from .transport import CoreFault
 from .web_access import WebAccess
@@ -264,6 +265,8 @@ class WebConsole:
                         try:
                             actor = p.auth.entry(db, actor_entry)
                             role = p.role_runtime.get(actor["actor_id"])
+                            if is_placeholder_actor(actor["actor_id"], role):
+                                continue
                             if role is not None and (
                                 not p.role_runtime.active(actor["actor_id"])
                                 or "dialogue" not in role["capabilities"]
@@ -856,12 +859,28 @@ class WebConsole:
             if reader is self.life and request.path == LIFE_PREFIX + "actors":
                 roles = await self.platform.local_work.run(self.role_runtime.directory)
                 names = {row["actor_id"]: row["name"] for row in roles}
-                result["items"] = [
-                    {**item, "label": names[item["actor_id"]]}
-                    if item["actor_id"] in names
-                    else item
-                    for item in result["items"]
-                ]
+                managed = {row["actor_id"]: row for row in roles}
+
+                def project(page):
+                    return [
+                        {**item, "label": names[item["actor_id"]]}
+                        if item["actor_id"] in names
+                        else item
+                        for item in page["items"]
+                        if not is_placeholder_actor(item["actor_id"], managed.get(item["actor_id"]))
+                    ]
+
+                items = project(result)
+                # Only one reserved bootstrap ID exists. If it occupied the whole
+                # first page, advance once rather than hide the following real role.
+                if result["items"] and not items and result["next_after_actor_id"] is not None:
+                    result = await reader.route(
+                        request.path,
+                        {"limit": body["limit"], "after_actor_id": result["next_after_actor_id"]},
+                        session,
+                    )
+                    items = project(result)
+                result["items"] = items
             require(
                 await self.platform.local_work.run(self.session_valid, session),
                 "session_expired",

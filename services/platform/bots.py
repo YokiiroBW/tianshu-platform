@@ -10,6 +10,7 @@ from contextlib import closing, nullcontext
 
 from .auth import secret
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
+from .role_runtime import is_placeholder_actor
 
 
 def validate_bot_settings(settings, auth, sources, contracts):
@@ -323,7 +324,12 @@ class Bots:
                         "namespace": entry["channel"]["namespace"],
                         "conversation_id": entry["channel"]["channel_conversation_id"],
                         "actor_ids": [
-                            self.p.auth.entries[item]["actor_id"] for item in entry["actor_entries"]
+                            self.p.auth.entries[item]["actor_id"]
+                            for item in entry["actor_entries"]
+                            if not is_placeholder_actor(
+                                self.p.auth.entries[item]["actor_id"],
+                                self.p.role_runtime.get(self.p.auth.entries[item]["actor_id"]),
+                            )
                         ],
                         "registered_authors": len(entries),
                         "created": slot_id in rows,

@@ -16,6 +16,7 @@ import aiohttp
 
 from .auth import secret
 from .contracts import Fault, loads, require
+from .role_runtime import is_placeholder_actor
 from .web_readers import RESPONSE_LIMIT, WebReader, _cursor, _limit, _text
 
 PREFIX = "/api/web/memory/"
@@ -52,8 +53,12 @@ class WebMemory(WebReader):
     def state(self):
         answer = super().state()
         entry = self.platform.auth.entries.get(self.config["entry_id"]) if self.config else None
-        answer["actor_id"] = entry["actor_id"] if entry and self._authorized() else None
         answer["roles"] = self._directory() if entry and self._authorized() else []
+        default = entry["actor_id"] if entry else None
+        answer["actor_id"] = next(
+            (row["id"] for row in answer["roles"] if row["id"] == default),
+            answer["roles"][0]["id"] if answer["roles"] else None,
+        )
         return answer
 
     def _directory(self):
@@ -76,6 +81,8 @@ class WebMemory(WebReader):
         result = []
         for actor in actors:
             row = rows.get(actor)
+            if is_placeholder_actor(actor, row):
+                continue
             reason = None
             if row is not None:
                 if not p.role_runtime.config or not p.role_runtime.config["enabled"]:
@@ -91,7 +98,7 @@ class WebMemory(WebReader):
             result.append(
                 {
                     "id": actor,
-                    "label": row["name"] if row else "默认角色",
+                    "label": row["name"] if row else actor,
                     "version": row["version"] if row else 0,
                     "available": reason is None,
                     "reason": reason,
@@ -226,8 +233,11 @@ class WebMemory(WebReader):
         selected = "role_id" in body or "role_version" in body
         require(not selected or {"role_id", "role_version"} <= set(body), "invalid_input", 400)
         if not selected:
-            chosen = self.platform.auth.entries[self.config["entry_id"]]["actor_id"]
-            version = next((row["version"] for row in self._directory() if row["id"] == chosen), 0)
+            roles = self._directory()
+            require(roles, "role_unavailable", 403)
+            default = self.platform.auth.entries[self.config["entry_id"]]["actor_id"]
+            row = next((row for row in roles if row["id"] == default), roles[0])
+            chosen, version = row["id"], row["version"]
         else:
             chosen = _text(body["role_id"])
             version = body["role_version"]

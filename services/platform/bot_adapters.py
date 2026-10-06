@@ -16,6 +16,7 @@ import aiohttp
 from .auth import secret
 from .bot_adapter_catalog import BotAdapterCatalog
 from .contracts import Fault, digest, loads, require, utc
+from .role_runtime import is_placeholder_actor
 from .transport import core_settings
 from .web_external import _url
 from .web_external_net import PinnedResolver, assert_pins, reviewed_pins
@@ -211,7 +212,12 @@ class BotAdapters:
             return {
                 "available": available,
                 "unlocked": available and code == "ready",
-                "actors": self.config["actors"] + self.p.role_runtime.active_actors()
+                "actors": [
+                    item
+                    for item in self.config["actors"]
+                    if not is_placeholder_actor(item["id"], self.p.role_runtime.get(item["id"]))
+                ]
+                + self.p.role_runtime.active_actors()
                 if available
                 else [],
                 "connections": [

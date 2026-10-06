@@ -193,6 +193,8 @@ export default function MemoryPage({
 
   async function loadState() {
     if (!csrf) return;
+    const wasListed = state?.roles.some((item) => item.id === roleId);
+    const previousRoleId = roleId;
     clearResults();
     const controller = start();
     setState(null);
@@ -207,7 +209,15 @@ export default function MemoryPage({
       );
       if (!controller.signal.aborted) {
         setState(next);
-        setRoleId(readRolePreference(storageKey) || next.actor_id);
+        const remembered = readRolePreference(storageKey);
+        setRoleId(
+          next.roles.length === 0
+            ? null
+            : next.roles.some((item) => item.id === remembered) ||
+                (wasListed && remembered === previousRoleId)
+              ? remembered
+              : next.actor_id,
+        );
       }
     } catch (cause) {
       if (!controller.signal.aborted) setStateError(readFailure(cause));
@@ -427,7 +437,9 @@ export default function MemoryPage({
         {roleId && !role && (
           <option value={roleId}>原角色已不在授权列表</option>
         )}
-        {!roleId && <option value="">请选择角色</option>}
+        {!roleId && (
+          <option value="">{state.roles.length ? "请选择角色" : ""}</option>
+        )}
         {state.roles.map((item) => (
           <option key={item.id} value={item.id}>
             {item.label}

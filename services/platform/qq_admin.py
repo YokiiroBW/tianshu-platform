@@ -19,6 +19,7 @@ import aiohttp
 
 from .contracts import Fault, canonical, require
 from .auth import secret
+from .role_runtime import is_placeholder_actor
 
 WEB_PREFIX = "/api/web/qq-admin/"
 CHECK_PATH = "/internal/v1/qq-admin/check"
@@ -199,7 +200,10 @@ class QQAdmin:
         roles = {
             item["id"]: item["label"]
             for item in (self.p.settings.get("bot_adapter_self_service") or {}).get("actors", [])
-            if type(item) is dict and type(item.get("id")) is str and type(item.get("label")) is str
+            if type(item) is dict
+            and type(item.get("id")) is str
+            and type(item.get("label")) is str
+            and not is_placeholder_actor(item["id"], self.p.role_runtime.get(item["id"]))
         }
         roles.update({item["id"]: item["label"] for item in self.p.role_runtime.active_actors()})
         with closing(self._db()) as db:

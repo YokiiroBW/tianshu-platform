@@ -66,6 +66,12 @@ class MemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
         entry = self.config["entries"]["actor-a"]
         entry["routes"].append({"caller": "platform", "receiver": "memory", "purpose": "dialogue"})
         self.platform = Platform(self.config)
+        # Tests below supply the coordinator's directory without starting its DB.
+        # Keep individual role reads on that same synthetic ownership boundary.
+        self.platform.role_runtime.get = lambda actor: next(
+            (row for row in self.platform.role_runtime.directory() if row["actor_id"] == actor),
+            None,
+        )
         with self.platform.store.connect(write=True) as db:
             db.execute(
                 "INSERT INTO identities VALUES(?,?,?)",

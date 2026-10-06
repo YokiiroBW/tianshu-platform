@@ -372,21 +372,21 @@ export default function LifePage() {
           <span className="life-avatar">
             <Sparkles aria-hidden="true" />
           </span>
-          {actors.length > 0 && (
-            <label className="life-actor">
-              <span className="sr-only">选择角色</span>
-              <select
-                value={actor}
-                onChange={(event) => changeActor(event.target.value)}
-              >
-                {actors.map((row) => (
-                  <option key={row.actor_id} value={row.actor_id}>
-                    {row.label || row.actor_id}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+          <label className="life-actor">
+            <span className="sr-only">选择角色</span>
+            <select
+              value={actor}
+              disabled={actors.length === 0}
+              onChange={(event) => changeActor(event.target.value)}
+            >
+              {actors.length === 0 && <option value="" />}
+              {actors.map((row) => (
+                <option key={row.actor_id} value={row.actor_id}>
+                  {row.label || row.actor_id}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
         <div className="life-page-title">
           <h2>今天的生活</h2>

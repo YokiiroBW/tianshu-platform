@@ -165,7 +165,9 @@ export default function RoomPage() {
             value={life.actor}
             onChange={(e) => life.choose(e.target.value)}
           >
-            <option value="">选择已授权角色</option>
+            <option value="">
+              {life.actors.length ? "选择已授权角色" : ""}
+            </option>
             {life.actors.map((row) => (
               <option key={row.actor_id} value={row.actor_id}>
                 {row.label ?? row.actor_id}

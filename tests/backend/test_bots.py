@@ -97,6 +97,34 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
     async def _close(self):
         self.platform.close()
 
+    async def test_browser_bot_directories_hide_bootstrap_without_changing_existing_connections(
+        self,
+    ):
+        self.platform.auth.entries["bot-actor-1"]["actor_id"] = "actor:household"
+        before = self.platform.bots.view()["connections"]
+        self.assertEqual(self.platform.bots.view()["slots"][0]["actor_ids"], [])
+        self.settings["bot_adapter_self_service"] = {
+            "actors": [
+                {"id": "actor:household", "label": "Bootstrap"},
+                {"id": "actor:ascii", "label": "ASCII"},
+            ]
+        }
+        self.assertEqual(
+            self.platform.qq_admin._view()["roles"], [{"id": "actor:ascii", "label": "ASCII"}]
+        )
+        self.platform.role_runtime.get = lambda actor: (
+            {"actor_id": actor} if actor == "actor:household" else None
+        )
+        self.platform.role_runtime.active_actors = lambda: [
+            {"id": "actor:household", "label": "Adopted role"}
+        ]
+        self.assertEqual(self.platform.bots.view()["slots"][0]["actor_ids"], ["actor:household"])
+        self.assertIn(
+            {"id": "actor:household", "label": "Adopted role"},
+            self.platform.qq_admin._view()["roles"],
+        )
+        self.assertEqual(self.platform.bots.view()["connections"], before)
+
     def event(self, account="1001"):
         return {
             "schema_version": 1,

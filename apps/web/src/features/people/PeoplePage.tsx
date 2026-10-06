@@ -272,7 +272,7 @@ export default function PeoplePage({ section }: { section: number }) {
               saveRolePreference(storageKey, event.target.value);
             }}
           >
-            <option value="">选择角色</option>
+            <option value="">{memory?.roles.length ? "选择角色" : ""}</option>
             {memory?.roles.map((item) => (
               <option key={item.id} value={item.id}>
                 {item.label}

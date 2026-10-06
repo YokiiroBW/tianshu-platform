@@ -89,7 +89,8 @@ async function fixture(page: Page) {
         conversations: [],
         dialogue: { available: false, code: "not_configured", model: "" },
       };
-    else if (path === "life/actors")
+    else if (path === "life/actors") {
+      expect(body.limit).toBeLessThanOrEqual(50);
       response = {
         schema_version: 1,
         fictional: true,
@@ -99,7 +100,7 @@ async function fixture(page: Page) {
         ],
         next_after_actor_id: null,
       };
-    else if (path === "skills/credentials")
+    } else if (path === "skills/credentials")
       response = {
         revision,
         credential_configured: body.source_id

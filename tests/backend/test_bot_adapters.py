@@ -227,6 +227,27 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
     async def _close(self):
         self.platform.close()
 
+    async def test_browser_actor_directory_omits_only_unadopted_bootstrap(self):
+        self.settings["bot_adapter_self_service"]["actors"].append(
+            {"id": "actor:household", "label": "Bootstrap"}
+        )
+        from types import SimpleNamespace
+
+        console = SimpleNamespace(
+            config={"principal": "admin"}, session_valid=lambda _: True, clock=time.time
+        )
+        result = await self.platform.bot_adapters.route(
+            console, "/api/web/bot-adapters/view", {}, {}
+        )
+        self.assertEqual([item["id"] for item in result["actors"]], ["actor:a"])
+        self.platform.role_runtime.get = lambda actor: (
+            {"actor_id": actor} if actor == "actor:household" else None
+        )
+        result = await self.platform.bot_adapters.route(
+            console, "/api/web/bot-adapters/view", {}, {}
+        )
+        self.assertEqual([item["id"] for item in result["actors"]], ["actor:a", "actor:household"])
+
     async def _draft(self, conversation_id="999"):
         manager = self.platform.bot_adapters
         session = {}

@@ -65,7 +65,7 @@ export function SkillsPanel() {
         next_after_actor_id: string | null;
       }>(
         "life/actors",
-        { limit: 100, after_actor_id: after },
+        { limit: 50, after_actor_id: after },
         csrf,
         controller.signal,
       );
@@ -222,22 +222,21 @@ export function SkillsPanel() {
         <p className="muted">
           查看角色可以使用的能力，管理启停与来源。停用后角色不再发起新的对话或主动调用，已开始的任务和原有管理入口继续可用。
         </p>
-        {actors.length > 0 && (
-          <label>
-            选择角色
-            <select
-              value={actor}
-              disabled={busy}
-              onChange={(event) => selectActor(event.target.value)}
-            >
-              {actors.map((item) => (
-                <option key={item.actor_id} value={item.actor_id}>
-                  {item.label || item.actor_id}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+        <label>
+          选择角色
+          <select
+            value={actor}
+            disabled={busy || actors.length === 0}
+            onChange={(event) => selectActor(event.target.value)}
+          >
+            {actors.length === 0 && <option value="" />}
+            {actors.map((item) => (
+              <option key={item.actor_id} value={item.actor_id}>
+                {item.label || item.actor_id}
+              </option>
+            ))}
+          </select>
+        </label>
         {cursor && (
           <button
             className="button"

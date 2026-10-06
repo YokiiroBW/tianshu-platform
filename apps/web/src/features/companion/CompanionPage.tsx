@@ -132,7 +132,7 @@ export default function CompanionPage() {
                   setActorId(event.target.value);
                 }}
               >
-                {!actors.length && <option value="">没有已授权角色</option>}
+                {!actors.length && <option value="" />}
                 {actors.map((id) => (
                   <option key={id} value={id}>
                     {id}

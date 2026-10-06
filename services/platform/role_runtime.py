@@ -14,6 +14,15 @@ PREFIX = "/api/web/roles/"
 CAPABILITIES = frozenset({"dialogue", "memory.read", "memory.write", "direct"})
 
 
+def is_placeholder_actor(actor_id, role):
+    """The installation's bootstrap identity is not a character until explicitly adopted.
+
+    Other static actors remain real registrations, with or without a name/runtime intent.
+    This affects browser directories only, never source authority or durable role facts.
+    """
+    return actor_id == "actor:household" and role is None
+
+
 class RoleRuntime:
     def __init__(self, platform):
         self.p = platform
