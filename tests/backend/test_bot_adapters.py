@@ -105,7 +105,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 return web.json_response({"found": receipt is not None, "receipt": receipt})
             return web.Response(status=404, text="missing")
 
-        app = web.Application()
+        app = web.Application(client_max_size=45 * 1024 * 1024)
         app.router.add_post("/tianshu/adapter/v1/{tail:.*}", handler)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
@@ -275,6 +275,39 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
     async def _created(self, conversation_id="999"):
         body, session = await self._draft(conversation_id)
         return await self.platform.bot_adapters.create(body, session), body
+
+    async def test_media_send_transport_exceeds_control_request_limit(self):
+        from services.platform.web_external_net import reviewed_pins
+
+        manager = self.platform.bot_adapters
+        pins = await reviewed_pins(self.address, ["127.0.0.0/8"])
+        payload = {
+            "delivery": {
+                "reply_id": "reply:image",
+                "attempt_id": "attempt:image",
+                "media": [{"data": "a" * (3 * 1024 * 1024)}],
+            }
+        }
+        receipt = await manager._call(
+            self.address,
+            "synthetic-plugin-key-123456789",
+            pins,
+            None,
+            "/tianshu/adapter/v1/messages/send",
+            payload,
+        )
+        self.assertEqual("reply:image", receipt["reply_id"])
+        self.assertEqual(payload["delivery"], self.sends[0])
+        with self.assertRaises(Fault) as oversized_control:
+            await manager._call(
+                self.address,
+                "synthetic-plugin-key-123456789",
+                pins,
+                None,
+                "/tianshu/adapter/v1/messages/status",
+                payload,
+            )
+        self.assertEqual("invalid_input", oversized_control.exception.code)
 
     async def test_probe_persist_enable_unknown_reconcile_restart_disable(self):
         manager = self.platform.bot_adapters

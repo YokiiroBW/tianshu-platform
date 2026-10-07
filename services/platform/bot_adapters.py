@@ -264,7 +264,9 @@ class BotAdapters:
             return {"connection": self._project(await self.change(operation, body))}
 
     async def _call(self, address, key, pins, ca_pem, path, payload, *, core=False, ca_file=None):
-        require(len(json.dumps(payload).encode()) <= 65536, "invalid_input", 400)
+        # Match the host RPC's bounded inline-media request allowance.
+        limit = 45 * 1024 * 1024 if not core and path == RPC + "/messages/send" else 65536
+        require(len(json.dumps(payload).encode()) <= limit, "invalid_input", 400)
         tls = ssl.create_default_context(cafile=ca_file, cadata=ca_pem)
         connector = (
             aiohttp.TCPConnector(resolver=PinnedResolver(pins), ssl=tls)
