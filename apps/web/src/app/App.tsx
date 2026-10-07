@@ -331,15 +331,17 @@ function AppShell() {
             </div>
             {current && current.sections.length > 0 && (
               <nav className="section-nav" aria-label={`${current.label}页面`}>
-                {current.sections.map((label, index) => (
-                  <a
-                    key={label}
-                    href={`#/${current.id}/${index}`}
-                    aria-current={section === index ? "page" : undefined}
-                  >
-                    {label}
-                  </a>
-                ))}
+                {current.sections.map((label, index) =>
+                  label === null ? null : (
+                    <a
+                      key={label}
+                      href={`#/${current.id}/${index}`}
+                      aria-current={section === index ? "page" : undefined}
+                    >
+                      {label}
+                    </a>
+                  ),
+                )}
               </nav>
             )}
             <PageBoundary key={hash}>

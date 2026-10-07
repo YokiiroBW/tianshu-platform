@@ -14,6 +14,7 @@ import { SharedPortrait } from "./SharedPortrait";
 import { Interactions } from "./Interactions";
 import { ReplyPermissions } from "./ReplyPermissions";
 import { ProactivePanel } from "./ProactivePanel";
+import { AdminToggle } from "./AdminToggle";
 import { AccountLinkPanel } from "./AccountLinkPanel";
 import "../life/life.css";
 import {
@@ -66,6 +67,11 @@ export function PersonDetail({
           <div className="people-person-title">
             <h2>{personName(person)}</h2>
             <span className="people-chip">QQ 用户</span>
+            <AdminToggle
+              key={`${csrf}:${person.qqId}`}
+              qqId={person.qqId}
+              csrf={csrf}
+            />
           </div>
           <p>
             QQ {person.qqId}

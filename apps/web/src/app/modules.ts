@@ -82,7 +82,7 @@ export const modules = [
       "资产库接入",
       "家庭设备接入",
       "访问与域名",
-      "QQ 管理身份",
+      null, // Reserved: old administrator links now open the user directory.
       "角色技能",
       "位置与天气",
     ],
@@ -118,5 +118,10 @@ export function resolveRoute(hash: string) {
     (!/^\d+$/.test(section) || Number(section) >= module.sections.length)
   )
     return null;
+  if (id === "settings" && Number(section) === 7)
+    return {
+      module: modules.find((item) => item.id === "memory")!,
+      section: 0,
+    };
   return { module, section: section === undefined ? 0 : Number(section) };
 }

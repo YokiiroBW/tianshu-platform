@@ -793,3 +793,57 @@
 .people-unlock-controls .button {
   margin-top: 0;
 }
+
+.people-admin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.people-admin-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.people-admin-label input {
+  appearance: none;
+  width: 34px;
+  height: 20px;
+  border-radius: 20px;
+  background: var(--color-muted);
+  margin: 0;
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.people-admin-label input::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  top: 3px;
+  left: 3px;
+  border-radius: 50%;
+  background: white;
+}
+.people-admin-label input:checked {
+  background: var(--color-accent, #6366f1);
+}
+.people-admin-label input:checked::after {
+  transform: translateX(14px);
+}
+.people-admin-label input:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.people-admin-state {
+  color: var(--color-muted);
+}
+.people-admin-error {
+  flex-basis: 100%;
+}
+.people-admin-error button {
+  margin-left: 8px;
+}

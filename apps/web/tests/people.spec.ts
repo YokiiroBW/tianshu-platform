@@ -52,6 +52,7 @@ async function fixture(
         conversations: [],
         dialogue: { available: false, code: "not_configured", model: "" },
       };
+    else if (path === "qq-admin/view") result = { version: 0, grants: [] };
     else if (path === "memory/state") {
       if (options.memoryFailure)
         return route.fulfill({
@@ -569,4 +570,137 @@ test("proactive preferences preserve failed operation identity and show partial 
     value: { id: "subscription:fixture", state: "paused" },
   });
   expect(fixtureState.errors).toEqual([]);
+});
+
+test("user administrator switch persists, isolates users and refreshes conflicts", async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  let view = { version: 2, grants: [] as Record<string, unknown>[] };
+  let fail = false;
+  const writes: Record<string, unknown>[] = [];
+  await page.route("**/api/web/qq-admin/*", async (route) => {
+    const action = route.request().url().split("/").at(-1);
+    if (action === "profiles") return route.fallback();
+    if (action !== "view") {
+      const body = route.request().postDataJSON();
+      writes.push(body);
+      if (fail) {
+        fail = false;
+        view.version++;
+        return route.fulfill({
+          status: 409,
+          json: { code: "version_conflict" },
+        });
+      }
+      expect(body.expected_version).toBe(view.version);
+      view = {
+        version: view.version + 1,
+        grants: action === "grant" ? [body] : [],
+      };
+    }
+    return route.fulfill({ json: view });
+  });
+  await page.reload();
+  await page
+    .getByRole("complementary", { name: "用户目录" })
+    .getByRole("button")
+    .filter({ hasText: "QQ 10001" })
+    .click();
+  const toggle = page.getByRole("switch", { name: "设为管理员" });
+  await expect(toggle).toBeEnabled();
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  expect(writes[0]).toMatchObject({
+    qq_id: "10001",
+    actor_ids: [],
+    conversations: [],
+    capabilities: ["identity.explain"],
+  });
+  await page.reload();
+  await page
+    .getByRole("complementary", { name: "用户目录" })
+    .getByRole("button")
+    .filter({ hasText: "QQ 10001" })
+    .click();
+  await expect(toggle).toBeChecked();
+  await page.screenshot({
+    path: testInfo.outputPath("user-admin.png"),
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  const directory = page.getByRole("complementary", { name: "用户目录" });
+  await directory.getByRole("button").filter({ hasText: "QQ 10002" }).click();
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).not.toBeChecked();
+  await directory.getByRole("button").filter({ hasText: "QQ 10001" }).click();
+  await expect(toggle).toBeChecked();
+  fail = true;
+  await toggle.click();
+  await expect(
+    page.getByText("管理员设置已变化，请刷新状态后重试。"),
+  ).toBeVisible();
+  await expect(toggle).toBeDisabled();
+  await page.getByRole("button", { name: "刷新状态", exact: true }).click();
+  await expect(toggle).toBeChecked();
+  await toggle.click();
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).not.toBeChecked();
+  await page.goto("/#/settings/7");
+  await expect(directory).toBeVisible();
+  await page.goto("/#/settings/1");
+  await expect(
+    page.getByRole("link", { name: "QQ 管理身份", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "角色技能", exact: true }),
+  ).toHaveAttribute("href", "#/settings/8");
+});
+
+test("admin status errors remain unknown and scoped grants stay scoped", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.route("**/api/web/qq-admin/view", (route) =>
+    route.fulfill({ status: 503, json: { code: "dependency_unavailable" } }),
+  );
+  await page.reload();
+  await page
+    .getByRole("complementary", { name: "用户目录" })
+    .getByRole("button")
+    .filter({ hasText: "QQ 10001" })
+    .click();
+  const toggle = page.getByRole("switch", { name: "设为管理员" });
+  await expect(page.getByText("状态未确认", { exact: true })).toBeVisible();
+  await expect(toggle).toBeDisabled();
+  await page.route("**/api/web/qq-admin/view", (route) =>
+    route.fulfill({
+      json: {
+        version: 5,
+        grants: [
+          {
+            qq_id: "10001",
+            actor_ids: ["actor:a"],
+            conversations: ["group:123"],
+            capabilities: ["identity.explain"],
+          },
+        ],
+      },
+    }),
+  );
+  await page.getByRole("button", { name: "刷新状态", exact: true }).click();
+  await expect(toggle).toBeChecked();
+  await expect(
+    page.getByText("管理员 · 限定范围", { exact: true }),
+  ).toBeVisible();
+  await page.route("**/api/web/qq-admin/revoke", (route) =>
+    route.fulfill({ status: 403, json: { code: "forbidden" } }),
+  );
+  await toggle.click();
+  await expect(page.getByText("当前账号不能修改管理员设置。")).toBeVisible();
+  await expect(toggle).toBeDisabled();
 });

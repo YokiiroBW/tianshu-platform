@@ -28,32 +28,23 @@ test("HTTPS QQ profiles and administrator grant then revoke", async ({
     path: testInfo.outputPath("profiles.png"),
     fullPage: true,
   });
-  await page.goto("/#/settings/7");
-  await expect(
-    page.getByRole("heading", { name: "QQ 管理身份", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "前往用户档案" }),
-  ).toHaveAttribute("href", "#/memory/0");
-  await page.getByLabel("QQ 号", { exact: true }).fill("1001");
-  await page.getByLabel("备注称呼").fill("合成管理员");
-  await page.getByText("高级设置：手动指定角色范围").click();
-  await page.getByLabel(/角色标识/).fill("actor:a");
-  await page.getByLabel(/适用会话/).fill("group:123");
-  await page.getByRole("button", { name: "保存管理身份" }).click();
-  await expect(page.getByText("合成管理员", { exact: true })).toBeVisible();
+  await directory.getByRole("button").filter({ hasText: "QQ 1001" }).click();
+  const toggle = page.getByRole("switch", { name: "设为管理员" });
+  await expect(toggle).toBeEnabled();
+  await toggle.click();
+  await expect(toggle).toBeChecked();
   await page.reload();
-  await expect(page.getByText("合成管理员", { exact: true })).toBeVisible();
+  await directory.getByRole("button").filter({ hasText: "QQ 1001" }).click();
+  await expect(toggle).toBeChecked();
   await page.screenshot({
     path: testInfo.outputPath("granted.png"),
     fullPage: true,
   });
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(page.getByText("合成管理员", { exact: true })).toHaveCount(0);
+  await toggle.click();
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).not.toBeChecked();
   await page.reload();
-  await expect(page.getByText("合成管理员", { exact: true })).toHaveCount(0);
-  await page.screenshot({
-    path: testInfo.outputPath("revoked.png"),
-    fullPage: true,
-  });
+  await directory.getByRole("button").filter({ hasText: "QQ 1001" }).click();
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).not.toBeChecked();
 });
