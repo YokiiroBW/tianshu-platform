@@ -10,7 +10,7 @@ import hashlib
 import uuid
 from contextlib import closing
 
-from .contracts import Fault, canonical, digest, loads, require, utc
+from .contracts import Fault, canonical, digest, loads, require, utc, epoch
 
 PREFIX = "/internal/v2/bot-delivery/"
 ROUTES = {PREFIX + name for name in ("send", "query", "cancel", "finalize", "context")}
@@ -19,7 +19,7 @@ ROUTES = {PREFIX + name for name in ("send", "query", "cancel", "finalize", "con
 class Delivery:
     def __init__(self, bots):
         self.bots, self.p = bots, bots.p
-        self.p.contracts.load_runtime("bot-delivery/v2")
+        self.p.contracts.load_runtime("bot-delivery/v2.1")
         with closing(bots._db()) as db, db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS expressions (
@@ -48,7 +48,7 @@ class Delivery:
         return identity
 
     def context(self, header, request):
-        """Read authorization for a live proactive recipient, without admitting user input."""
+        """Revalidate a recipient and continue its lease without admitting user input."""
         self.p.contracts.check("bot-delivery#context_request", request)
         with (
             self.bots._managed_guard(),
@@ -57,11 +57,39 @@ class Delivery:
         ):
             principal = self._caller(authority, header)
             entry_id, entry = self._entry(
-                authority, request["origin"], request["scope"], request["channel"]
+                authority,
+                request["origin"],
+                request["scope"],
+                request["channel"],
+                allow_expired=True,
             )
             self.p.auth.route(entry, "companion", "memory", "dialogue")
             self._connection(authority, queue, entry_id, entry, request["scope"])
-            issued = self.p.origins.issue_registered(authority, principal, entry_id, entry)
+            if request["origin"]["kind"] in {"response", "direct"}:
+                ref = request["origin"]["origin"]["assertion_ref"]
+                now = self.p.origins.clock()
+                expires = min(
+                    now + entry["ttl_seconds"],
+                    epoch(entry["expires_at"]) if "expires_at" in entry else float("inf"),
+                )
+                require(expires > now, "forbidden", 403)
+                authority.execute(
+                    "UPDATE origins SET expires_at=MAX(expires_at,?) WHERE ref=?", (expires, ref)
+                )
+                authority.execute(
+                    "INSERT INTO audit(principal,operation,object_id,observed_at) VALUES(?,?,?,?)",
+                    (principal, "delivery.origin.continue", digest(ref), now),
+                )
+                issued = {
+                    "assertion_ref": ref,
+                    "expires_at": utc(
+                        authority.execute(
+                            "SELECT expires_at FROM origins WHERE ref=?", (ref,)
+                        ).fetchone()[0]
+                    ),
+                }
+            else:
+                issued = self.p.origins.issue_registered(authority, principal, entry_id, entry)
             result = {
                 "schema_version": 2,
                 "request_id": request["request_id"],
@@ -73,7 +101,7 @@ class Delivery:
             self.p.contracts.check("bot-delivery#context_response", result)
             return result
 
-    def _entry(self, db, origin, scope, channel, entry_id=None):
+    def _entry(self, db, origin, scope, channel, entry_id=None, *, allow_expired=False):
         require(
             scope["person_id"] is not None
             and scope["conversation_id"] is not None
@@ -82,10 +110,21 @@ class Delivery:
             403,
         )
         if origin["kind"] in {"response", "direct"}:
-            selected, entry, context = self.p.origins.context(
-                db, origin["origin"]["assertion_ref"], "companion", "platform", "dialogue"
-            )
-            require(context["allowed_scope"] == scope and entry["channel"] == channel)
+            if allow_expired:
+                row = db.execute(
+                    "SELECT * FROM origins WHERE ref=?", (origin["origin"]["assertion_ref"],)
+                ).fetchone()
+                require(row is not None and not row["revoked"], "forbidden", 403)
+                selected = row["entry_id"]
+                entry = self.p.auth.entry(db, selected, row["entry_digest"])
+                self.p.auth.route(entry, "companion", "platform", "dialogue")
+                current_scope = self.p.origins.scope(db, entry)
+            else:
+                selected, entry, context = self.p.origins.context(
+                    db, origin["origin"]["assertion_ref"], "companion", "platform", "dialogue"
+                )
+                current_scope = context["allowed_scope"]
+            require(current_scope == scope and entry["channel"] == channel)
             require(entry_id is None or selected == entry_id, "scope_changed", 409)
             return selected, entry
         candidates = []

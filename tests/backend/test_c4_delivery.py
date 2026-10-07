@@ -256,7 +256,7 @@ class DeliveryHTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(current["allowed_scope"], self.scope)
             self.assertEqual(entry["account"]["immutable_account_id"], "1001")
             self.assertEqual(db.execute("SELECT COUNT(*) FROM source_inputs").fetchone()[0], 0)
-        self.assertEqual((await self.post("context", {**request, "origin": self.origin}))[0], 400)
+        self.assertEqual((await self.post("context", {**request, "origin": self.origin}))[0], 200)
         self.platform.origins.revoke(bearer("ADMIN"), "entry", "bot-actor-1")
         self.assertEqual((await self.post("context", request))[0], 403)
 
@@ -279,3 +279,98 @@ class DeliveryHTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM replies").fetchone()[0], 1)
         Bots(self.platform)
         self.assertEqual(len(list(Path(self.temp.name).glob("*.pre-delivery-*.sqlite"))), 1)
+
+    async def test_expired_response_continues_same_reference_and_sends_once(self):
+        self.now += 3600
+        request = dict(
+            schema_version=2,
+            request_id="resume",
+            origin=self.origin,
+            scope=self.scope,
+            channel=self.channel,
+        )
+        self.assertEqual((await self.post("send", self.request(final=True)))[0], 403)
+        status, result = await self.post("context", request)
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["origin"], self.origin["origin"])
+        self.assertEqual((await self.post("send", self.request(final=True)))[0], 200)
+        self.now += 3600
+        self.assertEqual((await self.post("context", request))[0], 200)
+        self.assertEqual((await self.post("send", self.request(final=True)))[0], 200)
+        self.assertEqual(len(await self.claim()), 1)
+
+    async def test_continuation_does_not_revive_revoked_or_retarget_origin(self):
+        self.now += 3600
+        request = dict(
+            schema_version=2,
+            request_id="resume",
+            origin=self.origin,
+            scope=self.scope,
+            channel=self.channel,
+        )
+        bad = copy.deepcopy(request)
+        bad["scope"]["person_id"] = "person:other"
+        self.assertEqual((await self.post("context", bad))[0], 403)
+        ref = self.origin["origin"]["assertion_ref"]
+        self.platform.origins.revoke(bearer("ADMIN"), "origin", ref)
+        self.assertEqual((await self.post("context", request))[0], 403)
+
+    async def test_direct_continuation_still_checks_disabled_connection(self):
+        self.now += 3600
+        origin = dict(
+            kind="direct",
+            actor_id="actor:a",
+            direct_request_id="direct:long",
+            origin=self.origin["origin"],
+            sources=[],
+        )
+        request = dict(
+            schema_version=2,
+            request_id="resume-direct",
+            origin=origin,
+            scope=self.scope,
+            channel=self.channel,
+        )
+        self.assertEqual((await self.post("context", request))[0], 200)
+        self.platform.bots.change(self.connection_id, "disable")
+        self.assertEqual((await self.post("context", request))[0], 403)
+
+    @unittest.skipUnless(
+        os.environ.get("TIANSHU_COMPANION_REPO"), "Set companion checkout for joint test"
+    )
+    async def test_actual_companion_sender_recovers_expired_origin(self):
+        import sys
+        from pathlib import Path
+        import httpx
+
+        sys.path.insert(0, str(Path(os.environ["TIANSHU_COMPANION_REPO"]) / "src"))
+        from tianshu_companion.clients import JsonService, PlatformBotSender
+        from tianshu_companion.contracts import Contracts
+        from fixtures import CONTRACT
+
+        async def forward(request):
+            async with self.client.post(
+                self.url + request.url.path,
+                data=request.content,
+                headers={
+                    "Authorization": request.headers["Authorization"],
+                    "Content-Type": "application/json",
+                },
+            ) as response:
+                return httpx.Response(response.status, json=await response.json())
+
+        client = JsonService(
+            "https://fixture.invalid",
+            bearer("COMPANION").removeprefix("Bearer "),
+            transport=httpx.MockTransport(forward),
+        )
+        self.addAsyncCleanup(client.close)
+        sender = PlatformBotSender(Contracts(CONTRACT), client)
+        self.now += 3600
+        request = self.request(final=True)
+        first = await sender.send_expression(request)
+        self.assertEqual(first["state"], "queued")
+        self.now += 3600
+        second = await sender.send_expression(request)
+        self.assertEqual(first["expression_id"], second["expression_id"])
+        self.assertEqual(len(await self.claim()), 1)
