@@ -265,7 +265,8 @@ class BotAdapters:
 
     async def _call(self, address, key, pins, ca_pem, path, payload, *, core=False, ca_file=None):
         # Match the host RPC's bounded inline-media request allowance.
-        limit = 45 * 1024 * 1024 if not core and path == RPC + "/messages/send" else 65536
+        media_paths = {RPC + "/messages/send", RPC + "/observation/messages/send"}
+        limit = 45 * 1024 * 1024 if not core and path in media_paths else 65536
         require(len(json.dumps(payload).encode()) <= limit, "invalid_input", 400)
         tls = ssl.create_default_context(cafile=ca_file, cadata=ca_pem)
         connector = (

@@ -89,7 +89,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 self.acked.extend(body["event_ids"])
                 self.events = [item for item in self.events if item["id"] not in body["event_ids"]]
                 return web.json_response({"acknowledged": body["event_ids"]})
-            if route == "/messages/send":
+            if route in {"/messages/send", "/observation/messages/send"}:
                 delivery = body["delivery"]
                 self.sends.append(delivery)
                 receipt = {
@@ -298,6 +298,16 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("reply:image", receipt["reply_id"])
         self.assertEqual(payload["delivery"], self.sends[0])
+        observed = await manager._call(
+            self.address,
+            "synthetic-plugin-key-123456789",
+            pins,
+            None,
+            "/tianshu/adapter/v1/observation/messages/send",
+            payload,
+        )
+        self.assertEqual(receipt, observed)
+        self.assertEqual(payload["delivery"], self.sends[1])
         with self.assertRaises(Fault) as oversized_control:
             await manager._call(
                 self.address,
