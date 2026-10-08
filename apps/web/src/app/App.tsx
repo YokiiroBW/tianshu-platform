@@ -228,6 +228,7 @@ function AppShell() {
     page = <pages.knowledge />;
   else if (current.id === "resources" && section === 1)
     page = <pages.resources />;
+  else if (current.id === "resources" && section === 2) page = <pages.media />;
   else if (current.id === "projects" && section === 0)
     page = <pages.knowledge />;
   else if (current.id === "projects" && section === 1)

@@ -100,6 +100,7 @@ export const pages = {
   settings: lazy(() => import("../features/settings/SettingsPage")),
   home: lazy(() => import("../features/home/HomePage")),
   resources: lazy(() => import("../features/resources/ResourcesPage")),
+  media: lazy(() => import("../features/media/MediaPage")),
   knowledge: lazy(() => import("../features/knowledge/KnowledgePage")),
   experience: lazy(() => import("../features/projects/ExperiencePage")),
   life: lazy(() => import("../features/life/LifePage")),
