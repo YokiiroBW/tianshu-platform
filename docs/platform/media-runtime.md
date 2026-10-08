@@ -41,3 +41,9 @@ staging_directory 需要同时作为 AssetLibrary 已信任 inbound 根的只读
 真实本地媒体服务器验证脚本：`python tests/backend/run_media_servers_integration.py --fixtures <合成服务连接JSON> --documents <纯元数据合成文档JSON>`，凭据从本次生成文件读取到临时 env，不打印。已用真实 Jellyfin12.2/Emby4.10.1 对single/multipart四种组合通过核验，源文件来自独立TS090 NFO输出。固定yt-dlp metadata-only实际公开测试 BV13x41117TL 可得80/64/32/16，无账号或视频下载。
 
 本地合成验证、联合真实本地Host验证和NAS部署/真实账号/用户使用必须分别记录。未执行NAS部署，未读取个人账号，未声称真实用户订阅已验收。
+
+## 独立资产服务整链验证
+
+`tests/backend/run_media_asset_integration.py --asset <隔离Asset连接JSON> --servers <隔离媒体服务器JSON> --work-directory <本次私有输出目录> --ffmpeg <工具> --ffprobe <工具>` 用实际平台HTTP/SQLite、AssetLibrary HTTPS/PostgreSQL/文件系统，以及真实Emby/Jellyfin完成两P任务。B站响应和视频内容明确使用合成夹具。它会向所指定的隔离库写测试成品，并注册测试媒体库，不得传生产配置。每次使用空的隔离资产库或通过`--bvid`传入未使用的合成BV。
+
+Asset JSON包含`base_url/token/library_id/staging_directory/library_directory/ca_file?`；servers JSON按`emby`和`jellyfin`分别包含`base_url/token/version`。只使用测试过程中生成的凭据，脚本不打印令牌。输出`joint-*/evidence.json`记录最终任务、资产回执与逐服务器结果。2026-10-09集成人实际完成一次两P整链，全部条目有entry_id，两台服务器均verified，任务completed；原始证据位置见工作区本批交付记录。
