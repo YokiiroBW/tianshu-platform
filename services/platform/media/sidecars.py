@@ -102,8 +102,8 @@ def _validate_request(metadata: MediaMetadata, request: object) -> RenderRequest
     if layout == LAYOUT_SINGLE:
         if metadata.part_count != 1:
             raise _reject("single_layout_requires_one_part", "layout")
-    elif metadata.part_count < 2:
-        raise _reject("multipart_layout_requires_multiple_parts", "layout")
+    elif metadata.part_count < 1:
+        raise _reject("multipart_layout_requires_parts", "layout")
 
     selected = request.selected_cids
     if not isinstance(selected, tuple):

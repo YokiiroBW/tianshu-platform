@@ -320,9 +320,10 @@ class TaskCentreTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(
                     source["code"],
-                    "no_task_contract"
-                    if source_id != "platform.dialogue"
-                    else "no_operation_ledger",
+                    {
+                        "resources.download": "media_not_configured",
+                        "platform.dialogue": "no_operation_ledger",
+                    }.get(source_id, "no_task_contract"),
                 )
         # Filtering by a source that is not connected is an empty page, never an error.
         gap = await self.tasks(logged, {"source": "companion.core"})
@@ -814,6 +815,7 @@ class TaskWatermarkTests(unittest.TestCase):
         from services.platform.tasks import Tasks
 
         records = {
+            "resources.download": [],
             "platform.home": [
                 {"task_id": "home-control:" + str(i), "created_at": i} for i in range(10, 15)
             ],

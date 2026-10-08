@@ -508,8 +508,18 @@ def create_app(platform, probe=None, *, console=None, public=False):
         }[path]
         return web.json_response(await platform.local_work.run(operation, header, body))
 
-    app = web.Application(middlewares=[boundary], client_max_size=1_048_576)
+    app = web.Application(middlewares=[boundary], client_max_size=6 * 1024 * 1024)
     app[PLATFORM] = platform
+    if not public and platform.media.config is not None:
+
+        async def media_context(app):
+            await platform.media.start()
+            try:
+                yield
+            finally:
+                await platform.media.close()
+
+        app.cleanup_ctx.append(media_context)
 
     if not public and platform.bot_adapters.catalog is not None:
 

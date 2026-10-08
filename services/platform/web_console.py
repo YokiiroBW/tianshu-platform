@@ -66,6 +66,7 @@ BOTS_PREFIX = "/api/web/bots/"
 BOT_ADAPTERS_PREFIX = "/api/web/bot-adapters/"
 BOT_OBSERVATION_PREFIX = "/api/web/bot-observation/"
 QQ_ADMIN_PREFIX = "/api/web/qq-admin/"
+MEDIA_PREFIX = "/api/web/media/"
 
 
 class WebConsole:
@@ -198,6 +199,9 @@ class WebConsole:
         self.memory = WebMemory(platform, self)
         self.role_runtime = platform.role_runtime
         self.qq_admin = platform.qq_admin
+        from .media.web import WebMedia
+
+        self.media = WebMedia(platform.media, self)
         if self.role_runtime.config is not None:
             self.role_runtime.console = self
 
@@ -534,7 +538,13 @@ class WebConsole:
                     data.extend(chunk)
                     require(
                         len(data)
-                        <= (262144 if request.path.startswith(PERSONAS_PREFIX) else 16384),
+                        <= (
+                            6 * 1024 * 1024
+                            if request.path.startswith(MEDIA_PREFIX)
+                            else 262144
+                            if request.path.startswith(PERSONAS_PREFIX)
+                            else 16384
+                        ),
                         "budget_exceeded",
                         413,
                     )
@@ -643,6 +653,14 @@ class WebConsole:
             return web.json_response(result)
         if request.path.startswith(EXTERNAL_PREFIX):
             result = await self.external.route(request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
+        if request.path.startswith(MEDIA_PREFIX):
+            result = await self.media.route(request.path, body, session)
             require(
                 await self.platform.local_work.run(self.session_valid, session),
                 "session_expired",

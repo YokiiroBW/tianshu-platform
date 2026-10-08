@@ -98,7 +98,12 @@ def imported_modules(path: Path) -> set[str]:
 
 
 def production_files() -> list[Path]:
-    return sorted(PRODUCTION_DIR.glob("*.py"))
+    # TS090 remains the pure public core. The subscription runtime's explicit IO owners now live
+    # beside it; their presence must not make a renderer-purity test forbid the requested runtime.
+    return [
+        PRODUCTION_DIR / name
+        for name in ("__init__.py", "identity.py", "metadata.py", "sidecars.py", "types.py")
+    ]
 
 
 def pathlib_imports(path: Path) -> list[str]:

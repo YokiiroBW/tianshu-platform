@@ -58,6 +58,7 @@ SIDECAR_TABLES = {
     "web-replies": "replies",
     "web-models": "publication_intents",
     "home-controls": "control_intents",
+    "media": "jobs",
     "bots": "connections",
 }
 ASSET_REFERENCE = re.compile(r'(?:src|href)="(/[^"]+\.(?:js|css))"')
@@ -129,6 +130,8 @@ def health_inputs(
                 owned.append((".home-controls.sqlite", "home-controls"))
         if settings.get("bot_connections") is not None:
             owned.append((".bots.sqlite", "bots"))
+        if isinstance(settings.get("media"), dict) and settings["media"].get("enabled", True):
+            owned.append((".media.sqlite", "media"))
         sidecars = tuple((database_path + suffix, kind) for suffix, kind in owned)
     tls = settings.get("tls")
     tls = tls if isinstance(tls, dict) else None
