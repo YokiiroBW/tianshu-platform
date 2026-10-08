@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "lucide-react": "1.45.0",
+    "qrcode-generator": "2.0.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "three": "0.186.0"
