@@ -163,6 +163,50 @@ test("media QR is generated locally and imported cookie leaves the editor", asyn
   ).not.toContain("synthetic-only-cookie");
 });
 
+test("media scanned QR state keeps its minimum polling interval", async ({
+  page,
+}) => {
+  const state = await installMediaFixture(page);
+  await page.clock.install();
+  let reads = 0;
+  await page.route("**/api/web/media/accounts/qr/poll", async (route) => {
+    reads += 1;
+    if (reads === 3)
+      state.view.accounts.push({
+        account_id: "qr-ready",
+        label: "扫码完成账号",
+        state: "ready",
+        revision: 1,
+        checked_at: 1791475200,
+        code: "",
+      });
+    await route.fulfill({
+      json: {
+        state: reads === 1 ? "waiting" : reads === 2 ? "scanned" : "ready",
+        account: reads === 3 ? state.view.accounts.at(-1) : null,
+      },
+    });
+  });
+  await page.goto("/#/resources/2");
+  await page.getByRole("tab", { name: "账号与媒体库", exact: true }).click();
+  await page
+    .getByRole("button", { name: "生成登录二维码", exact: true })
+    .click();
+  await expect(page.getByText("等待扫码", { exact: true })).toBeVisible();
+  await page.clock.runFor(5000);
+  await expect(
+    page.getByText("已扫码，请在手机确认", { exact: true }),
+  ).toBeVisible();
+  expect(reads).toBe(2);
+  await page.clock.runFor(4900);
+  expect(reads).toBe(2);
+  await page.clock.runFor(200);
+  await expect(
+    page.getByRole("heading", { name: "扫码完成账号", exact: true }),
+  ).toBeVisible();
+  expect(reads).toBe(3);
+});
+
 test("media job details preserve metadata revision and separate server results", async ({
   page,
 }) => {

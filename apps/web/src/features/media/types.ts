@@ -71,6 +71,7 @@ export type Job = {
   target_id: string;
   quality: Quality;
   actual_quality: string | null;
+  layout?: "single" | "multipart";
   cancel_requested: boolean;
   can_retry: boolean;
   can_cancel: boolean;

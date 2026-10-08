@@ -21,6 +21,14 @@ const issueWords: Record<string, string> = {
   title: "需要补全标题",
   description: "需要补全简介",
   cover: "尚未取得封面",
+  title_missing: "缺少标题",
+  description_missing: "缺少简介",
+  creator_missing: "缺少 UP 主资料，请重新解析来源",
+  author_name_missing: "缺少 UP 主名称，请重新解析来源",
+  cover_source_missing: "来源未提供封面",
+  cover_local_missing: "尚未取得来源封面",
+  published_at_missing: "来源未提供发布时间",
+  part_title_missing: "来源未提供分 P 标题",
 };
 const receiptWords: Record<string, string> = {
   state: "发布状态",
@@ -35,6 +43,8 @@ const receiptWords: Record<string, string> = {
   code: "原因",
   indexed: "索引已完成",
   manifest_digest: "成品摘要",
+  target_relative_path: "媒体目录",
+  indexed_at: "入库时间",
 };
 
 function MetadataEditor({
@@ -269,6 +279,7 @@ export function JobsPanel({ media }: { media: MediaController }) {
               <article
                 className={`media-card media-job${selected === job.job_id ? " selected" : ""}`}
                 key={job.job_id}
+                data-job-id={job.job_id}
               >
                 <div className="media-section-head">
                   <div>
@@ -438,6 +449,16 @@ export function JobsPanel({ media }: { media: MediaController }) {
                       <dt>当前阶段</dt>
                       <dd>{word(detail.job.stage)}</dd>
                     </div>
+                    {detail.job.layout && (
+                      <div>
+                        <dt>媒体组织</dt>
+                        <dd>
+                          {detail.job.layout === "multipart"
+                            ? "分 P 剧集"
+                            : "单视频"}
+                        </dd>
+                      </div>
+                    )}
                   </dl>
                   <section>
                     <h4>资产发布</h4>

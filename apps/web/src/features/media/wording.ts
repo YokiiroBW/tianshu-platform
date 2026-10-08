@@ -3,6 +3,7 @@ export const stateWords: Record<string, string> = {
   downloading: "正在下载",
   validating: "校验成品",
   metadata_ready: "元数据已就绪",
+  metadata: "检查元数据",
   publishing: "正在发布",
   asset_indexed: "资产已入库",
   library_verifying: "媒体服务器核对中",
@@ -51,6 +52,15 @@ export const reasonWords: Record<string, string> = {
   missing_description: "需要补全视频简介",
   missing_cover: "尚未取得来源封面",
   connection_failed: "媒体服务器连接失败，请稍后重试",
+  scan_complete: "来源成员已完整扫描",
+  published_no_media_servers: "发布完成，目标库未配置媒体服务器",
+  package_ready: "元数据和成品已准备完成",
+  metadata_incomplete: "元数据尚未完整，请补全资料或重新解析来源",
+  rule_short_circuit: "组内前面的规则已决定结果，本条无需继续执行",
+  priority_short_circuit: "前面的规则组已决定结果，本组无需继续执行",
+  blacklist_matched: "黑名单已命中",
+  whitelist_matched: "白名单已命中",
+  error_short_circuit: "前面的规则执行失败，后续规则未执行",
 };
 export const errorWords: Record<string, string> = {
   budget_exceeded: "请求超过媒体接口的 6 MiB 上限，请缩减本次输入。",
@@ -76,6 +86,9 @@ export const errorWords: Record<string, string> = {
   engine_unavailable: "下载引擎暂不可用。",
   cursor_conflict: "任务筛选已改变，请重新读取任务列表。",
   qr_expired: "二维码已过期，请重新生成。",
+  qr_poll_too_fast: "扫码状态仍在等待更新，请稍后查看。",
+  layout_change_requires_migration:
+    "这个视频已按单视频发布。订阅需要分 P 剧集目录，请选择独立媒体库。",
   rule_error: "规则试算失败，请修正规则后启用。",
   rule_invalid: "规则格式或正则表达式不合法，请检查规则。",
   too_many_requests: "尝试过于频繁，请稍后重试。",

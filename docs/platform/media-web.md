@@ -18,6 +18,8 @@
 
 页面状态轮询为 15 秒，一个在途读取；故障按 30/60/120 秒退避，隐藏及卸载取消，恢复可见后立即重读。扫码检查独立为 5 秒，读取失败改为 15 秒，达到二维码寿命即停止。开发模式 StrictMode 的每次 setup 都重新激活，cleanup 不设置永久关闭状态。
 
+同一二维码的 waiting/scanned 变化不会重启轮询；恢复可见时保留5秒最小检查间隔。任务详情的“媒体组织”来自 Job.layout。订阅从1P即使用稳定分P剧集布局；已有手动单视频成品若需要改为订阅布局，后台明确返回布局冲突，页面提示选择独立媒体库。
+
 宽屏采用列表/360px 详情双栏，中屏详情置于列表上方，手机详情替换列表并提供返回与焦点恢复。四区支持左右方向键和 Home/End；任务详情支持 Escape。遵守既有减少动态偏好，无持续背景动画。
 
 任务中心只消费媒体作业投影，保留统一五档状态和具体媒体阶段，详情跳转责任页面进行取消与重试；不建立第二份作业。
@@ -33,6 +35,6 @@ node node_modules/@playwright/test/cli.js test --config apps/web/playwright.medi
 node node_modules/@playwright/test/cli.js test --config apps/web/playwright.media-dev.config.ts
 ```
 
-`media.spec.ts` 明确使用合成 API 替身，覆盖三尺寸、实际画质/分 P、四来源、规则错误、扫描/暂停、二维码/导入、元数据版本冲突、取消/重试、晚到响应、退出与离线、幂等重放及键盘；不能替代真实媒体应用端口联合验证。后者在后端 fixture 就绪后另记。
+`media.spec.ts` 明确使用合成 API 替身，覆盖三尺寸、实际画质/分 P、四来源、规则错误、扫描/暂停、二维码/导入及检查间隔、元数据版本冲突、取消/重试、晚到响应、退出与离线、幂等重放及键盘。实际平台 HTTP 联验使用 `playwright.media-joint.config.ts`，需先由 backend 所有者启动隔离 `run_media_fixture.py`，设置 `MEDIA_JOINT_URL` 和输出的 `MEDIA_FIXTURE_CONTROL` 再执行。请求不被前端替身拦截；该套件会控制隔离上游，不适用于生产。实际结果及边界见本次前端交接。
 
 本次未推送、部署 NAS 或使用真实 B 站账号。`qrcode-generator@2.0.4` 的清单和锁由协调者独占集成；前端任务不修改依赖锁。

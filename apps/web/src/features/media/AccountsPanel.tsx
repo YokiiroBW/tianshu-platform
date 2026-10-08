@@ -39,15 +39,23 @@ export function AccountsPanel({ media }: { media: MediaController }) {
     [],
   );
   useEffect(() => {
-    if (!qr || ["ready", "expired"].includes(qrState)) return;
+    if (!qr) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
+    let nextReadAt = 0;
+    let readGeneration = 0;
     const poll = async () => {
       if (stopped || document.hidden) return;
+      if (Date.now() < nextReadAt) {
+        timer = setTimeout(poll, nextReadAt - Date.now());
+        return;
+      }
       if (Date.now() >= qr.expires_at * 1000) {
         setQrState("expired");
         return;
       }
+      const mine = ++readGeneration;
+      nextReadAt = Date.now() + 5000;
       const result = await controller.current.request<{
         state: string;
         account: Account | null;
@@ -55,7 +63,7 @@ export function AccountsPanel({ media }: { media: MediaController }) {
         qr_id: qr.qr_id,
         client_id: pollClient.current,
       });
-      if (stopped) return;
+      if (stopped || mine !== readGeneration) return;
       if (result) {
         setQrState(result.state);
         if (result.state === "ready") {
@@ -68,10 +76,12 @@ export function AccountsPanel({ media }: { media: MediaController }) {
         }
         if (result.state === "expired") return;
       }
-      timer = setTimeout(poll, result ? 5000 : 15_000);
+      nextReadAt = Date.now() + (result ? 5000 : 15_000);
+      timer = setTimeout(poll, nextReadAt - Date.now());
     };
     const visible = () => {
       clearTimeout(timer);
+      readGeneration += 1;
       controller.current.cancel("qr-poll");
       if (!document.hidden) void poll();
     };
@@ -83,7 +93,7 @@ export function AccountsPanel({ media }: { media: MediaController }) {
       controller.current.cancel("qr-poll");
       document.removeEventListener("visibilitychange", visible);
     };
-  }, [qr, qrState]);
+  }, [qr]);
   const startQr = async () => {
     generation.current += 1;
     const mine = generation.current;
