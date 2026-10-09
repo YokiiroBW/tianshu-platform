@@ -5,6 +5,7 @@ import { StatusRail } from "../../components/StatusRail";
 import { AccountField, QualityField, TargetField } from "./Fields";
 import { RuleEditor } from "./RuleEditor";
 import { RuleResults } from "./RuleResults";
+import { ReasonNote } from "./ReasonNote";
 import {
   bestQuality,
   emptyRules,
@@ -15,7 +16,7 @@ import {
   type Subscription,
 } from "./types";
 import type { MediaController } from "./useMediaController";
-import { sourceWords, timestamp, tone, word } from "./wording";
+import { qualityWord, sourceWords, timestamp, tone, word } from "./wording";
 
 type Draft = {
   subscription_id: string | null;
@@ -351,7 +352,7 @@ function SubscriptionEditor({
                   <dd>
                     {value.quality.mode === "best"
                       ? "实际可用最高画质"
-                      : `指定 ${value.quality.quality_id}`}{" "}
+                      : `指定 ${qualityWord(value.quality.quality_id)}`}{" "}
                     · {value.quality.allow_fallback ? "允许降级" : "不降级"}
                   </dd>
                 </div>
@@ -410,8 +411,46 @@ function SubscriptionEditor({
 export function SubscriptionsPanel({ media }: { media: MediaController }) {
   const [editing, setEditing] = useState<Subscription | "new" | null>(null);
   const [limit, setLimit] = useState(10);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
   const trigger = useRef<HTMLElement | null>(null);
   const subscriptions = media.view?.subscriptions ?? [];
+  const search = query.trim().toLocaleLowerCase();
+  const accounts = new Map(
+    media.view?.accounts.map((item) => [item.account_id, item.label]),
+  );
+  const targets = new Map(
+    media.view?.targets.map((item) => [item.target_id, item.label]),
+  );
+  const attention = (item: Subscription) =>
+    item.state === "auth_required" || item.state === "rule_error";
+  const matches = subscriptions.filter((item) => {
+    const statusMatch =
+      filter === "all" ||
+      (filter === "attention"
+        ? attention(item)
+        : filter === "uninitialized"
+          ? !item.baseline_ready
+          : item.state === filter);
+    const searchable = [
+      item.label,
+      item.source.id,
+      sourceWords[item.source.kind],
+      accounts.get(item.account_id ?? "") ?? "公开访问",
+      targets.get(item.target_id) ?? item.target_id,
+    ];
+    return (
+      statusMatch &&
+      (!search ||
+        searchable.some((value) => value.toLocaleLowerCase().includes(search)))
+    );
+  });
+  const filtered = !!search || filter !== "all";
+  const clearFilters = () => {
+    setQuery("");
+    setFilter("all");
+    setLimit(10);
+  };
   const edit = (item: Subscription | "new", element: HTMLElement) => {
     trigger.current = element;
     setEditing(item);
@@ -462,6 +501,78 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
           新建订阅
         </button>
       </div>
+      <dl className="media-subscription-stats" aria-label="已读取的订阅状态">
+        <div>
+          <dt>已读取</dt>
+          <dd>{subscriptions.length} 个订阅</dd>
+        </div>
+        <div>
+          <dt>运行中</dt>
+          <dd>
+            {subscriptions.filter((item) => item.state === "active").length}
+          </dd>
+        </div>
+        <div>
+          <dt>已暂停</dt>
+          <dd>
+            {subscriptions.filter((item) => item.state === "paused").length}
+          </dd>
+        </div>
+        <div>
+          <dt>需要处理</dt>
+          <dd>{subscriptions.filter(attention).length}</dd>
+        </div>
+        <div>
+          <dt>待初始化</dt>
+          <dd>{subscriptions.filter((item) => !item.baseline_ready).length}</dd>
+        </div>
+      </dl>
+      {!!subscriptions.length && (
+        <div className="media-subscription-search media-form-grid">
+          <label>
+            查找订阅
+            <input
+              type="search"
+              value={query}
+              placeholder="名称、来源 ID、账号或媒体库"
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setLimit(10);
+              }}
+            />
+          </label>
+          <label>
+            订阅状态
+            <select
+              value={filter}
+              onChange={(event) => {
+                setFilter(event.target.value);
+                setLimit(10);
+              }}
+            >
+              <option value="all">全部状态</option>
+              <option value="active">运行中</option>
+              <option value="paused">已暂停</option>
+              <option value="attention">需要处理</option>
+              <option value="auth_required">需要重新登录</option>
+              <option value="rule_error">规则需要修正</option>
+              <option value="uninitialized">待初始化</option>
+            </select>
+          </label>
+          <div className="media-actions media-subscription-match">
+            <p className="muted">
+              {filtered
+                ? `找到 ${matches.length} 个订阅`
+                : `已显示 ${Math.min(limit, matches.length)} / ${matches.length} 个订阅`}
+            </p>
+            {filtered && (
+              <button className="button" onClick={clearFilters}>
+                清除查找与筛选
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {editing && (
         <SubscriptionEditor
           key={editing === "new" ? "new" : editing.subscription_id}
@@ -475,8 +586,21 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
           <p>添加收藏夹、合集、系列或 UP 主投稿来源，即可持续发现新增视频。</p>
         </StatePanel>
       )}
+      {!!subscriptions.length && !matches.length && (
+        <StatePanel
+          kind="empty"
+          title="没有匹配的订阅"
+          action={
+            <button className="button" onClick={clearFilters}>
+              查看全部订阅
+            </button>
+          }
+        >
+          <p>尝试其他名称或来源，或清除当前查找与状态筛选。</p>
+        </StatePanel>
+      )}
       <div className="media-subscriptions">
-        {subscriptions.slice(0, limit).map((item) => (
+        {matches.slice(0, limit).map((item) => (
           <article className="media-card" key={item.subscription_id}>
             <div className="media-section-head">
               <div>
@@ -502,15 +626,38 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
               </div>
               <div>
                 <dt>最后成功扫描</dt>
-                <dd>{timestamp(item.last_scan_at)}</dd>
+                <dd>
+                  {item.last_scan_at == null
+                    ? "尚未成功扫描"
+                    : timestamp(item.last_scan_at)}
+                </dd>
               </div>
               <div>
                 <dt>下次计划</dt>
                 <dd>
                   {item.state === "active"
-                    ? timestamp(item.next_scan_at)
-                    : "暂停自动扫描"}
+                    ? item.next_scan_at > 0
+                      ? timestamp(item.next_scan_at)
+                      : "等待后台安排扫描"
+                    : item.state === "auth_required"
+                      ? "重新登录后继续"
+                      : item.state === "rule_error"
+                        ? "修正规则后继续"
+                        : "恢复订阅后安排"}
                 </dd>
+              </div>
+              <div>
+                <dt>扫描间隔</dt>
+                <dd>
+                  每{" "}
+                  {item.interval_seconds % 60 === 0
+                    ? `${item.interval_seconds / 60} 分钟`
+                    : `${item.interval_seconds} 秒`}
+                </dd>
+              </div>
+              <div>
+                <dt>目标媒体库</dt>
+                <dd>{targets.get(item.target_id) ?? item.target_id}</dd>
               </div>
             </dl>
             {!item.baseline_ready && (
@@ -518,7 +665,18 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
                 初始化未完成，订阅尚未建立可判断新增的完整基线。
               </p>
             )}
-            {item.code && <p className="muted">当前原因：{word(item.code)}</p>}
+            {item.state === "auth_required" && (
+              <p className="media-warning">
+                当前账号需要重新登录。
+                <a href="#/subscriptions/3">更新 B 站登录</a>后，再恢复订阅。
+              </p>
+            )}
+            {item.state === "rule_error" && (
+              <p className="media-warning">
+                请编辑并试算规则，修正后再恢复订阅。
+              </p>
+            )}
+            <ReasonNote code={item.code} />
             <div className="media-actions">
               <button
                 className="button"
@@ -553,7 +711,7 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
           </article>
         ))}
       </div>
-      {subscriptions.length > limit && (
+      {matches.length > limit && (
         <button className="button" onClick={() => setLimit(limit + 10)}>
           显示更多订阅
         </button>

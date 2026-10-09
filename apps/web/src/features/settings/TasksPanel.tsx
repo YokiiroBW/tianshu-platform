@@ -938,7 +938,7 @@ export function TasksPanel() {
                             </p>
                             <p className="tasks-cancel">
                               {item.cancel.supported
-                                ? "请到订阅与下载页查看取消视频任务的可用操作。"
+                                ? "请到下载任务页查看取消视频任务的可用操作。"
                                 : `取消：不可用 — ${cancelWording[item.cancel.code] ?? "执行方没有声明取消能力。"}`}
                             </p>
                             <h4>时间线</h4>
@@ -980,7 +980,14 @@ export function TasksPanel() {
                             </p>
                             {detail.module.page ? (
                               <p className="tasks-module">
-                                <a className="button" href={detail.module.page}>
+                                <a
+                                  className="button"
+                                  href={
+                                    detail.source === "resources.download"
+                                      ? "#/subscriptions/2"
+                                      : detail.module.page
+                                  }
+                                >
                                   到责任模块页面查看
                                 </a>
                               </p>

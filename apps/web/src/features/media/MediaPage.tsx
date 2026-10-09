@@ -1,5 +1,4 @@
-import { useRef, useState, type KeyboardEvent } from "react";
-import { Download, ListVideo, RefreshCw, Rss, UserRound } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
 import { AccountsPanel } from "./AccountsPanel";
@@ -10,63 +9,28 @@ import { useMediaController } from "./useMediaController";
 import { tone, word } from "./wording";
 import "./media.css";
 
-const tabs = [
-  { label: "链接下载", icon: Download },
-  { label: "订阅", icon: Rss },
-  { label: "下载任务", icon: ListVideo },
-  { label: "账号与媒体库", icon: UserRound },
-];
-export default function MediaPage() {
+export default function MediaPage({ section = 0 }: { section?: number }) {
   const media = useMediaController();
-  const [tab, setTab] = useState(0);
-  const buttons = useRef<(HTMLButtonElement | null)[]>([]);
-  const change = (next: number, focus = false) => {
-    media.clearError();
-    setTab(next);
-    if (focus) buttons.current[next]?.focus();
-  };
-  const keys = (event: KeyboardEvent, index: number) => {
-    const next =
-      event.key === "ArrowRight"
-        ? (index + 1) % tabs.length
-        : event.key === "ArrowLeft"
-          ? (index + tabs.length - 1) % tabs.length
-          : event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? tabs.length - 1
-              : null;
-    if (next !== null) {
-      event.preventDefault();
-      change(next, true);
-    }
-  };
   return (
     <div className="media-page">
       <div className="media-header">
-        <div>
-          <h2>订阅与下载</h2>
-          <p className="muted">发现视频，整理成品，查看每一步的实际进度。</p>
-        </div>
-        <div className="media-actions">
-          {media.view && (
-            <StatusRail
-              tone={tone(media.view.engine.state)}
-              label={`下载引擎 · ${word(media.view.engine.state)}`}
-            />
-          )}
-          <button
-            className="button"
-            disabled={media.loading || !!media.busy}
-            onClick={() => {
-              media.clearError();
-              void media.refresh();
-            }}
-          >
-            <RefreshCw aria-hidden="true" />
-            读取状态
-          </button>
-        </div>
+        {media.view && (
+          <StatusRail
+            tone={tone(media.view.engine.state)}
+            label={`下载引擎 · ${word(media.view.engine.state)}`}
+          />
+        )}
+        <button
+          className="button"
+          disabled={media.loading || !!media.busy}
+          onClick={() => {
+            media.clearError();
+            void media.refresh();
+          }}
+        >
+          <RefreshCw aria-hidden="true" />
+          读取状态
+        </button>
       </div>
       {media.error && (
         <div className="media-message media-warning" role="alert">
@@ -95,57 +59,19 @@ export default function MediaPage() {
         <StatePanel kind="unconfigured" title="视频订阅服务尚未配置">
           <p>此部署还没有登记视频账号、下载引擎和发布目标。</p>
         </StatePanel>
+      ) : section === 0 ? (
+        <SubscriptionsPanel media={media} />
+      ) : section === 1 ? (
+        <LinkPanel
+          media={media}
+          onJobs={() => {
+            window.location.hash = "#/subscriptions/2";
+          }}
+        />
+      ) : section === 2 ? (
+        <JobsPanel media={media} />
       ) : (
-        <>
-          <div
-            className="media-tabs"
-            role="tablist"
-            aria-label="订阅与下载功能"
-          >
-            {tabs.map((item, index) => (
-              <button
-                key={item.label}
-                ref={(element) => {
-                  buttons.current[index] = element;
-                }}
-                id={`media-tab-${index}`}
-                role="tab"
-                type="button"
-                aria-selected={tab === index}
-                aria-controls={`media-panel-${index}`}
-                tabIndex={tab === index ? 0 : -1}
-                onKeyDown={(event) => keys(event, index)}
-                onClick={() => change(index)}
-              >
-                <item.icon aria-hidden="true" />
-                {item.label}
-                {index === 2 && media.view!.jobs.length > 0 && (
-                  <span className="media-count">
-                    {media.view!.jobs.length >= 100
-                      ? "100+"
-                      : media.view!.jobs.length}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <div
-            id={`media-panel-${tab}`}
-            role="tabpanel"
-            aria-labelledby={`media-tab-${tab}`}
-            className="media-tab-panel"
-          >
-            {tab === 0 ? (
-              <LinkPanel media={media} onJobs={() => change(2, true)} />
-            ) : tab === 1 ? (
-              <SubscriptionsPanel media={media} />
-            ) : tab === 2 ? (
-              <JobsPanel media={media} />
-            ) : (
-              <AccountsPanel media={media} />
-            )}
-          </div>
-        </>
+        <AccountsPanel media={media} />
       )}
     </div>
   );

@@ -112,43 +112,33 @@
 .media-message.media-warning {
   background: var(--color-red-soft);
 }
-.media-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  border-bottom: 1px solid var(--color-line);
-  padding-bottom: var(--space-3);
+.media-subscription-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
 }
-.media-tabs button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  min-height: var(--control-height);
-  border: 1px solid transparent;
+.media-subscription-stats > div {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-line);
   border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--color-muted);
-  padding: var(--space-2) var(--space-4);
-  font: inherit;
-}
-.media-tabs button[aria-selected="true"] {
   background: var(--color-surface);
-  border-color: var(--color-line);
-  color: var(--color-accent-text);
-}
-.media-tabs button:hover {
-  background: var(--color-selection);
-}
-.media-count {
-  background: var(--color-selection);
-  border-radius: var(--radius-pill);
-  padding: 0 var(--space-2);
-  font-size: var(--text-small);
-}
-.media-tab-panel {
-  padding-top: var(--space-3);
   min-width: 0;
+}
+.media-subscription-stats dt {
+  font-size: var(--text-small);
+  color: var(--color-muted);
+}
+.media-subscription-stats dd {
+  margin: var(--space-2) 0 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.media-subscription-match {
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  font-size: var(--text-small);
+  color: var(--color-muted);
 }
 .media-preview-head {
   display: grid;
@@ -421,13 +411,11 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr);
   }
-  .media-tabs {
-    display: grid;
+  .media-subscription-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .media-tabs button {
-    padding: var(--space-2);
-    font-size: var(--text-small);
+  .media-subscription-stats > div:first-child {
+    grid-column: 1 / -1;
   }
   .media-job-layout.has-detail .media-job-list {
     display: none;

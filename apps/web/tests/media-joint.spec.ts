@@ -18,18 +18,18 @@ async function control(request: APIRequestContext, body: object) {
   expect((await request.post(controlUrl!, { data: body })).ok()).toBe(true);
 }
 async function login(page: Page) {
-  await page.goto("/#/resources/2");
+  await page.goto("/#/subscriptions/1");
   await page.getByLabel("管理员账号").fill("synthetic-admin");
   await page
     .getByLabel("密码", { exact: true })
     .fill("synthetic-local-password-014");
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await expect(
-    page.getByRole("tab", { name: "链接下载", exact: true }),
+    page.getByRole("link", { name: "链接下载", exact: true }),
   ).toBeVisible();
 }
 async function parse(page: Page, bvid: string, account?: string) {
-  await page.getByRole("tab", { name: "链接下载", exact: true }).click();
+  await page.getByRole("link", { name: "链接下载", exact: true }).click();
   if (account)
     await page
       .getByLabel("B 站账号")
@@ -76,7 +76,7 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
   await login(page);
   const account = `隔离扫码 ${randomUUID().slice(0, 8)}`;
   const newMember = `BV1${randomUUID().replaceAll("-", "").slice(0, 9)}`;
-  await page.getByRole("tab", { name: "账号与媒体库", exact: true }).click();
+  await page.getByRole("link", { name: "账号与媒体库", exact: true }).click();
   await page.getByLabel("账号显示名称").fill(account);
   await page
     .getByRole("button", { name: "生成登录二维码", exact: true })
@@ -131,8 +131,8 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
   await expect(
     page.locator("article.tasks-item").filter({ hasText: BV }).first(),
   ).toContainText("发布完成（未配置媒体服务器）");
-  await page.goto("/#/resources/2");
-  await page.getByRole("tab", { name: "订阅", exact: true }).click();
+  await page.goto("/#/subscriptions/1");
+  await page.getByRole("link", { name: "订阅管理", exact: true }).click();
   const sources = {
     favorite: "https://space.bilibili.com/946974/favlist?fid=123",
     collection: "https://space.bilibili.com/946974/lists/456?type=season",
@@ -193,7 +193,7 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
   await expect(
     favorite.getByRole("button", { name: "恢复订阅", exact: true }),
   ).toBeVisible();
-  await page.getByRole("tab", { name: /下载任务/ }).click();
+  await page.getByRole("link", { name: /下载任务/ }).click();
   await expect(
     page
       .getByRole("heading", { name: `合成投稿 ${newMember}`, exact: true })

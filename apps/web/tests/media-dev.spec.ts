@@ -5,23 +5,23 @@ test("media StrictMode remount reads facts and clears cancelled loading", async 
   page,
 }) => {
   const state = await installMediaFixture(page);
-  await page.goto("/#/resources/2");
+  await page.goto("/#/subscriptions/1");
   await expect(
-    page.getByRole("tab", { name: "链接下载", exact: true }),
+    page.getByRole("link", { name: "链接下载", exact: true }),
   ).toBeVisible();
-  await page.getByRole("tab", { name: /下载任务/ }).click();
+  await page.getByRole("link", { name: /下载任务/ }).click();
   await expect(
     page.getByRole("heading", { name: "隔离样例 · 城市与山海", exact: true }),
   ).toBeVisible();
   await page.evaluate(() => {
     location.hash = "#/workbench";
   });
-  await expect(page.getByRole("tab", { name: /下载任务/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /下载任务/ })).toHaveCount(0);
   await page.evaluate(() => {
-    location.hash = "#/resources/2";
+    location.hash = "#/subscriptions";
   });
   await expect(
-    page.getByRole("tab", { name: "链接下载", exact: true }),
+    page.getByRole("link", { name: "链接下载", exact: true }),
   ).toBeVisible();
   expect(
     state.calls.filter((call) => call.operation === "view").length,
