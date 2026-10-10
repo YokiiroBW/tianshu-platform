@@ -5,11 +5,12 @@ import {
   fixtureSubscription,
   fixtureView,
   installMediaFixture,
+  mediaNavigation,
+  expectMediaSection,
+  selectMediaSection,
 } from "./media.fixtures";
 
-const sections = ["订阅管理", "链接下载", "下载任务", "账号与媒体库"];
-const navigation = (page: Page) =>
-  page.getByRole("navigation", { name: "订阅页面" });
+const sections = ["视频订阅", "链接下载", "下载中心", "账号与媒体库", "概览"];
 function subscriptions(count = 12) {
   const view = fixtureView();
   view.subscriptions = Array.from({ length: count }, (_, index) => ({
@@ -48,14 +49,15 @@ test("subscription routes have one owner and reject malformed children", () => {
     );
     expect(resolveRoute(`#/subscriptions/${index}`)?.section).toBe(index);
   }
-  expect(resolveRoute("#/subscriptions")?.section).toBe(0);
+  expect(resolveRoute("#/subscriptions")?.section).toBe(4);
+  expect(resolveRoute("#/resources")?.section).toBe(0);
   expect(resolveRoute("#/resources/2")).toMatchObject({
     module: { id: "subscriptions" },
     section: 0,
-    redirectHash: "#/subscriptions",
+    redirectHash: "#/subscriptions/0",
   });
   for (const hash of [
-    "#/subscriptions/4",
+    "#/subscriptions/5",
     "#/subscriptions/-1",
     "#/subscriptions/1/extra",
     "#/resources/3",
@@ -70,13 +72,13 @@ test("subscription is a main navigation entry with one child navigation and lega
   await installMediaFixture(page, subscriptions(4));
   await page.goto("/#/subscriptions");
   await expect(
-    page.getByRole("region", { name: "订阅管理", exact: true }),
+    page.getByRole("region", { name: "订阅概览", exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("订阅");
-  await expect(navigation(page).getByRole("link")).toHaveCount(4);
-  await expect(
-    navigation(page).getByRole("link", { name: "订阅管理", exact: true }),
-  ).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("概览");
+  await expect(page.locator(".page-heading, main > .section-nav")).toHaveCount(
+    0,
+  );
+  await expectMediaSection(page, "概览");
   await expect(page.getByRole("tablist")).toHaveCount(0);
   expect(
     await page.evaluate(
@@ -89,6 +91,13 @@ test("subscription is a main navigation entry with one child navigation and lega
   });
   const menu = page.getByRole("button", { name: "打开导航" });
   if (await menu.isVisible()) await menu.click();
+  await expect((await mediaNavigation(page)).getByRole("link")).toHaveText([
+    "概览",
+    "视频订阅",
+    "链接下载",
+    "下载中心",
+    "账号与媒体库",
+  ]);
   const workspace = page
     .getByRole("navigation", { name: "工作区导航" })
     .filter({ visible: true });
@@ -106,14 +115,14 @@ test("subscription is a main navigation entry with one child navigation and lega
   await page.evaluate(() => {
     location.hash = "#/resources/2";
   });
-  await expect(page).toHaveURL(/#\/subscriptions$/);
+  await expect(page).toHaveURL(/#\/subscriptions\/0$/);
   await expect(
     page.getByRole("region", { name: "订阅管理", exact: true }),
   ).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(/#\/resources$/);
   await page.goForward();
-  await expect(page).toHaveURL(/#\/subscriptions$/);
+  await expect(page).toHaveURL(/#\/subscriptions\/0$/);
 });
 
 test("subscription child routes survive direct entry reload and browser return", async ({
@@ -122,22 +131,14 @@ test("subscription child routes survive direct entry reload and browser return",
   await installMediaFixture(page);
   for (const [index, label] of sections.entries()) {
     await page.goto(`/#/subscriptions/${index}`);
-    await expect(
-      navigation(page).getByRole("link", { name: label, exact: true }),
-    ).toHaveAttribute("aria-current", "page");
+    await expectMediaSection(page, label);
     await page.reload();
-    await expect(
-      navigation(page).getByRole("link", { name: label, exact: true }),
-    ).toHaveAttribute("aria-current", "page");
+    await expectMediaSection(page, label);
     await expect(page).toHaveTitle(`${label} · 天枢`);
   }
-  await navigation(page)
-    .getByRole("link", { name: "下载任务", exact: true })
-    .click();
+  await selectMediaSection(page, "下载中心");
   await expect(page.getByLabel("筛选任务")).toBeVisible();
-  await navigation(page)
-    .getByRole("link", { name: "链接下载", exact: true })
-    .click();
+  await selectMediaSection(page, "链接下载");
   await expect(page.getByLabel("B 站视频链接")).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(/#\/subscriptions\/2$/);
@@ -148,7 +149,7 @@ test("subscription search reaches every loaded row and summaries retain their re
   page,
 }) => {
   const state = await installMediaFixture(page, subscriptions());
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/0");
   await expect(cards(page)).toHaveCount(10);
   const stats = page.getByLabel("已读取的订阅状态");
   await expect(stats).toContainText("12 个订阅");
@@ -205,7 +206,7 @@ test("subscription cards explain missing scans and recovery while empty remains 
   page,
 }) => {
   const state = await installMediaFixture(page, subscriptions(4));
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/0");
   await expect(cards(page).nth(0)).toContainText("尚未成功扫描");
   await expect(cards(page).nth(0)).toContainText("等待后台安排扫描");
   await expect(cards(page).nth(1)).toContainText("恢复订阅后安排");
@@ -218,9 +219,7 @@ test("subscription cards explain missing scans and recovery while empty remains 
     page.getByRole("button", { name: "生成登录二维码", exact: true }),
   ).toBeVisible();
   state.view.subscriptions = [];
-  await navigation(page)
-    .getByRole("link", { name: "订阅管理", exact: true })
-    .click();
+  await selectMediaSection(page, "视频订阅");
   await expect(page.getByText("还没有订阅", { exact: true })).toBeVisible();
   await expect(page.getByLabel("查找订阅")).toHaveCount(0);
   await expect(page.getByLabel("已读取的订阅状态")).toContainText("0 个订阅");
@@ -245,7 +244,7 @@ test("legacy anonymous bookmark returns through login to canonical subscriptions
     .getByLabel("密码", { exact: true })
     .fill("synthetic-navigation-password");
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await expect(page).toHaveURL(/#\/subscriptions$/);
+  await expect(page).toHaveURL(/#\/subscriptions\/0$/);
   await expect(
     page.getByRole("region", { name: "订阅管理", exact: true }),
   ).toBeVisible();
@@ -317,7 +316,5 @@ test("task centre media responsibility link opens download tasks directly", asyn
   await expect(page).toHaveURL(/#\/subscriptions\/2$/);
   await expect(page.getByLabel("筛选任务")).toBeVisible();
   await page.reload();
-  await expect(
-    navigation(page).getByRole("link", { name: "下载任务", exact: true }),
-  ).toHaveAttribute("aria-current", "page");
+  await expectMediaSection(page, "下载中心");
 });

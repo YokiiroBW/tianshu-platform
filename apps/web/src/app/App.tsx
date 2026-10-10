@@ -1,6 +1,11 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { Menu, Palette, Sparkles, WifiOff } from "lucide-react";
-import { modules, pages, resolveRoute } from "./modules";
+import {
+  modules,
+  pages,
+  resolveRoute,
+  subscriptionNavigation,
+} from "./modules";
 import {
   AuthProvider,
   AccountPage,
@@ -194,16 +199,34 @@ function AppShell() {
           {modules
             .filter((item) => item.group === group)
             .map((item) => (
-              <a
-                key={item.id}
-                className="nav-item"
-                href={`#/${item.id}`}
-                aria-current={current?.id === item.id ? "page" : undefined}
-                onClick={() => setDrawer(null)}
-              >
-                <item.icon aria-hidden="true" />
-                <span>{item.label}</span>
-              </a>
+              <div key={item.id}>
+                <a
+                  className="nav-item"
+                  href={`#/${item.id}`}
+                  aria-current={current?.id === item.id ? "page" : undefined}
+                  onClick={() => setDrawer(null)}
+                >
+                  <item.icon aria-hidden="true" />
+                  <span>{item.label}</span>
+                </a>
+                {item.id === "subscriptions" && current?.id === item.id && (
+                  <nav className="nav-subsections" aria-label="订阅页面">
+                    {subscriptionNavigation.map((child) => (
+                      <a
+                        key={child.section}
+                        href={child.href}
+                        aria-current={
+                          section === child.section ? "page" : undefined
+                        }
+                        onClick={() => setDrawer(null)}
+                      >
+                        <child.icon aria-hidden="true" />
+                        <span>{item.sections[child.section]}</span>
+                      </a>
+                    ))}
+                  </nav>
+                )}
+              </div>
             ))}
         </div>
       ))}
@@ -262,7 +285,9 @@ function AppShell() {
         跳到主要内容
       </a>
       <div className="app-shell">
-        <aside className="sidebar glass">
+        <aside
+          className={`sidebar glass${current?.id === "subscriptions" ? " has-subnavigation" : ""}`}
+        >
           <a className="brand" href="#/workbench">
             <span className="brand-symbol">
               <Sparkles aria-hidden="true" />
@@ -330,31 +355,40 @@ function AppShell() {
             </div>
           )}
           <main id="main" ref={main} tabIndex={-1}>
-            <div className="page-heading">
-              <div>
-                <p className="eyebrow">
-                  {account
-                    ? "账号与首次使用"
-                    : (current?.description ?? "检查页面地址")}
-                </p>
-                <h1>
-                  {account ? accountTitle : (current?.label ?? "页面不存在")}
-                </h1>
+            {current?.id === "subscriptions" ? (
+              <h1 className="sr-only">{current.sections[section]}</h1>
+            ) : (
+              <div className="page-heading">
+                <div>
+                  <p className="eyebrow">
+                    {account
+                      ? "账号与首次使用"
+                      : (current?.description ?? "检查页面地址")}
+                  </p>
+                  <h1>
+                    {account ? accountTitle : (current?.label ?? "页面不存在")}
+                  </h1>
+                </div>
               </div>
-            </div>
-            {current && current.sections.length > 0 && (
-              <nav className="section-nav" aria-label={`${current.label}页面`}>
-                {current.sections.map((label, index) => (
-                  <a
-                    key={label}
-                    href={`#/${current.id}/${index}`}
-                    aria-current={section === index ? "page" : undefined}
-                  >
-                    {label}
-                  </a>
-                ))}
-              </nav>
             )}
+            {current &&
+              current.id !== "subscriptions" &&
+              current.sections.length > 0 && (
+                <nav
+                  className="section-nav"
+                  aria-label={`${current.label}页面`}
+                >
+                  {current.sections.map((label, index) => (
+                    <a
+                      key={label}
+                      href={`#/${current.id}/${index}`}
+                      aria-current={section === index ? "page" : undefined}
+                    >
+                      {label}
+                    </a>
+                  ))}
+                </nav>
+              )}
             <PageBoundary key={hash}>
               <Suspense
                 fallback={

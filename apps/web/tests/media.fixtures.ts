@@ -1,4 +1,4 @@
-import type { Page, Route } from "@playwright/test";
+import { expect, type Page, type Route } from "@playwright/test";
 import {
   bestQuality,
   emptyRules,
@@ -99,6 +99,22 @@ export const fixtureView = (): MediaView => ({
   ],
   subscriptions: [],
   jobs: [fixtureJob()],
+  overview: {
+    jobs: {
+      total: 1,
+      published: 0,
+      processing: 0,
+      queued: 0,
+      attention: 1,
+      cancelled: 0,
+    },
+    storage: {
+      state: "available",
+      total_bytes: 1024 ** 4,
+      used_bytes: 1024 ** 3 * 640,
+      free_bytes: 1024 ** 3 * 384,
+    },
+  },
 });
 export function fixtureDetail(job: Job): JobDetail {
   return {
@@ -324,3 +340,33 @@ export const fixtureSubscription = (): Subscription => ({
   code: "",
   counts: { members: 0, queued: 0 },
 });
+
+export async function mediaNavigation(page: Page) {
+  await expect(page.locator(".app-shell")).toBeVisible();
+  const navigation = page
+    .getByRole("navigation", { name: "订阅页面" })
+    .filter({ visible: true });
+  if (!(await navigation.isVisible()))
+    await page.getByRole("button", { name: "打开导航" }).click();
+  return navigation;
+}
+export async function selectMediaSection(
+  page: Page,
+  name: string,
+  keyboard = false,
+) {
+  const navigation = await mediaNavigation(page);
+  const link = navigation.getByRole("link", { name, exact: true });
+  if (keyboard) {
+    await link.focus();
+    await page.keyboard.press("Enter");
+  } else await link.click();
+}
+export async function expectMediaSection(page: Page, name: string) {
+  const navigation = await mediaNavigation(page);
+  await expect(
+    navigation.getByRole("link", { name, exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  const close = page.getByRole("button", { name: "关闭导航", exact: true });
+  if (await close.isVisible()) await close.click();
+}
