@@ -23,6 +23,20 @@ TERMINAL = frozenset(
         "waiting_metadata",
     }
 )
+OVERVIEW_STATES = {
+    "published": ("published", "completed"),
+    "processing": (
+        "downloading",
+        "validating",
+        "metadata_ready",
+        "publishing",
+        "asset_indexed",
+        "library_verifying",
+    ),
+    "queued": ("queued", "retry_wait"),
+    "attention": ("failed", "unknown", "auth_required", "waiting_metadata"),
+    "cancelled": ("cancelled",),
+}
 
 
 class Repository:
@@ -239,6 +253,18 @@ class Repository:
     def job_count(self):
         with self.transaction() as db:
             return db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+
+    def job_overview(self):
+        """Count the whole ledger in SQL without loading any job documents."""
+        with self.transaction() as db:
+            counts = dict(db.execute("SELECT state, COUNT(*) FROM jobs GROUP BY state"))
+        return {
+            "total": sum(counts.values()),
+            **{
+                category: sum(counts.get(state, 0) for state in states)
+                for category, states in OVERVIEW_STATES.items()
+            },
+        }
 
     def events(self, identity):
         with self.transaction() as db:

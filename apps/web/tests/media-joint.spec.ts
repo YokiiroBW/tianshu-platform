@@ -6,6 +6,8 @@ import {
   type APIRequestContext,
 } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+import { selectMediaSection, expectMediaSection } from "./media.fixtures";
+import type { MediaView } from "../src/features/media/types";
 
 const BV = "BV1xx411c7mD";
 const OTHER = "BV1Ab4y1z7Qs";
@@ -24,12 +26,10 @@ async function login(page: Page) {
     .getByLabel("密码", { exact: true })
     .fill("synthetic-local-password-014");
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await expect(
-    page.getByRole("link", { name: "链接下载", exact: true }),
-  ).toBeVisible();
+  await expectMediaSection(page, "链接下载");
 }
 async function parse(page: Page, bvid: string, account?: string) {
-  await page.getByRole("link", { name: "链接下载", exact: true }).click();
+  await selectMediaSection(page, "链接下载");
   if (account)
     await page
       .getByLabel("B 站账号")
@@ -76,7 +76,7 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
   await login(page);
   const account = `隔离扫码 ${randomUUID().slice(0, 8)}`;
   const newMember = `BV1${randomUUID().replaceAll("-", "").slice(0, 9)}`;
-  await page.getByRole("link", { name: "账号与媒体库", exact: true }).click();
+  await selectMediaSection(page, "账号与媒体库");
   await page.getByLabel("账号显示名称").fill(account);
   await page
     .getByRole("button", { name: "生成登录二维码", exact: true })
@@ -132,7 +132,7 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
     page.locator("article.tasks-item").filter({ hasText: BV }).first(),
   ).toContainText("发布完成（未配置媒体服务器）");
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: "订阅管理", exact: true }).click();
+  await selectMediaSection(page, "视频订阅");
   const sources = {
     favorite: "https://space.bilibili.com/946974/favlist?fid=123",
     collection: "https://space.bilibili.com/946974/lists/456?type=season",
@@ -193,7 +193,7 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
   await expect(
     favorite.getByRole("button", { name: "恢复订阅", exact: true }),
   ).toBeVisible();
-  await page.getByRole("link", { name: /下载任务/ }).click();
+  await selectMediaSection(page, "下载中心");
   await expect(
     page
       .getByRole("heading", { name: `合成投稿 ${newMember}`, exact: true })
@@ -244,4 +244,92 @@ test("actual media HTTP restores a waiting metadata job with an explicit overrid
   ).toBeVisible();
   await page.getByRole("button", { name: "返回任务列表", exact: true }).click();
   await waitForState(page, "发布完成", createdJob.job_id);
+});
+
+test("actual overview HTTP displays server totals and the staging disk facts", async ({
+  page,
+}, info) => {
+  await login(page);
+  await selectMediaSection(page, "概览");
+  await expectMediaSection(page, "概览");
+  const refresh = page.getByRole("button", { name: "读取状态", exact: true });
+  await expect(refresh).toBeEnabled();
+  const reading = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/web/media/view") &&
+      response.request().method() === "POST",
+  );
+  await refresh.click();
+  const response = await reading;
+  expect(response.ok()).toBe(true);
+  const view = (await response.json()) as MediaView;
+  expect(view.configured).toBe(true);
+  expect(view.overview).toBeTruthy();
+  const { jobs, storage } = view.overview!;
+  expect(jobs.total).toBeGreaterThanOrEqual(view.jobs.length);
+  await expect(page.locator(".overview-kpi-value")).toHaveText(
+    [jobs.published, jobs.processing, jobs.queued, jobs.attention].map(
+      (count) => count.toLocaleString("zh-CN"),
+    ),
+  );
+  await expect(page.locator(".overview-total")).toHaveText(
+    `累计 ${jobs.total.toLocaleString("zh-CN")} 个任务 · 其中 ${jobs.cancelled.toLocaleString("zh-CN")} 个已取消`,
+  );
+  await expect(page.locator(".overview-recent-row")).toHaveCount(
+    Math.min(5, view.jobs.length),
+  );
+  const disk = page.getByRole("region", { name: "下载暂存磁盘", exact: true });
+  await expect(disk).toContainText(
+    "平台下载暂存所在磁盘，容量包含同盘其他文件。",
+  );
+  if (storage.state === "available") {
+    for (const value of [
+      storage.total_bytes,
+      storage.used_bytes,
+      storage.free_bytes,
+    ]) {
+      expect(typeof value).toBe("number");
+      expect(value).toBeGreaterThanOrEqual(0);
+    }
+    const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    const unit =
+      storage.free_bytes! > 0
+        ? Math.min(
+            Math.floor(Math.log(storage.free_bytes!) / Math.log(1024)),
+            5,
+          )
+        : 0;
+    await expect(disk.locator(".overview-storage-capacity strong")).toHaveText(
+      `${(storage.free_bytes! / 1024 ** unit).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${units[unit]}`,
+    );
+    if (storage.total_bytes! > 0) {
+      await expect(disk.getByRole("progressbar")).toHaveAttribute(
+        "max",
+        String(storage.total_bytes),
+      );
+      await expect(disk.getByRole("progressbar")).toHaveAttribute(
+        "value",
+        String(storage.used_bytes),
+      );
+    }
+  } else {
+    expect([
+      storage.total_bytes,
+      storage.used_bytes,
+      storage.free_bytes,
+    ]).toEqual([null, null, null]);
+    await expect(
+      disk.getByText("暂未取得磁盘容量", { exact: true }),
+    ).toBeVisible();
+    await expect(disk.getByRole("progressbar")).toHaveCount(0);
+  }
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: info.outputPath(`overview-http-${info.project.name}.png`),
+    fullPage: true,
+  });
 });

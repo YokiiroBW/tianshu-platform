@@ -93,6 +93,23 @@ export type MediaView = {
   targets: Target[];
   subscriptions: Subscription[];
   jobs: Job[];
+  // Older servers omit overview. Its absence is unknown, never a count from the recent list.
+  overview?: {
+    jobs: {
+      total: number;
+      published: number;
+      processing: number;
+      queued: number;
+      attention: number;
+      cancelled: number;
+    };
+    storage: {
+      state: "available" | "unavailable";
+      total_bytes: number | null;
+      used_bytes: number | null;
+      free_bytes: number | null;
+    };
+  } | null;
 };
 export type Format = { quality_id: string; label: string };
 export type Part = {

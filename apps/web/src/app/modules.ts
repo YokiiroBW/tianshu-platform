@@ -9,6 +9,9 @@ import {
   UsersRound,
   Settings,
   Rss,
+  Link,
+  Download,
+  UserRound,
 } from "lucide-react";
 
 // Local navigation metadata, never a cross-product API or a connection-health registry.
@@ -51,7 +54,7 @@ export const modules = [
     icon: Rss,
     group: "个人空间",
     description: "关注视频来源，管理下载与媒体入库",
-    sections: ["订阅管理", "链接下载", "下载任务", "账号与媒体库"],
+    sections: ["视频订阅", "链接下载", "下载中心", "账号与媒体库", "概览"],
   },
   {
     id: "resources",
@@ -101,6 +104,15 @@ export const modules = [
 export type Module = (typeof modules)[number];
 export type ModuleId = Module["id"];
 
+// Stable section indices preserve existing media bookmarks; only their display order differs.
+export const subscriptionNavigation = [
+  { section: 4, icon: LayoutDashboard, href: "#/subscriptions" },
+  { section: 0, icon: Rss, href: "#/subscriptions/0" },
+  { section: 1, icon: Link, href: "#/subscriptions/1" },
+  { section: 2, icon: Download, href: "#/subscriptions/2" },
+  { section: 3, icon: UserRound, href: "#/subscriptions/3" },
+] as const;
+
 // Room remains a separate chunk. Future modules register one lazy page here.
 export const pages = {
   companion: lazy(() => import("../features/companion/CompanionPage")),
@@ -127,7 +139,7 @@ export function resolveRoute(
     return {
       module: modules.find((item) => item.id === "subscriptions")!,
       section: 0,
-      redirectHash: "#/subscriptions",
+      redirectHash: "#/subscriptions/0",
     };
   }
   const module = modules.find((item) => item.id === (id || "workbench"));
@@ -142,5 +154,13 @@ export function resolveRoute(
       module: modules.find((item) => item.id === "memory")!,
       section: 0,
     };
-  return { module, section: section === undefined ? 0 : Number(section) };
+  return {
+    module,
+    section:
+      section === undefined
+        ? module.id === "subscriptions"
+          ? 4
+          : 0
+        : Number(section),
+  };
 }

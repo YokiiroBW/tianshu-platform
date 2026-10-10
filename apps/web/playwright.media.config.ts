@@ -9,7 +9,11 @@ export default defineConfig({
     ["html", { outputFolder: ".runtime/media-ui/report", open: "never" }],
   ],
   testIgnore: [],
-  testMatch: ["media.spec.ts", "subscriptions-navigation.spec.ts"],
+  testMatch: [
+    "media.spec.ts",
+    "subscriptions-navigation.spec.ts",
+    "subscriptions-dashboard.spec.ts",
+  ],
   workers: 2,
   projects: [
     { name: "desktop", use: { viewport: { width: 1440, height: 900 } } },

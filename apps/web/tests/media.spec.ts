@@ -5,6 +5,8 @@ import {
   fixtureSubscription,
   fixtureView,
   installMediaFixture,
+  selectMediaSection,
+  expectMediaSection,
 } from "./media.fixtures";
 
 test("media link parsing preserves selected parts and only available quality", async ({
@@ -28,10 +30,7 @@ test("media link parsing preserves selected parts and only available quality", a
   await page.getByText("P2 · 山海", { exact: true }).click();
   await page.getByLabel("质量策略").selectOption("80");
   await page.getByRole("button", { name: "创建下载任务（1 个分 P）" }).click();
-  await expect(page.getByRole("link", { name: /下载任务/ })).toHaveAttribute(
-    "aria-current",
-    "page",
-  );
+  await expectMediaSection(page, "下载中心");
   const enqueue = state.calls.find((call) => call.operation === "enqueue")!;
   expect(enqueue.body.part_cids).toEqual(["100"]);
   expect(enqueue.body.quality).toEqual({
@@ -48,7 +47,7 @@ test("media subscription wizard supports four sources and explains rule errors",
 }) => {
   const state = await installMediaFixture(page);
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: "订阅管理", exact: true }).click();
+  await selectMediaSection(page, "视频订阅");
   const sourceUrls: Record<string, string> = {
     favorite: "https://space.bilibili.com/123456/favlist?fid=7890",
     collection: "https://space.bilibili.com/123456/lists/7890?type=season",
@@ -111,7 +110,7 @@ test("media subscription edit keeps scan interval and pause does not cancel jobs
   view.subscriptions = [fixtureSubscription()];
   const state = await installMediaFixture(page, view);
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: "订阅管理", exact: true }).click();
+  await selectMediaSection(page, "视频订阅");
   await page.getByRole("button", { name: "暂停订阅" }).click();
   await expect(page.getByRole("button", { name: "恢复订阅" })).toBeVisible();
   expect(state.calls.some((call) => call.operation === "jobs/control")).toBe(
@@ -139,7 +138,7 @@ test("media QR is generated locally and imported cookie leaves the editor", asyn
 }) => {
   const state = await installMediaFixture(page);
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: "账号与媒体库", exact: true }).click();
+  await selectMediaSection(page, "账号与媒体库");
   await page.getByRole("button", { name: "生成登录二维码" }).click();
   await expect(page.getByAltText("B 站登录二维码")).toHaveAttribute(
     "src",
@@ -188,7 +187,7 @@ test("media scanned QR state keeps its minimum polling interval", async ({
     });
   });
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: "账号与媒体库", exact: true }).click();
+  await selectMediaSection(page, "账号与媒体库");
   await page
     .getByRole("button", { name: "生成登录二维码", exact: true })
     .click();
@@ -212,7 +211,7 @@ test("media job details preserve metadata revision and separate server results",
 }) => {
   const state = await installMediaFixture(page);
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: /下载任务/ }).click();
+  await selectMediaSection(page, "下载中心");
   await page.getByRole("button", { name: "查看任务详情" }).click();
   await page.getByRole("button", { name: "重新解析来源", exact: true }).click();
   await expect(
@@ -316,7 +315,7 @@ test("media outages preserve a marked snapshot and session loss clears it", asyn
 }) => {
   const state = await installMediaFixture(page);
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: /下载任务/ }).click();
+  await selectMediaSection(page, "下载中心");
   await expect(
     page.getByRole("heading", { name: "隔离样例 · 城市与山海", exact: true }),
   ).toBeVisible();
@@ -350,8 +349,7 @@ test("media viewport and keyboard keep details reachable", async ({
     }),
   ];
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: "下载任务", exact: true }).focus();
-  await page.keyboard.press("Enter");
+  await selectMediaSection(page, "下载中心", true);
   await expect(page).toHaveURL(/#\/subscriptions\/2$/);
   await page.getByRole("button", { name: "查看任务详情" }).click();
   const detail = page.getByRole("complementary", { name: "任务详情" });
@@ -405,7 +403,7 @@ test("media metadata conflict keeps unsaved text and refuses an old revision", a
 }) => {
   const state = await installMediaFixture(page);
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: /下载任务/ }).click();
+  await selectMediaSection(page, "下载中心");
   await page.getByRole("button", { name: "查看任务详情" }).click();
   await page.getByLabel("展示标题").fill("本页尚未保存的标题");
   state.view.jobs[0].revision += 1;
@@ -424,7 +422,7 @@ test("media LAN HTTP UUID fallback creates a command without secure-context APIs
   });
   const state = await installMediaFixture(page);
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: "订阅管理", exact: true }).click();
+  await selectMediaSection(page, "视频订阅");
   await page.getByRole("button", { name: "新建订阅", exact: true }).click();
   await page.getByLabel("订阅名称").fill("LAN HTTP 合成订阅");
   await page.getByLabel("来源链接或 ID", { exact: true }).fill("123456");
@@ -458,7 +456,7 @@ test("media progress uses the owners normalized ratio", async ({ page }) => {
   ];
   await installMediaFixture(page, view);
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: /下载任务/ }).click();
+  await selectMediaSection(page, "下载中心");
   await expect(page.getByText("50%", { exact: true })).toBeVisible();
   await expect(page.getByRole("progressbar")).toHaveAttribute("value", "50");
 });
@@ -487,10 +485,7 @@ test("media retries an unconfirmed command with the original idempotency key", a
   await page.getByRole("button", { name: "创建下载任务（2 个分 P）" }).click();
   await expect(page.getByText(/连接中断，结果尚未确认/)).toBeVisible();
   await page.getByRole("button", { name: "创建下载任务（2 个分 P）" }).click();
-  await expect(page.getByRole("link", { name: /下载任务/ })).toHaveAttribute(
-    "aria-current",
-    "page",
-  );
+  await expectMediaSection(page, "下载中心");
   expect(keys).toHaveLength(2);
   expect(keys[1]).toBe(keys[0]);
   expect(
@@ -513,7 +508,7 @@ test("media task history follows the server cursor beyond the initial view", asy
   );
   const state = await installMediaFixture(page, view);
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: /下载任务/ }).click();
+  await selectMediaSection(page, "下载中心");
   await expect(page.locator("article.media-job")).toHaveCount(20);
   for (const count of [40, 60, 80, 100, 105]) {
     await page.getByRole("button", { name: /加载更多任务/ }).click();
@@ -597,7 +592,7 @@ test("media filter changes discard a delayed continuation", async ({
     }
   };
   await page.goto("/#/subscriptions/1");
-  await page.getByRole("link", { name: /下载任务/ }).click();
+  await selectMediaSection(page, "下载中心");
   await page.getByRole("button", { name: /加载更多任务/ }).click();
   await started;
   await page.getByLabel("筛选任务").selectOption("finished");
