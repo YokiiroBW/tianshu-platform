@@ -19,14 +19,12 @@ import {
 } from "./api";
 import {
   ProviderManager,
-  type Provider,
   type ProviderActions,
   type ProviderDraft,
 } from "./ProviderManager";
-import { readProviders } from "./providerApi";
+import { readProviders, type ProviderView } from "./providerApi";
+import { ModelFunctionsPanel } from "./ModelFunctionsPanel";
 import "./models.css";
-
-type ProviderView = { providers: Provider[]; defaultRevision: number };
 
 function errorMessage(cause: unknown) {
   if (cause instanceof WebError) {
@@ -450,12 +448,33 @@ export function ProviderModelsPanel() {
             </div>
           )}
           {management?.unlocked && providerView && (
-            <ProviderManager
-              providers={providerView.providers}
-              editable
-              actions={actions}
-              onError={handleProviderError}
-            />
+            <>
+              <ModelFunctionsPanel
+                functions={providerView.functions}
+                providers={providerView.providers}
+                onError={handleProviderError}
+                save={async (item, provider, signal) => {
+                  await invoke(
+                    "function",
+                    {
+                      client_id: requestId(),
+                      function_id: item.function_id,
+                      provider_id: provider?.providerId ?? null,
+                      expected_revision: provider?.revision ?? null,
+                      expected_binding_revision: item.revision,
+                    },
+                    signal,
+                  );
+                  await reloadProviders(signal);
+                }}
+              />
+              <ProviderManager
+                providers={providerView.providers}
+                editable
+                actions={actions}
+                onError={handleProviderError}
+              />
+            </>
           )}
         </>
       )}

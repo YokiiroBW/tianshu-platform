@@ -219,6 +219,48 @@
   align-items: center;
   gap: var(--space-3);
 }
+.model-functions {
+  display: grid;
+  gap: var(--space-4);
+  margin-block: var(--space-5);
+}
+.model-functions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: var(--space-4);
+}
+.model-function-card {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-input);
+}
+.model-function-card h4,
+.model-function-card p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.model-function-card label {
+  display: grid;
+  gap: var(--space-2);
+}
+.model-function-card select {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  padding: var(--space-2);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-input);
+  color: var(--color-text);
+  font: inherit;
+}
+.model-function-effective {
+  font-size: var(--text-small);
+}
 @media (max-width: 640px) {
   .models-toolbar,
   .models-actions {

@@ -3,6 +3,7 @@
 import time
 
 from .contracts import digest, require
+from .model_functions import validate_function
 
 
 class ProviderAuthority:
@@ -22,7 +23,7 @@ class ProviderAuthority:
         require(self.catalog is not None, "dependency_unavailable", 503)
         require(
             isinstance(body, dict)
-            and set(body)
+            and set(body) - {"function_id"}
             == {
                 "turn_id",
                 "actor_id",
@@ -44,13 +45,19 @@ class ProviderAuthority:
             self.platform.contracts.check("common#id", body[field])
         require(body["audience"] in {"group", "self_private"}, "invalid_input", 400)
         self._identity(header, "config.select", "companion")
+        function_id = validate_function(body.get("function_id", "chat"))
         view = self.catalog.view()
         selected = view["default"]
+        binding = next(item for item in view["functions"] if item["function_id"] == function_id)
+        if binding["provider_id"] is not None:
+            selected = binding
         role_runtime = getattr(self.platform, "role_runtime", None)
         role = role_runtime.get(body["actor_id"]) if role_runtime is not None else None
         if role is not None:
             require(role_runtime.active(body["actor_id"]), "forbidden", 403)
-            if role["provider_id"] is not None:
+            if role["provider_id"] is not None and (
+                function_id == "chat" or binding["provider_id"] is None
+            ):
                 provider = next(
                     (
                         item
