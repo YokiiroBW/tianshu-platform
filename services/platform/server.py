@@ -591,6 +591,16 @@ def create_app(platform, probe=None, *, console=None, public=False):
 
     app = web.Application(middlewares=[boundary], client_max_size=45 * 1024 * 1024)
     app[PLATFORM] = platform
+    if not public and platform.media.config is not None:
+
+        async def media_context(app):
+            await platform.media.start()
+            try:
+                yield
+            finally:
+                await platform.media.close()
+
+        app.cleanup_ctx.append(media_context)
 
     if not public and platform.bot_adapters.catalog is not None:
 

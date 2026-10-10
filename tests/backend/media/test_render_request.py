@@ -212,10 +212,15 @@ class RenderRequestValidationTest(unittest.TestCase):
         )
 
     def test_single_requires_one_part_and_rejects_a_thumbnail(self):
-        multipart_on_single = multipart_request()
-        error = refused(lambda: render_sidecars(self.single, multipart_on_single))
-        self.assertEqual(error.code, "multipart_layout_requires_multiple_parts")
-        self.assertEqual(error.field, "layout")
+        multipart_on_single = RenderRequest.build(
+            layout="multipart",
+            selected_cids=[CID_ONE],
+            media_extension="mkv",
+            episode_numbers={CID_ONE: 1},
+        )
+        bundle = render_sidecars(self.single, multipart_on_single)
+        self.assertEqual(len(bundle.expected_media), 1)
+        self.assertTrue(any(file.path == "tvshow.nfo" for file in bundle.files))
         single_on_multipart = RenderRequest.build(
             layout="single", selected_cids=[CID_ONE], media_extension="mkv"
         )

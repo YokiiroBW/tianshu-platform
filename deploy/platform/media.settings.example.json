@@ -1,0 +1,38 @@
+{
+  "media": {
+    "staging_directory": "/var/lib/tianshu/media-staging",
+    "package_contract_directory": "/srv/tianshu/contracts/media-package/v1",
+    "engine": {
+      "python": "/opt/tianshu-venv/bin/python",
+      "ffmpeg": "/usr/bin/ffmpeg",
+      "ffprobe": "/usr/bin/ffprobe",
+      "timeout_seconds": 7200,
+      "max_bytes": 21474836480
+    },
+    "scan_page_limit": 200,
+    "scan_item_limit": 5000,
+    "scan_timeout_seconds": 900,
+    "workers": 2,
+    "targets": [
+      {
+        "target_id": "bilibili-library",
+        "label": "B 站视频库",
+        "library_id": "00000000-0000-4000-8000-000000000001",
+        "publisher": {
+          "base_url": "http://assetlibrary:8080",
+          "token_env": "TIANSHU_MEDIA_PUBLISH_TOKEN"
+        },
+        "servers": [
+          {
+            "server_id": "jellyfin",
+            "kind": "jellyfin",
+            "base_url": "http://jellyfin:8096",
+            "token_env": "TIANSHU_JELLYFIN_TOKEN",
+            "library_id": "replace-with-jellyfin-library-id",
+            "media_root": "/media/bilibili"
+          }
+        ]
+      }
+    ]
+  }
+}

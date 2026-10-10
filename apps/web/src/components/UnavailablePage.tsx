@@ -10,8 +10,6 @@ export function UnavailablePage({
 }) {
   const info: Record<string, string> = {
     "memory/2": "账号关联目前没有面向浏览器的读取或修改流程。",
-    "resources/2":
-      "订阅与下载业务引擎及网页流程尚未提供；无需在连接设置中寻找地址或令牌。",
     "home/1":
       "容器清单与实时健康观测的浏览器接口尚未提供。连接摘要只报告已登记业务能力的读取状态。",
     "home/2": "节点与游戏服管理的浏览器流程尚未提供。",

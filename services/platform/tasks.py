@@ -59,6 +59,23 @@ MODEL_STATUS = {
     models_module.CORRUPT: ("unknown", "corrupt"),
     models_module.INTENT_UNRESOLVED: ("unknown", "unverified"),
 }
+MEDIA_STATUS = {
+    "queued": ("accepted", "queued"),
+    "downloading": ("in_progress", "downloading"),
+    "validating": ("in_progress", "validating"),
+    "metadata_ready": ("in_progress", "metadata_ready"),
+    "publishing": ("in_progress", "publishing"),
+    "asset_indexed": ("in_progress", "asset_indexed"),
+    "library_verifying": ("in_progress", "library_verifying"),
+    "retry_wait": ("in_progress", "retry_wait"),
+    "waiting_metadata": ("unknown", "waiting_metadata"),
+    "auth_required": ("unknown", "auth_required"),
+    "unknown": ("unknown", "unknown"),
+    "failed": ("failed", "failed"),
+    "cancelled": ("failed", "cancelled"),
+    "published": ("observed", "published"),
+    "completed": ("observed", "completed"),
+}
 
 
 def _by_status(table):
@@ -84,13 +101,19 @@ MODULES = {
         "by_status": _by_status(MODEL_STATUS),
         "cancel_code": "recorded_fact",
     },
+    "resources.download": {
+        "kind": "media_download",
+        "prefixes": ("media:",),
+        "states": frozenset(MEDIA_STATUS),
+        "by_status": _by_status(MEDIA_STATUS),
+        "cancel_code": "owner_controls_cancellation",
+    },
 }
 # Declared, never invented: no owner has a contracted task vocabulary for these this round, and
 # this product does not read another product's database to guess one.
 PENDING_MODULES = (
     {"id": "companion.core", "state": "not_connected", "code": "no_task_contract"},
     {"id": "assets.remote", "state": "not_connected", "code": "no_task_contract"},
-    {"id": "resources.download", "state": "not_connected", "code": "no_task_contract"},
     {"id": "platform.dialogue", "state": "not_connected", "code": "no_operation_ledger"},
 )
 SOURCE_IDS = tuple(MODULES) + tuple(item["id"] for item in PENDING_MODULES)
@@ -113,7 +136,11 @@ SUMMARY_FIELDS = (
     "evidence",
     "module",
 )
-MODULE_PAGES = {"platform.home": "#/home", "platform.models": "#/settings/2"}
+MODULE_PAGES = {
+    "platform.home": "#/home",
+    "platform.models": "#/settings/2",
+    "resources.download": "#/resources/2",
+}
 
 
 class Tasks:
@@ -215,12 +242,16 @@ class Tasks:
         if name == "platform.home":
             found = self.console.home.history(after=after, limit=size, states=states)
             return None if found is None else (found[0], found[1])
+        if name == "resources.download":
+            return self.p.media.history(after=after, limit=size, states=states)
         found = self.console.models.publications(after=after, limit=size, states=states)
         return None if found is None else (found[0], found[1])
 
     def _record(self, task_id):
         """One record by identifier; an unknown identifier is a real 404, not an empty record."""
         require(isinstance(task_id, str) and 0 < len(task_id) <= 128, "invalid_input", 400)
+        if task_id.startswith("media:"):
+            return self.p.media.record(self._identifier(task_id, "media:"))
         if task_id.startswith(home_module.TASK_PREFIX):
             client_id = self._identifier(task_id, home_module.TASK_PREFIX)
             return self.console.home.control_record(client_id, prefix=home_module.TASK_PREFIX)
@@ -270,6 +301,28 @@ class Tasks:
         if source == "platform.home":
             status, stage = HOME_STATUS[record["state"]]
             built = self._home_task(record, document, status)
+        elif source == "resources.download":
+            status, stage = MEDIA_STATUS[record["state"]]
+            built = {
+                "title": document["title"],
+                "target": document["target_id"],
+                "code": document["code"],
+                "settled": document["state"] in {"completed", "published", "cancelled", "failed"},
+                "source_state": "current" if self.p.media.config is not None else "source_missing",
+                "attention": document["state"]
+                in {"waiting_metadata", "auth_required", "failed", "unknown"},
+                "evidence": {
+                    "downloaded": document.get("actual_quality") is not None,
+                    "asset_indexed": document.get("asset_receipt") is not None,
+                    "media_servers": document["library_results"],
+                },
+                "request": {
+                    "job_id": document["job_id"],
+                    "bvid": document["bvid"],
+                    "selected_cids": document["selected_cids"],
+                    "quality": document["quality"],
+                },
+            }
         else:
             status, stage = MODEL_STATUS[record["state"]]
             built = self._model_task(record, document, status)
@@ -286,6 +339,8 @@ class Tasks:
             module={"page": MODULE_PAGES[source]},
         )
         built["attention"] = bool(built["attention"]) or built["source_state"] != "current"
+        if source == "resources.download":
+            built["cancel"] = {"supported": document["can_cancel"], "code": module["cancel_code"]}
         return built
 
     def _home_task(self, record, document, status):
@@ -384,7 +439,26 @@ class Tasks:
         """Every responsible module's own state, including the ones with nothing to show."""
         result = []
         for name, module in MODULES.items():
-            if name == "platform.home":
+            if name == "resources.download":
+                if self.p.media.config is None:
+                    result.append(
+                        {
+                            "id": name,
+                            "kind": None,
+                            "connected": False,
+                            "state": "not_connected",
+                            "code": "media_not_configured",
+                            "records": None,
+                            "cancel_code": None,
+                        }
+                    )
+                    continue
+                records = self.p.media.repo.job_count()
+                state = {
+                    "state": "available" if records else "empty",
+                    "code": "ready" if records else "no_records",
+                }
+            elif name == "platform.home":
                 state = self.console.home.source_state()
                 records = self.console.home.history_count()
                 if state["state"] == "unconfigured" and records:

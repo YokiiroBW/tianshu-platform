@@ -8,6 +8,7 @@ import {
   MessageCircle,
   UsersRound,
   Settings,
+  Rss,
 } from "lucide-react";
 
 // Local navigation metadata, never a cross-product API or a connection-health registry.
@@ -45,12 +46,20 @@ export const modules = [
     sections: ["用户档案", "群画像", "账号关联", "本人记忆"],
   },
   {
+    id: "subscriptions",
+    label: "订阅",
+    icon: Rss,
+    group: "个人空间",
+    description: "关注视频来源，管理下载与媒体入库",
+    sections: ["订阅管理", "链接下载", "下载任务", "账号与媒体库"],
+  },
+  {
     id: "resources",
     label: "资料与资源",
     icon: BookOpen,
     group: "工作空间",
     description: "研究资料、资产与归档",
-    sections: ["研究资料", "资产库", "订阅与下载"],
+    sections: ["研究资料", "资产库"],
   },
   {
     id: "home",
@@ -102,15 +111,25 @@ export const pages = {
   settings: lazy(() => import("../features/settings/SettingsPage")),
   home: lazy(() => import("../features/home/HomePage")),
   resources: lazy(() => import("../features/resources/ResourcesPage")),
+  media: lazy(() => import("../features/media/MediaPage")),
   knowledge: lazy(() => import("../features/knowledge/KnowledgePage")),
   experience: lazy(() => import("../features/projects/ExperiencePage")),
   life: lazy(() => import("../features/life/LifePage")),
   memory: lazy(() => import("../features/memory/PeopleWorkspace")),
 };
 
-export function resolveRoute(hash: string) {
+export function resolveRoute(
+  hash: string,
+): { module: Module; section: number; redirectHash?: string } | null {
   const path = hash.replace(/^#\/?/, "");
   const [id = "", section, ...rest] = path.split("/");
+  if (id === "resources" && section === "2" && rest.length === 0) {
+    return {
+      module: modules.find((item) => item.id === "subscriptions")!,
+      section: 0,
+      redirectHash: "#/subscriptions",
+    };
+  }
   const module = modules.find((item) => item.id === (id || "workbench"));
   if (!module || rest.length > 0) return null;
   if (

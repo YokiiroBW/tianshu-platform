@@ -70,6 +70,17 @@ function AppShell() {
     (auth.session?.authenticated &&
       auth.session.onboarding?.state === "claim_admin");
   useEffect(() => {
+    if (!route?.redirectHash) return;
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.search + route.redirectHash,
+    );
+    acceptedHash.current = route.redirectHash;
+    setHash(route.redirectHash);
+    setDrawer(null);
+  }, [route?.redirectHash]);
+  useEffect(() => {
     if (auth.loading || auth.error || !auth.session) return;
     if (setupNeeded && !hash.startsWith("#/setup")) {
       window.location.hash = `#/setup?next=${encodeURIComponent(account ? returnTarget(hash) : hash || "#/workbench")}`;
@@ -228,6 +239,8 @@ function AppShell() {
     page = <pages.knowledge />;
   else if (current.id === "resources" && section === 1)
     page = <pages.resources />;
+  else if (current.id === "subscriptions")
+    page = <pages.media section={section} />;
   else if (current.id === "projects" && section === 0)
     page = <pages.knowledge />;
   else if (current.id === "projects" && section === 1)

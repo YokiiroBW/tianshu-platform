@@ -71,6 +71,7 @@ BOTS_PREFIX = "/api/web/bots/"
 BOT_ADAPTERS_PREFIX = "/api/web/bot-adapters/"
 BOT_OBSERVATION_PREFIX = "/api/web/bot-observation/"
 QQ_ADMIN_PREFIX = "/api/web/qq-admin/"
+MEDIA_PREFIX = "/api/web/media/"
 
 
 class WebConsole:
@@ -207,6 +208,9 @@ class WebConsole:
         self.memory = WebMemory(platform, self)
         self.role_runtime = platform.role_runtime
         self.qq_admin = platform.qq_admin
+        from .media.web import WebMedia
+
+        self.media = WebMedia(platform.media, self)
         if self.role_runtime.config is not None:
             self.role_runtime.console = self
 
@@ -561,7 +565,9 @@ class WebConsole:
                     require(
                         len(data)
                         <= (
-                            1048576
+                            6 * 1024 * 1024
+                            if request.path.startswith(MEDIA_PREFIX)
+                            else 1048576
                             if request.path.startswith(
                                 (LIFE_PREFIX + "runtime/", "/api/web/content/")
                             )
@@ -677,6 +683,14 @@ class WebConsole:
             return web.json_response(result)
         if request.path.startswith(EXTERNAL_PREFIX):
             result = await self.external.route(request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
+        if request.path.startswith(MEDIA_PREFIX):
+            result = await self.media.route(request.path, body, session)
             require(
                 await self.platform.local_work.run(self.session_valid, session),
                 "session_expired",

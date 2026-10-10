@@ -1,0 +1,30 @@
+{
+  "recorded_date": "2026-10-09",
+  "yt_dlp": {
+    "version": "2026.8.19",
+    "source": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19",
+    "distribution": "PyPI wheel",
+    "wheel_sha256": "1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf",
+    "execution": "isolated Python subprocess"
+  },
+  "pillow": {
+    "version": "12.3.0",
+    "purpose": "verify downloaded image decoding and dimensions",
+    "linux_cp312_x86_64_wheel_sha256": "78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91",
+    "windows_cp312_x86_64_wheel_sha256": "a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09"
+  },
+  "qrcode_generator": {
+    "version": "2.0.4",
+    "source": "https://github.com/kazuhikoarase/qrcode-generator",
+    "purpose": "local rendering of Bilibili authorization QR URLs",
+    "integrity": "package-lock.json"
+  },
+  "ffmpeg": {
+    "container_source": "Debian bookworm ffmpeg package, installs ffmpeg and ffprobe",
+    "container_version": "resolved by apt at image build; not yet built in this Windows session",
+    "local_validation_version": "9.0.2-essentials_build-www.gyan.dev",
+    "local_validation_source": "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    "local_validation_checksum": "downloaded adjacent .sha256 verified before extraction",
+    "official_binary_provider_reference": "https://ffmpeg.org/download.html"
+  }
+}

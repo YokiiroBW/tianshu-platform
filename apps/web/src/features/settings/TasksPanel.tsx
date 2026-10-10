@@ -47,6 +47,20 @@ const stageWording: Record<string, string> = {
   published: "权威版本已核对",
   unverified: "权威版本未确认",
   corrupt: "权威内容不一致",
+  queued: "等待下载",
+  downloading: "正在下载",
+  validating: "校验成品",
+  metadata_ready: "元数据已就绪",
+  publishing: "正在发布",
+  asset_indexed: "资产已入库",
+  library_verifying: "媒体服务器核对中",
+  completed: "核对完成",
+  auth_required: "需要重新登录 B 站",
+  waiting_metadata: "等待补全元数据",
+  retry_wait: "等待重试",
+  paused: "已暂停",
+  cancelled: "已取消",
+  failed: "失败",
 };
 const sourceWording: Record<string, string> = {
   "platform.home": "家庭设备控制",
@@ -59,13 +73,14 @@ const sourceWording: Record<string, string> = {
 const sourceDetail: Record<string, string> = {
   "companion.core": "对话与写作任务还没有正式的任务合同，本轮没有接入。",
   "assets.remote": "资产远端任务还没有正式的任务合同，本轮没有接入。",
-  "resources.download": "订阅与下载任务还没有正式的任务合同，本轮没有接入。",
+  "resources.download": "显示已记录的视频下载与发布进度。",
   "platform.dialogue":
     "网页对话只有发送回执，没有可投影的操作台账，本轮没有接入。",
 };
 const kindWording: Record<string, string> = {
   "device.control": "设备控制",
   "model.publish": "模型发布",
+  "media.download": "视频下载与入库",
 };
 const sourceState: Record<string, { tone: Tone; label: string; note: string }> =
   {
@@ -127,6 +142,8 @@ const cancelWording: Record<string, string> = {
     "执行方不提供取消：已经发出的设备指令无法撤回，也不会从任务中心自动重发。要改变状态请到家庭设备页重新操作。",
   recorded_fact:
     "这是已经发生并记录的发布事实，不是可以取消的操作。要改变配置请到模型与用量页发布新版本。",
+  media_job_control: "请到订阅与下载页取消视频任务；已发布的成品会保留。",
+  terminal_state: "任务已经结束，不再接受取消。",
 };
 const fieldWording: Record<string, string> = {
   acceptance: "受理",
@@ -155,6 +172,14 @@ const fieldWording: Record<string, string> = {
   usable_until: "可用至",
   revoked_at: "撤销时间",
   settled_at: "结案时间",
+  job_id: "任务标识",
+  bvid: "视频标识",
+  cid: "分 P 标识",
+  actual_quality: "实际画质",
+  target_id: "目标媒体库",
+  cancel_requested: "已请求取消",
+  asset_indexed: "资产已入库",
+  library_verified: "媒体服务器已核对",
 };
 const valueWording: Record<string, string> = {
   pending: "等待",
@@ -854,7 +879,12 @@ export function TasksPanel() {
                     <dl className="tasks-facts">
                       <div>
                         <dt>阶段</dt>
-                        <dd>{stageWording[item.stage] ?? item.stage}</dd>
+                        <dd>
+                          {item.source === "resources.download" &&
+                          item.stage === "published"
+                            ? "发布完成（未配置媒体服务器）"
+                            : (stageWording[item.stage] ?? item.stage)}
+                        </dd>
                       </div>
                       <div>
                         <dt>记录时间</dt>
@@ -907,9 +937,9 @@ export function TasksPanel() {
                               收起并把焦点还给列表。
                             </p>
                             <p className="tasks-cancel">
-                              取消：不可用 —{" "}
-                              {cancelWording[item.cancel.code] ??
-                                "执行方没有声明取消能力。"}
+                              {item.cancel.supported
+                                ? "请到下载任务页查看取消视频任务的可用操作。"
+                                : `取消：不可用 — ${cancelWording[item.cancel.code] ?? "执行方没有声明取消能力。"}`}
                             </p>
                             <h4>时间线</h4>
                             <dl className="tasks-facts">
@@ -950,7 +980,14 @@ export function TasksPanel() {
                             </p>
                             {detail.module.page ? (
                               <p className="tasks-module">
-                                <a className="button" href={detail.module.page}>
+                                <a
+                                  className="button"
+                                  href={
+                                    detail.source === "resources.download"
+                                      ? "#/subscriptions/2"
+                                      : detail.module.page
+                                  }
+                                >
                                   到责任模块页面查看
                                 </a>
                               </p>

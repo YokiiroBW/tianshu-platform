@@ -66,6 +66,13 @@ def registered_credentials(settings, *, include_setup=True):
     take((settings.get("web_relationships") or {}).get("memory"))
     take(settings.get("web_qq_profiles"))
     take(settings.get("qq_alias_memory"))
+    media = settings.get("media")
+    if isinstance(media, dict):
+        for target in media.get("targets", []):
+            if isinstance(target, dict):
+                take(target.get("publisher"))
+                for server in target.get("servers", []):
+                    take(server)
     if include_setup:
         account = settings.get("web_account")
         if isinstance(account, dict) and account.get("mode") == "create":
@@ -124,6 +131,7 @@ SETTINGS_KEYS = frozenset(
         "bot_connections",
         "bot_adapter_self_service",
         "role_runtime",
+        "media",
     }
 )
 
@@ -142,6 +150,9 @@ def validate_settings(settings):
     """
     require(isinstance(settings, dict), "invalid_input", 400)
     require(set(settings) <= SETTINGS_KEYS, "invalid_input", 400)
+    from .media.runtime import validate_media
+
+    validate_media(settings)
     from .qq_admin import validate_profiles_configuration
 
     validate_profiles_configuration(
@@ -365,6 +376,9 @@ class Platform:
 
         self.local_work = LocalWork()
         self.store.run_local = self.local_work.run
+        from .media.runtime import Media
+
+        self.media = Media(settings, clock=clock, local=self.local_work.run)
 
     def close(self):
         """Mark this runtime as no longer serving, so readiness stops presenting it as current."""
