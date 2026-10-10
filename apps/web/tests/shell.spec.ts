@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
-import { resolveRoute } from "../src/app/modules";
+import { modules, resolveRoute } from "../src/app/modules";
 
 // The static shell suite explicitly supplies a synthetic session; no production preview bypass.
 test.beforeEach(async ({ page }) => {
@@ -24,11 +24,16 @@ test.beforeEach(async ({ page }) => {
 test("route boundaries reject unknown and malformed addresses", () => {
   expect(resolveRoute("")?.module.id).toBe("workbench");
   expect(resolveRoute("#/settings/1")?.section).toBe(1);
+  expect(resolveRoute("#/settings/9")?.section).toBe(9);
+  expect(resolveRoute("#/settings/7")).toMatchObject({
+    module: { id: "memory" },
+    section: 0,
+  });
   for (const hash of [
     "#/missing",
     "#/room/0",
     "#/settings/-1",
-    "#/settings/9",
+    `#/settings/${modules.find((module) => module.id === "settings")!.sections.length}`,
     "#/home/0/extra",
     "#/%ZZ",
   ])

@@ -62,11 +62,9 @@ test("function assignments save, reload, inherit and keep chat independent", asy
     .click();
   await expect(chat).toContainText("当前：辅助模型 · fixture-specialist");
   await expect(
-    page
-      .locator(".provider-card")
-      .filter({
-        has: page.getByRole("heading", { name: "辅助模型", exact: true }),
-      }),
+    page.locator(".provider-card").filter({
+      has: page.getByRole("heading", { name: "辅助模型", exact: true }),
+    }),
   ).toContainText("默认对话模型");
   await page
     .getByLabel("主对话模型", { exact: true })
