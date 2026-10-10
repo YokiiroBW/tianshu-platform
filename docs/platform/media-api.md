@@ -13,6 +13,8 @@
 
 `Account={account_id,label,state:"ready"|"auth_required"|"revoked",revision,checked_at:number|null,code}`。
 
+`Overview={jobs:{total:number,published:number,processing:number,queued:number,attention:number,cancelled:number},storage:{state:"available"|"unavailable",total_bytes:number|null,used_bytes:number|null,free_bytes:number|null}}`。任务数由 SQL 聚合全部持久作业，独立于 view 最新100条：published 包含published/completed；processing 包含downloading/validating/metadata_ready/publishing/asset_indexed/library_verifying；queued 包含queued/retry_wait；attention 包含failed/unknown/auth_required/waiting_metadata；cancelled单列。storage 是本服务下载暂存目录所在磁盘容量，不是 Emby/Jellyfin 总媒体库容量；暂存目录尚未创建时读取最近存在的父目录所在磁盘，不创建目录、不扫描文件。不可读时state=unavailable且三个字节数均为null，响应不含路径。
+
 `Subscription={subscription_id,label,revision,source,account_id:string|null,target_id,initial_sync:"future_only"|"history",quality,rules,interval_seconds:number,state:"active"|"paused"|"auth_required"|"rule_error",baseline_ready:boolean,last_scan_at:number|null,next_scan_at:number,code,counts:{members:number,queued:number}}`。
 
 `Job={job_id,subscription_id:string|null,media_key,bvid,cid,selected_cids:string[],layout:"single"|"multipart",revision:number,title,creator,state,stage,code,progress:number|null,created_at:number,updated_at:number,target_id,quality,actual_quality:string|null,cancel_requested:boolean,can_retry:boolean,can_cancel:boolean,asset_receipt:object|null,library_results:object[]}`。progress 范围 0..1；一个 Job 是所选 P 的完整投稿包，cid 为首个所选 CID，selected_cids 为全部所选 CID（增量会并入已有成品 CID）。订阅从仅1P即固定multipart剧集布局；手动单P可single，同目标已存在single后改订阅会报 `layout_change_requires_migration`。
@@ -23,7 +25,7 @@ Job.state/stage 来自持久台账：queued/downloading/validating/metadata_read
 
 | operation | 请求 | 返回 |
 |---|---|---|
-| view | `{}` | `{configured,capabilities:{provider:"bilibili",source_kinds:string[]},engine:{state,version,code},accounts:Account[],targets:[{target_id,label,state}],subscriptions:Subscription[],jobs:Job[]}` |
+| view | `{}` | `{configured,capabilities:{provider:"bilibili",source_kinds:string[]},engine:{state,version,code},accounts:Account[],targets:[{target_id,label,state}],subscriptions:Subscription[],jobs:Job[],overview:Overview|null}`；未配置overview=null，原字段兼容 |
 | resolve | `{url,account_id:string|null}` | `{preview_id,expires_at:number,video:{bvid,title,description,creator:{mid,name},cover_url:string|null,parts:[{cid,index,title,duration_seconds:number|null,formats:[{quality_id,label}]}]}}` |
 | enqueue | `{preview_id,part_cids:string[],account_id:string|null,target_id,quality,client_id}` | `{jobs:Job[],replayed:boolean}` |
 | subscriptions/save | `{subscription_id:string|null,expected_revision:number,label,source,account_id:string|null,target_id,initial_sync,quality,rules,interval_seconds:number,client_id}` | `{subscription:Subscription,replayed:boolean}` |

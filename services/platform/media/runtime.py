@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import shutil
 import uuid
 from pathlib import Path
 
@@ -53,6 +54,36 @@ def public_job(job):
         "can_cancel": job["state"]
         not in {"completed", "published", "cancelled", "failed", "unknown"},
     }
+
+
+def staging_storage(directory):
+    """Observe only the staging volume, including before its directory is first created."""
+    unavailable = {
+        "state": "unavailable",
+        "total_bytes": None,
+        "used_bytes": None,
+        "free_bytes": None,
+    }
+    try:
+        candidate = Path(directory)
+        while True:
+            try:
+                candidate.stat()
+                break
+            except (FileNotFoundError, NotADirectoryError):
+                parent = candidate.parent
+                if parent == candidate:
+                    return unavailable
+                candidate = parent
+        usage = shutil.disk_usage(candidate)
+        return {
+            "state": "available",
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+        }
+    except OSError:
+        return unavailable
 
 
 class PackageContract:
@@ -162,12 +193,17 @@ class Media:
                 "targets": [],
                 "subscriptions": [],
                 "jobs": [],
+                "overview": None,
             }
         from .accounts import public_account
 
         accounts = await self.local(self.repo.list, "account")
         subscriptions = await self.local(self.repo.list, "subscription")
         jobs, _ = await self.local(self.repo.jobs)
+        overview = {
+            "jobs": await self.local(self.repo.job_overview),
+            "storage": await self.local(staging_storage, self.config["staging_directory"]),
+        }
         return {
             "configured": True,
             "capabilities": {"provider": "bilibili", "source_kinds": list(SOURCE_KINDS)},
@@ -191,6 +227,7 @@ class Media:
             ],
             "subscriptions": subscriptions,
             "jobs": [public_job(job) for job in jobs],
+            "overview": overview,
         }
 
     async def resolve(self, value, cookie):
