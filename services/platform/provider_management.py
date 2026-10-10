@@ -146,6 +146,23 @@ class ProviderManagement:
             return await self.platform.local_work.run(
                 self._write, session, self.catalog.set_default, **body
             )
+        if operation == "function":
+            require(
+                set(body)
+                == {
+                    "client_id",
+                    "function_id",
+                    "provider_id",
+                    "expected_revision",
+                    "expected_binding_revision",
+                },
+                "invalid_input",
+                400,
+            )
+            _client_id(body)
+            return await self.platform.local_work.run(
+                self._write, session, self.catalog.functions.set_binding, **body
+            )
         if operation in {"models", "test"}:
             required = {"provider_id", "expected_revision"}
             if operation == "test":

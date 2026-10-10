@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from .contracts import Fault, canonical, require
+from .model_functions import ModelFunctions
 
 
 PROTOCOL = "openai-chat-completions"
@@ -258,6 +259,27 @@ class ProviderCatalog:
                         "provider_store_unavailable",
                         503,
                     )
+                if (
+                    db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='model_function_bindings'"
+                    ).fetchone()
+                    is None
+                ):
+                    if not create:
+                        backup = self.directory / (
+                            "providers.pre-functions-" + uuid.uuid4().hex + ".sqlite"
+                        )
+                        with closing(
+                            sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True)
+                        ) as source:
+                            with closing(sqlite3.connect(backup)) as destination:
+                                os.chmod(backup, 0o600)
+                                source.backup(destination)
+                    db.execute(
+                        "CREATE TABLE model_function_bindings (function_id TEXT PRIMARY KEY, "
+                        "provider_id TEXT, provider_revision INTEGER, revision INTEGER NOT NULL)"
+                    )
+            self.functions = ModelFunctions(self)
         except Fault:
             raise
         except Exception:
@@ -617,14 +639,16 @@ class ProviderCatalog:
                 "SELECT default_id, default_revision FROM metadata WHERE id=1"
             ).fetchone()
             selected = next((d for d in documents if d["provider_id"] == identity), None)
+            default = {
+                "provider_id": identity,
+                "revision": revision,
+                "provider_revision": selected["revision"] if selected else None,
+                "configured": bool(selected and self._selectable(selected)),
+            }
             return {
                 "providers": documents,
-                "default": {
-                    "provider_id": identity,
-                    "revision": revision,
-                    "provider_revision": selected["revision"] if selected else None,
-                    "configured": bool(selected and self._selectable(selected)),
-                },
+                "default": default,
+                "functions": self.functions.view(db, documents, default),
             }
 
     def execution_context(self, provider_id, expected_revision):

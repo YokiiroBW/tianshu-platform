@@ -1,6 +1,25 @@
 import { call, WebError } from "./api";
 import type { Provider } from "./ProviderManager";
 
+export type ModelFunction = {
+  function_id: string;
+  name: string;
+  description: string;
+  connected: boolean;
+  revision: number;
+  provider_id: string | null;
+  provider_revision: number | null;
+  effective_provider_id: string | null;
+  effective_provider_revision: number | null;
+  configured: boolean;
+};
+
+export type ProviderView = {
+  providers: Provider[];
+  defaultRevision: number;
+  functions: ModelFunction[];
+};
+
 type WireProvider = {
   provider_id: string;
   name: string;
@@ -20,6 +39,7 @@ type WireProvider = {
 
 type WireView = {
   providers: WireProvider[];
+  functions?: ModelFunction[];
   default: {
     provider_id: string | null;
     revision: number;
@@ -63,10 +83,7 @@ function validProvider(item: WireProvider): boolean {
   );
 }
 
-export function mapProviderView(wire: WireView): {
-  providers: Provider[];
-  defaultRevision: number;
-} {
+export function mapProviderView(wire: WireView): ProviderView {
   if (
     !wire ||
     !Array.isArray(wire.providers) ||
@@ -82,10 +99,32 @@ export function mapProviderView(wire: WireView): {
     typeof wire.default.configured !== "boolean" ||
     !Number.isInteger(wire.default.revision) ||
     wire.default.revision < 0 ||
-    !wire.providers.every(validProvider)
+    !wire.providers.every(validProvider) ||
+    (wire.functions !== undefined &&
+      (!Array.isArray(wire.functions) ||
+        !wire.functions.every(
+          (item) =>
+            item &&
+            typeof item.function_id === "string" &&
+            typeof item.name === "string" &&
+            typeof item.description === "string" &&
+            typeof item.connected === "boolean" &&
+            Number.isInteger(item.revision) &&
+            item.revision >= 0 &&
+            (item.provider_id === null ||
+              typeof item.provider_id === "string") &&
+            (item.provider_revision === null ||
+              Number.isInteger(item.provider_revision)) &&
+            (item.effective_provider_id === null ||
+              typeof item.effective_provider_id === "string") &&
+            (item.effective_provider_revision === null ||
+              Number.isInteger(item.effective_provider_revision)) &&
+            typeof item.configured === "boolean",
+        )))
   )
     throw new WebError("dependency_unavailable", 502);
   return {
+    functions: wire.functions ?? [],
     defaultRevision: wire.default.revision,
     providers: wire.providers.map((item) => ({
       providerId: item.provider_id,
