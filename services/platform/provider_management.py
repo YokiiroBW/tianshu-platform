@@ -184,7 +184,7 @@ class ProviderManagement:
                 self._context, session, body["provider_id"], body["expected_revision"]
             )
             try:
-                result = await self._gateway(operation, context)
+                result = await self.gateway_request(operation, context)
             except Fault as fault:
                 if operation == "test":
                     outcome = {
@@ -227,7 +227,7 @@ class ProviderManagement:
         self._gate(session)
         return self.catalog.execution_context(provider_id, revision)
 
-    async def _gateway(self, operation, context):
+    async def gateway_request(self, operation, context, *, payload=None):
         config = self.config
         token = secret(config["gateway_token_env"])
         require(token is not None, "dependency_unavailable", 503)
@@ -239,6 +239,8 @@ class ProviderManagement:
             "model_id": context.model_id,
             "api_key": context.api_key,
         }
+        if payload is not None:
+            body["payload"] = payload
         try:
             timeout = aiohttp.ClientTimeout(total=20)
             async with aiohttp.ClientSession(
@@ -273,7 +275,9 @@ class ProviderManagement:
                             response.status if code in allowed else 503,
                             document.get("provider_diagnostic") if code in allowed else None,
                         )
-                    if operation == "test":
+                    if operation in {"embed", "rerank"}:
+                        require(isinstance(document, dict), "dependency_unavailable", 503)
+                    elif operation == "test":
                         require(document == {"outcome": "succeeded"}, "dependency_unavailable", 503)
                     else:
                         models = document.get("models") if isinstance(document, dict) else None

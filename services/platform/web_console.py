@@ -43,6 +43,7 @@ from .web_readers import WebReader
 from .web_sender import WebSender
 from .web_skills import WebSkills
 from .web_weather import WebWeather
+from .memory_retrieval import MemoryRetrieval
 
 COOKIE = "tianshu_session"
 SESSION_TTL = 8 * 3600
@@ -205,6 +206,7 @@ class WebConsole:
         self.memory_links = WebMemoryLinks(platform, self)
         self.people_life = WebPeopleLife(platform, self)
         self.weather = WebWeather(platform, self)
+        self.memory_retrieval = MemoryRetrieval(platform, self)
         self.memory = WebMemory(platform, self)
         self.role_runtime = platform.role_runtime
         self.qq_admin = platform.qq_admin
@@ -820,6 +822,10 @@ class WebConsole:
                 401,
             )
             require(self.persona_read_authorised(), "persona_read_required", 403)
+            return web.json_response(result)
+        if request.path.startswith("/api/web/memory-retrieval/"):
+            result = await self.memory_retrieval.route(request.path, body, session)
+            require(self.session_valid(session), "session_expired", 401)
             return web.json_response(result)
         if request.path.startswith("/api/web/weather/"):
             result = await self.weather.route(request.path, body, session)

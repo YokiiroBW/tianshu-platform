@@ -8,6 +8,7 @@ import re
 from .contracts import canonical, digest, epoch, loads, require
 
 ACTIONS = {
+    "memory.retrieval",
     "qq.admin.view",
     "qq.admin.manage",
     "qq.admin.check",

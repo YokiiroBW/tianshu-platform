@@ -97,6 +97,7 @@ export const modules = [
       null, // Reserved: old administrator links now open the user directory.
       "角色技能",
       "位置与天气",
+      "记忆检索",
     ],
   },
 ] as const;

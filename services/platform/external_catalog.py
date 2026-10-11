@@ -20,7 +20,14 @@ from .contracts import Fault, canonical, require
 
 
 def supported_kind(kind):
-    return kind in {"assets", "home", "weather"} or (
+    return kind in {
+        "assets",
+        "home",
+        "weather",
+        "retrieval",
+        "retrieval:embed",
+        "retrieval:rerank",
+    } or (
         isinstance(kind, str)
         and (
             (kind.startswith("images:") and 1 <= len(kind[7:]) <= 128)

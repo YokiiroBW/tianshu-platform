@@ -14,6 +14,7 @@ from . import diagnostics, diagnostics_config, model_origin_renewal, runtime_hea
 from .bot_delivery import PREFIX as DELIVERY_PREFIX
 from .bot_delivery import ROUTES as DELIVERY_ROUTES
 from .contracts import Fault, loads, require
+from .memory_retrieval import PATH as RETRIEVAL_PATH
 from .memory_proofs import ISSUE as PROOF_ISSUE
 from .memory_proofs import VERIFY as PROOF_VERIFY
 from .qq_admin import CHECK_PATH as QQ_ADMIN_CHECK
@@ -233,6 +234,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 OBSERVATION_ADMIN_ENROLL,
             }
             qq_admin_call = request.path == QQ_ADMIN_CHECK
+            retrieval_call = request.path == RETRIEVAL_PATH
             credential_call = request.path == SERVICE_CREDENTIALS
             require(
                 request.method == "POST"
@@ -244,11 +246,14 @@ def create_app(platform, probe=None, *, console=None, public=False):
                     or observation_call
                     or qq_admin_call
                     or credential_call
+                    or retrieval_call
                 ),
                 "not_found",
                 404,
             )
-            if renewal:
+            if retrieval_call:
+                require(len(raw) <= 1048576, "budget_exceeded", 413)
+            elif renewal:
                 require(len(raw) <= 4096, "budget_exceeded", 413)
                 model_origin_renewal.validate_request(body)
             elif bot_call:
@@ -277,7 +282,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 check("request", body)
             else:
                 platform.contracts.check(schema, body)
-            if not provider_call and not bot_call:
+            if not provider_call and not bot_call and not retrieval_call:
                 request_id = body.get("query", body.get("command", body)).get(
                     "request_id", request_id
                 )
@@ -583,6 +588,12 @@ def create_app(platform, probe=None, *, console=None, public=False):
         )
         return web.json_response(result, headers={"Cache-Control": "no-store"})
 
+    async def retrieval_route(request):
+        result = await console.memory_retrieval.internal(
+            request.headers["Authorization"], request[BODY]
+        )
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
     async def credential_route(request):
         result = await platform.local_work.run(
             platform.service_credentials.resolve, request.headers["Authorization"], request[BODY]
@@ -683,6 +694,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
         app.router.add_post(PROOF_ISSUE, proof_route)
         app.router.add_post(PROOF_VERIFY, proof_route)
         app.router.add_post(SERVICE_CREDENTIALS, credential_route)
+        app.router.add_post(RETRIEVAL_PATH, retrieval_route)
         if hasattr(platform.bots, "delivery"):
             for path in DELIVERY_ROUTES:
                 app.router.add_post(path, delivery_route)

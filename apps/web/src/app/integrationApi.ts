@@ -23,6 +23,7 @@ const descriptions: Record<string, string> = {
   external_not_configured: "此部署尚未开放外部连接管理。",
   external_locked: "请先用管理员密码解锁连接管理。",
   revision_conflict: "连接设置已在其它页面改变，请刷新后重新检查。",
+  retrieval_not_configured: "请先保存所需嵌入或重排序模型的连接和密钥。",
   invalid_input: "输入不符合服务端规则，请检查填写内容。",
   upstream_forbidden: "上游服务拒绝了读取授权，请由部署管理员检查。",
   unauthorized: "登录已失效，请重新登录。",

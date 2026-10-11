@@ -7,8 +7,14 @@ import { BotAdapterPanel } from "./BotAdapterPanel";
 import { SkillsPanel } from "./skills/SkillsPanel";
 import { WeatherPanel } from "./WeatherPanel";
 import "./settings.css";
+import { RetrievalSettings } from "../memory/RetrievalSettings";
 
 const setupLinks = [
+  {
+    href: "#/settings/10",
+    title: "记忆检索",
+    detail: "选择关键词、向量或混合检索，配置嵌入与重排序模型。",
+  },
   {
     href: "#/settings/2",
     title: "模型供应商",
@@ -78,6 +84,7 @@ function ConnectionsOverview() {
 }
 
 export default function SettingsPage({ section }: { section: number }) {
+  if (section === 10) return <RetrievalSettings />;
   if (section === 0) return <TasksPanel />;
   if (section === 1) return <ConnectionsOverview />;
   if (section === 2) return <ProviderModelsPanel />;
