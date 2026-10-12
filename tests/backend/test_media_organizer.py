@@ -105,8 +105,10 @@ class FileOrganizerTests(unittest.TestCase):
         with self.assertRaises(Fault):
             restarted.prepare(self.target, self.package("changed"), "first")
         source = self.staging / operation["manifest"]["staging_ref"] / "video.mp4"
-        source.write_bytes(b"edited-staging-cache")
-        self.assertEqual((destination / "video.mp4").read_bytes(), b"synthetic-video")
+        self.assertTrue(source.samefile(destination / "video.mp4"))
+        sidecar = self.staging / operation["manifest"]["staging_ref"] / "movie.nfo"
+        sidecar.write_bytes(b"independent-metadata")
+        self.assertNotEqual((destination / "movie.nfo").read_bytes(), b"independent-metadata")
 
     def test_metadata_revision_and_owned_file_protection(self):
         first = self.publish(self.package())
@@ -128,6 +130,19 @@ class FileOrganizerTests(unittest.TestCase):
         with self.assertRaises(Fault):
             self.library.prepare(self.target, third, "third")
         self.assertEqual((destination / "user-note.txt").read_text(), "must survive")
+
+    def test_subdirectories_copy_fallback_and_recovery_keep_relative_receipt(self):
+        package = {**self.package(), "destination_subdirectory": "中文/收藏"}
+        with patch(
+            "services.platform.media.organizer.os.link", side_effect=OSError("cross device")
+        ):
+            operation = self.publish(package)
+        self.assertEqual(operation["relative"], "中文/收藏/bilibili-BV1xx411c7mD-cid-123")
+        destination = Path(self.target["directory"]) / operation["relative"]
+        source = self.staging / operation["manifest"]["staging_ref"] / "video.mp4"
+        self.assertFalse(source.samefile(destination / "video.mp4"))
+        self.assertEqual(source.read_bytes(), (destination / "video.mp4").read_bytes())
+        self.assertEqual(self.library.read(self.target, operation["operation_id"]), operation)
 
     def test_crash_after_install_before_receipt_recovers_on_read(self):
         operation = self.library.prepare(self.target, self.package(), "crash")

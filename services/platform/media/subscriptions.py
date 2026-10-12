@@ -8,6 +8,7 @@ from dataclasses import asdict
 from ..contracts import Fault, canonical, digest, require
 from .config import quality, source, text
 from .metadata import normalize_bilibili
+from .destination import head_key, snapshot, subdirectory
 from .rules import RuleValidationError, parse_policy
 
 
@@ -19,6 +20,8 @@ def job_payload(
     requested_quality,
     subscription_id=None,
     rule_evidence=None,
+    destination_subdirectory="",
+    destination_directory=None,
 ):
     snapshot = resolved["snapshot"]
     selected = [part["cid"] for part in snapshot["parts"] if part["cid"] in cids]
@@ -37,6 +40,8 @@ def job_payload(
         "creator": creator,
         "account_id": account_id,
         "target_id": target_id,
+        "destination_subdirectory": subdirectory(destination_subdirectory),
+        "destination_directory": destination_directory,
         "quality": requested_quality,
         "snapshot": snapshot,
         "cover_url": resolved["video"]["cover_url"],
@@ -52,7 +57,7 @@ class Subscriptions:
 
     def save(self, body, db):
         require(
-            set(body)
+            set(body) - {"destination_subdirectory"}
             == {
                 "subscription_id",
                 "expected_revision",
@@ -91,6 +96,10 @@ class Subscriptions:
             400,
         )
         current = self.media.repo._document(db, "subscription", identity)
+        destination = snapshot(
+            self.media.config["targets"][body["target_id"]],
+            body.get("destination_subdirectory", ""),
+        )
         source_value = source(body["source"])
         if current is not None:
             require(
@@ -105,6 +114,7 @@ class Subscriptions:
             "source": source_value,
             "account_id": body["account_id"],
             "target_id": body["target_id"],
+            **destination,
             "initial_sync": body["initial_sync"],
             "quality": quality(body["quality"]),
             "rules": body["rules"],
@@ -118,6 +128,15 @@ class Subscriptions:
             "quality_reassessment": bool(
                 current
                 and (current.get("quality_reassessment") or current["quality"] != body["quality"])
+            ),
+            "destination_reassessment": bool(
+                current
+                and (
+                    current.get("destination_reassessment")
+                    or current["target_id"] != body["target_id"]
+                    or current.get("destination_subdirectory", "")
+                    != destination["destination_subdirectory"]
+                )
             ),
         }
         return self.media.repo.put(
@@ -206,6 +225,10 @@ class Subscriptions:
                     else set()
                 )
                 old_parts = await self.media.local(self.media.repo.member_parts, identity)
+                destination = snapshot(
+                    self.media.config["targets"][subscription["target_id"]],
+                    subscription.get("destination_subdirectory", ""),
+                )
                 jobs, part_members = [], {}
                 for bvid in sorted(members):
                     require(time.monotonic() < deadline, "source_budget_exceeded", 503)
@@ -215,7 +238,7 @@ class Subscriptions:
                     await self.media.local(self.media.repo.episode_numbers, bvid, current_cids)
                     selected = (
                         current_cids
-                        if bvid in unseen
+                        if bvid in unseen or subscription.get("destination_reassessment")
                         else [cid for cid in current_cids if cid not in old_parts.get(bvid, set())]
                         if subscription["baseline_ready"]
                         else []
@@ -224,7 +247,7 @@ class Subscriptions:
                         head = await self.media.local(
                             self.media.repo.get,
                             "target_head",
-                            subscription["target_id"] + ":" + bvid,
+                            head_key({**subscription, "bvid": bvid}),
                         )
                         owned = (
                             await self.media.local(self.media.repo.job, head["job_id"])
@@ -260,6 +283,7 @@ class Subscriptions:
                                 subscription["quality"],
                                 identity,
                                 asdict(decision),
+                                **destination,
                             )
                         )
                 if account is not None:

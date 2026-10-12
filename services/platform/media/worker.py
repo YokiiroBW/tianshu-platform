@@ -11,6 +11,8 @@ from pathlib import Path
 
 from ..contracts import Fault, require
 from .engine import file_record, validate_image
+from .download_cache import validate_download
+from .destination import head_key, snapshot
 from .metadata import normalize_bilibili
 from .sidecars import render_sidecars
 from .types import ImageBinding, RenderRequest
@@ -78,6 +80,14 @@ class Worker:
 
         heartbeat = asyncio.create_task(pulse())
         try:
+            destination = snapshot(target, job.get("destination_subdirectory", ""))
+            require(
+                job.get("destination_directory") in {None, destination["destination_directory"]},
+                "scope_changed",
+                409,
+            )
+            if job.get("destination_directory") is None:
+                await update(**destination)
             if job["cancel_requested"]:
                 raise asyncio.CancelledError
             require(
@@ -89,110 +99,7 @@ class Worker:
                 await self.verify_libraries(job, update, target)
                 return
             if not job.get("package"):
-                if set(job["selected_cids"]) - set(job.get("downloads", {})) or not job.get(
-                    "base_job_id"
-                ):
-                    cookie = await self.media.local(self.media.accounts.cookie, job["account_id"])
-                    if job["account_id"]:
-                        account = await self.media.local(repo.get, "account", job["account_id"])
-                        await update(account_revision=account["revision"])
-                    await self.media.engine.check()
-                    require(
-                        self.media.engine.status["state"] == "ready",
-                        self.media.engine.status["code"],
-                        503,
-                    )
-                    # An already-owned edition supplies immutable old videos; only missing CIDs download.
-                    base = await self.base(job)
-                    replace_cids = job.get("replace_video_cids", [])
-                    if base and base["quality"] != job["quality"]:
-                        replace_cids = list(base["selected_cids"])
-                    if base:
-                        selected = list(dict.fromkeys(base["selected_cids"] + job["selected_cids"]))
-                        snapshot = dict(job["snapshot"])
-                        parts = {part["cid"]: part for part in base["snapshot"]["parts"]}
-                        parts.update({part["cid"]: part for part in snapshot["parts"]})
-                        snapshot["parts"] = list(parts.values())
-                        await update(
-                            selected_cids=selected,
-                            snapshot=snapshot,
-                            base_job_id=base["job_id"],
-                            replace_video_cids=replace_cids,
-                        )
-                    downloads = {
-                        **(base.get("downloads", {}) if base else {}),
-                        **job.get("downloads", {}),
-                    }
-                    for cid in replace_cids:
-                        if cid not in job.get("downloads", {}):
-                            downloads.pop(cid, None)
-                    for cid, downloaded in list(downloads.items()):
-                        try:
-                            record = await self.media.local(
-                                file_record, Path(downloaded["file"]), "cache", "video", cid
-                            )
-                            require(
-                                record["sha256"] == downloaded.get("sha256")
-                                and record["size_bytes"] == downloaded.get("size_bytes"),
-                                "download_cache_changed",
-                                409,
-                            )
-                        except (Fault, OSError):
-                            require(
-                                not base or cid not in base["selected_cids"] or cid in replace_cids,
-                                "publication_base_unavailable",
-                                409,
-                            )
-                            downloads.pop(cid)
-                    for part in job["snapshot"]["parts"]:
-                        if part["cid"] not in job["selected_cids"] or part["cid"] in downloads:
-                            continue
-                        directory = (
-                            Path(self.media.config["staging_directory"])
-                            / ".downloads"
-                            / identity
-                            / str(generation)
-                            / part["cid"]
-                        )
-                        await update(state="downloading", stage="downloading", code="downloading")
-                        before = await self.media.connector.resolve(
-                            job["bvid"], cookie, with_formats=False
-                        )
-                        mapping = {value["cid"]: value for value in before["snapshot"]["parts"]}
-                        require(part["cid"] in mapping, "source_cid_removed", 409)
-                        downloaded = await self.media.engine.download(
-                            job, mapping[part["cid"]], cookie, directory
-                        )
-                        after = await self.media.connector.resolve(
-                            job["bvid"], cookie, with_formats=False
-                        )
-                        require(
-                            [
-                                (value["cid"], value["index"])
-                                for value in before["snapshot"]["parts"]
-                            ]
-                            == [
-                                (value["cid"], value["index"])
-                                for value in after["snapshot"]["parts"]
-                            ],
-                            "source_identity_changed",
-                            409,
-                        )
-                        record = await self.media.local(
-                            file_record, Path(downloaded["file"]), "cache", "video", part["cid"]
-                        )
-                        downloaded.update(
-                            sha256=record["sha256"],
-                            size_bytes=record["size_bytes"],
-                            source_index=mapping[part["cid"]]["index"],
-                            source_captured_at=before["snapshot"]["captured_at"],
-                        )
-                        downloads[part["cid"]] = downloaded
-                        await update(
-                            downloads=downloads,
-                            actual_quality=downloaded["actual_quality"],
-                            progress=len(downloads) / len(job["selected_cids"]),
-                        )
+                await self.download_parts(job, update, owner)
                 await update(state="validating", stage="validating", code="validating")
                 metadata = normalize_bilibili(job["snapshot"], overrides=job.get("overrides"))
                 missing = [
@@ -399,12 +306,65 @@ class Worker:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
 
+    async def download_parts(self, job, update, owner):
+        base = await self.base(job)
+        if base:
+            selected = list(dict.fromkeys(base["selected_cids"] + job["selected_cids"]))
+            snapshot_value = dict(job["snapshot"])
+            parts = {part["cid"]: part for part in base["snapshot"]["parts"]}
+            parts.update({part["cid"]: part for part in snapshot_value["parts"]})
+            snapshot_value["parts"] = list(parts.values())
+            job = await update(
+                selected_cids=selected, snapshot=snapshot_value, base_job_id=base["job_id"]
+            )
+        previous = {**(base.get("downloads", {}) if base else {}), **job.get("downloads", {})}
+        cookie = await self.media.local(self.media.accounts.cookie, job["account_id"])
+        if job["account_id"]:
+            account = await self.media.local(self.media.repo.get, "account", job["account_id"])
+            job = await update(account_revision=account["revision"])
+        downloads, reused = {}, []
+        replace = set(job.get("replace_video_cids", []))
+        for part in job["snapshot"]["parts"]:
+            cid = part["cid"]
+            if cid not in job["selected_cids"]:
+                continue
+            selected_quality = await self.media.download_cache.selected_quality(job, part, cookie)
+            downloaded = None
+            if cid in previous:
+                try:
+                    downloaded = await self.media.local(
+                        validate_download, previous[cid], cid, selected_quality
+                    )
+                except (Fault, OSError, KeyError, ValueError):
+                    pass
+            was_reused = downloaded is not None
+            if downloaded is None:
+                await update(state="downloading", stage="downloading", code="downloading")
+                downloaded, was_reused = await self.media.download_cache.obtain(
+                    job, part, cookie, owner, selected_quality
+                )
+            if was_reused:
+                reused.append(cid)
+            if base and cid in base["selected_cids"]:
+                old = base.get("downloads", {}).get(cid, {})
+                if any(
+                    old.get(key) != downloaded.get(key)
+                    for key in ("sha256", "size_bytes", "extension", "actual_quality")
+                ):
+                    replace.add(cid)
+            downloads[cid] = downloaded
+            job = await update(
+                downloads=dict(downloads),
+                download_reused_cids=list(reused),
+                replace_video_cids=sorted(replace),
+                actual_quality=downloaded["actual_quality"],
+                progress=len(downloads) / len(job["selected_cids"]),
+            )
+
     async def base(self, job):
         if job.get("base_edition"):
             return job["base_edition"]
-        head = await self.media.local(
-            self.media.repo.get, "target_head", job["target_id"] + ":" + job["bvid"]
-        )
+        head = await self.media.local(self.media.repo.get, "target_head", head_key(job))
         if head is None:
             return None
         base = await self.media.local(self.media.repo.job, head["job_id"])
@@ -478,7 +438,14 @@ class Worker:
                     os.link(original, destination)
                 except OSError:
                     shutil.copyfile(original, destination)
-                records.append(file_record(destination, expected.path, "video", cid))
+                record = file_record(destination, expected.path, "video", cid)
+                require(
+                    record["sha256"] == job["downloads"][cid]["sha256"]
+                    and record["size_bytes"] == job["downloads"][cid]["size_bytes"],
+                    "download_cache_changed",
+                    409,
+                )
+                records.append(record)
             for entry in bundle.files:
                 destination = temporary / entry.path
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -536,6 +503,8 @@ class Worker:
             }
 
         package = await self.media.local(build)
+        if job.get("destination_subdirectory"):
+            package["destination_subdirectory"] = job["destination_subdirectory"]
         if base:
             latest = await self.media.publisher.read(
                 target, base["asset_operation"]["operation_id"]

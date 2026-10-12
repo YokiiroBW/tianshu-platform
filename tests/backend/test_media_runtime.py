@@ -389,8 +389,8 @@ class MediaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             upgraded["package"]["base_operation_id"], second["asset_operation"]["operation_id"]
         )
-        self.assertEqual(set(upgraded["package"]["replace_video_cids"]), {"111111111", "222222222"})
-        self.assertEqual(self.media.engine.calls.count("111111111"), 2)
+        self.assertEqual(upgraded["package"].get("replace_video_cids", []), [])
+        self.assertEqual(self.media.engine.calls.count("111111111"), 1)
 
     async def test_mapping_changes_during_download_rejects_unproven_output(self):
         job = await self.enqueue(["111111111"])

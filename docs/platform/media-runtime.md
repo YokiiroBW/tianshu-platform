@@ -6,7 +6,7 @@
 
 ## 配置字段
 
-media.enabled 默认 true，显式 false 不启动。staging_directory 是绝对私有目录；package_contract_directory 指向工作区正式 `contracts/media-package/v1`，启动核验 manifest.json 所列文件的 LF 归一 SHA256 和 schema。workers 默认2，范围1..4；同目标同 BV 的作业串行持有租约。
+media.enabled 默认 true，显式 false 不启动。staging_directory 是绝对私有目录；package_contract_directory 指向工作区正式 `contracts/media-package/v1`，启动核验 manifest.json 所列文件的 LF 归一 SHA256 和 schema。workers 默认2，范围1..4；同目标、同子目录、同 BV 的作业串行持有租约。不同目录的整理可以同时推进，实际相同视频下载共用全局占用。
 
 engine.python 默认为当前 Python；engine.ffmpeg/ffprobe 为可执行文件或 PATH 名称；timeout_seconds 默认7200（30..86400），max_bytes 默认20GiB（1MiB..200GiB）。固定依赖 yt-dlp==2026.8.19、Pillow==12.3.0，由平台依赖锁及镜像维护。启动检查 yt-dlp 精确版本与工具存在；实际每个视频使用 ffprobe 核对音视频流及来源时长，指定画质核对引擎实际 quality。不得用不同版本的全局下载器替代。
 
@@ -41,6 +41,18 @@ staging_directory 需要同时作为 AssetLibrary 已信任 inbound 根的只读
 真实本地媒体服务器验证脚本：`python tests/backend/run_media_servers_integration.py --fixtures <合成服务连接JSON> --documents <纯元数据合成文档JSON>`，凭据从本次生成文件读取到临时 env，不打印。已用真实 Jellyfin12.2/Emby4.10.1 对single/multipart四种组合通过核验，源文件来自独立TS090 NFO输出。固定yt-dlp metadata-only实际公开测试 BV13x41117TL 可得80/64/32/16，无账号或视频下载。
 
 本地合成验证、联合真实本地Host验证和NAS部署/真实账号/用户使用必须分别记录。未执行NAS部署，未读取个人账号，未声称真实用户订阅已验收。
+
+## 全局下载源与独立目录（TS-123）
+
+`destination.py` 统一相对目录校验、任务路径快照及目录身份；旧空目录的队列摘要与 target_head 键保持原身份。发布清单仍用现行合同，子目录作为平台内部整理参数保存在 package 外层；file_transfer 的 relative 及 receipt.target_relative_path 带完整子目录，服务器在自身 media_root 下映射同一相对路径。修改订阅不会挪动或删除旧文件。
+
+媒体 SQLite schema 为2，新增 `download_sources`，启动读取v0/v1旧库前生成 `.pre-media-<UUID>`备份；jobs、documents、receipts等原事实保持。探针需接受媒体schema2（由集成者维护共享探针入口）。`download_cache.py` 按 BV/CID/实际画质编号保存验证过的下载源；旧 jobs.downloads 的有效记录按需吸收，包含发布失败或中断任务已经完成的 CID。每次复用要求文件存在、路径无链接、扩展名一致、非空且大小和 SHA256 匹配，损坏或缺失源失效后重新取得，不将临时文件算成功。
+
+先取得相同下载键的跨进程 OS 文件锁，再通过 Repository 领取 owner/generation/30秒租约；每5秒续全局与任务租约。OS锁阻止仍在下载但暂时失去心跳的进程被并发接管；进程退出自动释放锁，租约过期后接管使用新generation目录。用户取消终止引擎进程树并释放占用；等待者可取消，正常等待不增加失败重试次数。只有完整验证且成功提交的源才是ready，迟到旧generation不能写回。整理根锁争用在既有 Publications 中可取消地等待，仍由worker维护任务租约。
+
+视频优先硬链接到独立成品包和目标目录，跨文件系统或不支持链接时复制；NFO/source/封面分别输出。服务从不原地改写已经验证的源视频，修订使用新文件和新目录；重启时恢复incoming也先解除原链接再复制，避免截断共享inode。外部原地修改硬链接视频会影响所有引用，后续复用和整理核验会拒绝已变内容。缓存、旧下载及previous目录均不自动清理，备份需包含这些持久引用。
+
+相关验证沿用 unittest：`python -m unittest discover -s tests/backend -p 'test_media*.py' -v`。新增全局源用例计数真正的 download 调用，覆盖两个独立进程和实例、租约/取消、旧记录/重启、损坏/缺失、best/exact/fallback；standalone夹具用真实FFmpeg视频完成两个中文目录、第二目标、独立NFO和订阅改目录/新增P。它们不证明真实B站账号下载或NAS大文件性能。
 
 ## 独立资产服务整链验证
 

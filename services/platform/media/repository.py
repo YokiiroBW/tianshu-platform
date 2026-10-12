@@ -11,6 +11,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 from ..contracts import Fault, digest, canonical, require
+from .destination import head_key, same_destination, directory_identity
 
 TERMINAL = frozenset(
     {
@@ -47,9 +48,9 @@ class Repository:
         if self.database.exists():
             with closing(sqlite3.connect(self.database)) as db:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
-                require(version in (0, 1), "media_store_unavailable", 503)
+                require(version in (0, 1, 2), "media_store_unavailable", 503)
                 if (
-                    version == 0
+                    version < 2
                     and db.execute("SELECT 1 FROM sqlite_master WHERE type='table'").fetchone()
                 ):
                     backup = self.database.with_name(
@@ -69,7 +70,8 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS episodes(bvid TEXT NOT NULL,cid TEXT NOT NULL,number INTEGER NOT NULL,PRIMARY KEY(bvid,cid),UNIQUE(bvid,number));
                 CREATE TABLE IF NOT EXISTS scan_leases(id TEXT PRIMARY KEY,owner TEXT NOT NULL,generation INTEGER NOT NULL,expires REAL NOT NULL);
-                PRAGMA user_version=1;
+                CREATE TABLE IF NOT EXISTS download_sources(bvid TEXT NOT NULL,cid TEXT NOT NULL,quality TEXT NOT NULL,state TEXT NOT NULL,owner TEXT,generation INTEGER NOT NULL DEFAULT 0,lease REAL NOT NULL DEFAULT 0,body TEXT,PRIMARY KEY(bvid,cid,quality));
+                PRAGMA user_version=2;
             """)
 
     @contextmanager
@@ -178,24 +180,23 @@ class Repository:
             prior = json.loads(existing[0])
             if (
                 prior["bvid"] == payload["bvid"]
-                and prior["target_id"] == payload["target_id"]
+                and same_destination(prior, payload)
                 and prior["quality"] == payload["quality"]
                 and prior.get("layout") == payload.get("layout")
                 and set(payload["selected_cids"]) <= set(prior["selected_cids"])
             ):
                 return prior
-        dedupe = digest(
-            canonical(
-                {
-                    "bvid": payload["bvid"],
-                    "selected_cids": sorted(payload["selected_cids"]),
-                    "target_id": payload["target_id"],
-                    "quality": payload["quality"],
-                    "layout": payload.get("layout"),
-                    "edition": payload.get("edition", 0),
-                }
-            )
-        )
+        dedupe_input = {
+            "bvid": payload["bvid"],
+            "selected_cids": sorted(payload["selected_cids"]),
+            "target_id": payload["target_id"],
+            "quality": payload["quality"],
+            "layout": payload.get("layout"),
+            "edition": payload.get("edition", 0),
+        }
+        if payload.get("destination_subdirectory"):
+            dedupe_input["destination_subdirectory"] = directory_identity(payload)
+        dedupe = digest(canonical(dedupe_input))
         row = db.execute("SELECT body FROM jobs WHERE dedupe=?", (dedupe,)).fetchone()
         if row:
             return json.loads(row[0])
@@ -296,7 +297,7 @@ class Repository:
                     if not any(
                         peer["job_id"] != value["id"]
                         and peer["bvid"] == json.loads(value["body"])["bvid"]
-                        and peer["target_id"] == json.loads(value["body"])["target_id"]
+                        and same_destination(peer, json.loads(value["body"]))
                         for peer in occupied
                     )
                 ),
@@ -372,7 +373,7 @@ class Repository:
         if changes.get("state") == "asset_indexed" and body.get("asset_receipt"):
             self.put(
                 "target_head",
-                body["target_id"] + ":" + body["bvid"],
+                head_key(body),
                 {"job_id": identity, "operation_id": body["asset_receipt"]["operation_id"]},
                 db=db,
             )
@@ -465,6 +466,7 @@ class Repository:
                 "code": "scan_complete",
                 "counts": {"members": count, "queued": current["counts"]["queued"] + queued},
                 "quality_reassessment": False,
+                "destination_reassessment": False,
             }
             # Scanning facts do not invalidate the user's configuration revision.
             db.execute(
@@ -472,6 +474,71 @@ class Repository:
                 (json.dumps(body, ensure_ascii=False), subscription["subscription_id"]),
             )
             return body, queued
+
+    def download_claim(self, bvid, cid, quality, owner):
+        """Claim one resolved quality across workers/processes; ready records are only candidates."""
+        with self.transaction() as db:
+            key = (bvid, cid, quality)
+            row = db.execute(
+                "SELECT * FROM download_sources WHERE bvid=? AND cid=? AND quality=?", key
+            ).fetchone()
+            if row and row["state"] == "ready":
+                return {
+                    "state": "ready",
+                    "generation": row["generation"],
+                    "download": json.loads(row["body"]),
+                }
+            if row and row["owner"] and row["lease"] >= self.clock():
+                return {"state": "waiting"}
+            generation = row["generation"] + 1 if row else 1
+            db.execute(
+                "INSERT INTO download_sources VALUES(?,?,?,'downloading',?,?,?,NULL) ON CONFLICT(bvid,cid,quality) DO UPDATE SET state='downloading',owner=excluded.owner,generation=excluded.generation,lease=excluded.lease,body=NULL",
+                (*key, owner, generation, self.clock() + 30),
+            )
+            return {"state": "owned", "generation": generation}
+
+    def download_invalidate(self, bvid, cid, quality, generation):
+        with self.transaction() as db:
+            db.execute(
+                "UPDATE download_sources SET state='missing',owner=NULL,lease=0,body=NULL WHERE bvid=? AND cid=? AND quality=? AND generation=? AND state='ready'",
+                (bvid, cid, quality, generation),
+            )
+
+    def download_heartbeat(self, bvid, cid, quality, owner, generation):
+        with self.transaction() as db:
+            changed = db.execute(
+                "UPDATE download_sources SET lease=? WHERE bvid=? AND cid=? AND quality=? AND owner=? AND generation=? AND state='downloading'",
+                (self.clock() + 30, bvid, cid, quality, owner, generation),
+            ).rowcount
+            require(changed == 1, "lease_conflict", 409)
+
+    def download_finish(self, bvid, cid, quality, owner, generation, download=None):
+        with self.transaction() as db:
+            changed = db.execute(
+                "UPDATE download_sources SET state=?,owner=NULL,lease=0,body=? WHERE bvid=? AND cid=? AND quality=? AND owner=? AND generation=? AND state='downloading'",
+                (
+                    "ready" if download else "missing",
+                    json.dumps(download) if download else None,
+                    bvid,
+                    cid,
+                    quality,
+                    owner,
+                    generation,
+                ),
+            ).rowcount
+            require(changed == 1, "lease_conflict", 409)
+
+    def legacy_downloads(self, bvid, cid):
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT body FROM jobs WHERE json_extract(body,'$.bvid')=? ORDER BY updated DESC",
+                (bvid,),
+            ).fetchall()
+        return [
+            body["downloads"][cid]
+            for row in rows
+            if cid in (body := json.loads(row[0])).get("downloads", {})
+        ]
 
     def members(self, identity):
         with self.transaction() as db:

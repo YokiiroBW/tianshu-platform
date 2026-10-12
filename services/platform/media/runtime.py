@@ -22,6 +22,7 @@ from .repository import Repository
 from .rules import RuleEvaluator
 from .subscriptions import Subscriptions
 from .worker import Worker
+from .download_cache import DownloadCache
 
 JOB_FIELDS = (
     "job_id",
@@ -41,6 +42,9 @@ JOB_FIELDS = (
     "created_at",
     "updated_at",
     "target_id",
+    "destination_subdirectory",
+    "destination_directory",
+    "download_reused_cids",
     "quality",
     "actual_quality",
     "cancel_requested",
@@ -53,6 +57,8 @@ RETRYABLE = frozenset({"failed", "auth_required", "unknown", "cancelled", "retry
 def public_job(job):
     return {
         **{key: job.get(key) for key in JOB_FIELDS},
+        "destination_subdirectory": job.get("destination_subdirectory", ""),
+        "download_reused_cids": job.get("download_reused_cids", []),
         "can_retry": job["state"] in RETRYABLE,
         "can_cancel": job["state"]
         not in {"completed", "published", "cancelled", "failed", "unknown"},
@@ -165,6 +171,7 @@ class Media:
         self.evaluator = RuleEvaluator()
         self.subscriptions = Subscriptions(self)
         self.worker = Worker(self)
+        self.download_cache = DownloadCache(self)
 
     async def start(self):
         if self.config is None or self.started:
@@ -245,7 +252,10 @@ class Media:
                 }
                 for identity, target in self.config["targets"].items()
             ],
-            "subscriptions": subscriptions,
+            "subscriptions": [
+                {**item, "destination_subdirectory": item.get("destination_subdirectory", "")}
+                for item in subscriptions
+            ],
             "jobs": [public_job(job) for job in jobs],
             "overview": overview,
         }

@@ -1,6 +1,7 @@
 """Real Platform HTTP, SQLite, FFmpeg files and local publication; no AssetLibrary server."""
 
 import base64
+import asyncio
 import json
 import os
 import sys
@@ -17,6 +18,8 @@ from fixtures import ENV, start_http
 from media_runtime_fixtures import BV, QUALITY, SyntheticEngine, Upstream, settings, subscription
 from services.platform.media.bilibili import Bilibili
 from services.platform.media.subscriptions import job_payload
+from services.platform.media.destination import head_key, snapshot
+from services.platform.media.repository import Repository
 from services.platform.server import create_app
 from services.platform.service import Platform
 from web_fixtures import PASSWORD
@@ -149,6 +152,116 @@ class StandaloneMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((destination / "movie.nfo").exists())
         view = await self.post("view", {})
         self.assertEqual(view["overview"]["jobs"]["published"], 1)
+
+    async def test_global_download_once_two_directories_and_different_target_with_independent_nfo(
+        self,
+    ):
+        target = self.media.config["targets"]["test-server"]
+        resolved = await self.media.connector.resolve(BV, with_formats=False)
+        jobs = []
+        for folder, title in [("收藏夹/音乐", "音乐收藏"), ("订阅/学习", "学习订阅")]:
+            payload = job_payload(
+                resolved,
+                self.upstream.parts[BV],
+                None,
+                "test-server",
+                dict(QUALITY),
+                **snapshot(target, folder),
+            )
+            payload["overrides"] = {"title": title, "description": "不同目录的独立简介"}
+            jobs.append(self.media.repo.enqueue(payload))
+        first = self.media.repo.claim("one")
+        second = self.media.repo.claim("two")
+        self.assertIsNotNone(second)  # Different destination directories do not serialize jobs.
+        await asyncio.gather(
+            self.media.worker.run(first, "one"), self.media.worker.run(second, "two")
+        )
+        done = [self.media.repo.job(job["job_id"]) for job in jobs]
+        for job, (folder, title) in zip(
+            done, [("收藏夹/音乐", "音乐收藏"), ("订阅/学习", "学习订阅")], strict=True
+        ):
+            destination = self.verify_output(job)
+            self.assertTrue(job["asset_receipt"]["target_relative_path"].startswith(folder + "/"))
+            self.assertEqual(job["destination_directory"], str(Path(target["directory"]) / folder))
+            self.assertIn(title, next(destination.rglob("*.nfo")).read_text(encoding="utf-8"))
+            self.assertEqual(
+                self.media.repo.get("target_head", head_key(job))["job_id"], job["job_id"]
+            )
+        self.assertEqual(self.media.engine.calls, self.upstream.parts[BV])
+        video_paths = []
+        nfo_paths = []
+        for job in done:
+            directory = Path(target["directory"]) / job["asset_receipt"]["target_relative_path"]
+            video_paths.append(next(directory.rglob("*.mp4")))
+            nfo_paths.append(next(directory.rglob("*.nfo")))
+        self.assertTrue(video_paths[0].samefile(video_paths[1]))
+        self.assertFalse(nfo_paths[0].samefile(nfo_paths[1]))
+        self.assertEqual(
+            {
+                call.args[1]["destination_subdirectory"]
+                for call in self.media.servers.verify.call_args_list
+            },
+            {"收藏夹/音乐", "订阅/学习"},
+        )
+        # A new repository/cache instance and a second target still consume the same video sources.
+        self.media.repo = Repository(self.media.repo.database)
+        other = {
+            **target,
+            "target_id": "second-server",
+            "directory": str(Path(self.temp.name) / "second-library"),
+        }
+        self.media.config["targets"]["second-server"] = other
+        third = self.media.repo.enqueue(
+            job_payload(
+                resolved,
+                self.upstream.parts[BV],
+                None,
+                "second-server",
+                dict(QUALITY),
+                **snapshot(other, "重启复用"),
+            )
+        )
+        third = await self.run_job(third["job_id"])
+        self.assertEqual(third["state"], "completed", third["code"])
+        self.assertEqual(third["download_reused_cids"], self.upstream.parts[BV])
+        self.assertEqual(self.media.engine.calls, self.upstream.parts[BV])
+
+    async def test_subscription_directory_edit_preserves_queued_snapshot_and_reorganizes_existing_members(
+        self,
+    ):
+        request = subscription()
+        request.update(target_id="test-server", destination_subdirectory="旧目录/收藏")
+        saved = (await self.post("subscriptions/save", request))["subscription"]
+        await self.media.subscriptions.scan(saved["subscription_id"])
+        old_jobs, _ = self.media.repo.jobs()
+        old = old_jobs[0]
+        request.update(
+            subscription_id=saved["subscription_id"],
+            expected_revision=saved["revision"],
+            destination_subdirectory="新目录/收藏",
+            client_id=str(uuid.uuid4()),
+        )
+        changed = (await self.post("subscriptions/save", request))["subscription"]
+        self.assertEqual(
+            (await self.media.subscriptions.scan(changed["subscription_id"]))["queued"], 1
+        )
+        self.assertEqual(
+            self.media.repo.job(old["job_id"])["destination_subdirectory"], "旧目录/收藏"
+        )
+        await self.run_job(old["job_id"])
+        pending, _ = self.media.repo.jobs(states={"queued"})
+        second = await self.run_job(pending[0]["job_id"])
+        self.assertEqual(second["destination_subdirectory"], "新目录/收藏")
+        self.verify_output(second)
+        self.assertEqual(self.media.engine.calls, self.upstream.parts[BV])
+        # New P is independently added to both directory heads without re-downloading old P.
+        self.upstream.parts[BV].append("333333333")
+        await self.media.subscriptions.scan(changed["subscription_id"])
+        pending, _ = self.media.repo.jobs(states={"queued"})
+        latest = await self.run_job(pending[0]["job_id"])
+        self.assertEqual(latest["selected_cids"], self.upstream.parts[BV])
+        self.assertEqual(self.media.engine.calls, self.upstream.parts[BV])
+        self.assertTrue(latest["asset_receipt"]["target_relative_path"].startswith("新目录/收藏/"))
 
     async def test_subscription_new_parts_and_metadata_editions_keep_existing_videos(self):
         self.upstream.parts[BV] = ["111111111"]

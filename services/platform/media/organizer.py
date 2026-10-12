@@ -1,6 +1,7 @@
 """Recoverable file transfers into an external media server directory, not a media catalog."""
 
 import base64
+import asyncio
 import hashlib
 import json
 import os
@@ -11,29 +12,11 @@ from pathlib import Path
 
 from ..contracts import Fault, require
 from .engine import file_record
-from .identity import multipart_directory, single_directory, require_relative_path
+from .identity import multipart_directory, single_directory
+from .destination import safe_path, subdirectory
 
 MARKER = ".tianshu-publication.json"
 KIND = "file_transfer"
-
-
-def safe_path(root, relative):
-    require_relative_path(relative)
-    parts = relative.split("/")
-    require(
-        all(
-            not any(c in part for c in ':\x00<>"|?*') and not part.endswith((" ", "."))
-            for part in parts
-        ),
-        "unsafe_library_path",
-        409,
-    )
-    path = root
-    for part in parts:
-        path = path / part
-        require(not path.is_symlink() and not path.is_junction(), "unsafe_library_path", 409)
-    require(path.resolve().is_relative_to(root.resolve()), "unsafe_library_path", 409)
-    return path
 
 
 def sync_directory(path):
@@ -165,6 +148,9 @@ class FileOrganizer:
                 if manifest["layout"] == "single"
                 else multipart_directory(manifest["bvid"])
             )
+            prefix = subdirectory(package.get("destination_subdirectory", ""))
+            if prefix:
+                relative = prefix + "/" + relative
             destination = safe_path(root, relative)
             base_id = package.get("base_operation_id")
             if base_id:
@@ -273,8 +259,16 @@ class FileOrganizer:
                 src = safe_path(source, entry["path"])
                 dst = safe_path(incoming, entry["path"])
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                # Copy rather than link: later cache edits cannot alter a published video.
-                with src.open("rb") as reader, dst.open("wb") as writer:
+                if entry["kind"] == "video" and not dst.exists():
+                    try:
+                        os.link(src, dst)
+                        continue
+                    except OSError:
+                        pass
+                # Retry never truncates a linked source inode; replace the incoming file.
+                if dst.exists():
+                    dst.unlink()
+                with src.open("rb") as reader, dst.open("xb") as writer:
                     shutil.copyfileobj(reader, writer, 1024**2)
                     writer.flush()
                     os.fsync(writer.fileno())
@@ -299,6 +293,7 @@ class FileOrganizer:
                     self.verify_owned(destination, base)
                     require(not previous.exists(), "target_exists", 409)
                     destination.rename(previous)
+                    sync_directory(destination.parent)
                     sync_directory(root)
                     sync_directory(control)
                 else:
@@ -306,8 +301,14 @@ class FileOrganizer:
                     self.verify_owned(previous, base)
             else:
                 require(not destination.exists(), "target_exists", 409)
+            destination.parent.mkdir(parents=True, exist_ok=True)
             incoming.rename(destination)
-            sync_directory(root)
+            parent = destination.parent
+            while True:
+                sync_directory(parent)
+                if parent == root:
+                    break
+                parent = parent.parent
             sync_directory(control)
             return self.reconcile(root, operation)
 
@@ -328,9 +329,20 @@ class Publications:
     def __init__(self, remote, organizer, run_local):
         self.remote, self.organizer, self.run_local = remote, organizer, run_local
 
+    async def local(self, operation, *args):
+        while True:
+            try:
+                return await self.run_local(operation, *args)
+            except Fault as error:
+                if error.code != "busy":
+                    raise
+                # Root-level filesystem ownership is shared by independent directories.
+                # Wait cancellably while the worker heartbeat maintains its job lease.
+                await asyncio.sleep(0.1)
+
     async def prepare(self, target, package, identity):
         if target.get("kind") == "media_server":
-            return await self.run_local(self.organizer.prepare, target, package, identity)
+            return await self.local(self.organizer.prepare, target, package, identity)
         return await self.remote.prepare(target, package, identity)
 
     async def read(self, target, identity):
@@ -340,7 +352,7 @@ class Publications:
 
     async def publish(self, target, operation):
         if target.get("kind") == "media_server":
-            return await self.run_local(self.organizer.publish, target, operation)
+            return await self.local(self.organizer.publish, target, operation)
         return await self.remote.publish(target, operation)
 
     async def cancel(self, target, operation):

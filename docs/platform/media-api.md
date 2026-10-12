@@ -1,6 +1,6 @@
 # 视频订阅同源 API（2026-10-09）
 
-所有操作为 `POST /api/web/media/<operation>`，JSON，请求沿用网页登录的 Cookie、Origin 和 X-CSRF-Token；无第二次密码解锁。错误返回现有 `{code}`，400 输入错误、401 会话失效、409 版本/幂等冲突、503 上游或运行依赖不可用。媒体正文总预算 6 MiB，流式计数后解析，包含规则最大 20 组×10 条×4096 字符及 JSON 转义余量；超限报413 `budget_exceeded`，不截断。账号 Cookie 仅在 import 请求出现，响应、台账、任务日志不返回 Cookie、签名媒体 URL、文件路径或私有引用。
+所有操作为 `POST /api/web/media/<operation>`，JSON，请求沿用网页登录的 Cookie、Origin 和 X-CSRF-Token；无第二次密码解锁。错误返回现有 `{code}`，400 输入错误、401 会话失效、409 版本/幂等冲突、503 上游或运行依赖不可用。媒体正文总预算 6 MiB，流式计数后解析，包含规则最大 20 组×10 条×4096 字符及 JSON 转义余量；超限报413 `budget_exceeded`，不截断。账号 Cookie 仅在 import 请求出现，响应、台账、任务日志不返回 Cookie、签名媒体 URL、私有下载路径或私有引用；整理目标目录供已登录控制台预览。
 
 ## 通用值
 
@@ -27,8 +27,8 @@ Job.state/stage 来自持久台账：queued/downloading/validating/metadata_read
 |---|---|---|
 | view | `{}` | `{configured,capabilities:{provider:"bilibili",source_kinds:string[]},engine:{state,version,code},accounts:Account[],targets:[{target_id,label,state}],subscriptions:Subscription[],jobs:Job[],overview:Overview|null}`；未配置overview=null，原字段兼容 |
 | resolve | `{url,account_id:string|null}` | `{preview_id,expires_at:number,video:{bvid,title,description,creator:{mid,name},cover_url:string|null,parts:[{cid,index,title,duration_seconds:number|null,formats:[{quality_id,label}]}]}}` |
-| enqueue | `{preview_id,part_cids:string[],account_id:string|null,target_id,quality,client_id}` | `{jobs:Job[],replayed:boolean}` |
-| subscriptions/save | `{subscription_id:string|null,expected_revision:number,label,source,account_id:string|null,target_id,initial_sync,quality,rules,interval_seconds:number,client_id}` | `{subscription:Subscription,replayed:boolean}` |
+| enqueue | `{preview_id,part_cids:string[],account_id:string|null,target_id,destination_subdirectory?:string,quality,client_id}` | `{jobs:Job[],replayed:boolean}` |
+| subscriptions/save | `{subscription_id:string|null,expected_revision:number,label,source,account_id:string|null,target_id,destination_subdirectory?:string,initial_sync,quality,rules,interval_seconds:number,client_id}` | `{subscription:Subscription,replayed:boolean}` |
 | subscriptions/control | `{subscription_id,expected_revision:number,action:"pause"|"resume",client_id}` | `{subscription:Subscription,replayed:boolean}` |
 | subscriptions/scan | `{subscription_id,recompute:boolean,client_id}` | `{subscription:Subscription,queued:number,replayed:boolean}`（完整扫描；失败不更新成员基线和水位） |
 | rules/preview | `{preview_id,rules}` | `{results:[{cid,decision,reason,automatic_enqueue_allowed,requires_rule_attention,trace:object}]}` |
@@ -55,3 +55,11 @@ resolve 画质来自固定 yt-dlp 引擎 metadata-only 提取，实际下载同�
 `rules/preview.results[].trace` 为 TS-098 的 `RuleDecision`：`{item_key,snapshot_revision,policy_revision,policy_digest,decision,reason,automatic_enqueue_allowed,requires_rule_attention,trace:[{group_id,list_kind:"blacklist"|"whitelist",result,reason,rules:[{rule_id,field,op,result,reason}]}]}`。snapshot_revision 是原始快照内容 SHA256。先黑名单后白名单，trace不带匹配原文。
 
 metadata/refresh_metadata 的版本冲突统一报409 `version_conflict`。二维码 waiting/scanned/expired 不缓存为导入回执；同 client_id 持续轮询可观察阶段变化，ready 才持久导入幂等事实。每次轮询至少间隔2秒。
+
+## 独立目录与下载复用（TS-123）
+
+订阅保存和手动 enqueue 的可选 `destination_subdirectory` 缺省为 `""`，使用目标根目录。反斜杠归一成 `/`，整体前后空白去除，支持中文多层目录；总长最多1024字符，单段 UTF-8 最多255字节。绝对路径、空段、`.`/`..`、控制字符、不成对 Unicode 代理字符、Windows保留名称、冒号和不兼容文件名、段末空格/点报400 `invalid_destination_subdirectory`。目录及父级的符号链接/junction报409 `unsafe_library_path`；历史 AssetLibrary 目标只有空目录兼容，非空报409 `destination_not_supported`。
+
+Subscription 和 Job 新增 `destination_subdirectory:string`、`destination_directory:string|null`；Job 另有 `download_reused_cids:string[]`，只列真正通过完整性核验并复用的 CID，未复用为空数组。旧投影缺省子目录为空串，旧 Job 完整目录尚未补记时为null。入队固定完整整理路径快照；编辑订阅目录不会改变旧任务，并会在下次扫描按新目录重新整理当前成员。不同目录拥有独立任务、成品、发布和媒体服务器路径。同目录新增 P 继续扩展原有成品。
+
+下载源在本平台台账内按 BV/CID/实际画质编号全局复用，不含账号、订阅、来源或目标。`exact` 无 fallback 按指定编号命中；`best` 每次使用固定引擎 metadata-only 探测当前可用编号中的最高值；`exact + allow_fallback` 优先指定编号，仅在探测确认不可用时选当前最高值。实际视频以选定编号的 exact 策略下载并核对结果。旧的低清回退只可满足同一实际编号，不能冒充后来可用的高清；best 的可用最高编号变化会取得新画质。探测失败或下载出错不自动降清，命中缓存不再调用视频下载引擎。

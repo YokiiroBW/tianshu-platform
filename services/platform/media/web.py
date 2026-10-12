@@ -13,6 +13,7 @@ from .config import quality, text
 from .metadata import normalize_bilibili
 from .runtime import public_job
 from .subscriptions import job_payload
+from .destination import snapshot
 from .types import MetadataValidationError
 from .rules import RuleValidationError
 
@@ -186,7 +187,7 @@ class WebMedia:
 
     async def enqueue(self, body, session):
         require(
-            set(body)
+            set(body) - {"destination_subdirectory"}
             == {"preview_id", "part_cids", "account_id", "target_id", "quality", "client_id"},
             "invalid_input",
             400,
@@ -224,7 +225,15 @@ class WebMedia:
                     409,
                 )
         payload = job_payload(
-            preview, body["part_cids"], body["account_id"], body["target_id"], requested
+            preview,
+            body["part_cids"],
+            body["account_id"],
+            body["target_id"],
+            requested,
+            **snapshot(
+                self.media.config["targets"][body["target_id"]],
+                body.get("destination_subdirectory", ""),
+            ),
         )
         result = await self.receipt(
             body,
@@ -427,7 +436,7 @@ class WebMedia:
             }
             if current.get("asset_receipt"):
                 changes["base_edition"] = {
-                    key: current[key]
+                    key: current.get(key)
                     for key in (
                         "package",
                         "asset_operation",
@@ -438,6 +447,8 @@ class WebMedia:
                         "quality",
                         "bvid",
                         "target_id",
+                        "destination_subdirectory",
+                        "destination_directory",
                         "job_id",
                     )
                 }
@@ -538,6 +549,8 @@ class WebMedia:
                     "quality": job["quality"],
                     "bvid": job["bvid"],
                     "target_id": job["target_id"],
+                    "destination_subdirectory": job.get("destination_subdirectory", ""),
+                    "destination_directory": job.get("destination_directory"),
                     "job_id": job["job_id"],
                 }
             return {"job": public_job(self.media.repo.update_job(job["job_id"], changes, db=db))}
