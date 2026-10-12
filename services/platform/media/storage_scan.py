@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 
 from ..contracts import Fault, require
+from .storage_filesystem import capacity_key, read_mountinfo
 
 
 def server_path(value):
@@ -67,7 +68,7 @@ def scan_files(volumes, subscription_roots, emby_roots, discovery_code, cancel):
         }
         for volume in volumes
     }
-    devices = {}
+    filesystems = {}
 
     def checked():
         if cancel.is_set():
@@ -84,11 +85,16 @@ def scan_files(volumes, subscription_roots, emby_roots, discovery_code, cancel):
             raise OSError("observation root is not a directory")
         return observed
 
+    checked()
+    mounts = read_mountinfo()
+
     for volume in volumes:
         for directory in volume["directories"]:
             try:
                 observed = root_stat(Path(directory))
-                devices[observed.st_dev] = volume["storage_id"]
+                filesystems[capacity_key(Path(directory), observed.st_dev, mounts)] = volume[
+                    "storage_id"
+                ]
                 data[volume["storage_id"]]["allocated"] &= hasattr(observed, "st_blocks")
             except OSError:
                 data[volume["storage_id"]].update(
@@ -113,7 +119,7 @@ def scan_files(volumes, subscription_roots, emby_roots, discovery_code, cancel):
         except OSError:
             failed(category, identity)
             return
-        identity = devices.get(observed.st_dev)
+        identity = filesystems.get(capacity_key(root, observed.st_dev, mounts))
         if identity is None:
             # A separately mounted volume is outside this media disk's scope.
             return

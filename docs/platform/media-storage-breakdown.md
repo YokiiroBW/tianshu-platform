@@ -1,10 +1,14 @@
 # 媒体磁盘四类占用（TS-129）
 
-统计服务只读取目录和文件元数据，类别为“订阅占用、Emby占用、其他占用、未使用”。容量继续从直接媒体目标的真实directory读取，同设备分组。music和video按文件st_dev归实际卷，不因同server_id就算到Bilibili盘。
+统计服务只读取目录和文件元数据，类别为“订阅占用、Emby占用、其他占用、未使用”。容量继续从直接媒体目标的真实directory读取；容量归属与文件身份分别处理。Linux Btrfs通过当前容器mountinfo的major:minor和source识别共享容量池，其他文件系统/平台按st_dev；不因同server_id或容量数值相同合盘。
 
 ## 扫描范围与口径
 
 `storage_scan.py`先遍历所有配置订阅根内的普通文件，含NFO、封面和共享视频控制池；再遍历现有Emby连接通过`MediaServers.libraries()`取得的所有媒体库Locations。跨目录硬链接、重叠媒体库和重复目录按`(st_dev,st_ino)`全局排重；订阅已计的inode从Emby排除。只读stat/lstat/scandir，不读文件内容，不跟随symlink/junction，也不递归跨入另一设备的子挂载。独立已配置卷可从其明确观察根统计。Windows DirEntry缓存的空设备/inode用原生lstat补齐，不虚构零占用。
+
+`storage_filesystem.py`为容量展示和扫描根归属共用的唯一规则：只在Linux读取`/proc/self/mountinfo`，解码八进制路径转义，以最长完整挂载点边界定位根。明确btrfs及绝对mount source时，容量键为`(btrfs,mountinfo major:minor,source)`；不能要求mountinfo设备号等于stat设备号。无法核验或其他FS退回原stat设备身份。文件/目录排重仍是原`(st_dev,st_ino)`，每个明确扫描根仍以自己的原st_dev限定子树。这样可统计同池不同子卷的明确Emby根，不会把不同子卷的同号inode去重，也不会因为同池就跨入意外子挂载。Btrfs子卷共享存储池且各有inode命名空间，见[官方子卷文档](https://btrfs.readthedocs.io/en/latest/Subvolumes.html)。
+
+2026-10-13实机修复依据：三条media bind的mountinfo均为`0:39`、btrfs、`/dev/mapper/cachedev_1`；Video subvol260的stat dev6291518，Music subvol264的stat dev7340078，两者fsid也不同。不能用fsid或相同total/free替代文件系统身份。此组合有固定回归，正式NAS再次统计由协调者执行。
 
 有st_blocks时每文件计`st_blocks*512`；没有该字段时整个卷统一退为logical文件长度近似，响应basis=logical。目录、特殊文件和链接本身的分配量归其他。其他=`total-free-subscription-emby`，包括其余文件、文件系统开销和预留；未使用沿用实际可用free（Linux为bavail口径）。已计字节大于实际total-free时保留观察数，other=null并标partial；reflink/压缩或扫描期间内容变化不能用clamp伪装总量守恒。
 

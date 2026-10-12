@@ -5,10 +5,12 @@ import shutil
 from pathlib import Path
 
 from ..contracts import digest
+from .storage_filesystem import capacity_key, read_mountinfo
 
 
 def media_storage(targets):
     groups = {}
+    mounts = read_mountinfo()
     for identity, target in sorted(targets.items()):
         if target.get("kind") != "media_server":
             continue
@@ -21,7 +23,9 @@ def media_storage(targets):
         except OSError:
             pass
         key = (
-            ("device", device) if device is not None else ("path", os.path.normcase(str(directory)))
+            capacity_key(directory, device, mounts)
+            if device is not None
+            else ("path", os.path.normcase(str(directory)))
         )
         volume = groups.setdefault(
             key,
