@@ -147,6 +147,22 @@ class MediaServers:
                 matched = True
                 missing = False
                 for index, identity in enumerate(identities):
+                    cid = (
+                        job["selected_cids"][0]
+                        if single
+                        else None
+                        if index == 0
+                        else job["selected_cids"][index - 1]
+                    )
+                    file = next(
+                        (
+                            value
+                            for value in manifest["files"]
+                            if value["kind"] == "video" and value["cid"] == cid
+                        ),
+                        None,
+                    )
+                    expected_path = root + ("/" + file["path"] if file else "")
                     listing = await self.remote.request(
                         server,
                         "GET",
@@ -166,6 +182,8 @@ class MediaServers:
                             value
                             for value in items
                             if value.get("ProviderIds", {}).get("bilibili") == identity
+                            and value.get("Path", "").replace("\\", "/").rstrip("/")
+                            == expected_path
                         ),
                         None,
                     )
@@ -174,22 +192,6 @@ class MediaServers:
                         matched = False
                         continue
                     result["item_id"] = result["item_id"] or str(item.get("Id"))
-                    cid = (
-                        job["selected_cids"][0]
-                        if single
-                        else None
-                        if index == 0
-                        else job["selected_cids"][index - 1]
-                    )
-                    file = next(
-                        (
-                            value
-                            for value in manifest["files"]
-                            if value["kind"] == "video" and value["cid"] == cid
-                        ),
-                        None,
-                    )
-                    expected_path = root + ("/" + file["path"] if file else "")
                     expected_name = (
                         expected_title
                         if single or cid is None
@@ -201,8 +203,7 @@ class MediaServers:
                     )
                     observed_names = {person.get("Name") for person in item.get("People", [])}
                     correct = (
-                        item.get("Path", "").replace("\\", "/").rstrip("/") == expected_path
-                        and item.get("Name") == expected_name
+                        item.get("Name") == expected_name
                         and (not description or item.get("Overview") == description)
                         and names <= observed_names
                     )
