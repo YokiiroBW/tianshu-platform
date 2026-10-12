@@ -20,6 +20,7 @@ from .organizer import FileOrganizer, Publications
 from .repository import Repository, TERMINAL
 from .retention import Retention
 from .storage import media_storage
+from .storage_breakdown import StorageBreakdown
 from .rules import RuleEvaluator
 from .subscriptions import Subscriptions
 from .worker import Worker
@@ -145,11 +146,13 @@ class Media:
         self.worker = Worker(self)
         self.retention = Retention(self)
         self.download_cache = DownloadCache(self)
+        self.storage_breakdown = StorageBreakdown(self, clock=clock)
 
     async def start(self):
         if self.config is None or self.started:
             return
         self.started = True
+        self.storage_breakdown.closed = False
         await self.connector.start()
         await self.engine.check()
         self.tasks = [asyncio.create_task(self.subscriptions.pump())]
@@ -161,6 +164,7 @@ class Media:
     async def close(self):
         if self.config is None:
             return
+        await self.storage_breakdown.close()
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
@@ -193,7 +197,9 @@ class Media:
         jobs, _ = await self.local(self.repo.jobs)
         overview = {
             "jobs": await self.local(self.repo.job_overview),
-            "storage": await self.local(media_storage, dict(self.config["targets"])),
+            "storage": self.storage_breakdown.view(
+                await self.local(media_storage, dict(self.config["targets"]))
+            ),
         }
         return {
             "configured": True,

@@ -123,6 +123,7 @@ def configuration(settings):
             "scan_item_limit",
             "scan_timeout_seconds",
             "workers",
+            "storage_mappings",
         },
         "invalid_input",
         400,
@@ -185,6 +186,32 @@ def configuration(settings):
             "invalid_input",
             400,
         )
+    from .storage_scan import server_path
+
+    mappings = raw.get("storage_mappings", [])
+    require(isinstance(mappings, list) and len(mappings) <= 128, "invalid_input", 400)
+    storage_mappings, mapped = [], set()
+    for mapping in mappings:
+        require(
+            isinstance(mapping, dict)
+            and set(mapping) == {"server_id", "server_prefix", "local_prefix"},
+            "invalid_input",
+            400,
+        )
+        identity = text(mapping["server_id"], 64)
+        prefix = server_path(mapping["server_prefix"])
+        local_prefix = text(mapping["local_prefix"], 4096)
+        require(Path(local_prefix).is_absolute(), "invalid_input", 400)
+        key = (identity, prefix.casefold() if re.match(r"^[A-Za-z]:/", prefix) else prefix)
+        require(key not in mapped, "invalid_input", 400)
+        mapped.add(key)
+        storage_mappings.append(
+            {
+                "server_id": identity,
+                "server_prefix": prefix,
+                "local_prefix": str(Path(local_prefix).absolute()),
+            }
+        )
     result = {
         "staging_directory": str(Path(staging).resolve()),
         "package_contract_directory": raw.get(
@@ -203,6 +230,7 @@ def configuration(settings):
         "scan_item_limit": raw.get("scan_item_limit", 5000),
         "scan_timeout_seconds": raw.get("scan_timeout_seconds", 900),
         "workers": raw.get("workers", 2),
+        "storage_mappings": storage_mappings,
     }
     for name, lower, upper in (
         ("scan_page_limit", 1, 1000),

@@ -33,6 +33,20 @@ async def serve(arguments):
         configuration = settings(directory, engine, publisher.url, arguments.static, arguments.port)
         if arguments.local_server:
             library = Path(directory) / "media-library"
+            if arguments.storage_emby:
+                observe = Path(directory) / "emby-observe"
+                observe.mkdir()
+                library = observe / "subscriptions"
+                (observe / "other-fixture.mp4").write_bytes(
+                    b"metadata-only synthetic fixture" * 1024
+                )
+                configuration["media"]["storage_mappings"] = [
+                    {
+                        "server_id": "synthetic-server",
+                        "server_prefix": "/synthetic",
+                        "local_prefix": str(observe),
+                    }
+                ]
             library.mkdir()
             configuration["media"]["targets"] = [
                 {
@@ -43,11 +57,13 @@ async def serve(arguments):
                     "servers": [
                         {
                             "server_id": "synthetic-server",
-                            "kind": "jellyfin",
+                            "kind": "emby" if arguments.storage_emby else "jellyfin",
                             "base_url": "http://127.0.0.1:1",
                             "token_env": "SYNTHETIC_MEDIA_PUBLISH",
                             "library_id": "synthetic",
-                            "media_root": "/synthetic",
+                            "media_root": "/synthetic/subscriptions"
+                            if arguments.storage_emby
+                            else "/synthetic",
                         }
                     ],
                 }
@@ -67,6 +83,17 @@ async def serve(arguments):
                     }
                 ]
             )
+            if arguments.storage_emby:
+                platform.media.servers.libraries = AsyncMock(
+                    return_value=[
+                        {
+                            "library_id": "synthetic",
+                            "label": "合成媒体观察根",
+                            "paths": ["/synthetic"],
+                        },
+                        {"library_id": "empty", "label": "空库", "paths": []},
+                    ]
+                )
 
         async def fixture_cover(url):
             return (upstream.cover_bytes, "png") if url else None
@@ -99,5 +126,10 @@ if __name__ == "__main__":
         "--local-server",
         action="store_true",
         help="Use real local organized files with synthetic media-server observations",
+    )
+    parser.add_argument(
+        "--storage-emby",
+        action="store_true",
+        help="Add a synthetic mapped Emby observation root for storage breakdown QA (with --local-server)",
     )
     asyncio.run(serve(parser.parse_args()))

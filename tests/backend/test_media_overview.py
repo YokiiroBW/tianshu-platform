@@ -13,6 +13,7 @@ from unittest.mock import patch
 from services.platform.media.repository import Repository
 from services.platform.media.runtime import Media
 from services.platform.media.storage import media_storage
+from services.platform.media.storage_breakdown import StorageBreakdown
 
 
 EMPTY_COUNTS = {
@@ -193,6 +194,8 @@ class MediaOverviewViewTests(unittest.IsolatedAsyncioTestCase):
             return await asyncio.to_thread(operation, *arguments)
 
         self.media.local = local
+        self.media.storage_breakdown = StorageBreakdown(self.media)
+        self.addAsyncCleanup(self.media.storage_breakdown.close)
 
     async def test_view_preserves_first_page_and_reports_full_counts_off_the_event_loop(self):
         seed_jobs(self.media.repo, {"published": 120, "queued": 17})
@@ -231,3 +234,27 @@ class MediaOverviewViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(view["configured"])
         self.assertEqual(view["jobs"], [])
         read.assert_not_called()
+
+    async def test_view_returns_capacity_without_waiting_for_directory_scan(self):
+        entered, release = threading.Event(), threading.Event()
+        from services.platform.media.storage_scan import scan_files
+
+        def delayed_scan(*args):
+            entered.set()
+            release.wait(3)
+            return scan_files(*args)
+
+        with patch(
+            "services.platform.media.storage_breakdown.scan_files", side_effect=delayed_scan
+        ):
+            result = await asyncio.wait_for(self.media.view(), 1)
+            self.assertEqual(
+                result["overview"]["storage"]["volumes"][0]["breakdown"]["state"], "scanning"
+            )
+            self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+            again = await asyncio.wait_for(self.media.view(), 1)
+            self.assertEqual(
+                again["overview"]["storage"]["volumes"][0]["breakdown"]["state"], "scanning"
+            )
+            release.set()
+            await self.media.storage_breakdown.task
