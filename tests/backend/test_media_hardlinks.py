@@ -10,7 +10,7 @@ from unittest.mock import patch
 from test_media_organizer import OrganizerFixture
 from services.platform.contracts import Fault
 from services.platform.media.destination import subdirectory
-from services.platform.media.organizer import FileOrganizer, MARKER
+from services.platform.media.organizer import FileOrganizer, MARKER, library_lock
 from services.platform.media.video_storage import VideoStorage, copy_file
 
 
@@ -199,6 +199,48 @@ class HardlinkStorageTests(OrganizerFixture, unittest.TestCase):
         self.assertEqual(copies.call_count, 0)
         self.assertEqual(self.video(result).stat().st_ino, inode)
         self.assertEqual(result["receipt"]["video_storage"]["mode"], "hardlink")
+
+    def test_interrupted_deterministic_temporaries_recover_without_orphan_copies(self):
+        package = self.package()
+        operation = self.library.prepare(self.target, package, "interrupted-copy")
+        entry = next(f for f in operation["manifest"]["files"] if f["kind"] == "video")
+        source = self.staging / operation["manifest"]["staging_ref"] / entry["path"]
+        with library_lock(self.target["directory"]) as (root, control):
+            storage = VideoStorage(control)
+            pending = storage.source_temporary(entry)
+            # A process killed during a cross-device copy leaves a partial file.
+            pending.write_bytes(b"partial")
+            shared = VideoStorage(control).ensure(source, entry)
+            self.assertEqual(shared.read_bytes(), b"synthetic-video")
+            self.assertFalse(pending.exists())
+            # A completed shared source must also clear this entry's interrupted residue.
+            pending.write_bytes(b"abandoned-copy")
+            VideoStorage(control).ensure(source, entry)
+            self.assertFalse(pending.exists())
+            # Fully copied but not atomically installed bytes are reused, not copied again.
+            shared.unlink()
+            copy_file(source, pending)
+            copied_inode = pending.stat().st_ino
+            with patch(
+                "services.platform.media.video_storage.copy_file", wraps=copy_file
+            ) as copies:
+                shared = VideoStorage(control).ensure(source, entry)
+            self.assertEqual(copies.call_count, 0)
+            self.assertEqual(shared.stat().st_ino, copied_inode)
+            # Install residue stays in the control area and is scoped to this target.
+            incoming = root / "exact-install-target"
+            install_pending = storage.install_temporary(incoming, entry)
+            install_pending.write_bytes(b"interrupted-install")
+            unrelated = control / ".video-unrelated-entry"
+            unrelated.write_bytes(b"not-ours")
+            restarted = VideoStorage(control)
+            restarted.install(source, incoming, entry)
+            self.assertFalse(install_pending.exists())
+            self.assertTrue(incoming.samefile(shared))
+            install_pending.write_bytes(b"already-installed-residue")
+            restarted.install(source, incoming, entry)
+            self.assertFalse(install_pending.exists())
+            self.assertEqual(unrelated.read_bytes(), b"not-ours")
 
     def test_corrupt_pool_is_not_reused_or_modified_in_place(self):
         first = self.publish_in("UP主", "up")

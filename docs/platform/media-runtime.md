@@ -58,6 +58,8 @@ staging_directory 需要同时作为 AssetLibrary 已信任 inbound 根的只读
 
 共享视频职责在 `video_storage.py`，不新增下载账本、数据库schema或公共合同。FileOrganizer在既有库锁内写控制区临时文件，复验长度/SHA256、fsync后原子安装；命中共享源仍复验。控制文件及临时文件没有媒体扩展名，不生成额外NFO或媒体条目。不同字节内容的画质拥有不同摘要，不串用文件；相同字节内容可共用同一inode。损坏的池文件不作为命中，可从已验证源原子换成新inode，不就地修补已发布视频。`previous-*`不自动清理。
 
+池写入临时路径按该视频SHA256/长度确定，成品安装临时路径再绑定精确目标身份；进程强制终止后重试只处理当前条目的保留路径。已完整复制的临时池文件经核验直接恢复安装，不再跨卷复制；不完整残留清理后重建，命中既有共享源时也清理该条目残留。安装临时链接留在控制区，目标已安装的重试仍处理自己的残留，不扫描其它条目或执行全库GC。
+
 直接整理回执新增结构化 `video_storage={mode:"hardlink"|"copy"|"mixed",files:[{path,mode:"hardlink"|"copy"}]}`，由实际文件inode关联观测，复制降级不声称存储去重。网页现有字段保持；目录输入首段 `.tianshu-transfer`（不区分大小写）属于内部控制区，报 `invalid_destination_subdirectory`。
 
 上线后的明确维护入口：

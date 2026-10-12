@@ -1,9 +1,9 @@
 """Verified video bytes shared on a target volume; no download/catalog ledger."""
 
 import errno
+import hashlib
 import os
 import shutil
-import uuid
 from pathlib import Path
 
 from ..contracts import Fault, require
@@ -73,20 +73,42 @@ class VideoStorage:
         # Deliberately no media extension: the control file is not a server item.
         return safe_path(self.directory, entry["sha256"] + "-" + str(entry["size_bytes"]))
 
+    def source_temporary(self, entry):
+        return safe_path(self.directory, ".source-" + self.shared_path(entry).name)
+
+    def install_temporary(self, destination, entry):
+        target = hashlib.sha256(os.path.normcase(str(destination)).encode()).hexdigest()
+        return safe_path(self.control, ".video-" + self.shared_path(entry).name + "-" + target)
+
+    def discard_temporary(self, path):
+        if path.exists():
+            require(path.is_file(), "unsafe_library_path", 409)
+            path.unlink()
+            sync_directory(path.parent)
+
     def ensure(self, source, entry):
         shared = self.shared_path(entry)
+        temporary = self.source_temporary(entry)
         if shared.exists():
             try:
                 verify_video(shared, entry)
+                self.discard_temporary(temporary)
                 return shared
             except Fault as error:
                 if error.code != "source_changed":
                     raise
-        verify_video(source, entry)
-        temporary = safe_path(self.directory, ".source-" + uuid.uuid4().hex)
         try:
-            if not try_link(source, temporary):
-                copy_file(source, temporary)
+            if temporary.exists():
+                try:
+                    verify_video(temporary, entry)
+                except Fault as error:
+                    if error.code != "source_changed":
+                        raise
+                    self.discard_temporary(temporary)
+            if not temporary.exists():
+                verify_video(source, entry)
+                if not try_link(source, temporary):
+                    copy_file(source, temporary)
             verify_video(temporary, entry)
             sync_file(temporary)
             # Replacing a corrupt control file never overwrites its shared inode.
@@ -98,11 +120,14 @@ class VideoStorage:
 
     def install(self, source, destination, entry, *, preserve_copy=False):
         shared = self.ensure(source, entry)
+        temporary = self.install_temporary(destination, entry)
+        # The pool already holds the verified bytes, so recovering an interrupted
+        # install needs only this target's exact reserved path, never a global scan.
+        self.discard_temporary(temporary)
         if destination.exists() and shared.samefile(destination):
             return "hardlink"
         if preserve_copy and shared.stat().st_dev != destination.stat().st_dev:
             return "copy"
-        temporary = safe_path(self.control, ".video-" + uuid.uuid4().hex)
         try:
             if not try_link(shared, temporary):
                 if preserve_copy:
