@@ -1,21 +1,27 @@
 import { defineConfig } from "@playwright/test";
-
 export default defineConfig({
   testDir: "./tests",
   testMatch: "provider-manager.spec.ts",
-  outputDir: "./test-results/providers",
+  workers: 1,
   reporter: "list",
+  outputDir: "./test-results/providers",
   use: {
-    baseURL: "http://127.0.0.1:5188",
+    baseURL: "http://127.0.0.1:4828",
     browserName: "chromium",
     locale: "zh-CN",
-    viewport: { width: 1280, height: 900 },
+    timezoneId: "Asia/Shanghai",
   },
+  projects: [
+    { name: "desktop", use: { viewport: { width: 1440, height: 1000 } } },
+    {
+      name: "mobile",
+      use: { viewport: { width: 390, height: 844 }, isMobile: true },
+    },
+  ],
   webServer: {
-    command:
-      "node node_modules/vite/bin/vite.js --config apps/web/vite.config.ts --host 127.0.0.1 --port 5188",
+    command: `"${process.env.TIANSHU_TEST_PYTHON ?? "python"}" apps/web/tests/retrieval-fixture.py`,
     cwd: "../..",
-    url: "http://127.0.0.1:5188/tests/provider-manager.fixture.html",
+    url: "http://127.0.0.1:4828/api/web/session",
     reuseExistingServer: false,
   },
 });

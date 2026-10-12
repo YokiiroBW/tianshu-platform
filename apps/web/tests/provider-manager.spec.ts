@@ -1,142 +1,148 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
-for (const [preset, label, base] of [
-  ["opencode", "OpenCode Zen", "https://opencode.ai/zen/v1"],
-  ["opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1"],
-]) {
-  test(`${label} preset needs only a key and lists Chat models`, async ({
-    page,
-  }) => {
-    await page.goto("/tests/provider-manager.fixture.html");
-    await page.getByRole("button", { name: "添加供应商" }).click();
-    await page.getByLabel("服务预设").selectOption(preset);
-    await expect(page.getByLabel("名称")).toHaveValue(label);
-    await expect(page.getByLabel("API 基础地址")).toHaveValue(base);
-    await expect(page.getByLabel("模型 ID（可稍后选择）")).toHaveValue(
-      "deepseek-v4.1-flash",
-    );
-    await page.getByLabel("API Key").fill("synthetic-opencode-key");
-    await page.getByRole("button", { name: "保存供应商" }).click();
-    await expect(
-      page.getByRole("heading", { name: label, exact: true }),
-    ).toBeVisible();
-    expect(await page.evaluate(() => window.providerEvents)).toEqual(["save"]);
-    await expect(page.getByRole("button", { name: "设为默认" })).toBeDisabled();
-    await page.getByRole("button", { name: "获取模型" }).click();
-    await expect(
-      page.getByRole("button", { name: "deepseek-v4.1-flash", exact: true }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "gpt-6-luna", exact: true }),
-    ).toHaveCount(0);
-    await expect(
-      page.getByRole("button", { name: "minimax-m3", exact: true }),
-    ).toHaveCount(preset === "opencode" ? 1 : 0);
-    await page.getByRole("button", { name: "编辑" }).click();
-    await page.getByLabel("服务预设").selectOption("custom");
-    await page.getByLabel("模型 ID（可稍后选择）").fill("future-manual-model");
-    await expect(page.getByLabel("模型 ID（可稍后选择）")).toHaveValue(
-      "future-manual-model",
-    );
-  });
-}
-
-test("persisted upstream refusal stays clear after reload", async ({
+test("shared provider models survive reload, route by function and supply retrieval", async ({
   page,
-}) => {
-  await page.goto("/tests/provider-manager.fixture.html?rejected=1");
+}, info) => {
+  await page.goto("/#/settings/2");
+  await page.getByLabel("管理员账号").fill("synthetic-admin");
+  await page
+    .getByLabel("密码", { exact: true })
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByLabel("管理员密码").fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "解锁模型管理" }).click();
+  await page.getByRole("button", { name: "添加供应商", exact: true }).click();
+  const name = `共享中转站-${info.project.name}`;
+  await page.getByLabel("供应商名称").fill(name);
+  await page
+    .getByLabel("API 基础地址", { exact: true })
+    .fill("https://example.invalid/v1");
+  await page.getByLabel("API Key", { exact: true }).fill("synthetic-test-key");
+  await page.getByRole("button", { name: "保存供应商", exact: true }).click();
+  const detail = page.getByRole("region", { name: `${name}供应商详情` });
+  await expect(detail).toContainText("尚未添加模型");
+  await detail.getByRole("button", { name: "获取模型列表" }).click();
+  await detail.getByLabel("fixture-chat", { exact: true }).check();
+  await detail.getByLabel("fixture-writing", { exact: true }).check();
+  await detail
+    .getByRole("button", { name: "添加所选模型（2）", exact: true })
+    .click();
+  await expect(detail.locator(".provider-model-row")).toHaveCount(2);
+  const chat = detail.getByRole("article", {
+    name: "fixture-chat模型",
+    exact: true,
+  });
+  const writing = detail.getByRole("article", {
+    name: "fixture-writing模型",
+    exact: true,
+  });
+  await expect(chat).toContainText("尚未测试");
+  await chat.getByRole("button", { name: "测试连接" }).click();
+  await expect(chat).toContainText("测试通过");
+  await expect(writing).toContainText("尚未测试");
+  await chat.getByRole("button", { name: "设为默认" }).click();
+  await writing.getByRole("button", { name: "测试连接" }).click();
+  await page
+    .getByLabel("日常与日记模型", { exact: true })
+    .selectOption({ label: `${name} / fixture-writing` });
+  await page.getByRole("button", { name: "保存日常与日记模型" }).click();
   await expect(
-    page.locator(".provider-card dd").filter({ hasText: /^服务拒绝请求/ }),
-  ).toBeVisible();
-  await expect(page.getByText(/服务已返回拒绝响应/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "设为默认" })).toBeDisabled();
+    page.getByRole("region", { name: "模型功能分工" }),
+  ).toContainText(`当前：${name} / fixture-writing`);
+  await expect(chat).toContainText("默认对话模型");
   await page.reload();
+  await page
+    .getByRole("navigation", { name: "供应商列表" })
+    .getByRole("button", { name: new RegExp(name) })
+    .click();
+  await expect(chat).toContainText("默认对话模型");
+  await expect(writing).toContainText("测试通过");
+  for (const [kind, model] of [
+    ["embed", "fixture-embed"],
+    ["rerank", "fixture-rerank"],
+  ]) {
+    await detail.getByLabel("添加模型类型").selectOption(kind);
+    await detail.getByLabel("手动填写模型 ID").fill(model);
+    await detail.getByRole("button", { name: "添加模型", exact: true }).click();
+    const row = detail.getByRole("article", {
+      name: `${model}模型`,
+      exact: true,
+    });
+    await row.getByRole("button", { name: "测试连接" }).click();
+    await expect(row).toContainText("测试通过");
+    await expect(row.getByRole("button", { name: "设为默认" })).toHaveCount(0);
+  }
+  await expect(detail.locator(".provider-model-row")).toHaveCount(4);
   await expect(
-    page.locator(".provider-card dd").filter({ hasText: /^服务拒绝请求/ }),
-  ).toBeVisible();
-});
-
-test("synthetic component flow keeps save, enumeration, test and default distinct", async ({
-  page,
-}, testInfo) => {
-  await page.goto("/tests/provider-manager.fixture.html");
-  await expect(
-    page.getByRole("heading", { name: "还没有供应商" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "添加供应商" }).click();
-  await page.getByLabel("服务预设").selectOption("deepseek");
-  await expect(page.getByLabel("API 基础地址")).toHaveValue(
-    "https://api.deepseek.com",
-  );
-  await page.getByLabel("API Key").fill("synthetic-key-never-persisted");
-  await page.getByRole("button", { name: "保存供应商" }).click();
-  await expect(page.getByRole("heading", { name: "DeepSeek" })).toBeVisible();
-  expect(await page.evaluate(() => window.providerEvents)).toEqual(["save"]);
-  await expect(page.getByRole("button", { name: "设为默认" })).toBeDisabled();
-  await page.getByRole("button", { name: "获取模型" }).click();
-  await expect(
-    page.getByText("已读取模型列表；这不代表模型能生成回复。"),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "synthetic-small" }).click();
-  await expect(page.getByLabel("模型 ID（可稍后选择）")).toHaveValue(
-    "synthetic-small",
-  );
-  await expect(page.getByLabel("API Key")).toHaveValue("");
-  await page.getByRole("button", { name: "保存供应商" }).click();
-  await expect(page.getByText("尚未测试")).toBeVisible();
-  await page.getByRole("button", { name: "测试回复" }).click();
-  await expect(
-    page.locator(".provider-card dd").filter({ hasText: /^测试通过/ }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "设为默认" }).click();
-  await expect(page.getByText("默认对话模型", { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => window.providerEvents)).toEqual([
-    "save",
-    "models:1",
-    "save",
-    "test:2",
-    "default:2",
-  ]);
-  await expect(page.getByRole("button", { name: "删除" })).toBeDisabled();
-  await page.screenshot({
-    path: testInfo.outputPath("provider-manager-synthetic.png"),
-    fullPage: true,
-  });
-  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-  await page.setViewportSize({ width: 390, height: 844 });
+    page
+      .getByLabel("主对话模型", { exact: true })
+      .locator("option")
+      .filter({ hasText: "fixture-embed" }),
+  ).toHaveCount(0);
+  await detail.getByRole("button", { name: "编辑连接" }).click();
+  await expect(page.getByLabel("API Key", { exact: true })).toHaveValue("");
+  await page
+    .getByRole("form", { name: "供应商连接设置" })
+    .getByRole("button", { name: "取消", exact: true })
+    .click();
   expect(
     await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
+      () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
-  ).toBe(true);
-  await page.getByRole("button", { name: "编辑" }).click();
-  await expect(
-    page.getByText(/编辑当前默认供应商会使旧测试失效/),
-  ).toBeVisible();
-  await expect(page.getByLabel("API Key")).toHaveValue("");
-  await page.getByRole("button", { name: "保存供应商" }).click();
-  await expect(page.getByText("尚未测试")).toBeVisible();
-  await expect(page.getByRole("button", { name: "设为默认" })).toBeDisabled();
-  expect(await page.evaluate(() => window.providerEvents)).toEqual([
-    "save",
-    "models:1",
-    "save",
-    "test:2",
-    "default:2",
-    "save",
-  ]);
-});
-
-test("synthetic component rejects upstream HTTP while allowing the LAN HTTP page", async ({
-  page,
-}) => {
-  await page.goto("/tests/provider-manager.fixture.html");
-  await expect(page.getByText(/当前使用局域网 HTTP/)).toBeVisible();
-  await page.getByRole("button", { name: "添加供应商" }).click();
-  await page.getByLabel("名称").fill("本地服务");
-  await page.getByLabel("API 基础地址").fill("http://127.0.0.1:8000/v1");
-  await page.getByRole("button", { name: "保存供应商" }).click();
-  await expect(page.getByText(/当前模型供应商接入要求 HTTPS/)).toBeVisible();
-  expect(await page.evaluate(() => window.providerEvents)).toEqual([]);
+  ).toBeTruthy();
+  const accessibility = await new AxeBuilder({ page })
+    .include('[aria-label="供应商与模型"]')
+    .withTags(["wcag2a", "wcag2aa"])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  await page.screenshot({
+    path: info.outputPath("provider-multiple-models.png"),
+    fullPage: true,
+  });
+  await page.getByRole("link", { name: "记忆检索设置" }).click();
+  for (const [label, model] of [
+    ["嵌入", "fixture-embed"],
+    ["重排序", "fixture-rerank"],
+  ]) {
+    await page
+      .getByLabel(`${label}模型选择`)
+      .selectOption({ label: `${name} / ${model}` });
+    await page
+      .getByRole("button", { name: `保存${label}模型`, exact: true })
+      .click();
+    const section = page.getByRole("region", { name: `${label}模型连接` });
+    await expect(section).toContainText(`当前：${name} / ${model}`);
+    await section.getByRole("button", { name: "测试已保存模型" }).click();
+    await expect(page.getByRole("status")).toContainText("测试通过");
+    await expect(section.getByLabel(`${label} API Key`)).toHaveCount(0);
+  }
+  await page.getByLabel("检索模式", { exact: true }).selectOption("hybrid");
+  await page.getByLabel("启用重排序").check();
+  await page.getByRole("button", { name: "保存检索模式", exact: true }).click();
+  await page.reload();
+  await expect(page.getByLabel("检索模式", { exact: true })).toHaveValue(
+    "hybrid",
+  );
+  await expect(page.getByLabel("启用重排序")).toBeChecked();
+  await page.screenshot({
+    path: info.outputPath("retrieval-shared-models.png"),
+    fullPage: true,
+  });
+  await page.goto("/#/settings/2");
+  await page
+    .getByRole("navigation", { name: "供应商列表" })
+    .getByRole("button", { name: new RegExp(name) })
+    .click();
+  await writing.getByRole("button", { name: "停用", exact: true }).click();
+  await expect(chat).toContainText("默认对话模型");
+  await expect(writing).toContainText("已停用");
+  await chat.getByRole("button", { name: "模型设置" }).click();
+  await page.getByLabel("显示名称").fill("日常聊天");
+  await page.getByRole("button", { name: "保存模型设置" }).click();
+  await expect(chat).toContainText("默认对话模型");
+  await writing.getByRole("button", { name: "删除模型", exact: true }).click();
+  await writing.getByRole("button", { name: "确认删除模型" }).click();
+  await expect(writing).toHaveCount(0);
+  await expect(chat).toContainText("测试通过");
 });

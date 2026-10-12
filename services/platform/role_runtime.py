@@ -666,7 +666,9 @@ class RoleRuntime:
                 "providers": [
                     {
                         "id": p["provider_id"],
-                        "name": p["name"],
+                        "name": (p.get("source_name", p["name"]) + " / " + p["name"])
+                        if p.get("source_name", p["name"]) != p["name"]
+                        else p["name"],
                         "model": p["model_id"],
                         "revision": p["revision"],
                         "available": self.p.provider_catalog._selectable(p),
@@ -674,6 +676,7 @@ class RoleRuntime:
                         "model_capabilities": model_capabilities(p),
                     }
                     for p in providers["providers"]
+                    if p.get("kind", "text") == "text"
                 ],
                 "default_available": providers["default"]["configured"],
                 "default_provider_id": providers["default"].get("provider_id"),

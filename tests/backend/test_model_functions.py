@@ -209,3 +209,46 @@ class ModelFunctionsTests(unittest.IsolatedAsyncioTestCase):
         await post("providers/function", self.binding(), 409)
         await post("providers/function", self.binding("unknown"), 400)
         await post("providers/function", self.binding(provider=None, revision=1))
+
+    async def test_same_source_models_route_independently_with_existing_role_override(self):
+        source = self.providers[0]["source_id"]
+        added = self.catalog.sources.add_models(
+            client_id="siblings",
+            source_id=source,
+            expected_revision=1,
+            models=["writer", "role-chat"],
+            kind="text",
+        )["provider_ids"]
+        for identity in added:
+            self.catalog.record_test(
+                client_id="test-" + identity,
+                provider_id=identity,
+                expected_revision=1,
+                outcome="succeeded",
+            )
+        self.catalog.functions.set_binding(
+            client_id="writing-sibling",
+            function_id="writing",
+            provider_id=added[0],
+            expected_revision=1,
+            expected_binding_revision=0,
+        )
+        self.assertEqual("writer", self.selection("writing")["model_id"])
+        self.assertEqual("chat", self.selection()["model_id"])
+        self.platform.role_runtime = SimpleNamespace(
+            get=lambda _: {"provider_id": added[1], "provider_revision": 1}, active=lambda _: True
+        )
+        self.assertEqual("role-chat", self.selection()["model_id"])
+        self.assertEqual("writer", self.selection("writing")["model_id"])
+        self.catalog.sources.save_model(
+            client_id="disable-writer",
+            provider_id=added[0],
+            expected_revision=1,
+            name="writer",
+            model_id="writer",
+            kind="text",
+            enabled=False,
+        )
+        with self.assertRaises(Fault):
+            self.selection("writing")
+        self.assertEqual("role-chat", self.selection()["model_id"])

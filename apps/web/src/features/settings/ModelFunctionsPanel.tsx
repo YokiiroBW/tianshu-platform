@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import type { Provider } from "./ProviderManager";
+import { modelLabel, type Provider } from "./providerTypes";
 import type { ModelFunction } from "./providerApi";
 
 type Props = {
@@ -30,6 +30,8 @@ function FunctionChoice({
   }, [item.revision, item.provider_id]);
   const eligible = providers.filter(
     (provider) =>
+      (provider.kind ?? "text") === "text" &&
+      provider.sourceEnabled !== false &&
       provider.enabled &&
       provider.hasKey &&
       provider.test.state === "passed" &&
@@ -87,13 +89,13 @@ function FunctionChoice({
         )}
         {eligible.map((provider) => (
           <option key={provider.providerId} value={provider.providerId}>
-            {provider.name} · {provider.modelId}
+            {modelLabel(provider)}
           </option>
         ))}
       </select>
       <p className="model-function-effective">
         {item.configured && effective
-          ? `当前：${effective.name} · ${effective.modelId}`
+          ? `当前：${modelLabel(effective)}`
           : item.provider_id
             ? "原模型已变更或不可用，请重新选择。"
             : "尚无可用的默认模型。"}
@@ -124,12 +126,16 @@ export function ModelFunctionsPanel(props: Props) {
       <div>
         <h3>模型功能分工</h3>
         <p className="muted">
-          为不同功能选择模型，也可以共用默认模型。先在下方添加并测试所需模型，再在这里分配。
+          为不同功能选择模型，也可以共用默认模型。先在上方添加并测试所需模型，再在这里分配。
         </p>
         <p className="muted">
           角色单独选择的聊天模型仍优先生效；其他功能未单独指定时沿用角色模型或系统默认。
         </p>
       </div>
+      <p className="muted">
+        嵌入与重排序可在 <a href="#/settings/10">记忆检索设置</a>{" "}
+        选择同一供应商下的专用模型。
+      </p>
       <div className="model-functions-grid">
         {props.functions.map((item) => (
           <FunctionChoice

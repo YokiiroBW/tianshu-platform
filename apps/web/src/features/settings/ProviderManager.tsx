@@ -1,268 +1,131 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StatusRail } from "../../components/StatusRail";
+import { compatibleModels } from "./providerPresets";
+import { SourceEditor, ModelEditor } from "./ProviderEditors";
 import {
-  compatibleModels,
-  openCodePreset,
-  providerPresets as presets,
-} from "./providerPresets";
+  modelKindNames,
+  type Provider,
+  type ProviderSource,
+  type ProviderActions,
+  type ModelKind,
+} from "./providerTypes";
 
-/** Public, redacted fields only. The secret is never part of a provider view. */
-export type Provider = {
-  providerId: string;
-  name: string;
-  protocol: "openai-chat-completions";
-  baseUrl: string;
-  modelId: string;
-  enabled: boolean;
-  revision: number;
-  hasKey: boolean;
-  isDefault: boolean;
-  test: {
-    state: "passed" | "failed" | "unknown" | "untested";
-    code: string | null;
-    revision: number | null;
-    at: string | null;
-  };
-};
-
-export type ProviderDraft = {
-  name: string;
-  protocol: "openai-chat-completions";
-  baseUrl: string;
-  modelId: string;
-  apiKey: string;
-};
-
-export type ProviderActions = {
-  save: (
-    draft: ProviderDraft,
-    original: Provider | null,
-    signal: AbortSignal,
-  ) => Promise<void>;
-  listModels: (provider: Provider, signal: AbortSignal) => Promise<string[]>;
-  test: (provider: Provider, signal: AbortSignal) => Promise<void>;
-  setDefault: (provider: Provider, signal: AbortSignal) => Promise<void>;
-  setEnabled: (
-    provider: Provider,
-    enabled: boolean,
-    signal: AbortSignal,
-  ) => Promise<void>;
-  clearKey: (provider: Provider, signal: AbortSignal) => Promise<void>;
-  remove: (provider: Provider, signal: AbortSignal) => Promise<void>;
-};
-
-const empty: ProviderDraft = {
-  name: "",
-  protocol: "openai-chat-completions",
-  baseUrl: "",
-  modelId: "",
-  apiKey: "",
-};
-
-function stamp(value: string | null) {
-  if (!value) return "尚无记录";
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime())
-    ? "时间未知"
-    : parsed.toLocaleString("zh-CN", { hour12: false });
-}
-
-function tested(provider: Provider) {
-  return (
-    provider.test.state === "passed" &&
-    provider.test.revision === provider.revision
-  );
-}
-
-function testLabel(provider: Provider) {
-  if (tested(provider)) return "测试通过";
-  if (
-    provider.test.revision === provider.revision &&
-    provider.test.code === "upstream_rejected"
-  )
-    return "服务拒绝请求";
-  if (
-    provider.test.state === "unknown" &&
-    provider.test.revision === provider.revision
-  )
-    return "结果未知";
-  if (
-    provider.test.state === "failed" &&
-    provider.test.revision === provider.revision
-  )
-    return "测试失败";
-  return "尚未测试";
-}
-
-const testHelp: Record<string, string> = {
-  authentication_failed: "请检查 API Key，然后保存并重新测试。",
-  endpoint_failed: "请检查 API 基础地址和兼容协议。",
-  model_not_found: "请检查模型 ID，或重新读取列表。",
-  timed_out: "测试超时，结果可能未知；请检查服务状态后再决定是否手动重试。",
-  connection_failed: "请检查模型服务是否可连接。",
-  upstream_rejected:
-    "服务已返回拒绝响应。请检查账号权限和模型支持范围；OpenCode 接入会话标识由天枢自动提供。",
-  cancelled: "已取消等待；如果服务已收到请求，仍可能继续执行。",
-  unknown:
-    "本次测试结果未知，可能已调用模型；请人工核对后台状态，避免重复计费。页面不会自动重试。",
-};
-
-/** The UI is independent of HTTP paths until the platform contract is published. */
 export function ProviderManager({
   providers,
+  sources,
   editable,
   actions,
   onError,
 }: {
   providers: Provider[];
+  sources: ProviderSource[];
   editable: boolean;
   actions: ProviderActions;
   onError: (cause: unknown) => void;
 }) {
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [formOpen, setFormOpen] = useState(false);
-  const [draft, setDraft] = useState<ProviderDraft>(empty);
-  const [preset, setPreset] = useState<string>("custom");
-  const [models, setModels] = useState<{
-    providerId: string;
+  const [selected, setSelected] = useState("");
+  const source = sources.find((s) => s.sourceId === selected) ?? sources[0];
+  const [editor, setEditor] = useState<"new" | "edit" | null>(null);
+  const [modelEditor, setModelEditor] = useState("");
+  const [directory, setDirectory] = useState<{
+    sourceId: string;
+    revision: number;
     items: string[];
   } | null>(null);
-  const [confirmId, setConfirmId] = useState<string | null>(null);
-  const [operation, setOperation] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
+  const [search, setSearch] = useState("");
+  const [manual, setManual] = useState("");
+  const [kind, setKind] = useState<ModelKind>("text");
+  const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  const [formError, setFormError] = useState("");
+  const [confirm, setConfirm] = useState("");
   const active = useRef<AbortController | null>(null);
-  const inFlight = useRef(false);
-  const keyInput = useRef<HTMLInputElement>(null);
-  const original =
-    providers.find((item) => item.providerId === editingId) ?? null;
-
   useEffect(() => () => active.current?.abort(), []);
-
-  function begin(provider: Provider | null) {
-    active.current?.abort();
-    setEditingId(provider?.providerId ?? null);
-    setDraft(
-      provider
-        ? {
-            name: provider.name,
-            protocol: provider.protocol,
-            baseUrl: provider.baseUrl,
-            modelId: provider.modelId,
-            apiKey: "",
-          }
-        : empty,
-    );
-    setPreset(
-      provider ? (openCodePreset(provider.baseUrl) ?? "custom") : "custom",
-    );
-    setModels(null);
-    setConfirmId(null);
-    setMessage("");
-    setFormError("");
-    setFormOpen(true);
-  }
+  useEffect(() => {
+    setDirectory(null);
+    setPicked([]);
+    setConfirm("");
+    setModelEditor("");
+    setSearch("");
+    setManual("");
+  }, [source?.sourceId, source?.revision]);
+  const models = providers.filter((p) => p.sourceId === source?.sourceId);
+  const listed =
+    directory &&
+    source &&
+    directory.sourceId === source.sourceId &&
+    directory?.revision === source?.revision
+      ? directory.items
+      : [];
+  const available = (
+    kind === "text" ? compatibleModels(source?.baseUrl ?? "", listed) : listed
+  ).filter(
+    (id) =>
+      !models.some((m) => m.modelId === id && (m.kind ?? "text") === kind) &&
+      id.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+  );
+  const shown = models.filter((m) =>
+    `${m.name} ${m.modelId}`
+      .toLocaleLowerCase()
+      .includes(search.toLocaleLowerCase()),
+  );
 
   async function run(
-    name: string,
     task: (signal: AbortSignal) => Promise<void>,
     success: string,
   ) {
-    if (inFlight.current) return false;
-    inFlight.current = true;
+    if (active.current) return;
     const controller = new AbortController();
     active.current = controller;
-    setOperation(name);
+    setBusy(true);
     setMessage("");
     try {
       await task(controller.signal);
-      if (!controller.signal.aborted) setMessage(success);
-      return !controller.signal.aborted;
+      if (!controller.signal.aborted) {
+        setMessage(success);
+        setConfirm("");
+      }
     } catch (cause) {
       if (!controller.signal.aborted) onError(cause);
-      return false;
     } finally {
-      if (active.current === controller) inFlight.current = false;
-      if (!controller.signal.aborted) setOperation("");
+      if (!controller.signal.aborted) setBusy(false);
+      if (active.current === controller) active.current = null;
     }
   }
-
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const submitted = {
-      ...draft,
-      name: draft.name.trim(),
-      baseUrl: draft.baseUrl.trim(),
-      modelId: draft.modelId.trim(),
-    };
-    if (!submitted.name || !submitted.baseUrl) return;
-    try {
-      const url = new URL(submitted.baseUrl);
-      if (url.protocol !== "https:") throw new Error();
-      if (url.username || url.password || url.search || url.hash) {
-        setFormError("API 基础地址不能包含账号、密码、查询参数或片段。");
-        return;
+  function add(ids: string[]) {
+    if (!source || !ids.length) return;
+    void run(async (signal) => {
+      await actions.addModels(source, ids, kind, signal);
+      if (!signal.aborted) {
+        setPicked([]);
+        setManual("");
       }
-    } catch {
-      setFormError(
-        "当前模型供应商接入要求 HTTPS 服务地址；天枢网页仍可从局域网 HTTP 入口打开。",
-      );
-      return;
-    }
-    setFormError("");
-    const ok = await run(
-      "save",
-      (signal) => actions.save(submitted, original, signal),
-      "已保存。保存不会发送测试请求；请单独测试回复。",
-    );
-    if (ok) {
-      if (keyInput.current) keyInput.current.value = "";
-      setDraft(empty);
-      setFormOpen(false);
-      setEditingId(null);
-      setModels(null);
-    }
-  }
-
-  async function enumerate(provider: Provider) {
-    await run(
-      "models",
-      async (signal) => {
-        const items = await actions.listModels(provider, signal);
-        if (!signal.aborted)
-          setModels({
-            providerId: provider.providerId,
-            items: compatibleModels(provider.baseUrl, items),
-          });
-      },
-      "已读取模型列表；这不代表模型能生成回复。请选择模型后保存，再单独测试。",
-    );
+    }, `已添加 ${ids.length} 个模型，可以分别测试并分配给功能。`);
   }
 
   return (
-    <div className="providers">
+    <section className="providers" aria-label="供应商与模型">
       <div className="section-heading">
         <div>
           <h3>模型供应商</h3>
           <p className="muted">
-            添加服务、选择模型，再发送一条短测试，最后设为默认对话模型。
+            一份连接，多个模型。添加后在下方的功能分工中选择。
           </p>
         </div>
-        {editable && (
-          <button
-            className="button primary"
-            type="button"
-            onClick={() => begin(null)}
-            disabled={!!operation}
-          >
-            添加供应商
-          </button>
-        )}
+        <button
+          className="button primary"
+          disabled={!editable || busy}
+          onClick={() => {
+            setEditor("new");
+            setMessage("");
+          }}
+        >
+          添加供应商
+        </button>
       </div>
       {location.protocol === "http:" && (
-        <p className="models-transport">
-          当前使用局域网
-          HTTP：网页与平台之间的传输未加密。请只在可信网络中输入密钥。
+        <p className="models-transport muted">
+          当前使用局域网 HTTP：请在可信网络中输入密钥。
         </p>
       )}
       {message && (
@@ -270,421 +133,480 @@ export function ProviderManager({
           {message}
         </p>
       )}
-      {operation && (
-        <div className="models-wait" role="status">
-          正在处理
-          {operation === "test"
-            ? "短回复测试"
-            : operation === "models"
-              ? "模型列表"
-              : "请求"}
-          …{" "}
-          <button
-            className="button"
-            type="button"
-            onClick={() => {
-              active.current?.abort();
-              inFlight.current = false;
-              setOperation("");
-              setMessage(
-                "已取消等待；如果请求已到达服务端，结果可能仍在执行。不会自动重试，请重新读取状态。",
+      {editor && (
+        <SourceEditor
+          key={editor === "new" ? "new" : source?.sourceId}
+          source={editor === "edit" ? (source ?? null) : null}
+          busy={busy}
+          cancel={() => setEditor(null)}
+          save={(draft) =>
+            void run(async (signal) => {
+              const id = await actions.saveSource(
+                draft,
+                editor === "edit" ? (source ?? null) : null,
+                signal,
               );
-            }}
+              if (!signal.aborted) {
+                setSelected(id);
+                setEditor(null);
+              }
+            }, "供应商已保存，请添加需要的模型。")
+          }
+        />
+      )}
+      {!sources.length && !editor && (
+        <p className="muted">
+          尚未添加供应商。先保存地址与 Key，再获取或手动添加模型。
+        </p>
+      )}
+      {source && (
+        <div className="provider-workspace">
+          <nav className="provider-source-list" aria-label="供应商列表">
+            {sources.map((item) => (
+              <button
+                key={item.sourceId}
+                className={`provider-source-choice ${source.sourceId === item.sourceId ? "selected" : ""}`}
+                aria-pressed={source.sourceId === item.sourceId}
+                disabled={busy}
+                onClick={() => {
+                  setSelected(item.sourceId);
+                  setEditor(null);
+                  setMessage("");
+                }}
+              >
+                <strong>{item.name}</strong>
+                <small>{item.baseUrl}</small>
+                <span>
+                  {providers.filter((p) => p.sourceId === item.sourceId).length}{" "}
+                  个模型 · {item.enabled ? "已启用" : "已停用"}
+                </span>
+              </button>
+            ))}
+          </nav>
+          <section
+            className="provider-source-detail"
+            aria-label={`${source.name}供应商详情`}
           >
-            取消等待
-          </button>
-        </div>
-      )}
-      {!providers.length && (
-        <div className="models-empty">
-          <h3>还没有供应商</h3>
-          <p>
-            添加一个使用 HTTPS 的 OpenAI Chat Completions
-            兼容服务，即可开始配置对话模型。可使用预设地址，也可输入自己的服务地址。
-          </p>
-          {!editable && <p>验证管理员密码后可以添加。</p>}
-        </div>
-      )}
-      <div className="providers-grid">
-        {providers.map((provider) => (
-          <article className="provider-card" key={provider.providerId}>
-            <div className="models-target-head">
-              <h3>{provider.name}</h3>
-              <div className="provider-badges">
-                {provider.isDefault && (
-                  <StatusRail tone="blue" label="默认对话模型" />
-                )}
-                <StatusRail
-                  tone={provider.enabled ? "blue" : "gray"}
-                  label={provider.enabled ? "已启用" : "已停用"}
-                />
+            <div className="section-heading">
+              <div>
+                <h3>{source.name}</h3>
+                <p className="muted">{source.baseUrl}</p>
               </div>
+              <StatusRail
+                tone={source.enabled ? "blue" : "gray"}
+                label={source.enabled ? "已启用" : "已停用"}
+              />
             </div>
-            <p className="muted">Chat Completions 兼容 · {provider.baseUrl}</p>
-            {openCodePreset(provider.baseUrl) && (
-              <p className="muted">
-                仅支持 Chat Completions
-                模型；天枢自动提供客户端标识与稳定会话参数。
-              </p>
-            )}
-            <dl className="models-facts">
-              <div>
-                <dt>模型</dt>
-                <dd>{provider.modelId || "尚未选择"}</dd>
-              </div>
-              <div>
-                <dt>密钥</dt>
-                <dd>{provider.hasKey ? "已保存，不会回显" : "未设置"}</dd>
-              </div>
-              <div>
-                <dt>短回复测试</dt>
-                <dd>
-                  {testLabel(provider)}
-                  {provider.test.revision === provider.revision &&
-                  provider.test.at
-                    ? ` · ${stamp(provider.test.at)}`
-                    : ""}
-                </dd>
-              </div>
-            </dl>
-            {editable && (
-              <div className="models-actions">
-                <button
-                  className="button"
-                  type="button"
-                  disabled={!!operation}
-                  onClick={() => begin(provider)}
-                >
-                  编辑
-                </button>
-                <button
-                  className="button"
-                  type="button"
-                  disabled={!!operation}
-                  onClick={() => void enumerate(provider)}
-                >
-                  获取模型
-                </button>
-                <button
-                  className="button"
-                  type="button"
-                  disabled={
-                    !!operation || !provider.enabled || !provider.modelId
-                  }
-                  onClick={() =>
-                    void run(
-                      "test",
-                      (signal) => actions.test(provider, signal),
-                      "短回复测试已提交；以重新读取的测试结果为准。",
-                    )
-                  }
-                >
-                  测试回复
-                </button>
-                <button
-                  className="button primary"
-                  type="button"
-                  disabled={
-                    !!operation ||
-                    !provider.enabled ||
-                    !tested(provider) ||
-                    provider.isDefault
-                  }
-                  onClick={() =>
-                    void run(
-                      "default",
-                      (signal) => actions.setDefault(provider, signal),
-                      "已保存默认对话模型。请到对话页确认通道状态。",
-                    )
-                  }
-                >
-                  设为默认
-                </button>
-                <button
-                  className="button"
-                  type="button"
-                  disabled={!!operation || provider.isDefault}
-                  onClick={() =>
-                    void run(
-                      "enabled",
-                      (signal) =>
-                        actions.setEnabled(provider, !provider.enabled, signal),
-                      provider.enabled
-                        ? "已停用供应商。"
-                        : "已启用供应商；请确认测试状态。",
-                    )
-                  }
-                >
-                  {provider.enabled ? "停用" : "启用"}
-                </button>
-                <button
-                  className="button"
-                  type="button"
-                  disabled={
-                    !!operation || !provider.hasKey || provider.isDefault
-                  }
-                  onClick={() =>
-                    void run(
-                      "key",
-                      (signal) => actions.clearKey(provider, signal),
-                      "已清除密钥；原测试状态不再有效。",
-                    )
-                  }
-                >
-                  清除密钥
-                </button>
-                <button
-                  className="button"
-                  type="button"
-                  disabled={!!operation || provider.isDefault}
-                  onClick={() => setConfirmId(provider.providerId)}
-                >
-                  删除
-                </button>
-              </div>
-            )}
-            {provider.isDefault && (
-              <p className="muted">
-                如需停用、清除密钥或删除，请先选择其他默认模型。
-              </p>
-            )}
-            {!tested(provider) && provider.enabled && (
-              <p className="muted">设为默认前，请先确认短回复测试通过。</p>
-            )}
-            {provider.test.revision === provider.revision &&
-              provider.test.code &&
-              testHelp[provider.test.code] && (
-                <p className="models-error">{testHelp[provider.test.code]}</p>
-              )}
-            <p className="muted models-test-disclosure">
-              短回复测试会向此服务发送一条简短测试内容，可能产生费用；不会发送聊天历史。模型列表读取不等于测试通过。
+            <p className="muted">
+              密钥：{source.hasKey ? "已保存，不会回显" : "尚未配置"}
             </p>
-            {models?.providerId === provider.providerId && (
-              <div className="provider-models">
-                <strong>可选模型</strong>
-                {models.items.length ? (
-                  <ul>
-                    {models.items.map((id) => (
-                      <li key={id}>
+            <div className="models-actions">
+              <button
+                className="button"
+                disabled={busy || !editable}
+                onClick={() => setEditor("edit")}
+              >
+                编辑连接
+              </button>
+              <button
+                className="button"
+                disabled={busy || !editable}
+                onClick={() =>
+                  void run(
+                    async (signal) => {
+                      await actions.saveSource(
+                        {
+                          name: source.name,
+                          baseUrl: source.baseUrl,
+                          apiKey: "",
+                          enabled: !source.enabled,
+                        },
+                        source,
+                        signal,
+                      );
+                    },
+                    source.enabled
+                      ? "供应商已停用。"
+                      : "供应商已启用，请测试需要的模型。",
+                  )
+                }
+              >
+                {source.enabled ? "停用供应商" : "启用供应商"}
+              </button>
+              <button
+                className="button"
+                disabled={busy || !editable || !source.hasKey}
+                onClick={() => setConfirm("key")}
+              >
+                清除密钥
+              </button>
+              <button
+                className="button"
+                disabled={busy || !editable}
+                onClick={() => setConfirm("source")}
+              >
+                删除供应商
+              </button>
+            </div>
+            {(confirm === "source" || confirm === "key") && (
+              <div className="provider-confirm">
+                <p>
+                  {confirm === "source"
+                    ? `删除“${source.name}”及其 ${models.length} 个模型？`
+                    : "清除共用密钥后，该供应商的所有模型将不可用。"}{" "}
+                  已选择这些模型的功能需要重新分配。
+                </p>
+                <button
+                  className="button"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(
+                      (signal) =>
+                        confirm === "source"
+                          ? actions.removeSource(source, signal)
+                          : actions.clearKey(source, signal),
+                      "已完成。",
+                    )
+                  }
+                >
+                  确认{confirm === "source" ? "删除供应商" : "清除密钥"}
+                </button>
+                <button
+                  className="button"
+                  disabled={busy}
+                  onClick={() => setConfirm("")}
+                >
+                  取消
+                </button>
+              </div>
+            )}
+            <div className="models-toolbar">
+              <label>
+                搜索模型
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="名称或模型 ID"
+                />
+              </label>
+              <button
+                className="button"
+                disabled={busy || !source.hasKey || !source.enabled}
+                onClick={() =>
+                  void run(async (signal) => {
+                    const items = await actions.listModels(source, signal);
+                    if (!signal.aborted)
+                      setDirectory({
+                        sourceId: source.sourceId,
+                        revision: source.revision,
+                        items: [...new Set(items)],
+                      });
+                  }, "模型列表已获取。勾选后可一次添加多个；获取列表不等于测试通过。")
+                }
+              >
+                获取模型列表
+              </button>
+            </div>
+            <h4>已添加的模型（{models.length}）</h4>
+            <div className="provider-model-rows">
+              {shown.map((model) => {
+                const current = model.test.revision === model.revision;
+                const passed = current && model.test.state === "passed";
+                return (
+                  <article
+                    className="provider-model-row"
+                    key={model.providerId}
+                    aria-label={`${model.modelId}模型`}
+                  >
+                    <div className="provider-model-heading">
+                      <div>
+                        <strong>{model.name}</strong>
+                        <p className="muted">
+                          {model.modelId} ·{" "}
+                          {modelKindNames[model.kind ?? "text"]}
+                        </p>
+                        <p className="muted">
+                          {passed
+                            ? "测试通过"
+                            : current && model.test.code === "upstream_rejected"
+                              ? "服务拒绝请求"
+                              : current && model.test.state === "failed"
+                                ? "测试失败"
+                                : current && model.test.state === "unknown"
+                                  ? "测试结果未知"
+                                  : "尚未测试"}
+                          {model.test.at && current
+                            ? ` · ${new Date(model.test.at).toLocaleString("zh-CN", { hour12: false })}`
+                            : ""}
+                        </p>
+                      </div>
+                      <div className="provider-badges">
+                        {model.isDefault && (
+                          <StatusRail tone="blue" label="默认对话模型" />
+                        )}
+                        <StatusRail
+                          tone={
+                            model.enabled && source.enabled ? "blue" : "gray"
+                          }
+                          label={
+                            !source.enabled
+                              ? "供应商已停用"
+                              : model.enabled
+                                ? "已启用"
+                                : "已停用"
+                          }
+                        />
+                      </div>
+                    </div>
+                    <p className="muted">
+                      {current && model.test.code
+                        ? ((
+                            {
+                              authentication_failed: "请检查供应商 API Key。",
+                              model_not_found: "请检查模型 ID。",
+                              endpoint_failed: "请检查供应商地址与模型类型。",
+                              upstream_rejected:
+                                "服务已返回拒绝响应，请检查账号权限和模型支持范围。",
+                              connection_failed: "连接失败，请检查服务状态。",
+                              timed_out: "请求超时，结果可能未知。",
+                            } as Record<string, string>
+                          )[model.test.code] ??
+                          "测试未成功，请检查连接和模型类型。")
+                        : ""}
+                    </p>
+                    <div className="models-actions">
+                      <button
+                        className="button"
+                        disabled={
+                          busy ||
+                          !source.enabled ||
+                          !source.hasKey ||
+                          !model.enabled
+                        }
+                        onClick={() =>
+                          void run(
+                            (signal) => actions.test(model, signal),
+                            `${model.modelId} 测试通过。`,
+                          )
+                        }
+                      >
+                        测试连接
+                      </button>
+                      <button
+                        className="button"
+                        disabled={busy || !editable}
+                        onClick={() =>
+                          setModelEditor(
+                            modelEditor === model.providerId
+                              ? ""
+                              : model.providerId,
+                          )
+                        }
+                      >
+                        模型设置
+                      </button>
+                      <button
+                        className="button"
+                        disabled={busy || !editable}
+                        onClick={() =>
+                          void run(
+                            (signal) =>
+                              actions.setEnabled(model, !model.enabled, signal),
+                            model.enabled
+                              ? "模型已停用。"
+                              : "模型已启用，请重新测试。",
+                          )
+                        }
+                      >
+                        {model.enabled ? "停用" : "启用"}
+                      </button>
+                      {(model.kind ?? "text") === "text" && (
                         <button
                           className="button"
-                          type="button"
-                          disabled={!!operation}
-                          onClick={() => {
-                            begin(provider);
-                            setDraft((current) => ({
-                              ...current,
-                              modelId: id,
-                            }));
-                          }}
+                          disabled={
+                            busy ||
+                            model.isDefault ||
+                            !passed ||
+                            !model.enabled ||
+                            !source.enabled ||
+                            !source.hasKey
+                          }
+                          onClick={() =>
+                            void run(
+                              (signal) => actions.setDefault(model, signal),
+                              "已设为默认对话模型。",
+                            )
+                          }
                         >
-                          {id}
+                          设为默认
+                        </button>
+                      )}
+                      <button
+                        className="button"
+                        disabled={busy || !editable}
+                        onClick={() => setConfirm(model.providerId)}
+                      >
+                        删除模型
+                      </button>
+                    </div>
+                    {confirm === model.providerId && (
+                      <div className="provider-confirm">
+                        <p>
+                          删除此模型后，使用它的功能需要重新选择；供应商连接和其他模型会保留。
+                        </p>
+                        <button
+                          className="button"
+                          disabled={busy}
+                          onClick={() =>
+                            void run(
+                              (signal) => actions.remove(model, signal),
+                              "模型已删除。",
+                            )
+                          }
+                        >
+                          确认删除模型
+                        </button>
+                        <button
+                          className="button"
+                          disabled={busy}
+                          onClick={() => setConfirm("")}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    )}
+                    {modelEditor === model.providerId && (
+                      <ModelEditor
+                        model={model}
+                        busy={busy}
+                        cancel={() => setModelEditor("")}
+                        save={(draft) =>
+                          void run(async (signal) => {
+                            await actions.saveModel(model, draft, signal);
+                            if (!signal.aborted) setModelEditor("");
+                          }, "模型设置已保存。")
+                        }
+                      />
+                    )}
+                  </article>
+                );
+              })}
+              {!shown.length && (
+                <p className="muted">
+                  {models.length
+                    ? "没有匹配的模型。"
+                    : "尚未添加模型。可从列表多选，也可手动填写模型 ID。"}
+                </p>
+              )}
+            </div>
+            <fieldset
+              className="provider-model-add"
+              disabled={busy || !editable}
+            >
+              <legend>添加模型</legend>
+              <label>
+                添加模型类型
+                <select
+                  value={kind}
+                  onChange={(e) => {
+                    setKind(e.target.value as ModelKind);
+                    setPicked([]);
+                  }}
+                >
+                  {Object.entries(modelKindNames).map(([id, name]) => (
+                    <option key={id} value={id}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="muted">
+                类型决定可分配的功能与测试接口。目录不会自动验证模型能力。
+              </p>
+              {directory && (
+                <>
+                  <div className="models-actions">
+                    <h4>可用模型（{available.length}）</h4>
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={!available.length}
+                      onClick={() => setPicked(available.slice(0, 256))}
+                    >
+                      选择当前结果
+                    </button>
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={!picked.length}
+                      onClick={() => add(picked)}
+                    >
+                      添加所选模型（{picked.length}）
+                    </button>
+                  </div>
+                  <ul className="provider-available-models">
+                    {available.map((id) => (
+                      <li key={id}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={picked.includes(id)}
+                            onChange={(e) =>
+                              setPicked((items) =>
+                                e.target.checked
+                                  ? [...items, id].slice(0, 256)
+                                  : items.filter((i) => i !== id),
+                              )
+                            }
+                          />
+                          <span>{id}</span>
+                        </label>
+                        <button
+                          type="button"
+                          className="button"
+                          aria-label={`添加 ${id}`}
+                          onClick={() => add([id])}
+                        >
+                          ＋
                         </button>
                       </li>
                     ))}
                   </ul>
-                ) : (
-                  <p>服务未返回模型。仍可编辑并手动填写模型 ID。</p>
-                )}
-              </div>
-            )}
-            {confirmId === provider.providerId && (
-              <div className="provider-confirm">
-                <p>确定删除“{provider.name}”？此操作会移除保存的配置和密钥。</p>
-                <button
-                  className="button"
-                  type="button"
-                  disabled={!!operation}
-                  onClick={() => setConfirmId(null)}
-                >
-                  保留
-                </button>
-                <button
-                  className="button"
-                  type="button"
-                  disabled={!!operation}
-                  onClick={() =>
-                    void run(
-                      "delete",
-                      (signal) => actions.remove(provider, signal),
-                      "供应商已删除。",
-                    ).then((ok) => {
-                      if (ok) setConfirmId(null);
-                    })
-                  }
-                >
-                  确认删除
-                </button>
-              </div>
-            )}
-          </article>
-        ))}
-      </div>
-      {formOpen && editable && (
-        <div className="provider-editor">
-          <div className="models-target-head">
-            <h3>{original ? `编辑 ${original.name}` : "添加供应商"}</h3>
-            <button
-              className="button"
-              type="button"
-              disabled={!!operation}
-              onClick={() => {
-                setFormOpen(false);
-                setDraft(empty);
-                setEditingId(null);
-              }}
-            >
-              关闭
-            </button>
-          </div>
-          <p className="muted">
-            目前支持使用 HTTPS 的 OpenAI Chat Completions 兼容服务。OpenCode
-            预设已填写地址与默认 DeepSeek 模型，只需输入 API
-            Key；可保存后获取支持的模型列表。
-          </p>
-          {original?.isDefault && (
-            <p className="models-transport">
-              编辑当前默认供应商会使旧测试失效，并需要重新测试、重新设为默认。期间对话可能不可用。
-            </p>
-          )}
-          {formError && (
-            <p className="models-error" role="alert">
-              {formError}
-            </p>
-          )}
-          <form onSubmit={(event) => void save(event)}>
-            <label>
-              服务预设
-              <select
-                value={preset}
-                disabled={!!operation}
-                onChange={(event) => {
-                  const item =
-                    presets.find((entry) => entry.id === event.target.value) ??
-                    presets[0];
-                  setPreset(item.id);
-                  if (item.id !== "custom")
-                    setDraft((current) => ({
-                      ...current,
-                      name: item.name,
-                      baseUrl: item.baseUrl,
-                      modelId: item.modelId || current.modelId,
-                    }));
+                </>
+              )}
+              <form
+                className="models-toolbar"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  add([manual.trim()]);
                 }}
               >
-                {presets.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              名称
-              <input
-                required
-                maxLength={100}
-                value={draft.name}
-                disabled={!!operation}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    name: event.target.value,
-                  }))
-                }
-                placeholder="例如：我的本地模型"
-              />
-            </label>
-            <label>
-              API 基础地址
-              <input
-                required
-                type="url"
-                value={draft.baseUrl}
-                disabled={!!operation}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    baseUrl: event.target.value,
-                  }))
-                }
-                placeholder="https://api.example.com/v1"
-              />
-            </label>
-            <label>
-              模型 ID（可稍后选择）
-              <input
-                maxLength={200}
-                value={draft.modelId}
-                disabled={!!operation}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    modelId: event.target.value,
-                  }))
-                }
-                placeholder="从列表选择，或手动输入"
-              />
-            </label>
-            <label>
-              API Key
-              <input
-                ref={keyInput}
-                type="password"
-                autoComplete="new-password"
-                value={draft.apiKey}
-                disabled={!!operation}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    apiKey: event.target.value,
-                  }))
-                }
-                placeholder={
-                  original?.hasKey ? "留空表示保留已保存密钥" : "按服务要求填写"
-                }
-              />
-            </label>
-            {original?.hasKey && (
-              <p className="muted">
-                已保存密钥不会回显；留空表示保留。需要移除时请使用卡片上的“清除密钥”。
-              </p>
-            )}
-            <p className="muted">
-              保存只保存配置，不会调用模型或产生测试费用。模型列表和短回复测试需分别执行。
+                <label>
+                  手动填写模型 ID
+                  <input
+                    required
+                    maxLength={256}
+                    value={manual}
+                    onChange={(e) => setManual(e.target.value)}
+                    placeholder="填写供应商提供的准确模型 ID"
+                  />
+                </label>
+                <button
+                  className="button"
+                  type="submit"
+                  disabled={!manual.trim()}
+                >
+                  添加模型
+                </button>
+              </form>
+            </fieldset>
+            <p className="models-test-disclosure muted">
+              测试使用短样本，可能产生费用；不会发送聊天历史。每个模型分别测试，不会自动批量调用。
             </p>
-            <div className="models-actions">
-              <button
-                className="button primary"
-                type="submit"
-                disabled={!!operation}
-              >
-                保存供应商
-              </button>
-              <button
-                className="button"
-                type="button"
-                disabled={!!operation}
-                onClick={() => {
-                  setFormOpen(false);
-                  setDraft(empty);
-                  setEditingId(null);
-                }}
-              >
-                取消
-              </button>
-            </div>
-          </form>
+          </section>
         </div>
       )}
-      {providers.some(
-        (provider) =>
-          provider.isDefault && provider.enabled && tested(provider),
-      ) && (
-        <a className="button primary provider-start" href="#/companion">
-          开始对话
-        </a>
-      )}
-    </div>
+    </section>
   );
 }

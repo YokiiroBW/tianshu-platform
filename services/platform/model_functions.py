@@ -9,7 +9,7 @@ FUNCTIONS = (
     ("code", "代码", "代码编写、分析与排错", False),
     ("search", "网页搜索", "搜索资料、阅读网页与整理来源", False),
     ("writing", "日常与日记", "角色日常、生活经历与日记生成", True),
-    ("memory", "记忆整理", "记忆提取、摘要与归纳", False),
+    ("memory", "记忆整理", "记忆提取、摘要与归纳", True),
 )
 FUNCTION_IDS = frozenset(item[0] for item in FUNCTIONS)
 

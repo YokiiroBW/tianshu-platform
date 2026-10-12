@@ -14,14 +14,13 @@ import sqlite3
 import time
 import uuid
 from contextlib import closing, contextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
 from .contracts import Fault, canonical, require
 from .model_functions import ModelFunctions
+from .provider_values import PROTOCOL, ProviderExecutionContext, text as _text, normalize_base_url
+from .provider_sources import ProviderSources
 
-PROTOCOL = "openai-chat-completions"
 TEST_CODES = frozenset(
     {
         "succeeded",
@@ -81,59 +80,6 @@ def validate_test_diagnostic(diagnostic):
     return diagnostic
 
 
-@dataclass(frozen=True)
-class ProviderExecutionContext:
-    """Ephemeral private DTO; repr excludes endpoint/model and credential values."""
-
-    provider_id: str
-    revision: int
-    protocol: str
-    base_url: str = field(repr=False)
-    model_id: str = field(repr=False)
-    api_key: str = field(repr=False)
-
-
-def _text(value, maximum):
-    require(isinstance(value, str), "invalid_input", 400)
-    value = value.strip()
-    require(0 < len(value) <= maximum and not any(ord(c) < 32 for c in value), "invalid_input", 400)
-    return value
-
-
-def normalize_base_url(value):
-    """Syntax only. Executor still has to enforce DNS, TLS, target and redirect policy."""
-    value = _text(value, 2048)
-    require(
-        not any(ord(c) <= 32 or ord(c) > 126 for c in value)
-        and "\\" not in value
-        and "%" not in value,
-        "invalid_input",
-        400,
-    )
-    try:
-        url = urlsplit(value)
-        require(
-            url.scheme == "https"
-            and url.hostname
-            and not url.username
-            and not url.password
-            and not url.query
-            and not url.fragment,
-            "invalid_input",
-            400,
-        )
-        port = url.port
-        require(port is None or 0 < port <= 65535, "invalid_input", 400)
-        host = url.hostname.lower()
-        require(not any(part in {".", ".."} for part in url.path.split("/")), "invalid_input", 400)
-        authority = f"[{host}]" if ":" in host else host
-        if port is not None and port != 443:
-            authority += f":{port}"
-        return urlunsplit(("https", authority, url.path.rstrip("/"), "", ""))
-    except ValueError:
-        raise Fault("invalid_input", 400) from None
-
-
 class ProviderCatalog:
     """SQLite serializes writers across processes; encrypted keys commit with public revisions.
 
@@ -174,6 +120,12 @@ class ProviderCatalog:
                 for identity, encrypted in db.execute("SELECT id,secret FROM providers"):
                     if encrypted is not None:
                         cipher.decrypt(encrypted[:12], encrypted[12:], identity.encode())
+                if db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='provider_sources'"
+                ).fetchone():
+                    for identity, encrypted in db.execute("SELECT id,secret FROM provider_sources"):
+                        if encrypted is not None:
+                            cipher.decrypt(encrypted[:12], encrypted[12:], identity.encode())
                 for table in (
                     "receipts",
                     "test_attempts",
@@ -250,6 +202,7 @@ class ProviderCatalog:
             )
             self._key = self.key_file.read_bytes()
             self._cipher = AESGCM(self._key)
+            self.sources = ProviderSources(self)
             with self._transaction() as db:
                 row = db.execute("SELECT seal FROM metadata WHERE id=1").fetchone()
                 require(
@@ -261,7 +214,9 @@ class ProviderCatalog:
                     document = json.loads(row[1])
                     require(
                         document["provider_id"] == row[0]
-                        and document["has_key"] == (row[2] is not None),
+                        and (
+                            "source_id" in document or document["has_key"] == (row[2] is not None)
+                        ),
                         "provider_store_unavailable",
                         503,
                     )
@@ -296,6 +251,7 @@ class ProviderCatalog:
                         "CREATE TABLE model_function_bindings (function_id TEXT PRIMARY KEY, "
                         "provider_id TEXT, provider_revision INTEGER, revision INTEGER NOT NULL)"
                     )
+                self.sources.initialize(db, create=create)
             self.functions = ModelFunctions(self)
         except Fault:
             raise
@@ -357,8 +313,7 @@ class ProviderCatalog:
             )
             return result
 
-    @staticmethod
-    def _row(db, provider_id, expected_revision):
+    def _row(self, db, provider_id, expected_revision):
         require(
             isinstance(provider_id, str)
             and bool(provider_id)
@@ -372,8 +327,9 @@ class ProviderCatalog:
         ).fetchone()
         require(row is not None, "provider_not_found", 404)
         document = json.loads(row[0])
+        require(row[1] is None, "provider_store_unavailable", 503)
         require(document["revision"] == expected_revision, "revision_conflict", 409)
-        return document, row[1]
+        return self.sources.project(db, document)
 
     @staticmethod
     def _clear_default(db, provider_id):
@@ -436,44 +392,25 @@ class ProviderCatalog:
         ]
 
         def action(db):
-            identity = provider_id or "provider-" + uuid.uuid4().hex
-            previous, encrypted = (
-                self._row(db, identity, expected_revision) if provider_id else (None, None)
-            )
-            if api_key:
-                encrypted = self._encrypt(api_key, identity)
-            document = dict(
-                provider_id=identity,
+            return self.sources.save_legacy(
+                db,
                 name=name,
-                protocol=protocol,
                 base_url=base_url,
                 model_id=model_id,
+                protocol=protocol,
                 enabled=enabled,
-                revision=previous["revision"] + 1 if previous else 1,
-                has_key=encrypted is not None,
-                test=None,
+                api_key=api_key,
+                provider_id=provider_id,
+                expected_revision=expected_revision,
             )
-            db.execute(
-                "INSERT INTO providers VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
-                "document=excluded.document, secret=excluded.secret",
-                (identity, canonical(document), encrypted),
-            )
-            # Every changed revision invalidates the selected tested revision conservatively.
-            self._clear_default(db, identity)
-            return document
 
         return self._mutate(client_id, "save", arguments, action)
 
     def clear_key(self, *, client_id, provider_id, expected_revision):
         def action(db):
             document, _ = self._row(db, provider_id, expected_revision)
-            document.update(has_key=False, revision=document["revision"] + 1, test=None)
-            db.execute(
-                "UPDATE providers SET document=?, secret=NULL WHERE id=?",
-                (canonical(document), provider_id),
-            )
-            self._clear_default(db, provider_id)
-            return document
+            self.sources._clear_key(db, document["source_id"], document["source_revision"])
+            return self._row(db, provider_id, expected_revision + 1)[0]
 
         return self._mutate(client_id, "clear_key", [provider_id, expected_revision], action)
 
@@ -498,7 +435,10 @@ class ProviderCatalog:
     def _record_test(self, db, provider_id, expected_revision, outcome):
         document, _ = self._row(db, provider_id, expected_revision)
         require(
-            document["enabled"] and document["has_key"] and document["model_id"],
+            document["enabled"]
+            and document["source_enabled"]
+            and document["has_key"]
+            and document["model_id"],
             "provider_unavailable",
             409,
         )
@@ -507,7 +447,7 @@ class ProviderCatalog:
             "outcome": outcome,
             "tested_at": self.clock(),
         }
-        db.execute("UPDATE providers SET document=? WHERE id=?", (canonical(document), provider_id))
+        self.sources.store_model(db, document)
         if outcome != "succeeded":
             self._clear_default(db, provider_id)
         return document
@@ -530,7 +470,10 @@ class ProviderCatalog:
                 }
             document, _ = self._row(db, provider_id, expected_revision)
             require(
-                document["enabled"] and document["has_key"] and document["model_id"],
+                document["enabled"]
+                and document["source_enabled"]
+                and document["has_key"]
+                and document["model_id"],
                 "provider_unavailable",
                 409,
             )
@@ -621,6 +564,8 @@ class ProviderCatalog:
         test = document["test"]
         return bool(
             document["enabled"]
+            and document.get("source_enabled", True)
+            and document.get("kind", "text") == "text"
             and document["has_key"]
             and test
             and test["revision"] == document["revision"]
@@ -630,7 +575,7 @@ class ProviderCatalog:
     def view(self):
         with self._transaction() as db:
             documents = [
-                json.loads(row[0])
+                self.sources.project(db, json.loads(row[0]))[0]
                 for row in db.execute("SELECT document FROM providers ORDER BY id")
             ]
             for document in documents:
@@ -663,6 +608,7 @@ class ProviderCatalog:
                 "configured": bool(selected and self._selectable(selected)),
             }
             return {
+                "sources": self.sources.view(db),
                 "providers": documents,
                 "default": default,
                 "functions": self.functions.view(db, documents, default),
@@ -672,12 +618,17 @@ class ProviderCatalog:
         """Only trusted internal callers; this is NOT a public projection or a live grant."""
         with self._transaction() as db:
             document, encrypted = self._row(db, provider_id, expected_revision)
-            require(document["enabled"] and encrypted is not None, "provider_unavailable", 409)
+            require(
+                document["enabled"] and document["source_enabled"] and encrypted is not None,
+                "provider_unavailable",
+                409,
+            )
             return ProviderExecutionContext(
                 provider_id,
                 document["revision"],
                 document["protocol"],
                 document["base_url"],
                 document["model_id"],
-                self._decrypt(encrypted, provider_id),
+                self._decrypt(encrypted, document["source_id"]),
+                document["kind"],
             )

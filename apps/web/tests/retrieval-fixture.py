@@ -28,6 +28,23 @@ async def main():
     ):
 
         async def model(request):
+            body = await request.json()
+            operation = request.match_info["operation"]
+            if operation == "models":
+                return web.json_response(
+                    {
+                        "models": [
+                            "fixture-chat",
+                            "fixture-writing",
+                            "fixture-embed",
+                            "fixture-rerank",
+                        ]
+                    }
+                )
+            if body["model_id"] == "unavailable-model":
+                return web.json_response({"code": "model_not_found"}, status=404)
+            if operation == "test":
+                return web.json_response({"outcome": "succeeded"})
             return web.json_response({"vectors": [[1.0, 0.0]], "scores": [0.9, 0.1]})
 
         gateway = web.Application()

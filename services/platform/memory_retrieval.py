@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
-from .contracts import require, digest
+from .contracts import require, digest, Fault
 
 PATH = "/internal/v1/memory-retrieval/execute"
 PREFIX = "/api/web/memory-retrieval/"
@@ -71,10 +71,50 @@ class MemoryRetrieval:
         if self.catalog is None:
             return 0, {}
         revision, rows = self.catalog.snapshot()
-        return revision, {
+        selected = {
             key: rows[key]
             for key in ("retrieval", "retrieval:embed", "retrieval:rerank")
             if key in rows
+        }
+        providers = {item["provider_id"]: item for item in self.models()}
+        for kind in ("embed", "rerank"):
+            row = selected.get("retrieval:" + kind)
+            if row and "provider_id" in row["value"]:
+                model = providers.get(row["value"]["provider_id"])
+                row["value"] = {
+                    **row["value"],
+                    "catalog_revision": model["revision"] if model else None,
+                }
+        return revision, selected
+
+    def models(self):
+        catalog = getattr(self.p, "provider_catalog", None)
+        return catalog.view()["providers"] if catalog is not None else []
+
+    def connection_view(self, rows, kind):
+        row = rows.get("retrieval:" + kind, {})
+        value = row.get("value", {})
+        if "provider_id" in value:
+            model = next(
+                (item for item in self.models() if item["provider_id"] == value["provider_id"]),
+                None,
+            )
+            return {
+                "provider_id": value["provider_id"],
+                "base_url": model["base_url"] if model else "",
+                "model_id": model["model_id"] if model else "",
+                "has_key": bool(
+                    model
+                    and model["has_key"]
+                    and model["enabled"]
+                    and model["source_enabled"]
+                    and model["kind"] == kind
+                ),
+            }
+        return {
+            "base_url": value.get("base_url", ""),
+            "model_id": value.get("model_id", ""),
+            "has_key": bool(row.get("credential")),
         }
 
     def settings(self, rows):
@@ -93,18 +133,20 @@ class MemoryRetrieval:
             "revision": revision,
             "can_manage": self.catalog is not None,
             "policy": {key: self.settings(rows)[key] for key in DEFAULT},
-            "connections": {
-                kind: {
-                    "base_url": rows.get("retrieval:" + kind, {})
-                    .get("value", {})
-                    .get("base_url", ""),
-                    "model_id": rows.get("retrieval:" + kind, {})
-                    .get("value", {})
-                    .get("model_id", ""),
-                    "has_key": bool(rows.get("retrieval:" + kind, {}).get("credential")),
+            "connections": {kind: self.connection_view(rows, kind) for kind in ("embed", "rerank")},
+            "models": [
+                {
+                    "provider_id": item["provider_id"],
+                    "name": item["source_name"] + " / " + item["name"],
+                    "model_id": item["model_id"],
+                    "kind": item["kind"],
+                    "available": bool(
+                        item["enabled"] and item["source_enabled"] and item["has_key"]
+                    ),
                 }
-                for kind in ("embed", "rerank")
-            },
+                for item in self.models()
+                if item["kind"] in {"embed", "rerank"}
+            ],
         }
 
     def gate(self, session):
@@ -134,11 +176,28 @@ class MemoryRetrieval:
             needed = (["embed"] if value["mode"] != "keyword" else []) + (
                 ["rerank"] if value["rerank"] else []
             )
+            for name in needed:
+                try:
+                    self.connection(rows, name)
+                except Fault:
+                    require(False, "retrieval_not_configured", 409)
+        elif isinstance(value, dict) and set(value) == {"provider_id"}:
+            require(credential == {"action": "keep"}, "invalid_input", 400)
+            provider = next(
+                (item for item in self.models() if item["provider_id"] == value["provider_id"]),
+                None,
+            )
             require(
-                all(rows.get("retrieval:" + name, {}).get("credential") for name in needed),
+                provider is not None
+                and provider["kind"] == kind
+                and provider["enabled"]
+                and provider["source_enabled"]
+                and provider["has_key"],
                 "retrieval_not_configured",
                 409,
             )
+            # Replace the old standalone secret with a reference, never a copied key.
+            credential = {"action": "clear"}
         else:
             validate_connection(value)
             require(
@@ -199,6 +258,27 @@ class MemoryRetrieval:
 
     def connection(self, rows, operation):
         row = rows.get("retrieval:" + operation)
+        if row and "provider_id" in row["value"]:
+            value = row["value"]
+            catalog = getattr(self.p, "provider_catalog", None)
+            require(
+                catalog is not None and value.get("catalog_revision") is not None,
+                "retrieval_not_configured",
+                503,
+            )
+            context = catalog.execution_context(value["provider_id"], value["catalog_revision"])
+            require(context.kind == operation, "retrieval_not_configured", 503)
+            return {
+                key: getattr(context, key)
+                for key in (
+                    "provider_id",
+                    "revision",
+                    "protocol",
+                    "base_url",
+                    "model_id",
+                    "api_key",
+                )
+            }
         require(
             row and row["credential"],
             "retrieval_not_configured",
