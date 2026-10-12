@@ -21,6 +21,12 @@ def private_environment():
     return {key: value for key, value in os.environ.items() if key.upper() in names}
 
 
+def executable_path(command):
+    path = shutil.which(command)
+    require(path is not None, "engine_unavailable", 503)
+    return str(Path(path).resolve())
+
+
 def write_cookie(path, cookie):
     with path.open("x", encoding="utf-8", newline="\n") as handle:
         os.chmod(path, 0o600)
@@ -109,8 +115,7 @@ class Engine:
                 503,
             )
             for tool in ("ffmpeg", "ffprobe"):
-                command = self.config[tool]
-                require(Path(command).is_file() or shutil.which(command), "engine_unavailable", 503)
+                executable_path(self.config[tool])
             self.status = {"state": "ready", "version": ENGINE_VERSION, "code": "ready"}
         except (Fault, TimeoutError, UnicodeDecodeError) as error:
             self.status = {
@@ -181,6 +186,7 @@ class Engine:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         require(not directory.is_symlink(), "unsafe_staging", 503)
+        ffmpeg = executable_path(self.config["ffmpeg"])
         cookie_file = directory / ".session.txt"
         if cookie:
             write_cookie(cookie_file, cookie)
@@ -216,7 +222,7 @@ class Engine:
             "--merge-output-format",
             "mp4",
             "--ffmpeg-location",
-            self.config["ffmpeg"],
+            ffmpeg,
             "--format",
             selector,
             "--output",
@@ -243,7 +249,7 @@ class Engine:
             files = [
                 path
                 for path in directory.iterdir()
-                if path.suffix.lower() in {".mp4", ".mkv"} and path.name.startswith("download.")
+                if path.name in {"download.mp4", "download.mkv"}
             ]
             require(
                 len(files) == 1 and files[0].stat().st_size <= self.config["max_bytes"],
@@ -305,7 +311,7 @@ class Engine:
     async def verify(self, path, expected_duration=None):
         code, output, _ = await run_process(
             [
-                self.config["ffprobe"],
+                executable_path(self.config["ffprobe"]),
                 "-v",
                 "error",
                 "-show_streams",
