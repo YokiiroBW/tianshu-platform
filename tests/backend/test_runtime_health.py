@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -450,6 +451,30 @@ class LivenessTests(ProbeTestCase):
 
 @unittest.skipUnless(runtime_available(), "TS013_TLS_PYTHON is not configured")
 class ReadinessTests(ProbeTestCase):
+    async def test_global_media_download_ledger_is_ready_without_probe_writes(self):
+        self.settings["media"] = {
+            "engine": {
+                "python": sys.executable,
+                "ffmpeg": os.environ.get("MEDIA_TEST_FFMPEG", "ffmpeg"),
+                "ffprobe": os.environ.get("MEDIA_TEST_FFPROBE", "ffprobe"),
+            },
+        }
+        await self.boot()
+        path = self.platform.media.repo.database
+        with closing(sqlite3.connect(path)) as database:
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertIsNotNone(
+                database.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='download_sources'"
+                ).fetchone()
+            )
+        before = path.read_bytes()
+        response, document = await self.probe(READY)
+        self.assertEqual(response.status, 200, document)
+        self.assertEqual(document["checks"]["sidecars"], "ok")
+        self.assertEqual(document["status"], "ready")
+        self.assertEqual(path.read_bytes(), before)
+
     async def test_current_bot_delivery_queue_is_ready(self):
         self.settings["principals"]["health-bot"] = {
             "kind": "service",

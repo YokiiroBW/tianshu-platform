@@ -420,7 +420,7 @@ class Probe:
         states = []
         for path, kind in self.inputs.sidecars:
             table = SIDECAR_TABLES.get(kind)
-            versions = (0, 1, 2) if kind == "bots" else (0, 1)
+            versions = (0, 1, 2) if kind in {"bots", "media"} else (0, 1)
             states.append(inspect_sqlite(path, (table,) if table else (), versions)[0])
         if self.inputs.web_account_enabled and self._account_state() != "ok":
             states.append("failed")
