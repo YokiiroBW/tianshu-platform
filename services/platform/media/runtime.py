@@ -25,6 +25,7 @@ from .rules import RuleEvaluator
 from .subscriptions import Subscriptions
 from .worker import Worker
 from .download_cache import DownloadCache
+from .imports import Imports
 
 JOB_FIELDS = (
     "job_id",
@@ -146,6 +147,7 @@ class Media:
         self.worker = Worker(self)
         self.retention = Retention(self)
         self.download_cache = DownloadCache(self)
+        self.imports = Imports(self)
         self.storage_breakdown = StorageBreakdown(self, clock=clock)
 
     async def start(self):

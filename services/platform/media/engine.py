@@ -308,7 +308,7 @@ class Engine:
             for info in directory.glob("*.info.json"):
                 info.unlink(missing_ok=True)
 
-    async def verify(self, path, expected_duration=None):
+    async def probe(self, path):
         code, output, _ = await run_process(
             [
                 executable_path(self.config["ffprobe"]),
@@ -326,6 +326,23 @@ class Engine:
         require(code == 0, "media_invalid", 503)
         try:
             info = json.loads(output)
+            require(
+                isinstance(info, dict)
+                and isinstance(info.get("streams"), list)
+                and all(isinstance(stream, dict) for stream in info["streams"])
+                and isinstance(info.get("format", {}), dict),
+                "media_invalid",
+                503,
+            )
+            return info
+        except (ValueError, TypeError):
+            raise Fault("media_invalid", 503) from None
+
+    async def verify(self, path, expected_duration=None):
+        return self.validate_probe(await self.probe(path), expected_duration)
+
+    def validate_probe(self, info, expected_duration=None):
+        try:
             streams = info.get("streams", [])
             require(
                 any(item.get("codec_type") == "video" for item in streams),

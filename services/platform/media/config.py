@@ -124,6 +124,7 @@ def configuration(settings):
             "scan_timeout_seconds",
             "workers",
             "storage_mappings",
+            "import_roots",
         },
         "invalid_input",
         400,
@@ -231,7 +232,42 @@ def configuration(settings):
         "scan_timeout_seconds": raw.get("scan_timeout_seconds", 900),
         "workers": raw.get("workers", 2),
         "storage_mappings": storage_mappings,
+        "import_roots": [],
     }
+    roots = raw.get("import_roots", [])
+    require(isinstance(roots, list) and len(roots) <= 32, "invalid_input", 400)
+    imported = set()
+    for root in roots:
+        require(
+            isinstance(root, dict) and set(root) == {"root_id", "label", "directory"},
+            "invalid_input",
+            400,
+        )
+        identity = text(root["root_id"], 64)
+        directory = text(root["directory"], 4096)
+        require(
+            re.fullmatch(r"[A-Za-z0-9_-]{1,64}", identity)
+            and identity not in imported
+            and Path(directory).is_absolute(),
+            "invalid_input",
+            400,
+        )
+        imported.add(identity)
+        import_path, staging_path = Path(directory).resolve(), Path(staging).resolve()
+        require(
+            import_path != staging_path
+            and import_path not in staging_path.parents
+            and staging_path not in import_path.parents,
+            "invalid_input",
+            400,
+        )
+        result["import_roots"].append(
+            {
+                "root_id": identity,
+                "label": text(root["label"], 128),
+                "directory": str(Path(directory).absolute()),
+            }
+        )
     for name, lower, upper in (
         ("scan_page_limit", 1, 1000),
         ("scan_item_limit", 1, 50000),

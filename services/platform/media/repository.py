@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ..contracts import Fault, digest, canonical, require
 from .destination import head_key, same_destination, directory_identity
+from .import_records import same_identity
 
 TERMINAL = frozenset(
     {
@@ -566,6 +567,62 @@ class Repository:
                 (bvid, cid, quality),
             ).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def import_commit(self, identity, record, expected):
+        with self.transaction() as db:
+            current = self._document(db, "media_import", identity)
+            require(
+                (current.get("revision", 0) if current else 0) == expected, "version_conflict", 409
+            )
+            if (
+                current
+                and {key: value for key, value in current.items() if key != "revision"} == record
+            ):
+                return current
+            require(
+                not (
+                    current
+                    and current["state"] == "verified"
+                    and same_identity(current["observation"], record.get("observation"))
+                    and (
+                        record["state"] != "verified"
+                        or any(
+                            current[key] != record[key] for key in ("bvid", "cid", "actual_quality")
+                        )
+                    )
+                ),
+                "import_evidence_conflict",
+                409,
+            )
+            saved = self.put("media_import", identity, record, expected, db=db)
+            if saved["state"] == "verified":
+                source = {
+                    key: saved[key]
+                    for key in (
+                        "root_id",
+                        "directory",
+                        "relative_path",
+                        "bvid",
+                        "cid",
+                        "actual_quality",
+                        "sha256",
+                        "evidence_digest",
+                    )
+                }
+                source.update(
+                    kind="import",
+                    import_record_id=identity,
+                    import_record_revision=saved["revision"],
+                    entry={
+                        "path": saved["relative_path"],
+                        "kind": "video",
+                        "cid": saved["cid"],
+                        "sha256": saved["sha256"],
+                        "size_bytes": saved["observation"]["size_bytes"],
+                    },
+                )
+                self.put("media_source", "import:" + identity, source, db=db)
+            return saved
 
     def download_source(self, bvid, cid, quality):
         with self.transaction() as db:

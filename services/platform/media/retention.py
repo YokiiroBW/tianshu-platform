@@ -59,6 +59,11 @@ class Retention:
 
     def source(self, bvid, cid, quality, job=None):
         for candidate in self.media.repo.media_sources(bvid, cid, quality):
+            if candidate.get("kind") == "import":
+                try:
+                    return self.media.imports.source(candidate, job)
+                except (Fault, OSError, KeyError, ValueError):
+                    continue
             target = self.media.config.get("targets", {}).get(candidate["target_id"])
             # Removed/repointed mounts cannot remain implicit read authority.
             if (
