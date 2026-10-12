@@ -163,6 +163,7 @@ const messages: Record<string, string> = {
   provider_not_tested: "当前配置尚未通过短回复测试，不能设为默认。",
   default_revision_conflict: "默认模型已被其他页面更改。请重新读取后再选择。",
   revision_conflict: "供应商已在其他页面更改。请重新读取后再操作。",
+  model_already_added: "此供应商下已添加同类型的同名模型。",
   provider_not_found: "供应商已不存在。请重新读取列表。",
   budget_exceeded: "请求内容过长。请缩短名称或模型 ID。",
   result_unknown:

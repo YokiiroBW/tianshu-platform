@@ -10,8 +10,20 @@ type Policy = {
   rerank: boolean;
   candidates: number;
 };
-type Connection = { base_url: string; model_id: string; has_key: boolean };
+type Connection = {
+  base_url: string;
+  model_id: string;
+  has_key: boolean;
+  provider_id?: string;
+};
 type View = {
+  models?: {
+    provider_id: string;
+    name: string;
+    model_id: string;
+    kind: Kind;
+    available: boolean;
+  }[];
   revision: number;
   can_manage: boolean;
   policy: Policy;
@@ -32,6 +44,7 @@ export function RetrievalSettings() {
     embed: { base_url: "", model_id: "", has_key: false },
     rerank: { base_url: "", model_id: "", has_key: false },
   });
+  const [selected, setSelected] = useState({ embed: "", rerank: "" });
   const [keys, setKeys] = useState({ embed: "", rerank: "" });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -42,6 +55,10 @@ export function RetrievalSettings() {
     setView(next);
     setPolicy(next.policy);
     setConnections(next.connections);
+    setSelected({
+      embed: next.connections.embed.provider_id ?? "",
+      rerank: next.connections.rerank.provider_id ?? "",
+    });
   }
   useEffect(() => {
     const controller = new AbortController();
@@ -64,7 +81,12 @@ export function RetrievalSettings() {
     };
   }, [csrf]);
 
-  async function run(kind: Kind | "policy", test = false, clear = false) {
+  async function run(
+    kind: Kind | "policy",
+    test = false,
+    clear = false,
+    reference = false,
+  ) {
     if (!view || active.current) return;
     const controller = new AbortController();
     active.current = controller;
@@ -85,12 +107,14 @@ export function RetrievalSettings() {
         const value =
           kind === "policy"
             ? policy
-            : {
-                base_url: connections[kind].base_url.trim(),
-                model_id: connections[kind].model_id.trim(),
-              };
+            : reference
+              ? { provider_id: selected[kind] }
+              : {
+                  base_url: connections[kind].base_url.trim(),
+                  model_id: connections[kind].model_id.trim(),
+                };
         const credential =
-          kind === "policy"
+          kind === "policy" || reference
             ? { action: "keep" }
             : clear
               ? { action: "clear" }
@@ -118,6 +142,10 @@ export function RetrievalSettings() {
               [kind]: next.connections[kind],
             }));
             setKeys((current) => ({ ...current, [kind]: "" }));
+            setSelected((current) => ({
+              ...current,
+              [kind]: next.connections[kind].provider_id ?? "",
+            }));
           }
           setMessage("已保存。");
         }
@@ -201,81 +229,156 @@ export function RetrievalSettings() {
           >
             <h3>{names[kind]}模型</h3>
             <fieldset disabled={busy || !view.can_manage}>
+              <p className="muted">
+                从 <a href="#/settings/2">模型供应商</a> 已添加的{names[kind]}
+                模型中选择，共用供应商的地址和密钥。
+              </p>
               <label>
-                API 基础地址{" "}
-                <input
-                  aria-label={`${names[kind]} API 基础地址`}
-                  type="url"
-                  value={connections[kind].base_url}
-                  placeholder="https://api.example.com/v1"
+                {names[kind]}模型选择
+                <select
+                  aria-label={`${names[kind]}模型选择`}
+                  value={selected[kind]}
                   onChange={(e) =>
-                    setConnections({
-                      ...connections,
-                      [kind]: {
-                        ...connections[kind],
-                        base_url: e.target.value,
-                      },
-                    })
+                    setSelected({ ...selected, [kind]: e.target.value })
                   }
-                />
-              </label>
-              <label>
-                模型名称{" "}
-                <input
-                  aria-label={`${names[kind]}模型名称`}
-                  value={connections[kind].model_id}
-                  onChange={(e) =>
-                    setConnections({
-                      ...connections,
-                      [kind]: {
-                        ...connections[kind],
-                        model_id: e.target.value,
-                      },
-                    })
-                  }
-                />
-              </label>
-              <label>
-                API Key{" "}
-                <input
-                  aria-label={`${names[kind]} API Key`}
-                  type="password"
-                  autoComplete="new-password"
-                  value={keys[kind]}
-                  placeholder={
-                    connections[kind].has_key
-                      ? "已保存，留空保留"
-                      : "填写 API Key"
-                  }
-                  onChange={(e) => setKeys({ ...keys, [kind]: e.target.value })}
-                />
+                >
+                  <option value="">请选择模型</option>
+                  {selected[kind] &&
+                    !(view.models ?? []).some(
+                      (m) => m.provider_id === selected[kind],
+                    ) && (
+                      <option value={selected[kind]} disabled>
+                        原模型已不可用
+                      </option>
+                    )}
+                  {(view.models ?? [])
+                    .filter((m) => m.kind === kind)
+                    .map((m) => (
+                      <option
+                        key={m.provider_id}
+                        value={m.provider_id}
+                        disabled={!m.available}
+                      >
+                        {m.name}
+                        {m.available ? "" : "（不可用）"}
+                      </option>
+                    ))}
+                </select>
               </label>
               <p className="muted">
-                {kind === "embed"
-                  ? "使用兼容 /embeddings 的浮点向量接口。"
-                  : "使用兼容 /rerank 的重排序接口。"}
-                保存后可测试连接。
+                当前：
+                {view.connections[kind].provider_id
+                  ? ((view.models ?? []).find(
+                      (m) =>
+                        m.provider_id === view.connections[kind].provider_id,
+                    )?.name ?? "原模型已不可用")
+                  : view.connections[kind].model_id
+                    ? `${view.connections[kind].model_id}（原独立连接）`
+                    : "尚未配置"}
               </p>
               <div className="models-actions">
-                <button className="button" onClick={() => void run(kind)}>
-                  保存{names[kind]}连接
+                <button
+                  className="button"
+                  disabled={!selected[kind]}
+                  onClick={() => void run(kind, false, false, true)}
+                >
+                  保存{names[kind]}模型
                 </button>
                 <button
                   className="button"
-                  disabled={!connections[kind].has_key}
+                  disabled={!view.connections[kind].has_key}
                   onClick={() => void run(kind, true)}
                 >
-                  测试{names[kind]}连接
-                </button>
-                <button
-                  className="button"
-                  disabled={!connections[kind].has_key}
-                  onClick={() => void run(kind, false, true)}
-                >
-                  清除{names[kind]}密钥
+                  测试已保存模型
                 </button>
               </div>
+              <p className="muted">
+                测试使用短样本，可能产生费用。更换嵌入模型后，记忆向量会按新模型重新计算。
+              </p>
             </fieldset>
+            {!view.connections[kind].provider_id && (
+              <details open={!!view.connections[kind].model_id}>
+                <summary>原独立连接设置</summary>
+                <fieldset disabled={busy || !view.can_manage}>
+                  <label>
+                    API 基础地址{" "}
+                    <input
+                      aria-label={`${names[kind]} API 基础地址`}
+                      type="url"
+                      value={connections[kind].base_url}
+                      placeholder="https://api.example.com/v1"
+                      onChange={(e) =>
+                        setConnections({
+                          ...connections,
+                          [kind]: {
+                            ...connections[kind],
+                            base_url: e.target.value,
+                          },
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    模型名称{" "}
+                    <input
+                      aria-label={`${names[kind]}模型名称`}
+                      value={connections[kind].model_id}
+                      onChange={(e) =>
+                        setConnections({
+                          ...connections,
+                          [kind]: {
+                            ...connections[kind],
+                            model_id: e.target.value,
+                          },
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    API Key{" "}
+                    <input
+                      aria-label={`${names[kind]} API Key`}
+                      type="password"
+                      autoComplete="new-password"
+                      value={keys[kind]}
+                      placeholder={
+                        connections[kind].has_key
+                          ? "已保存，留空保留"
+                          : "填写 API Key"
+                      }
+                      onChange={(e) =>
+                        setKeys({ ...keys, [kind]: e.target.value })
+                      }
+                    />
+                  </label>
+                  <p className="muted">
+                    {kind === "embed"
+                      ? "使用兼容 /embeddings 的浮点向量接口。"
+                      : "使用兼容 /rerank 的重排序接口。"}
+                    保存后可测试连接。
+                  </p>
+                  <div className="models-actions">
+                    <button className="button" onClick={() => void run(kind)}>
+                      保存{names[kind]}连接
+                    </button>
+                    <button
+                      className="button"
+                      disabled={!connections[kind].has_key}
+                      onClick={() => void run(kind, true)}
+                    >
+                      测试{names[kind]}连接
+                    </button>
+                    <button
+                      className="button"
+                      disabled={!connections[kind].has_key}
+                      onClick={() => void run(kind, false, true)}
+                    >
+                      清除{names[kind]}密钥
+                    </button>
+                  </div>
+                </fieldset>
+              </details>
+            )}
           </section>
         ))}
     </div>

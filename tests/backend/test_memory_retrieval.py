@@ -112,3 +112,94 @@ class RetrievalSettingsTests(unittest.IsolatedAsyncioTestCase):
             changed["embedding_revision"],
             self.service.settings(self.service.snapshot()[1])["embedding_revision"],
         )
+
+
+class SharedRetrievalModelsTests(unittest.IsolatedAsyncioTestCase):
+    setUp = RetrievalSettingsTests.setUp
+    save = RetrievalSettingsTests.save
+    connection = RetrievalSettingsTests.connection
+
+    async def test_shared_models_reuse_one_key_and_invalidate_vector_space(self):
+        from services.platform.provider_catalog import ProviderCatalog
+
+        providers = ProviderCatalog(Path(self.temp.name) / "providers", create=True)
+        self.p.provider_catalog = providers
+        source = providers.sources.save(
+            client_id="source",
+            name="one",
+            base_url="https://example.invalid/v1",
+            api_key="synthetic-shared",
+        )
+        identities = {}
+        for kind in ("embed", "rerank"):
+            identities[kind] = providers.sources.add_models(
+                client_id="add-" + kind,
+                source_id=source["source_id"],
+                expected_revision=1,
+                models=[kind],
+                kind=kind,
+            )["provider_ids"][0]
+            view = await self.save(kind, {"provider_id": identities[kind]})
+            self.assertEqual(identities[kind], view["connections"][kind]["provider_id"])
+            self.assertNotIn("synthetic-shared", json.dumps(view))
+        await self.save("policy", {"mode": "hybrid", "rerank": True, "candidates": 40})
+        _, rows = self.service.snapshot()
+        before = self.service.settings(rows)
+        await self.service.execute(rows, "embed", {"texts": ["sample"]})
+        self.assertEqual(
+            "synthetic-shared", self.console.providers.gateway_request.call_args.args[1].api_key
+        )
+        self.assertIsNone(self.catalog.snapshot()[1]["retrieval:embed"]["credential"])
+        providers.sources.save_model(
+            client_id="change",
+            provider_id=identities["embed"],
+            expected_revision=1,
+            name="new",
+            model_id="new-vector-space",
+            kind="embed",
+            enabled=True,
+        )
+        with self.assertRaises(Fault):
+            self.service.connection(rows, "embed")
+        _, rows = self.service.snapshot()
+        self.assertNotEqual(
+            before["embedding_revision"], self.service.settings(rows)["embedding_revision"]
+        )
+        self.assertEqual("new-vector-space", self.service.connection(rows, "embed")["model_id"])
+        self.assertEqual("rerank", self.service.connection(rows, "rerank")["model_id"])
+        with self.assertRaises(Fault):
+            await self.save("embed", {"provider_id": identities["rerank"]})
+        providers.sources.clear_key(
+            client_id="clear", source_id=source["source_id"], expected_revision=1
+        )
+        with self.assertRaises(Fault):
+            await self.save("policy", {"mode": "hybrid", "rerank": True, "candidates": 40})
+        view = self.service.view()
+        self.assertFalse(view["connections"]["embed"]["has_key"])
+        self.assertFalse(view["connections"]["rerank"]["has_key"])
+        await self.save("policy", {"mode": "keyword", "rerank": False, "candidates": 40})
+
+    async def test_replacing_standalone_with_shared_reference_removes_old_secret(self):
+        from services.platform.provider_catalog import ProviderCatalog
+
+        await self.connection()
+        providers = ProviderCatalog(Path(self.temp.name) / "providers", create=True)
+        self.p.provider_catalog = providers
+        source = providers.sources.save(
+            client_id="source",
+            name="shared",
+            base_url="https://example.invalid/v1",
+            api_key="synthetic-shared",
+        )
+        identity = providers.sources.add_models(
+            client_id="add",
+            source_id=source["source_id"],
+            expected_revision=1,
+            models=["embed"],
+            kind="embed",
+        )["provider_ids"][0]
+        await self.save("embed", {"provider_id": identity})
+        stored = self.catalog.snapshot()[1]["retrieval:embed"]
+        self.assertIsNone(stored["credential"])
+        self.assertNotIn("base_url", stored["value"])
+        self.assertEqual(identity, stored["value"]["provider_id"])

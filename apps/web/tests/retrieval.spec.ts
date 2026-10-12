@@ -13,6 +13,11 @@ test("memory retrieval saves independent models and all six mode combinations", 
     page.getByRole("heading", { name: "记忆检索", exact: true }),
   ).toBeVisible();
   for (const name of ["嵌入", "重排序"]) {
+    const legacy = page
+      .getByRole("region", { name: `${name}模型连接` })
+      .locator("details");
+    if ((await legacy.getAttribute("open")) === null)
+      await legacy.locator("summary").click();
     await page
       .getByLabel(`${name} API 基础地址`)
       .fill("https://models.example/v1");

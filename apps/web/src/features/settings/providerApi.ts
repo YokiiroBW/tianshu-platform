@@ -1,5 +1,5 @@
 import { call, WebError } from "./api";
-import type { Provider } from "./ProviderManager";
+import type { Provider, ProviderSource, ModelKind } from "./providerTypes";
 
 export type ModelFunction = {
   function_id: string;
@@ -16,12 +16,17 @@ export type ModelFunction = {
 
 export type ProviderView = {
   providers: Provider[];
+  sources: ProviderSource[];
   defaultRevision: number;
   functions: ModelFunction[];
 };
 
 type WireProvider = {
   provider_id: string;
+  source_id?: string;
+  source_name?: string;
+  source_enabled?: boolean;
+  kind?: ModelKind;
   name: string;
   protocol: "openai-chat-completions";
   base_url: string;
@@ -39,6 +44,15 @@ type WireProvider = {
 
 type WireView = {
   providers: WireProvider[];
+  sources?: {
+    source_id: string;
+    name: string;
+    base_url: string;
+    protocol: "openai-chat-completions";
+    enabled: boolean;
+    revision: number;
+    has_key: boolean;
+  }[];
   functions?: ModelFunction[];
   default: {
     provider_id: string | null;
@@ -64,6 +78,8 @@ function validProvider(item: WireProvider): boolean {
   return (
     !!item &&
     typeof item.provider_id === "string" &&
+    (item.kind === undefined ||
+      ["text", "embed", "rerank"].includes(item.kind)) &&
     typeof item.name === "string" &&
     item.protocol === "openai-chat-completions" &&
     typeof item.base_url === "string" &&
@@ -100,6 +116,20 @@ export function mapProviderView(wire: WireView): ProviderView {
     !Number.isInteger(wire.default.revision) ||
     wire.default.revision < 0 ||
     !wire.providers.every(validProvider) ||
+    (wire.sources !== undefined &&
+      (!Array.isArray(wire.sources) ||
+        !wire.sources.every(
+          (item) =>
+            item &&
+            typeof item.source_id === "string" &&
+            typeof item.name === "string" &&
+            typeof item.base_url === "string" &&
+            item.protocol === "openai-chat-completions" &&
+            typeof item.enabled === "boolean" &&
+            Number.isInteger(item.revision) &&
+            item.revision > 0 &&
+            typeof item.has_key === "boolean",
+        ))) ||
     (wire.functions !== undefined &&
       (!Array.isArray(wire.functions) ||
         !wire.functions.every(
@@ -124,10 +154,23 @@ export function mapProviderView(wire: WireView): ProviderView {
   )
     throw new WebError("dependency_unavailable", 502);
   return {
+    sources: (wire.sources ?? []).map((item) => ({
+      sourceId: item.source_id,
+      name: item.name,
+      baseUrl: item.base_url,
+      protocol: item.protocol,
+      enabled: item.enabled,
+      revision: item.revision,
+      hasKey: item.has_key,
+    })),
     functions: wire.functions ?? [],
     defaultRevision: wire.default.revision,
     providers: wire.providers.map((item) => ({
       providerId: item.provider_id,
+      sourceId: item.source_id,
+      sourceName: item.source_name,
+      sourceEnabled: item.source_enabled,
+      kind: item.kind ?? "text",
       name: item.name,
       protocol: item.protocol,
       baseUrl: item.base_url,

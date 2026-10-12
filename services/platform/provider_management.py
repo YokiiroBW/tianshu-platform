@@ -105,6 +105,66 @@ class ProviderManagement:
         if operation == "view":
             require(body == {}, "invalid_input", 400)
             return await self.platform.local_work.run(self._view, session)
+        if operation in {
+            "source-save",
+            "source-delete",
+            "source-clear-key",
+            "model-add",
+            "model-save",
+        }:
+            fields = {
+                "source-save": (
+                    {"client_id", "name", "base_url", "enabled"},
+                    {"source_id", "expected_revision", "api_key", "protocol"},
+                ),
+                "source-delete": ({"client_id", "source_id", "expected_revision"}, set()),
+                "source-clear-key": ({"client_id", "source_id", "expected_revision"}, set()),
+                "model-add": (
+                    {"client_id", "source_id", "expected_revision", "models", "kind"},
+                    set(),
+                ),
+                "model-save": (
+                    {
+                        "client_id",
+                        "provider_id",
+                        "expected_revision",
+                        "name",
+                        "model_id",
+                        "kind",
+                        "enabled",
+                    },
+                    set(),
+                ),
+            }
+            required, optional = fields[operation]
+            require(required <= set(body) <= required | optional, "invalid_input", 400)
+            _client_id(body)
+            methods = {
+                "source-save": self.catalog.sources.save,
+                "source-delete": self.catalog.sources.delete,
+                "source-clear-key": self.catalog.sources.clear_key,
+                "model-add": self.catalog.sources.add_models,
+                "model-save": self.catalog.sources.save_model,
+            }
+            return await self.platform.local_work.run(
+                self._write, session, methods[operation], **body
+            )
+        if operation == "source-models":
+            require(set(body) == {"source_id", "expected_revision"}, "invalid_input", 400)
+            context = await self.platform.local_work.run(
+                self._write, session, self.catalog.sources.execution_context, **body
+            )
+            result = await self.gateway_request("models", context)
+            await self.platform.local_work.run(self._gate, session)
+            # Reject a directory response received after its connection was edited.
+            await self.platform.local_work.run(
+                self._write, session, self.catalog.sources.execution_context, **body
+            )
+            return {
+                "source_id": context.provider_id,
+                "revision": context.revision,
+                "models": result["models"],
+            }
         if operation == "save":
             allowed = {
                 "client_id",
@@ -184,7 +244,15 @@ class ProviderManagement:
                 self._context, session, body["provider_id"], body["expected_revision"]
             )
             try:
-                result = await self.gateway_request(operation, context)
+                if operation == "test" and context.kind in {"embed", "rerank"}:
+                    payload = (
+                        {"texts": ["模型连接测试"]}
+                        if context.kind == "embed"
+                        else {"query": "散步", "documents": ["喜欢散步", "学习绘画"]}
+                    )
+                    result = await self.gateway_request(context.kind, context, payload=payload)
+                else:
+                    result = await self.gateway_request(operation, context)
             except Fault as fault:
                 if operation == "test":
                     outcome = {

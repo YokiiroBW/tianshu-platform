@@ -125,11 +125,25 @@ class RetrievalIntegration(unittest.IsolatedAsyncioTestCase):
             console = create_console(platform)
             external = ExternalCatalog(root / "external", create=True)
             console.external.catalog = external
+            source = catalog.sources.save(
+                client_id="shared-source",
+                name="Shared fixture",
+                base_url=model_url + "/v1",
+                api_key="synthetic-model-key",
+            )
+            model_ids = {}
             for kind in ("embed", "rerank"):
+                model_ids[kind] = catalog.sources.add_models(
+                    client_id="model-" + kind,
+                    source_id=source["source_id"],
+                    expected_revision=1,
+                    models=[kind],
+                    kind=kind,
+                )["provider_ids"][0]
                 external.save(
                     "retrieval:" + kind,
-                    {"base_url": model_url + "/v1", "model_id": kind},
-                    {"action": "replace", "value": "synthetic-model-key"},
+                    {"provider_id": model_ids[kind]},
+                    {"action": "clear"},
                     {"action": "clear"},
                     external.snapshot()[0],
                     str(uuid.uuid4()),
@@ -183,13 +197,14 @@ class RetrievalIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 len([body for path, body in calls if path.endswith("embeddings")]), before + 1
             )
-            external.save(
-                "retrieval:embed",
-                {"base_url": model_url + "/v1", "model_id": "embed-new-space"},
-                {"action": "keep"},
-                {"action": "clear"},
-                external.snapshot()[0],
-                str(uuid.uuid4()),
+            catalog.sources.save_model(
+                client_id="new-space",
+                provider_id=model_ids["embed"],
+                expected_revision=1,
+                name="new",
+                model_id="embed-new-space",
+                kind="embed",
+                enabled=True,
             )
             calls.clear()
             await asyncio.to_thread(h.select, query="睡前饮料推荐")

@@ -17,11 +17,8 @@ import {
   type ModelsView,
   type SessionState,
 } from "./api";
-import {
-  ProviderManager,
-  type ProviderActions,
-  type ProviderDraft,
-} from "./ProviderManager";
+import { ProviderManager } from "./ProviderManager";
+import type { ProviderActions } from "./providerTypes";
 import { readProviders, type ProviderView } from "./providerApi";
 import { ModelFunctionsPanel } from "./ModelFunctionsPanel";
 import "./models.css";
@@ -168,46 +165,99 @@ export function ProviderModelsPanel() {
   }
 
   const actions: ProviderActions = {
-    save: async (draft: ProviderDraft, original, signal) => {
-      const body = {
-        client_id: requestId(),
-        ...(original
-          ? {
-              provider_id: original.providerId,
-              expected_revision: original.revision,
-            }
-          : {}),
-        name: draft.name,
-        protocol: draft.protocol,
-        base_url: draft.baseUrl,
-        model_id: draft.modelId,
-        enabled: original?.enabled ?? true,
-        ...(draft.apiKey ? { api_key: draft.apiKey } : {}),
-      };
-      await invoke("save", body, signal);
-      await reloadProviders(signal);
-    },
-    listModels: async (provider, signal) => {
-      const result = await invoke<{
-        provider_id: string;
-        revision: number;
-        models: string[];
-      }>(
-        "models",
+    saveSource: async (draft, original, signal) => {
+      const result = await invoke<{ source_id: string }>(
+        "source-save",
         {
-          provider_id: provider.providerId,
-          expected_revision: provider.revision,
+          client_id: requestId(),
+          name: draft.name,
+          base_url: draft.baseUrl,
+          enabled: draft.enabled,
+          ...(original
+            ? {
+                source_id: original.sourceId,
+                expected_revision: original.revision,
+              }
+            : {}),
+          ...(draft.apiKey ? { api_key: draft.apiKey } : {}),
         },
         signal,
       );
+      await reloadProviders(signal);
+      return result.source_id;
+    },
+    listModels: async (source, signal) => {
+      const result = await invoke<{
+        source_id: string;
+        revision: number;
+        models: string[];
+      }>(
+        "source-models",
+        { source_id: source.sourceId, expected_revision: source.revision },
+        signal,
+      );
       if (
-        result.provider_id !== provider.providerId ||
-        result.revision !== provider.revision ||
+        result.source_id !== source.sourceId ||
+        result.revision !== source.revision ||
         !Array.isArray(result.models) ||
         !result.models.every((item) => typeof item === "string")
       )
         throw new WebError("dependency_unavailable", 502);
       return result.models;
+    },
+    addModels: async (source, models, kind, signal) => {
+      await invoke(
+        "model-add",
+        {
+          client_id: requestId(),
+          source_id: source.sourceId,
+          expected_revision: source.revision,
+          models,
+          kind,
+        },
+        signal,
+      );
+      await reloadProviders(signal);
+    },
+    saveModel: async (model, draft, signal) => {
+      await invoke(
+        "model-save",
+        {
+          client_id: requestId(),
+          provider_id: model.providerId,
+          expected_revision: model.revision,
+          name: draft.name,
+          model_id: draft.modelId,
+          kind: draft.kind,
+          enabled: draft.enabled,
+        },
+        signal,
+      );
+      await reloadProviders(signal);
+    },
+    clearKey: async (source, signal) => {
+      await invoke(
+        "source-clear-key",
+        {
+          client_id: requestId(),
+          source_id: source.sourceId,
+          expected_revision: source.revision,
+        },
+        signal,
+      );
+      await reloadProviders(signal);
+    },
+    removeSource: async (source, signal) => {
+      await invoke(
+        "source-delete",
+        {
+          client_id: requestId(),
+          source_id: source.sourceId,
+          expected_revision: source.revision,
+        },
+        signal,
+      );
+      await reloadProviders(signal);
     },
     test: async (provider, signal) => {
       let result: { provider_id: string; revision: number; outcome: string };
@@ -259,28 +309,15 @@ export function ProviderModelsPanel() {
     },
     setEnabled: async (provider, enabled, signal) => {
       await invoke(
-        "save",
+        "model-save",
         {
           client_id: requestId(),
           provider_id: provider.providerId,
           expected_revision: provider.revision,
           name: provider.name,
-          protocol: provider.protocol,
-          base_url: provider.baseUrl,
           model_id: provider.modelId,
+          kind: provider.kind ?? "text",
           enabled,
-        },
-        signal,
-      );
-      await reloadProviders(signal);
-    },
-    clearKey: async (provider, signal) => {
-      await invoke(
-        "clear-key",
-        {
-          client_id: requestId(),
-          provider_id: provider.providerId,
-          expected_revision: provider.revision,
         },
         signal,
       );
@@ -361,7 +398,7 @@ export function ProviderModelsPanel() {
         )}
       </div>
       <p className="muted">
-        管理你的模型服务，确认短回复测试后设置默认对话模型。
+        供应商统一管理连接，模型分别添加与测试，各项功能自由选择。
       </p>
       <div role="status" className="models-status">
         {busy
@@ -449,6 +486,13 @@ export function ProviderModelsPanel() {
           )}
           {management?.unlocked && providerView && (
             <>
+              <ProviderManager
+                providers={providerView.providers}
+                sources={providerView.sources}
+                editable
+                actions={actions}
+                onError={handleProviderError}
+              />
               <ModelFunctionsPanel
                 functions={providerView.functions}
                 providers={providerView.providers}
@@ -467,12 +511,6 @@ export function ProviderModelsPanel() {
                   );
                   await reloadProviders(signal);
                 }}
-              />
-              <ProviderManager
-                providers={providerView.providers}
-                editable
-                actions={actions}
-                onError={handleProviderError}
               />
             </>
           )}
