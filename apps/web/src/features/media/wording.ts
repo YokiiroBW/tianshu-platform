@@ -64,6 +64,8 @@ export const reasonWords: Record<string, string> = {
   error_short_circuit: "前面的规则执行失败，后续规则未执行",
 };
 export const errorWords: Record<string, string> = {
+  invalid_destination_subdirectory:
+    "请检查整理子目录：使用相对目录，不含空层级、.、..、保留文件名或不兼容字符。",
   directory_overlap: "整理目录不能与暂存目录或其他目标重叠",
   target_mapping_in_use:
     "已有任务使用此目录映射；更换目录或库请添加新的连接，原连接可继续更新密钥",
@@ -98,7 +100,7 @@ export const errorWords: Record<string, string> = {
   qr_expired: "二维码已过期，请重新生成。",
   qr_poll_too_fast: "扫码状态仍在等待更新，请稍后查看。",
   layout_change_requires_migration:
-    "这个视频已按单视频发布。订阅需要分 P 剧集目录，请选择独立媒体库。",
+    "这个视频已按单视频发布。订阅需要分 P 剧集目录，请选择独立整理子目录或媒体库。",
   rule_error: "规则试算失败，请修正规则后启用。",
   rule_invalid: "规则格式或正则表达式不合法，请检查规则。",
   too_many_requests: "尝试过于频繁，请稍后重试。",

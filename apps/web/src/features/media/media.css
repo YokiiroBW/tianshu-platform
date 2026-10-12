@@ -109,6 +109,15 @@
 .media-warning {
   color: var(--color-red);
 }
+.media-directory-preview {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--color-muted);
+  overflow-wrap: anywhere;
+}
+.media-directory-preview span {
+  color: var(--color-text);
+}
 .media-message.media-warning {
   background: var(--color-red-soft);
 }

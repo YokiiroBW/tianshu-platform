@@ -7,6 +7,12 @@ import { RuleEditor } from "./RuleEditor";
 import { RuleResults } from "./RuleResults";
 import { ReasonNote } from "./ReasonNote";
 import {
+  destinationLabel,
+  destinationPath,
+  normalizeSubdirectory,
+  subdirectoryInputError,
+} from "./destination";
+import {
   bestQuality,
   emptyRules,
   type Preview,
@@ -25,6 +31,7 @@ type Draft = {
   source: Source;
   account_id: string;
   target_id: string;
+  destination_subdirectory: string;
   initial_sync: "future_only" | "history";
   quality: ReturnType<typeof bestQuality>;
   rules: Rules;
@@ -39,6 +46,7 @@ function draft(item?: Subscription): Draft {
         source: { ...item.source },
         account_id: item.account_id ?? "",
         target_id: item.target_id,
+        destination_subdirectory: item.destination_subdirectory ?? "",
         initial_sync: item.initial_sync,
         quality: { ...item.quality },
         rules: structuredClone({
@@ -54,6 +62,7 @@ function draft(item?: Subscription): Draft {
         source: { kind: "favorite", id: "" },
         account_id: "",
         target_id: "",
+        destination_subdirectory: "",
         initial_sync: "future_only",
         quality: bestQuality(),
         rules: emptyRules(),
@@ -132,9 +141,16 @@ function SubscriptionEditor({
       setStep(step + 1);
       return;
     }
+    if (subdirectoryInputError(value.destination_subdirectory)) return;
     const result = await media.command<{ subscription: Subscription }>(
       "subscriptions/save",
-      { ...value, account_id: value.account_id || null },
+      {
+        ...value,
+        account_id: value.account_id || null,
+        destination_subdirectory: normalizeSubdirectory(
+          value.destination_subdirectory,
+        ),
+      },
     );
     if (result) {
       media.setNotice("订阅已保存。完整建立成员基线后，才会处理新发现的视频。");
@@ -147,6 +163,10 @@ function SubscriptionEditor({
   const account = media.view?.accounts.find(
     (entry) => entry.account_id === value.account_id,
   );
+  const directoryError = subdirectoryInputError(value.destination_subdirectory);
+  const directory = directoryError
+    ? null
+    : destinationPath(target?.directory, value.destination_subdirectory);
   return (
     <section
       className="media-card media-subscription-editor"
@@ -326,6 +346,46 @@ function SubscriptionEditor({
               value={value.target_id}
               onChange={(target_id) => patch({ target_id })}
             />
+            <label>
+              整理子目录（可选）
+              <input
+                value={value.destination_subdirectory}
+                maxLength={1024}
+                placeholder="例如 UP主、收藏夹/学习"
+                aria-describedby="media-subdirectory-help media-subdirectory-preview"
+                aria-invalid={!!directoryError}
+                onChange={(event) =>
+                  patch({ destination_subdirectory: event.target.value })
+                }
+              />
+            </label>
+            <p className="muted" id="media-subdirectory-help">
+              相对于所选媒体库的整理根目录，留空使用原根目录。不同订阅可以选择同一媒体库的不同子目录。
+              {item &&
+                "修改目录后，下次扫描会将现有成员整理到新目录；已入队任务仍按原目录继续。"}
+            </p>
+            <p
+              className="media-directory-preview"
+              id="media-subdirectory-preview"
+            >
+              整理路径预览：
+              <span>
+                {directoryError
+                  ? "请修正子目录"
+                  : (directory ??
+                    (target
+                      ? "目标根目录未提供，无法预览完整路径"
+                      : "请先选择媒体库"))}
+              </span>
+            </p>
+            {directoryError && (
+              <p role="alert" className="media-warning">
+                {directoryError}
+              </p>
+            )}
+            <p className="muted">
+              相同视频、分 P 和画质会复用已有的有效下载，各目录分别整理。
+            </p>
             <div className="media-summary">
               <h4>保存前预览</h4>
               <dl className="media-facts">
@@ -368,6 +428,17 @@ function SubscriptionEditor({
                   <dd>{target?.label ?? "尚未选择"}</dd>
                 </div>
                 <div>
+                  <dt>整理目录</dt>
+                  <dd>
+                    {directoryError
+                      ? "请修正子目录"
+                      : destinationLabel(
+                          target?.directory,
+                          value.destination_subdirectory,
+                        )}
+                  </dd>
+                </div>
+                <div>
                   <dt>媒体服务器</dt>
                   <dd>
                     {target?.servers.length
@@ -393,7 +464,11 @@ function SubscriptionEditor({
             type="submit"
             className="button primary"
             disabled={
-              !!media.busy || testing || ruleError || (step === 1 && emptyRule)
+              !!media.busy ||
+              testing ||
+              ruleError ||
+              (step === 1 && emptyRule) ||
+              (step === 2 && !!directoryError)
             }
           >
             {media.busy === "subscriptions/save"
@@ -422,6 +497,9 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
   const targets = new Map(
     media.view?.targets.map((item) => [item.target_id, item.label]),
   );
+  const targetDirectories = new Map(
+    media.view?.targets.map((item) => [item.target_id, item.directory]),
+  );
   const attention = (item: Subscription) =>
     item.state === "auth_required" || item.state === "rule_error";
   const matches = subscriptions.filter((item) => {
@@ -438,6 +516,10 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
       sourceWords[item.source.kind],
       accounts.get(item.account_id ?? "") ?? "公开访问",
       targets.get(item.target_id) ?? item.target_id,
+      destinationLabel(
+        targetDirectories.get(item.target_id),
+        item.destination_subdirectory,
+      ),
     ];
     return (
       statusMatch &&
@@ -534,7 +616,7 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
             <input
               type="search"
               value={query}
-              placeholder="名称、来源 ID、账号或媒体库"
+              placeholder="名称、来源 ID、账号、媒体库或目录"
               onChange={(event) => {
                 setQuery(event.target.value);
                 setLimit(10);
@@ -658,6 +740,15 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
               <div>
                 <dt>目标媒体库</dt>
                 <dd>{targets.get(item.target_id) ?? item.target_id}</dd>
+              </div>
+              <div>
+                <dt>整理目录</dt>
+                <dd>
+                  {destinationLabel(
+                    targetDirectories.get(item.target_id),
+                    item.destination_subdirectory,
+                  )}
+                </dd>
               </div>
             </dl>
             {!item.baseline_ready && (

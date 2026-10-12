@@ -86,6 +86,7 @@ export const fixtureView = (): MediaView => ({
     {
       target_id: "test-library",
       label: "隔离网络视频库",
+      directory: "/media/Bilibili",
       state: "ready",
       servers: [
         {

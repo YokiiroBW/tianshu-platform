@@ -53,6 +53,7 @@ export type Subscription = {
   account_id: string | null;
   target_id: string;
   initial_sync: "future_only" | "history";
+  destination_subdirectory?: string;
   quality: Quality;
   rules: Rules;
   state: "active" | "paused" | "auth_required" | "rule_error";
@@ -80,6 +81,9 @@ export type Job = {
   updated_at: number;
   target_id: string;
   quality: Quality;
+  destination_subdirectory?: string;
+  destination_directory?: string | null;
+  download_reused_cids?: string[];
   actual_quality: string | null;
   layout?: "single" | "multipart";
   cancel_requested: boolean;

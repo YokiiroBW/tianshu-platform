@@ -6,6 +6,7 @@ import type { Job, JobDetail } from "./types";
 import type { MediaController } from "./useMediaController";
 import { useJobs } from "./useJobs";
 import { ReasonNote } from "./ReasonNote";
+import { destinationLabel } from "./destination";
 import { qualityWord, timestamp, tone, word } from "./wording";
 
 const serverWords: Record<string, string> = {
@@ -314,6 +315,23 @@ export function JobsPanel({ media }: { media: MediaController }) {
                       )?.label ?? job.target_id}
                     </dd>
                   </div>
+                  <div>
+                    <dt>整理目录</dt>
+                    <dd>
+                      {destinationLabel(
+                        job.destination_directory,
+                        job.destination_directory
+                          ? ""
+                          : job.destination_subdirectory,
+                      )}
+                    </dd>
+                  </div>
+                  {!!job.download_reused_cids?.length && (
+                    <div>
+                      <dt>下载复用</dt>
+                      <dd>已复用 {job.download_reused_cids.length} 个分 P</dd>
+                    </div>
+                  )}
                 </dl>
                 {job.progress != null && Number.isFinite(job.progress) ? (
                   <div className="media-progress">
@@ -451,6 +469,25 @@ export function JobsPanel({ media }: { media: MediaController }) {
                       <dt>当前阶段</dt>
                       <dd>{word(detail.job.stage)}</dd>
                     </div>
+                    <div>
+                      <dt>整理目录</dt>
+                      <dd>
+                        {destinationLabel(
+                          detail.job.destination_directory,
+                          detail.job.destination_directory
+                            ? ""
+                            : detail.job.destination_subdirectory,
+                        )}
+                      </dd>
+                    </div>
+                    {!!detail.job.download_reused_cids?.length && (
+                      <div>
+                        <dt>下载复用</dt>
+                        <dd>
+                          已复用 {detail.job.download_reused_cids.length} 个分 P
+                        </dd>
+                      </div>
+                    )}
                     {detail.job.layout && (
                       <div>
                         <dt>媒体组织</dt>

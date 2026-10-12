@@ -129,8 +129,236 @@ test("media subscription edit keeps scan interval and pause does not cancel jobs
   )!;
   expect(saved.body.expected_revision).toBe(3);
   expect(saved.body.interval_seconds).toBe(1800);
+  expect(saved.body.destination_subdirectory).toBe("");
   await page.getByRole("button", { name: "立即扫描", exact: true }).click();
   await expect(page.getByText("完整 · 3 个成员")).toBeVisible();
+});
+
+test("media subscriptions keep independent subdirectories under one target", async ({
+  page,
+}, info) => {
+  const state = await installMediaFixture(page);
+  await page.goto("/#/subscriptions/0");
+  await expectMediaSection(page, "视频订阅");
+  for (const entry of [
+    {
+      kind: "favorite",
+      label: "学习收藏夹",
+      input: " 收藏夹\\学习 ",
+      directory: "收藏夹/学习",
+    },
+    {
+      kind: "uploader",
+      label: "关注的 UP 主",
+      input: "UP主/合成作者",
+      directory: "UP主/合成作者",
+    },
+  ]) {
+    await page.getByRole("button", { name: "新建订阅", exact: true }).click();
+    await page.getByLabel("订阅名称").fill(entry.label);
+    await page.getByLabel("来源类型").selectOption(entry.kind);
+    await page.getByLabel("来源链接或 ID", { exact: true }).fill("123456");
+    await page.getByRole("button", { name: "下一步", exact: true }).click();
+    await page.getByRole("button", { name: "下一步", exact: true }).click();
+    await page.getByLabel("目标媒体库").selectOption("test-library");
+    await expect(page.locator("#media-subdirectory-preview")).toHaveText(
+      "整理路径预览：/media/Bilibili",
+    );
+    await page.getByLabel("整理子目录（可选）").fill(entry.input);
+    await expect(page.locator("#media-subdirectory-preview")).toHaveText(
+      `整理路径预览：/media/Bilibili/${entry.directory}`,
+    );
+    await expect(
+      page.getByText(
+        "相同视频、分 P 和画质会复用已有的有效下载，各目录分别整理。",
+      ),
+    ).toBeVisible();
+    if (entry.kind === "favorite")
+      await page.screenshot({
+        path: info.outputPath(`subdirectory-preview-${info.project.name}.png`),
+        fullPage: true,
+      });
+    await page.getByRole("button", { name: "保存订阅", exact: true }).click();
+    const card = page.locator(".media-subscriptions > article").filter({
+      has: page.getByRole("heading", { name: entry.label, exact: true }),
+    });
+    await expect(
+      card.getByText(`/media/Bilibili/${entry.directory}`, { exact: true }),
+    ).toBeVisible();
+  }
+  const saves = state.calls.filter(
+    (call) => call.operation === "subscriptions/save",
+  );
+  expect(saves.map((call) => call.body.target_id)).toEqual([
+    "test-library",
+    "test-library",
+  ]);
+  expect(saves.map((call) => call.body.destination_subdirectory)).toEqual([
+    "收藏夹/学习",
+    "UP主/合成作者",
+  ]);
+  await page.getByLabel("查找订阅").fill("收藏夹/学习");
+  await expect(page.locator(".media-subscriptions > article")).toHaveCount(1);
+  await expect(
+    page.getByRole("heading", { name: "学习收藏夹", exact: true }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
+    ),
+  ).toBe(true);
+});
+
+test("media subscription directory edits round trip and can return to the root", async ({
+  page,
+}, info) => {
+  const view = fixtureView();
+  view.subscriptions = [
+    { ...fixtureSubscription(), destination_subdirectory: "收藏夹/原目录" },
+  ];
+  const state = await installMediaFixture(page, view);
+  await page.goto("/#/subscriptions/0");
+  await expectMediaSection(page, "视频订阅");
+  const nextDirectory = `收藏夹/${"较长的学习资料目录".repeat(8)}`;
+  for (const directory of [nextDirectory, ""]) {
+    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    await page.getByRole("button", { name: "下一步", exact: true }).click();
+    await page.getByRole("button", { name: "下一步", exact: true }).click();
+    await expect(page.getByLabel("整理子目录（可选）")).toHaveValue(
+      directory ? "收藏夹/原目录" : nextDirectory,
+    );
+    await expect(
+      page.getByText(/修改目录后，下次扫描会将现有成员整理到新目录/),
+    ).toBeVisible();
+    await page.getByLabel("整理子目录（可选）").fill(directory);
+    await expect(page.locator("#media-subdirectory-preview")).toHaveText(
+      `整理路径预览：/media/Bilibili${directory ? `/${directory}` : ""}`,
+    );
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    ).toBe(true);
+    if (directory)
+      await page.screenshot({
+        path: info.outputPath(`subdirectory-long-${info.project.name}.png`),
+        fullPage: true,
+      });
+    await page.getByRole("button", { name: "保存订阅", exact: true }).click();
+    await expect(
+      page
+        .locator(".media-subscriptions > article")
+        .getByText(`/media/Bilibili${directory ? `/${directory}` : ""}`, {
+          exact: true,
+        }),
+    ).toBeVisible();
+  }
+  const saves = state.calls.filter(
+    (call) => call.operation === "subscriptions/save",
+  );
+  expect(saves.map((call) => call.body.destination_subdirectory)).toEqual([
+    nextDirectory,
+    "",
+  ]);
+  expect(saves.map((call) => call.body.expected_revision)).toEqual([2, 3]);
+  expect(
+    saves.every(
+      (call) => call.body.subscription_id === "existing-subscription",
+    ),
+  ).toBe(true);
+});
+
+test("media subdirectory errors keep the editor input for correction", async ({
+  page,
+}) => {
+  await installMediaFixture(page);
+  let rejected = false;
+  await page.route("**/api/web/media/subscriptions/save", async (route) => {
+    if (rejected) return route.fallback();
+    rejected = true;
+    await route.fulfill({
+      status: 400,
+      json: { code: "invalid_destination_subdirectory" },
+    });
+  });
+  await page.goto("/#/subscriptions/0");
+  await expectMediaSection(page, "视频订阅");
+  await page.getByRole("button", { name: "新建订阅", exact: true }).click();
+  await page.getByLabel("订阅名称").fill("待修正目录的收藏夹");
+  await page.getByLabel("来源链接或 ID", { exact: true }).fill("123456");
+  await page.getByRole("button", { name: "下一步", exact: true }).click();
+  await page.getByRole("button", { name: "下一步", exact: true }).click();
+  await page.getByLabel("目标媒体库").selectOption("test-library");
+  for (const invalid of ["/绝对目录", "../越界目录"]) {
+    await page.getByLabel("整理子目录（可选）").fill(invalid);
+    await expect(page.getByLabel("整理子目录（可选）")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    await expect(
+      page.getByRole("button", { name: "保存订阅", exact: true }),
+    ).toBeDisabled();
+    await expect(page.locator("#media-subdirectory-preview")).toHaveText(
+      "整理路径预览：请修正子目录",
+    );
+  }
+  await page.getByLabel("整理子目录（可选）").fill("CON");
+  await page.getByRole("button", { name: "保存订阅", exact: true }).click();
+  await expect(page.getByText(/请检查整理子目录：使用相对目录/)).toBeVisible();
+  await expect(page.getByLabel("整理子目录（可选）")).toHaveValue("CON");
+  await page.getByLabel("整理子目录（可选）").fill("收藏夹/已修正");
+  await page.getByRole("button", { name: "保存订阅", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "待修正目录的收藏夹", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("整理子目录（可选）")).toHaveCount(0);
+});
+
+test("media jobs display their fixed directory and only reported download reuse", async ({
+  page,
+}) => {
+  const view = fixtureView();
+  view.subscriptions = [
+    { ...fixtureSubscription(), destination_subdirectory: "收藏夹/新目录" },
+  ];
+  view.jobs = [
+    fixtureJob({
+      destination_subdirectory: "收藏夹/旧目录",
+      destination_directory: "/media/Bilibili/收藏夹/旧目录",
+      download_reused_cids: ["100"],
+      subscription_id: "existing-subscription",
+    }),
+    fixtureJob({ job_id: "legacy-job", title: "旧投影未提供路径" }),
+  ];
+  await installMediaFixture(page, view);
+  await page.goto("/#/subscriptions/2");
+  await expectMediaSection(page, "下载中心");
+  const card = page.locator('[data-job-id="media-job-one"]');
+  await expect(
+    card.getByText("/media/Bilibili/收藏夹/旧目录", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    card.getByText("已复用 1 个分 P", { exact: true }),
+  ).toBeVisible();
+  const legacy = page.locator('[data-job-id="legacy-job"]');
+  await expect(
+    legacy.getByText("目标根目录（完整路径未提供）", { exact: true }),
+  ).toBeVisible();
+  await expect(legacy.getByText(/已复用/)).toHaveCount(0);
+  await card.getByRole("button", { name: "查看任务详情", exact: true }).click();
+  const detail = page.getByRole("complementary", {
+    name: "任务详情",
+    exact: true,
+  });
+  await expect(
+    detail.getByText("/media/Bilibili/收藏夹/旧目录", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail.getByText("已复用 1 个分 P", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail.getByText("/media/Bilibili/收藏夹/新目录", { exact: true }),
+  ).toHaveCount(0);
 });
 
 test("media QR is generated locally and imported cookie leaves the editor", async ({
