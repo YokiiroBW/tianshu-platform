@@ -21,6 +21,14 @@ OTHER_BV = "BV1Ab4y1z7Qs"
 QUALITY = {"mode": "best", "quality_id": None, "allow_fallback": False}
 
 
+def favorite_page(total, members, more=False):
+    return {
+        "info": {"media_count": total},
+        "medias": [{"bvid": bvid} for bvid in members] if members is not None else None,
+        "has_more": more,
+    }
+
+
 class Upstream:
     def __init__(self):
         self.members = [BV]
@@ -28,6 +36,8 @@ class Upstream:
         self.description = "完整合成简介"
         self.anonymous_nav = True
         self.fail_page = False
+        self.favorite_pages = None
+        self.favorite_requests = []
         self.cookie_seen = []
         self.qr_state = "waiting"
         self.cover_enabled = False
@@ -95,13 +105,16 @@ class Upstream:
                 ],
             }
         elif path == "/x/v3/fav/resource/list":
+            page = int(request.query["pn"])
+            self.favorite_requests.append(page)
             if self.fail_page:
                 return web.json_response({"code": -503, "data": {}})
-            data = {
-                "info": {"media_count": len(self.members)},
-                "medias": [{"bvid": bvid} for bvid in self.members],
-                "has_more": False,
-            }
+            if self.favorite_pages is None:
+                data = favorite_page(len(self.members), self.members)
+            else:
+                if page > len(self.favorite_pages):
+                    return web.json_response({"code": -503, "data": {}})
+                data = self.favorite_pages[page - 1]
         elif path == "/x/space/wbi/arc/search":
             data = {
                 "page": {"count": len(self.members)},

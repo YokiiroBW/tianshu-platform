@@ -18,6 +18,7 @@ from media_runtime_fixtures import (
     PublicationFixture,
     SyntheticEngine,
     Upstream,
+    favorite_page,
     settings,
     subscription,
 )
@@ -180,6 +181,44 @@ class MediaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (await self.media.subscriptions.scan(saved["subscription_id"]))["queued"], 0
         )
+
+    async def test_hidden_favorite_entries_preserve_baseline_downloads_and_readd_dedupe(self):
+        self.upstream.favorite_pages = [favorite_page(3, [BV, OTHER_BV])]
+        sub = await self.save(subscription("history"))
+        identity = sub["subscription_id"]
+        first = await self.media.subscriptions.scan(identity)
+        self.assertTrue(first["subscription"]["baseline_ready"])
+        self.assertEqual(first["subscription"]["counts"]["members"], 2)
+        self.assertEqual(first["queued"], 2)
+        while job := self.media.repo.claim("hidden-favorite-test"):
+            await self.media.worker.run(job, "hidden-favorite-test")
+        jobs, _ = self.media.repo.jobs()
+        self.assertEqual(len(jobs), 2)
+        downloads = {
+            job["job_id"]: {cid: dict(value) for cid, value in job["downloads"].items()}
+            for job in jobs
+        }
+        files = {
+            value["file"]: Path(value["file"]).read_bytes()
+            for job in jobs
+            for value in job["downloads"].values()
+        }
+        self.assertEqual(len(files), 3)
+        calls = list(self.media.engine.calls)
+        parts = self.media.repo.member_parts(identity)
+        for members in ([BV], [BV, OTHER_BV]):
+            self.upstream.favorite_pages = [favorite_page(3, members)]
+            scanned = await self.media.subscriptions.scan(identity)
+            self.assertEqual(scanned["queued"], 0)
+            self.assertEqual(scanned["subscription"]["counts"]["members"], 2)
+            self.assertEqual(self.media.repo.members(identity), {BV, OTHER_BV})
+            self.assertEqual(self.media.repo.member_parts(identity), parts)
+            self.assertEqual(self.media.engine.calls, calls)
+            self.assertEqual(
+                {job["job_id"]: job["downloads"] for job in self.media.repo.jobs()[0]}, downloads
+            )
+            for path, contents in files.items():
+                self.assertEqual(Path(path).read_bytes(), contents)
 
     async def test_large_legal_unicode_policy_and_idempotency(self):
         body = subscription()

@@ -369,9 +369,16 @@ class Bilibili:
                     params={"media_id": identity, "pn": page, "ps": 20, "order": "mtime"},
                     cookie=cookie,
                 )
-                items = data.get("medias") or []
-                total = data.get("info", {}).get("media_count")
+                require(isinstance(data, dict), "source_invalid_response", 503)
+                info = data.get("info")
                 more = data.get("has_more")
+                require(
+                    isinstance(info, dict) and "medias" in data and type(more) is bool,
+                    "source_invalid_response",
+                    503,
+                )
+                items = [] if data["medias"] is None else data["medias"]
+                total = info.get("media_count")
             elif kind == "uploader":
                 query = await self.signed(
                     {
@@ -412,16 +419,25 @@ class Bilibili:
             if expected is None:
                 expected = total
             require(total == expected, "source_changed_during_scan", 503)
+            if kind == "favorite":
+                require(len(items) <= 20, "source_invalid_response", 503)
             for item in items:
                 require(isinstance(item, dict), "source_invalid_response", 503)
                 bvid = item.get("bvid") or item.get("bv_id")
                 # A deleted/private member still belongs to the baseline; never call an incomplete list empty.
                 require(isinstance(bvid, str), "source_member_unavailable", 503)
                 require_bvid(bvid)
+                if kind == "favorite":
+                    require(bvid not in seen, "source_scan_incomplete", 503)
                 seen.add(bvid)
                 require(len(seen) <= item_limit, "source_budget_exceeded", 503)
+            if kind == "favorite":
+                require(len(seen) <= expected, "source_scan_incomplete", 503)
             if not more:
-                require(len(seen) == expected, "source_scan_incomplete", 503)
+                # Favorites can count hidden entries that are absent from every visible page.
+                # Their explicit terminal marker completes this visible set, not media_count.
+                if kind != "favorite":
+                    require(len(seen) == expected, "source_scan_incomplete", 503)
                 return seen
             require(items, "source_scan_incomplete", 503)
         raise Fault("source_budget_exceeded", 503)
