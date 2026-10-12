@@ -2,7 +2,6 @@ import {
   ArrowRight,
   CheckCheck,
   Download,
-  HardDrive,
   Link,
   ListVideo,
   LoaderCircle,
@@ -12,6 +11,8 @@ import {
 } from "lucide-react";
 import { StatusRail } from "../../components/StatusRail";
 import { ReasonNote } from "./ReasonNote";
+import { StoragePanel } from "./StoragePanel";
+import { attentionJobsHref } from "./jobsNavigation";
 import type { MediaView } from "./types";
 import { sourceWords, timestamp, tone, word } from "./wording";
 import "./overview.css";
@@ -73,14 +74,6 @@ const shortcuts = [
   },
 ];
 const number = (value: number) => value.toLocaleString("zh-CN");
-function bytes(value: number) {
-  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-  const index =
-    value > 0
-      ? Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
-      : 0;
-  return `${(value / 1024 ** index).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${units[index]}`;
-}
 
 export function OverviewPanel({ view }: { view: MediaView }) {
   const counts = view.overview?.jobs;
@@ -94,13 +87,6 @@ export function OverviewPanel({ view }: { view: MediaView }) {
       counts.attention,
       counts.cancelled,
     ].every((value) => Number.isSafeInteger(value) && value >= 0);
-  const storage = view.overview?.storage;
-  const storageAvailable =
-    storage?.state === "available" &&
-    [storage.total_bytes, storage.used_bytes, storage.free_bytes].every(
-      (value) =>
-        typeof value === "number" && Number.isFinite(value) && value >= 0,
-    );
   const subscriptions = view.subscriptions;
   const groups = [
     {
@@ -128,7 +114,11 @@ export function OverviewPanel({ view }: { view: MediaView }) {
         {metrics.map((metric) => (
           <a
             className={`overview-kpi overview-tone-${metric.tone}`}
-            href="#/subscriptions/2"
+            href={
+              metric.key === "attention"
+                ? attentionJobsHref()
+                : "#/subscriptions/2"
+            }
             key={metric.key}
             aria-label={`${metric.label}，${countsAvailable ? number(counts[metric.key]) + " 个任务" : "总量暂不可用"}，打开下载中心`}
           >
@@ -318,52 +308,7 @@ export function OverviewPanel({ view }: { view: MediaView }) {
           </section>
         </div>
         <aside className="overview-side" aria-label="下载环境与快捷入口">
-          <section
-            className="media-card overview-storage"
-            aria-label="下载暂存磁盘"
-          >
-            <div className="media-section-head">
-              <h2>
-                <HardDrive aria-hidden="true" /> 下载暂存磁盘
-              </h2>
-              <span className="muted">
-                {storageAvailable ? "已读取" : "暂不可用"}
-              </span>
-            </div>
-            {storageAvailable ? (
-              <>
-                <div className="overview-storage-capacity">
-                  <strong>{bytes(storage!.free_bytes!)}</strong>
-                  <span className="muted">可用空间</span>
-                </div>
-                {storage!.total_bytes! > 0 && (
-                  <progress
-                    aria-label="下载暂存磁盘使用量"
-                    value={storage!.used_bytes!}
-                    max={storage!.total_bytes!}
-                  />
-                )}
-                <dl className="overview-storage-facts">
-                  <div>
-                    <dt>已用</dt>
-                    <dd>{bytes(storage!.used_bytes!)}</dd>
-                  </div>
-                  <div>
-                    <dt>总容量</dt>
-                    <dd>{bytes(storage!.total_bytes!)}</dd>
-                  </div>
-                </dl>
-              </>
-            ) : (
-              <div className="overview-empty">
-                <p>暂未取得磁盘容量</p>
-                <p className="muted">恢复读取后显示实际已用和可用空间。</p>
-              </div>
-            )}
-            <p className="overview-note muted">
-              平台下载暂存所在磁盘，容量包含同盘其他文件。
-            </p>
-          </section>
+          <StoragePanel storage={view.overview?.storage} />
           <section
             className="media-card overview-environment"
             aria-label="引擎、账号与发布目标"

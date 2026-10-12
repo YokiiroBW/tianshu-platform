@@ -246,7 +246,7 @@ test("actual media HTTP restores a waiting metadata job with an explicit overrid
   await waitForState(page, "发布完成", createdJob.job_id);
 });
 
-test("actual overview HTTP displays server totals and the staging disk facts", async ({
+test("actual overview HTTP displays server totals and media storage disk facts", async ({
   page,
 }, info) => {
   await login(page);
@@ -278,49 +278,66 @@ test("actual overview HTTP displays server totals and the staging disk facts", a
   await expect(page.locator(".overview-recent-row")).toHaveCount(
     Math.min(5, view.jobs.length),
   );
-  const disk = page.getByRole("region", { name: "下载暂存磁盘", exact: true });
+  const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(disk).toContainText(
-    "平台下载暂存所在磁盘，容量包含同盘其他文件。",
+    "媒体目录所在的存储磁盘，容量包含同盘其他文件。同盘目录合并显示。",
   );
-  if (storage.state === "available") {
+  expect(Array.isArray(storage.volumes)).toBe(true);
+  await expect(disk.locator(".overview-storage-volume")).toHaveCount(
+    storage.volumes.length,
+  );
+  for (const volume of storage.volumes) {
+    const displayed = disk.getByRole("region", {
+      name: volume.label,
+      exact: true,
+    });
+    for (const directory of volume.directories)
+      await expect(displayed).toContainText(directory);
+    if (volume.state !== "available") {
+      expect([
+        volume.total_bytes,
+        volume.used_bytes,
+        volume.free_bytes,
+      ]).toEqual([null, null, null]);
+      await expect(displayed).toContainText("暂未取得磁盘容量");
+      await expect(displayed.getByRole("progressbar")).toHaveCount(0);
+      continue;
+    }
     for (const value of [
-      storage.total_bytes,
-      storage.used_bytes,
-      storage.free_bytes,
+      volume.total_bytes,
+      volume.used_bytes,
+      volume.free_bytes,
     ]) {
       expect(typeof value).toBe("number");
       expect(value).toBeGreaterThanOrEqual(0);
     }
     const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
     const unit =
-      storage.free_bytes! > 0
-        ? Math.min(
-            Math.floor(Math.log(storage.free_bytes!) / Math.log(1024)),
-            5,
-          )
+      volume.free_bytes! > 0
+        ? Math.min(Math.floor(Math.log(volume.free_bytes!) / Math.log(1024)), 5)
         : 0;
-    await expect(disk.locator(".overview-storage-capacity strong")).toHaveText(
-      `${(storage.free_bytes! / 1024 ** unit).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${units[unit]}`,
+    await expect(
+      displayed.locator(".overview-storage-capacity strong"),
+    ).toHaveText(
+      `${(volume.free_bytes! / 1024 ** unit).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${units[unit]}`,
     );
-    if (storage.total_bytes! > 0) {
-      await expect(disk.getByRole("progressbar")).toHaveAttribute(
+    if (volume.total_bytes! > 0) {
+      await expect(displayed.getByRole("progressbar")).toHaveAttribute(
         "max",
-        String(storage.total_bytes),
+        String(volume.total_bytes),
       );
-      await expect(disk.getByRole("progressbar")).toHaveAttribute(
+      await expect(displayed.getByRole("progressbar")).toHaveAttribute(
         "value",
-        String(storage.used_bytes),
+        String(volume.used_bytes),
       );
     }
-  } else {
-    expect([
-      storage.total_bytes,
-      storage.used_bytes,
-      storage.free_bytes,
-    ]).toEqual([null, null, null]);
-    await expect(
-      disk.getByText("暂未取得磁盘容量", { exact: true }),
-    ).toBeVisible();
+  }
+  if (!storage.volumes.length) {
+    await expect(disk).toContainText(
+      storage.state === "not_configured"
+        ? "尚未配置媒体存储目录"
+        : "暂未取得磁盘容量",
+    );
     await expect(disk.getByRole("progressbar")).toHaveCount(0);
   }
   expect(
@@ -330,6 +347,88 @@ test("actual overview HTTP displays server totals and the staging disk facts", a
   ).toBe(true);
   await page.screenshot({
     path: info.outputPath(`overview-http-${info.project.name}.png`),
+    fullPage: true,
+  });
+});
+
+test("actual media HTTP deletes a waiting record with revision checks counters and replay", async ({
+  page,
+  request,
+}, info) => {
+  const bvid = `BV1${randomUUID().replaceAll("-", "").slice(0, 9)}`;
+  await control(request, { description: "", parts: { [bvid]: ["777777777"] } });
+  await login(page);
+  await parse(page, bvid);
+  const created = page.waitForResponse((response) =>
+    response.url().endsWith("/api/web/media/enqueue"),
+  );
+  await page
+    .getByRole("button", { name: "创建下载任务（1 个分 P）", exact: true })
+    .click();
+  const job = (await (await created).json()).jobs[0];
+  await waitForState(page, "等待补全元数据", job.job_id);
+  const card = page.locator(`article.media-job[data-job-id="${job.job_id}"]`);
+  await card.getByRole("button", { name: "查看任务详情", exact: true }).click();
+  const detail = page.getByRole("complementary", { name: "任务详情" });
+  await expect(
+    detail.getByRole("button", { name: "删除记录", exact: true }),
+  ).toBeVisible();
+  const session = await (await page.request.get("/api/web/session")).json();
+  const headers = {
+    "X-CSRF-Token": session.csrf,
+    Origin: new URL(page.url()).origin,
+  };
+  const before = await (
+    await page.request.post("/api/web/media/view", { headers, data: {} })
+  ).json();
+  const conflict = await page.request.post("/api/web/media/jobs/delete", {
+    headers,
+    data: { job_id: job.job_id, expected_revision: 1, client_id: randomUUID() },
+  });
+  expect(conflict.status()).toBe(409);
+  await expect(card).toHaveCount(1);
+  await expect(detail).toBeVisible();
+  const deleted = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/web/media/jobs/delete") &&
+      response.request().method() === "POST",
+  );
+  await detail.getByRole("button", { name: "删除记录", exact: true }).click();
+  const response = await deleted;
+  expect(response.ok()).toBe(true);
+  expect(await response.json()).toMatchObject({
+    deleted: true,
+    job_id: job.job_id,
+  });
+  await expect(detail).toHaveCount(0);
+  await expect(card).toHaveCount(0);
+  const replay = await page.request.post("/api/web/media/jobs/delete", {
+    headers,
+    data: response.request().postDataJSON(),
+  });
+  expect(replay.ok()).toBe(true);
+  expect(await replay.json()).toMatchObject({
+    deleted: true,
+    job_id: job.job_id,
+    replayed: true,
+  });
+  const missing = await page.request.post("/api/web/media/jobs/detail", {
+    headers,
+    data: { job_id: job.job_id },
+  });
+  expect(missing.status()).toBe(404);
+  const after = await (
+    await page.request.post("/api/web/media/view", { headers, data: {} })
+  ).json();
+  expect(after.overview.jobs.total).toBe(before.overview.jobs.total - 1);
+  expect(after.overview.jobs.attention).toBe(
+    before.overview.jobs.attention - 1,
+  );
+  expect(
+    after.jobs.some((item: { job_id: string }) => item.job_id === job.job_id),
+  ).toBe(false);
+  await page.screenshot({
+    path: info.outputPath(`records-http-deleted-${info.project.name}.png`),
     fullPage: true,
   });
 });

@@ -100,13 +100,15 @@ test("overview uses full counters independently of its hundred recent jobs", asy
     }),
   ).toBeVisible();
   await expect(page.locator(".overview-subscription-card")).toHaveCount(3);
-  for (const link of await kpis(page).getByRole("link").all())
+  for (const link of await kpis(page).getByRole("link").all()) {
+    if ((await link.getAttribute("href"))?.includes("media-filter")) continue;
     await expect(link).toHaveAttribute("href", "#/subscriptions/2");
+  }
   await kpis(page)
     .getByRole("link", { name: /^需要处理，18 个任务/ })
     .click();
   await expect(page).toHaveURL(/#\/subscriptions\/2$/);
-  await expect(page.getByLabel("筛选任务")).toBeVisible();
+  await expect(page.getByLabel("筛选任务")).toHaveValue("attention");
 });
 
 test("overview preserves real zeros and concise empty sections", async ({
@@ -186,19 +188,17 @@ test("older servers without overview never turn a recent snapshot into totals", 
   ]);
 });
 
-test("staging storage can be unknown without fabricating zero capacity", async ({
+test("media storage shows distinct disks and unknown readings without fabricated zeros", async ({
   page,
-}) => {
+}, info) => {
   const view = dashboard();
   view.overview!.storage = {
     state: "unavailable",
-    total_bytes: null,
-    used_bytes: null,
-    free_bytes: null,
+    volumes: [],
   };
   const state = await installMediaFixture(page, view);
   await page.goto("/#/subscriptions");
-  const disk = page.getByRole("region", { name: "下载暂存磁盘", exact: true });
+  const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(
     disk.getByText("暂未取得磁盘容量", { exact: true }),
   ).toBeVisible();
@@ -206,9 +206,18 @@ test("staging storage can be unknown without fabricating zero capacity", async (
   await expect(disk).not.toContainText("0 B");
   state.view.overview!.storage = {
     state: "available",
-    total_bytes: 1024,
-    used_bytes: null,
-    free_bytes: 1024,
+    volumes: [
+      {
+        storage_id: "media-one",
+        label: "视频存储盘",
+        target_ids: ["test-library", "another-library"],
+        directories: ["/media/Bilibili", "/media/纪录片/较长目录名"],
+        state: "available",
+        total_bytes: 1024,
+        used_bytes: null,
+        free_bytes: 1024,
+      },
+    ],
   };
   await page.getByRole("button", { name: "读取状态", exact: true }).click();
   await expect(
@@ -216,18 +225,81 @@ test("staging storage can be unknown without fabricating zero capacity", async (
   ).toBeVisible();
   state.view.overview!.storage = {
     state: "available",
-    total_bytes: 1024 ** 4,
-    used_bytes: 1024 ** 3 * 640,
-    free_bytes: 1024 ** 3 * 384,
+    volumes: [
+      {
+        ...state.view.overview!.storage.volumes[0],
+        total_bytes: 1024 ** 4,
+        used_bytes: 1024 ** 3 * 640,
+        free_bytes: 1024 ** 3 * 384,
+      },
+      {
+        storage_id: "media-two",
+        label: "外接媒体盘",
+        target_ids: ["second-library"],
+        directories: ["/media/USB/音乐现场"],
+        state: "available",
+        total_bytes: 1024 ** 4 * 2,
+        used_bytes: 1024 ** 4,
+        free_bytes: 1024 ** 4,
+      },
+      {
+        storage_id: "media-missing",
+        label: "离线媒体盘",
+        target_ids: ["offline-library"],
+        directories: ["/media/offline"],
+        state: "unavailable",
+        total_bytes: null,
+        used_bytes: null,
+        free_bytes: null,
+      },
+    ],
   };
   await page.getByRole("button", { name: "读取状态", exact: true }).click();
   await expect(disk.getByText("384 GiB", { exact: true })).toBeVisible();
-  await expect(disk.getByRole("progressbar")).toHaveAttribute(
+  await expect(disk.getByRole("progressbar")).toHaveCount(2);
+  await expect(disk.getByRole("progressbar").first()).toHaveAttribute(
     "max",
     String(1024 ** 4),
   );
   await expect(disk).toContainText(
-    "平台下载暂存所在磁盘，容量包含同盘其他文件。",
+    "媒体目录所在的存储磁盘，容量包含同盘其他文件。同盘目录合并显示。",
+  );
+  await expect(disk.locator(".overview-storage-volume")).toHaveCount(3);
+  await expect(disk).toContainText("/media/Bilibili");
+  await expect(disk).toContainText("/media/纪录片/较长目录名");
+  const missing = disk.getByRole("region", { name: "离线媒体盘", exact: true });
+  await expect(missing).toContainText("暂未取得磁盘容量");
+  await expect(missing).not.toContainText("0 B");
+  await expect(page.getByText("下载暂存磁盘", { exact: true })).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: info.outputPath(`storage-volumes-${info.project.name}.png`),
+    fullPage: true,
+  });
+});
+
+test("media storage distinguishes no target directory from actual zero free space", async ({
+  page,
+}) => {
+  const view = fixtureView();
+  view.overview!.storage = { state: "not_configured", volumes: [] };
+  const state = await installMediaFixture(page, view);
+  await page.goto("/#/subscriptions");
+  const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
+  await expect(disk).toContainText("尚未配置媒体存储目录");
+  await expect(disk.getByRole("progressbar")).toHaveCount(0);
+  state.view.overview!.storage = fixtureView().overview!.storage;
+  state.view.overview!.storage.volumes[0].free_bytes = 0;
+  state.view.overview!.storage.volumes[0].used_bytes = 1024 ** 4;
+  await page.getByRole("button", { name: "读取状态", exact: true }).click();
+  await expect(disk.getByText("0 B", { exact: true })).toBeVisible();
+  await expect(disk.getByRole("progressbar")).toHaveAttribute(
+    "value",
+    String(1024 ** 4),
   );
 });
 

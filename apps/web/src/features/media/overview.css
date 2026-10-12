@@ -267,6 +267,36 @@
   width: 1.125rem;
   height: 1.125rem;
 }
+.overview-storage-volume {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.overview-storage-volume + .overview-storage-volume {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+}
+.overview-storage-volume .media-section-head {
+  margin: 0;
+  align-items: start;
+}
+.overview-storage-volume h3 {
+  overflow-wrap: anywhere;
+}
+.overview-storage-volume .media-section-head > span {
+  flex-shrink: 0;
+  font-size: var(--text-small);
+}
+.overview-storage-directories {
+  display: grid;
+  gap: var(--space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  color: var(--color-muted);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
 .overview-storage-capacity {
   display: grid;
   gap: var(--space-1);

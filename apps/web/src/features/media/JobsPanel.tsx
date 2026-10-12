@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowLeft, RefreshCw, X } from "lucide-react";
+import { ArrowLeft, RefreshCw, Trash2, X } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
 import type { Job, JobDetail } from "./types";
@@ -8,6 +8,7 @@ import { useJobs } from "./useJobs";
 import { ReasonNote } from "./ReasonNote";
 import { destinationLabel } from "./destination";
 import { qualityWord, timestamp, tone, word } from "./wording";
+import { consumeJobsFilter, initialJobsFilter } from "./jobsNavigation";
 
 const serverWords: Record<string, string> = {
   verified: "已核对",
@@ -143,16 +144,22 @@ export function JobsPanel({ media }: { media: MediaController }) {
   const [selected, setSelected] = useState("");
   const [detail, setDetail] = useState<JobDetail | null>(null);
   const [reading, setReading] = useState(false);
-  const [filter, setFilter] = useState("all");
+  const [filter, setFilter] = useState(initialJobsFilter);
+  const [deleting, setDeleting] = useState("");
   const [editorKey, setEditorKey] = useState(0);
   const trigger = useRef<HTMLElement | null>(null);
   const panel = useRef<HTMLElement>(null);
   const generation = useRef(0);
   const controller = useRef(media);
   controller.current = media;
+  const currentSelection = useRef(selected);
+  currentSelection.current = selected;
   const listing = useJobs(media, filter);
+  const currentListing = useRef(listing);
+  currentListing.current = listing;
   const jobs = listing.jobs;
   const visible = jobs;
+  useEffect(consumeJobsFilter, []);
   useEffect(
     () => () => {
       generation.current += 1;
@@ -202,6 +209,31 @@ export function JobsPanel({ media }: { media: MediaController }) {
       if (selected === job.job_id) void read(job.job_id, false);
     }
   };
+  const deleteRecord = async (job: Job) => {
+    setDeleting(job.job_id);
+    const result = await media.command<{ deleted: boolean; job_id: string }>(
+      "jobs/delete",
+      { job_id: job.job_id, expected_revision: job.revision },
+    );
+    if (result?.deleted && result.job_id === job.job_id) {
+      if (currentSelection.current === job.job_id) close();
+      media.setNotice("任务记录已删除，已入库的媒体文件会保留。");
+      // A deletion invalidates every continuation of this filtered list.
+      currentListing.current.reset();
+    }
+    setDeleting("");
+  };
+  const deleteButton = (job: Job) =>
+    job.can_delete ? (
+      <button
+        className="button"
+        disabled={!!media.busy || !!deleting}
+        onClick={() => void deleteRecord(job)}
+      >
+        <Trash2 aria-hidden="true" />
+        {deleting === job.job_id ? "正在删除…" : "删除记录"}
+      </button>
+    ) : null;
   const selectedSnapshot = jobs.find((job) => job.job_id === selected);
   const serverLabel = (id: string) =>
     media.view?.targets
@@ -214,6 +246,9 @@ export function JobsPanel({ media }: { media: MediaController }) {
           <h2>下载与入库进度</h2>
           <p className="muted">
             下载、资产发布和媒体服务器核对分别记账。刷新失败不会触发重新下载。
+          </p>
+          <p className="muted">
+            删除记录仅移除任务信息，已入库的媒体文件会保留。
           </p>
         </div>
         <div className="media-actions">
@@ -380,6 +415,7 @@ export function JobsPanel({ media }: { media: MediaController }) {
                       重试任务
                     </button>
                   )}
+                  {deleteButton(job)}
                 </div>
               </article>
             ))}
@@ -456,6 +492,7 @@ export function JobsPanel({ media }: { media: MediaController }) {
                     <RefreshCw aria-hidden="true" />
                     重新读取详情
                   </button>
+                  {deleteButton(detail.job)}
                   <dl className="media-facts">
                     <div>
                       <dt>任务标识</dt>

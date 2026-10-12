@@ -89,6 +89,7 @@ export type Job = {
   cancel_requested: boolean;
   can_retry: boolean;
   can_cancel: boolean;
+  can_delete: boolean;
   revision: number;
   asset_receipt: Record<string, unknown> | null;
   library_results: {
@@ -98,6 +99,20 @@ export type Job = {
     code: string;
     item_id: string | null;
   }[];
+};
+export type StorageVolume = {
+  storage_id: string;
+  label: string;
+  target_ids: string[];
+  directories: string[];
+  state: "available" | "unavailable";
+  total_bytes: number | null;
+  used_bytes: number | null;
+  free_bytes: number | null;
+};
+export type MediaStorage = {
+  state: "available" | "unavailable" | "not_configured";
+  volumes: StorageVolume[];
 };
 export type MediaView = {
   configured: boolean;
@@ -117,12 +132,7 @@ export type MediaView = {
       attention: number;
       cancelled: number;
     };
-    storage: {
-      state: "available" | "unavailable";
-      total_bytes: number | null;
-      used_bytes: number | null;
-      free_bytes: number | null;
-    };
+    storage: MediaStorage;
   } | null;
 };
 export type Format = { quality_id: string; label: string };

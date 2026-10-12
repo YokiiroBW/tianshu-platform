@@ -30,6 +30,7 @@ export const fixtureJob = (overrides: Partial<Job> = {}): Job => ({
   cancel_requested: false,
   can_retry: false,
   can_cancel: true,
+  can_delete: false,
   revision: 3,
   asset_receipt: null,
   library_results: [],
@@ -111,9 +112,18 @@ export const fixtureView = (): MediaView => ({
     },
     storage: {
       state: "available",
-      total_bytes: 1024 ** 4,
-      used_bytes: 1024 ** 3 * 640,
-      free_bytes: 1024 ** 3 * 384,
+      volumes: [
+        {
+          storage_id: "media-disk-one",
+          label: "媒体存储盘",
+          target_ids: ["test-library"],
+          directories: ["/media/Bilibili"],
+          state: "available",
+          total_bytes: 1024 ** 4,
+          used_bytes: 1024 ** 3 * 640,
+          free_bytes: 1024 ** 3 * 384,
+        },
+      ],
     },
   },
 });
@@ -146,6 +156,7 @@ export async function installMediaFixture(page: Page, initial = fixtureView()) {
     resolveHandler: null as ((route: Route) => Promise<void>) | null,
     detailHandler: null as ((route: Route) => Promise<void>) | null,
     listHandler: null as ((route: Route) => Promise<void>) | null,
+    deleteHandler: null as ((route: Route) => Promise<void>) | null,
   };
   await page.route("**/api/web/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -195,6 +206,27 @@ export async function installMediaFixture(page: Page, initial = fixtureView()) {
       const job = state.view.jobs.find((item) => item.job_id === body.job_id)!;
       job.revision += 1;
       return reply({ job, replayed: false });
+    }
+    if (operation === "jobs/delete") {
+      if (state.deleteHandler) return state.deleteHandler(route);
+      const job = state.view.jobs.find((item) => item.job_id === body.job_id);
+      if (!job) return reply({ code: "not_found" }, 404);
+      if (body.expected_revision !== job.revision)
+        return reply({ code: "revision_conflict" }, 409);
+      if (!job.can_delete) return reply({ code: "job_not_deletable" }, 409);
+      state.view.jobs = state.view.jobs.filter(
+        (item) => item.job_id !== job.job_id,
+      );
+      if (state.view.overview) {
+        state.view.overview.jobs.total -= 1;
+        if (
+          ["failed", "unknown", "waiting_metadata", "auth_required"].includes(
+            job.state,
+          )
+        )
+          state.view.overview.jobs.attention -= 1;
+      }
+      return reply({ deleted: true, job_id: job.job_id });
     }
     if (operation === "resolve")
       return state.resolveHandler

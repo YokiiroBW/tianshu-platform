@@ -94,6 +94,8 @@ export const errorWords: Record<string, string> = {
   quality_unavailable: "所选画质目前不可取得，请调整画质或重新登录。",
   target_unavailable: "目标媒体库暂不可用，请检查账号与媒体库。",
   revision_conflict: "记录已被其他操作更新，请重新读取后修改。",
+  job_not_deletable:
+    "任务仍在执行，暂时不能删除记录。请等待任务结束后重新读取。",
   version_conflict: "记录版本已改变，请重新读取后修改。",
   idempotency_conflict: "这次请求与原操作不一致，请重新读取后操作。",
   dependency_unavailable: "后台或上游暂不可用，请稍后重试。",
