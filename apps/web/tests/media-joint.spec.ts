@@ -12,6 +12,8 @@ import type { MediaView } from "../src/features/media/types";
 const BV = "BV1xx411c7mD";
 const OTHER = "BV1Ab4y1z7Qs";
 const controlUrl = process.env.MEDIA_FIXTURE_CONTROL;
+const localServer = process.env.MEDIA_FIXTURE_LOCAL_SERVER === "1";
+const finishedLabel = localServer ? "核对完成" : "发布完成";
 async function control(request: APIRequestContext, body: object) {
   expect(
     controlUrl,
@@ -111,16 +113,22 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
     .getByRole("button", { name: "创建下载任务（2 个分 P）", exact: true })
     .click();
   const createdJob = (await (await created).json()).jobs[0];
-  await waitForState(page, "发布完成", createdJob.job_id);
+  await waitForState(page, finishedLabel, createdJob.job_id);
   await page
     .locator(`article.media-job[data-job-id="${createdJob.job_id}"]`)
     .getByRole("button", { name: "查看任务详情", exact: true })
     .click();
   const detail = page.getByRole("complementary", { name: "任务详情" });
   await expect(detail.getByText("1080P", { exact: true })).toBeVisible();
-  await expect(
-    detail.getByText("目标库未配置媒体服务器。发布完成不代表服务器核对完成。"),
-  ).toBeVisible();
+  if (localServer) {
+    await expect(detail.getByText("已核对", { exact: true })).toBeVisible();
+  } else {
+    await expect(
+      detail.getByText(
+        "目标库未配置媒体服务器。发布完成不代表服务器核对完成。",
+      ),
+    ).toBeVisible();
+  }
   await expect(detail.getByText("尚无已确认的资产发布回执。")).toHaveCount(0);
   await page.screenshot({
     path: info.outputPath(`media-http-${info.project.name}.png`),
@@ -130,7 +138,7 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
   await page.goto("/#/settings/0");
   await expect(
     page.locator("article.tasks-item").filter({ hasText: BV }).first(),
-  ).toContainText("发布完成（未配置媒体服务器）");
+  ).toContainText(localServer ? "核对完成" : "发布完成（未配置媒体服务器）");
   await page.goto("/#/subscriptions/1");
   await selectMediaSection(page, "视频订阅");
   const sources = {
@@ -171,6 +179,10 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
     }
     await page.getByRole("button", { name: "下一步", exact: true }).click();
     await page.getByLabel("目标媒体库").selectOption("synthetic-network-video");
+    if (localServer)
+      await page
+        .getByLabel("整理子目录（可选）")
+        .fill(`joint/${info.project.name}/${kind}/${randomUUID().slice(0, 6)}`);
     await page.getByRole("button", { name: "保存订阅", exact: true }).click();
     const card = page
       .locator("article.media-card")
@@ -202,7 +214,7 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
   await page.getByLabel("筛选任务").selectOption("finished");
   await expect(
     page.locator("article.media-job").filter({ hasText: newMember }).first(),
-  ).toContainText("发布完成", { timeout: 30_000 });
+  ).toContainText(finishedLabel, { timeout: 30_000 });
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -243,7 +255,7 @@ test("actual media HTTP restores a waiting metadata job with an explicit overrid
     ),
   ).toBeVisible();
   await page.getByRole("button", { name: "返回任务列表", exact: true }).click();
-  await waitForState(page, "发布完成", createdJob.job_id);
+  await waitForState(page, finishedLabel, createdJob.job_id);
 });
 
 test("actual overview HTTP displays server totals and media storage disk facts", async ({
@@ -283,6 +295,10 @@ test("actual overview HTTP displays server totals and media storage disk facts",
     "媒体目录所在的存储磁盘，容量包含同盘其他文件。同盘目录合并显示。",
   );
   expect(Array.isArray(storage.volumes)).toBe(true);
+  if (localServer) {
+    expect(storage.state).toBe("available");
+    expect(storage.volumes.length).toBeGreaterThan(0);
+  }
   await expect(disk.locator(".overview-storage-volume")).toHaveCount(
     storage.volumes.length,
   );
