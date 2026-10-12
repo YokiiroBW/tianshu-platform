@@ -50,9 +50,26 @@ staging_directory 需要同时作为 AssetLibrary 已信任 inbound 根的只读
 
 先取得相同下载键的跨进程 OS 文件锁，再通过 Repository 领取 owner/generation/30秒租约；每5秒续全局与任务租约。OS锁阻止仍在下载但暂时失去心跳的进程被并发接管；进程退出自动释放锁，租约过期后接管使用新generation目录。用户取消终止引擎进程树并释放占用；等待者可取消，正常等待不增加失败重试次数。只有完整验证且成功提交的源才是ready，迟到旧generation不能写回。整理根锁争用在既有 Publications 中可取消地等待，仍由worker维护任务租约。
 
-视频优先硬链接到独立成品包和目标目录，跨文件系统或不支持链接时复制；NFO/source/封面分别输出。服务从不原地改写已经验证的源视频，修订使用新文件和新目录；重启时恢复incoming也先解除原链接再复制，避免截断共享inode。外部原地修改硬链接视频会影响所有引用，后续复用和整理核验会拒绝已变内容。缓存、旧下载及previous目录均不自动清理，备份需包含这些持久引用。
+成品包视频继续复用全局下载源；直接整理目标在自己的 `.tianshu-transfer/videos` 中保留按SHA256和长度验证的无扩展名共享文件。staging与媒体目标跨卷时首次复制一份到该目标卷，后续目录链接这一份；文件系统不支持链接时安全复制并报告实际模式。NFO/source/封面分别输出。服务从不原地改写已经验证的源视频，修订使用新文件和新目录，incoming恢复仍通过共享源安装。外部原地修改硬链接视频会影响所有引用，后续复用和整理核验会拒绝已变内容。缓存、旧下载及previous目录均不自动清理，备份需包含这些持久引用。
 
 相关验证沿用 unittest：`python -m unittest discover -s tests/backend -p 'test_media*.py' -v`。新增全局源用例计数真正的 download 调用，覆盖两个独立进程和实例、租约/取消、旧记录/重启、损坏/缺失、best/exact/fallback；standalone夹具用真实FFmpeg视频完成两个中文目录、第二目标、独立NFO和订阅改目录/新增P。它们不证明真实B站账号下载或NAS大文件性能。
+
+## 媒体卷内硬链接与既有成品转换（TS-126）
+
+共享视频职责在 `video_storage.py`，不新增下载账本、数据库schema或公共合同。FileOrganizer在既有库锁内写控制区临时文件，复验长度/SHA256、fsync后原子安装；命中共享源仍复验。控制文件及临时文件没有媒体扩展名，不生成额外NFO或媒体条目。不同字节内容的画质拥有不同摘要，不串用文件；相同字节内容可共用同一inode。损坏的池文件不作为命中，可从已验证源原子换成新inode，不就地修补已发布视频。`previous-*`不自动清理。
+
+直接整理回执新增结构化 `video_storage={mode:"hardlink"|"copy"|"mixed",files:[{path,mode:"hardlink"|"copy"}]}`，由实际文件inode关联观测，复制降级不声称存储去重。网页现有字段保持；目录输入首段 `.tianshu-transfer`（不区分大小写）属于内部控制区，报 `invalid_destination_subdirectory`。
+
+上线后的明确维护入口：
+
+```python
+target = media.config["targets"][target_id]
+result = await media.local(media.publisher.organizer.deduplicate, target, operation_id)
+```
+
+同步脚本也可直接 `media.publisher.organizer.deduplicate(target, operation_id)`。每次只处理一个明确operation，不扫描整个库。操作必须indexed、有回执，且当前目录的marker、全部manifest文件哈希和自有文件集合一致；旧版本marker或外来文件拒绝转换。仅视频以控制区临时硬链接+原子replace转换，元数据/marker及job、operation/version、package、清单身份保持。转换成功后才更新file_transfer回执的video_storage观测；失败不记假成功，可重复调用恢复，已链接时不重写。文件系统不支持硬链接时保留现有有效复制，返回mode=copy。返回 `{operation_id,video_storage,receipt}` 不含私有绝对池路径。
+
+该维护方法沿用非阻塞库锁，实际被占用时报busy；协调脚本在现有媒体worker暂不写该库时逐一调用，不在锁内嵌套另一个Organizer方法。媒体文件删除一处不会破坏其它硬链接；外部媒体目录继续按既有挂载和备份规则管理。
 
 ## 独立资产服务整链验证
 

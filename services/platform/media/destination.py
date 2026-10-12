@@ -18,6 +18,7 @@ def subdirectory(value=""):
     if not value:
         return ""
     parts = value.split("/")
+    require(parts[0].casefold() != ".tianshu-transfer", "invalid_destination_subdirectory", 400)
     require(
         all(
             part not in {"", ".", ".."}

@@ -1,4 +1,5 @@
 import base64
+import errno
 import hashlib
 import json
 import tempfile
@@ -16,7 +17,7 @@ from services.platform.media.repository import Repository
 from services.platform.media.runtime import PackageContract
 
 
-class FileOrganizerTests(unittest.TestCase):
+class OrganizerFixture:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -69,6 +70,8 @@ class FileOrganizerTests(unittest.TestCase):
         operation = self.library.prepare(self.target, package, key)
         return self.library.publish(self.target, operation)
 
+
+class FileOrganizerTests(OrganizerFixture, unittest.TestCase):
     def test_default_configuration_and_explicit_remote_compatibility(self):
         settings = {
             "database_path": str(self.root / "platform.sqlite"),
@@ -121,6 +124,13 @@ class FileOrganizerTests(unittest.TestCase):
         destination = Path(self.target["directory"]) / second["relative"]
         self.assertIn("updated", (destination / "movie.nfo").read_text())
         self.assertEqual((destination / "video.mp4").read_bytes(), b"synthetic-video")
+        previous_video = (
+            Path(self.target["directory"])
+            / ".tianshu-transfer"
+            / ("previous-" + second["operation_id"])
+            / "video.mp4"
+        )
+        self.assertTrue((destination / "video.mp4").samefile(previous_video))
         third = {
             **self.package("third"),
             "base_operation_id": second["operation_id"],
@@ -134,7 +144,8 @@ class FileOrganizerTests(unittest.TestCase):
     def test_subdirectories_copy_fallback_and_recovery_keep_relative_receipt(self):
         package = {**self.package(), "destination_subdirectory": "中文/收藏"}
         with patch(
-            "services.platform.media.organizer.os.link", side_effect=OSError("cross device")
+            "services.platform.media.video_storage.os.link",
+            side_effect=OSError(errno.EXDEV, "cross device"),
         ):
             operation = self.publish(package)
         self.assertEqual(operation["relative"], "中文/收藏/bilibili-BV1xx411c7mD-cid-123")
@@ -143,6 +154,7 @@ class FileOrganizerTests(unittest.TestCase):
         self.assertFalse(source.samefile(destination / "video.mp4"))
         self.assertEqual(source.read_bytes(), (destination / "video.mp4").read_bytes())
         self.assertEqual(self.library.read(self.target, operation["operation_id"]), operation)
+        self.assertEqual(operation["receipt"]["video_storage"]["mode"], "copy")
 
     def test_crash_after_install_before_receipt_recovers_on_read(self):
         operation = self.library.prepare(self.target, self.package(), "crash")

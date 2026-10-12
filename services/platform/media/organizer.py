@@ -5,7 +5,6 @@ import asyncio
 import hashlib
 import json
 import os
-import shutil
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,18 +13,10 @@ from ..contracts import Fault, require
 from .engine import file_record
 from .identity import multipart_directory, single_directory
 from .destination import safe_path, subdirectory
+from .video_storage import VideoStorage, copy_file, sync_directory
 
 MARKER = ".tianshu-publication.json"
 KIND = "file_transfer"
-
-
-def sync_directory(path):
-    if os.name != "nt":
-        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
 
 
 @contextmanager
@@ -222,6 +213,9 @@ class FileOrganizer:
                 "target_relative_path": operation["relative"],
                 "files": manifest["files"],
                 "storage": "server_directory",
+                "video_storage": VideoStorage(safe_path(root, ".tianshu-transfer")).observe(
+                    destination, manifest
+                ),
             }
             return self.save(
                 operation, status="indexed", version=operation["version"] + 1, receipt=receipt
@@ -255,23 +249,18 @@ class FileOrganizer:
             previous = safe_path(control, "previous-" + operation["operation_id"])
             self.verify_files(source, manifest)
             incoming.mkdir(exist_ok=True)
+            videos = VideoStorage(control)
             for entry in manifest["files"]:
                 src = safe_path(source, entry["path"])
                 dst = safe_path(incoming, entry["path"])
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                if entry["kind"] == "video" and not dst.exists():
-                    try:
-                        os.link(src, dst)
-                        continue
-                    except OSError:
-                        pass
+                if entry["kind"] == "video":
+                    videos.install(src, dst, entry)
+                    continue
                 # Retry never truncates a linked source inode; replace the incoming file.
                 if dst.exists():
                     dst.unlink()
-                with src.open("rb") as reader, dst.open("xb") as writer:
-                    shutil.copyfileobj(reader, writer, 1024**2)
-                    writer.flush()
-                    os.fsync(writer.fileno())
+                copy_file(src, dst)
             self.verify_files(incoming, manifest)
             marker = safe_path(incoming, MARKER)
             with marker.open("w", encoding="utf-8") as out:
@@ -321,6 +310,34 @@ class FileOrganizer:
                 )
             # Never claim a partly or fully installed publication was rolled back.
             return operation
+
+    def deduplicate(self, target, identity):
+        """Convert one current, receipted Tianshu publication; no discovery or job edits."""
+        with library_lock(target["directory"]) as (root, control):
+            operation = self.operation(target, identity)
+            require(
+                operation["status"] == "indexed" and operation.get("receipt"),
+                "publication_not_indexed",
+                409,
+            )
+            destination = safe_path(root, operation["relative"])
+            self.verify_owned(destination, operation)
+            videos = VideoStorage(control)
+            for entry in operation["manifest"]["files"]:
+                if entry["kind"] == "video":
+                    path = safe_path(destination, entry["path"])
+                    videos.install(path, path, entry, preserve_copy=True)
+            self.verify_owned(destination, operation)
+            storage = videos.observe(destination, operation["manifest"])
+            if operation["receipt"].get("video_storage") != storage:
+                operation = self.save(
+                    operation, receipt={**operation["receipt"], "video_storage": storage}
+                )
+            return {
+                "operation_id": identity,
+                "video_storage": storage,
+                "receipt": operation["receipt"],
+            }
 
 
 class Publications:
