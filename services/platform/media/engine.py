@@ -211,6 +211,8 @@ class Engine:
             "--max-filesize",
             str(self.config["max_bytes"]),
             "--write-info-json",
+            # yt-dlp's default cleaning removes the selected requested_formats.
+            "--no-clean-info-json",
             "--merge-output-format",
             "mp4",
             "--ffmpeg-location",
@@ -255,12 +257,25 @@ class Engine:
                 503,
             )
             value = json.loads(infos[0].read_bytes())
+            require(isinstance(value, dict), "download_invalid_output", 503)
+            require(
+                value.get("id") == f"{job['bvid']}_p{part['index']}",
+                "source_identity_changed",
+                409,
+            )
             formats = value.get("requested_formats") or [value]
+            require(
+                isinstance(formats, list) and all(isinstance(item, dict) for item in formats),
+                "quality_unverified",
+                503,
+            )
             actual = next(
                 (
-                    str(item["quality"])
+                    str(int(item["quality"]))
                     for item in formats
-                    if item.get("vcodec") != "none" and item.get("quality") is not None
+                    if item.get("vcodec") not in {None, "none"}
+                    and type(item.get("quality")) in (int, float)
+                    and float(item["quality"]).is_integer()
                 ),
                 None,
             )
