@@ -314,6 +314,92 @@ test("media subdirectory errors keep the editor input for correction", async ({
   await expect(page.getByLabel("整理子目录（可选）")).toHaveCount(0);
 });
 
+test("media AssetLibrary targets explain managed directories and retain input when switching", async ({
+  page,
+}) => {
+  const view = fixtureView();
+  view.targets[0].kind = "media_server";
+  view.targets.push({
+    target_id: "legacy-assets",
+    label: "历史资产库目标",
+    kind: "assetlibrary",
+    directory: null,
+    state: "ready",
+    servers: [],
+  });
+  const state = await installMediaFixture(page, view);
+  let rejected = false;
+  await page.route("**/api/web/media/subscriptions/save", async (route) => {
+    if (rejected) return route.fallback();
+    rejected = true;
+    // The server can reject a target capability that changed after the view snapshot.
+    await route.fulfill({
+      status: 409,
+      json: { code: "destination_not_supported" },
+    });
+  });
+  await page.goto("/#/subscriptions/0");
+  await expectMediaSection(page, "视频订阅");
+  await page.getByRole("button", { name: "新建订阅", exact: true }).click();
+  await page.getByLabel("订阅名称").fill("历史资产库订阅");
+  await page.getByLabel("来源链接或 ID", { exact: true }).fill("123456");
+  await page.getByRole("button", { name: "下一步", exact: true }).click();
+  await page.getByRole("button", { name: "下一步", exact: true }).click();
+  await page.getByLabel("目标媒体库").selectOption("test-library");
+  await page.getByLabel("整理子目录（可选）").fill("收藏夹/学习");
+  await page.getByRole("button", { name: "保存订阅", exact: true }).click();
+  await expect(
+    page.getByText(
+      "这个目标的目录由资产库管理，整理子目录请留空，或选择媒体服务器目标。（destination_not_supported）",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(page.getByLabel("整理子目录（可选）")).toHaveValue(
+    "收藏夹/学习",
+  );
+  await page.getByLabel("目标媒体库").selectOption("legacy-assets");
+  await expect(page.locator("#media-subdirectory-help")).toHaveText(
+    "此目标的目录由资产库管理，整理子目录请留空。切换目标会保留当前输入。",
+  );
+  await expect(page.getByLabel("整理子目录（可选）")).toHaveValue(
+    "收藏夹/学习",
+  );
+  await expect(
+    page.getByRole("button", { name: "保存订阅", exact: true }),
+  ).toBeDisabled();
+  await page.getByLabel("目标媒体库").selectOption("test-library");
+  await expect(page.locator("#media-subdirectory-preview")).toHaveText(
+    "整理路径预览：/media/Bilibili/收藏夹/学习",
+  );
+  await expect(page.getByLabel("整理子目录（可选）")).toHaveValue(
+    "收藏夹/学习",
+  );
+  await page.getByLabel("目标媒体库").selectOption("legacy-assets");
+  await page.getByLabel("整理子目录（可选）").fill("");
+  await expect(page.locator("#media-subdirectory-preview")).toHaveText(
+    "整理路径预览：由资产库管理",
+  );
+  await page.getByRole("button", { name: "保存订阅", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "历史资产库订阅", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .locator(".media-subscriptions > article")
+      .getByText("由资产库管理", { exact: true }),
+  ).toBeVisible();
+  const saved = state.calls.find(
+    (call) => call.operation === "subscriptions/save",
+  )!;
+  expect(saved.body.target_id).toBe("legacy-assets");
+  expect(saved.body.destination_subdirectory).toBe("");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
+    ),
+  ).toBe(true);
+});
+
 test("media jobs display their fixed directory and only reported download reuse", async ({
   page,
 }) => {

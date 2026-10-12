@@ -66,6 +66,8 @@ export const reasonWords: Record<string, string> = {
 export const errorWords: Record<string, string> = {
   invalid_destination_subdirectory:
     "请检查整理子目录：使用相对目录，不含空层级、.、..、保留文件名或不兼容字符。",
+  destination_not_supported:
+    "这个目标的目录由资产库管理，整理子目录请留空，或选择媒体服务器目标。",
   directory_overlap: "整理目录不能与暂存目录或其他目标重叠",
   target_mapping_in_use:
     "已有任务使用此目录映射；更换目录或库请添加新的连接，原连接可继续更新密钥",

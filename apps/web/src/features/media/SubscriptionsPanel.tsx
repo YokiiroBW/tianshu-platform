@@ -22,7 +22,14 @@ import {
   type Subscription,
 } from "./types";
 import type { MediaController } from "./useMediaController";
-import { qualityWord, sourceWords, timestamp, tone, word } from "./wording";
+import {
+  errorWords,
+  qualityWord,
+  sourceWords,
+  timestamp,
+  tone,
+  word,
+} from "./wording";
 
 type Draft = {
   subscription_id: string | null;
@@ -141,7 +148,7 @@ function SubscriptionEditor({
       setStep(step + 1);
       return;
     }
-    if (subdirectoryInputError(value.destination_subdirectory)) return;
+    if (directoryError) return;
     const result = await media.command<{ subscription: Subscription }>(
       "subscriptions/save",
       {
@@ -163,7 +170,11 @@ function SubscriptionEditor({
   const account = media.view?.accounts.find(
     (entry) => entry.account_id === value.account_id,
   );
-  const directoryError = subdirectoryInputError(value.destination_subdirectory);
+  const assetManaged = target?.kind === "assetlibrary";
+  const directoryError =
+    assetManaged && normalizeSubdirectory(value.destination_subdirectory)
+      ? errorWords.destination_not_supported
+      : subdirectoryInputError(value.destination_subdirectory);
   const directory = directoryError
     ? null
     : destinationPath(target?.directory, value.destination_subdirectory);
@@ -360,8 +371,11 @@ function SubscriptionEditor({
               />
             </label>
             <p className="muted" id="media-subdirectory-help">
-              相对于所选媒体库的整理根目录，留空使用原根目录。不同订阅可以选择同一媒体库的不同子目录。
-              {item &&
+              {assetManaged
+                ? "此目标的目录由资产库管理，整理子目录请留空。切换目标会保留当前输入。"
+                : "相对于所选媒体库的整理根目录，留空使用原根目录。不同订阅可以选择同一媒体库的不同子目录。"}
+              {!assetManaged &&
+                item &&
                 "修改目录后，下次扫描会将现有成员整理到新目录；已入队任务仍按原目录继续。"}
             </p>
             <p
@@ -372,10 +386,12 @@ function SubscriptionEditor({
               <span>
                 {directoryError
                   ? "请修正子目录"
-                  : (directory ??
-                    (target
-                      ? "目标根目录未提供，无法预览完整路径"
-                      : "请先选择媒体库"))}
+                  : assetManaged
+                    ? "由资产库管理"
+                    : (directory ??
+                      (target
+                        ? "目标根目录未提供，无法预览完整路径"
+                        : "请先选择媒体库"))}
               </span>
             </p>
             {directoryError && (
@@ -432,10 +448,12 @@ function SubscriptionEditor({
                   <dd>
                     {directoryError
                       ? "请修正子目录"
-                      : destinationLabel(
-                          target?.directory,
-                          value.destination_subdirectory,
-                        )}
+                      : assetManaged
+                        ? "由资产库管理"
+                        : destinationLabel(
+                            target?.directory,
+                            value.destination_subdirectory,
+                          )}
                   </dd>
                 </div>
                 <div>
@@ -495,11 +513,14 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
     media.view?.accounts.map((item) => [item.account_id, item.label]),
   );
   const targets = new Map(
-    media.view?.targets.map((item) => [item.target_id, item.label]),
+    media.view?.targets.map((item) => [item.target_id, item]),
   );
-  const targetDirectories = new Map(
-    media.view?.targets.map((item) => [item.target_id, item.directory]),
-  );
+  const subscriptionDirectory = (item: Subscription) => {
+    const target = targets.get(item.target_id);
+    return target?.kind === "assetlibrary"
+      ? "由资产库管理"
+      : destinationLabel(target?.directory, item.destination_subdirectory);
+  };
   const attention = (item: Subscription) =>
     item.state === "auth_required" || item.state === "rule_error";
   const matches = subscriptions.filter((item) => {
@@ -515,11 +536,8 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
       item.source.id,
       sourceWords[item.source.kind],
       accounts.get(item.account_id ?? "") ?? "公开访问",
-      targets.get(item.target_id) ?? item.target_id,
-      destinationLabel(
-        targetDirectories.get(item.target_id),
-        item.destination_subdirectory,
-      ),
+      targets.get(item.target_id)?.label ?? item.target_id,
+      subscriptionDirectory(item),
     ];
     return (
       statusMatch &&
@@ -739,16 +757,11 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
               </div>
               <div>
                 <dt>目标媒体库</dt>
-                <dd>{targets.get(item.target_id) ?? item.target_id}</dd>
+                <dd>{targets.get(item.target_id)?.label ?? item.target_id}</dd>
               </div>
               <div>
                 <dt>整理目录</dt>
-                <dd>
-                  {destinationLabel(
-                    targetDirectories.get(item.target_id),
-                    item.destination_subdirectory,
-                  )}
-                </dd>
+                <dd>{subscriptionDirectory(item)}</dd>
               </div>
             </dl>
             {!item.baseline_ready && (
