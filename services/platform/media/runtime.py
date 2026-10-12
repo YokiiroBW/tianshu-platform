@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import json
-import shutil
 import uuid
 from pathlib import Path
 
@@ -18,7 +17,9 @@ from .config import SOURCE_KINDS, configuration
 from .engine import Engine
 from .publication import Publisher, Remote, validate_connection
 from .organizer import FileOrganizer, Publications
-from .repository import Repository
+from .repository import Repository, TERMINAL
+from .retention import Retention
+from .storage import media_storage
 from .rules import RuleEvaluator
 from .subscriptions import Subscriptions
 from .worker import Worker
@@ -60,39 +61,10 @@ def public_job(job):
         "destination_subdirectory": job.get("destination_subdirectory", ""),
         "download_reused_cids": job.get("download_reused_cids", []),
         "can_retry": job["state"] in RETRYABLE,
+        "can_delete": job["state"] in TERMINAL,
         "can_cancel": job["state"]
         not in {"completed", "published", "cancelled", "failed", "unknown"},
     }
-
-
-def staging_storage(directory):
-    """Observe only the staging volume, including before its directory is first created."""
-    unavailable = {
-        "state": "unavailable",
-        "total_bytes": None,
-        "used_bytes": None,
-        "free_bytes": None,
-    }
-    try:
-        candidate = Path(directory)
-        while True:
-            try:
-                candidate.stat()
-                break
-            except (FileNotFoundError, NotADirectoryError):
-                parent = candidate.parent
-                if parent == candidate:
-                    return unavailable
-                candidate = parent
-        usage = shutil.disk_usage(candidate)
-        return {
-            "state": "available",
-            "total_bytes": usage.total,
-            "used_bytes": usage.used,
-            "free_bytes": usage.free,
-        }
-    except OSError:
-        return unavailable
 
 
 class PackageContract:
@@ -171,6 +143,7 @@ class Media:
         self.evaluator = RuleEvaluator()
         self.subscriptions = Subscriptions(self)
         self.worker = Worker(self)
+        self.retention = Retention(self)
         self.download_cache = DownloadCache(self)
 
     async def start(self):
@@ -180,6 +153,7 @@ class Media:
         await self.connector.start()
         await self.engine.check()
         self.tasks = [asyncio.create_task(self.subscriptions.pump())]
+        self.tasks.append(asyncio.create_task(self.retention.pump()))
         self.tasks += [
             asyncio.create_task(self.worker.pump(index)) for index in range(self.config["workers"])
         ]
@@ -219,7 +193,7 @@ class Media:
         jobs, _ = await self.local(self.repo.jobs)
         overview = {
             "jobs": await self.local(self.repo.job_overview),
-            "storage": await self.local(staging_storage, self.config["staging_directory"]),
+            "storage": await self.local(media_storage, dict(self.config["targets"])),
         }
         return {
             "configured": True,

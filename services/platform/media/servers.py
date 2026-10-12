@@ -9,6 +9,8 @@ from urllib.parse import quote
 from ..contracts import Fault, require
 from .identity import item_key, media_key
 from .publication import matching_image
+from .destination import safe_path
+from .engine import file_record
 
 
 class MediaServers:
@@ -220,11 +222,21 @@ class MediaServers:
                     if image:
                         require(item.get("Id"), "library_item_pending", 503)
                         observed_image = await self.remote.image(server, str(item["Id"]))
-                        original = (
-                            Path(job["staging_directory"])
-                            / job["package"]["staging_ref"]
-                            / image["path"]
-                        )
+                        if target.get("kind") == "media_server":
+                            directory = safe_path(
+                                Path(target["directory"]), receipt["target_relative_path"]
+                            )
+                            original = safe_path(directory, image["path"])
+                            record = await asyncio.to_thread(
+                                file_record, original, image["path"], image["kind"], image["cid"]
+                            )
+                            require(record == image, "source_changed", 409)
+                        else:
+                            original = (
+                                Path(job["staging_directory"])
+                                / job["package"]["staging_ref"]
+                                / image["path"]
+                            )
                         correct = correct and await asyncio.to_thread(
                             matching_image, original.read_bytes(), observed_image
                         )
@@ -239,6 +251,8 @@ class MediaServers:
                 )
             except Fault as error:
                 result["code"] = error.code
+            except OSError:
+                result["code"] = "source_missing"
             except (KeyError, TypeError, AttributeError, ValueError):
                 result["code"] = "media_peer_invalid_response"
             results.append(result)

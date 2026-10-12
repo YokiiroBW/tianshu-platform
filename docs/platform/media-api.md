@@ -13,11 +13,11 @@
 
 `Account={account_id,label,state:"ready"|"auth_required"|"revoked",revision,checked_at:number|null,code}`。
 
-`Overview={jobs:{total:number,published:number,processing:number,queued:number,attention:number,cancelled:number},storage:{state:"available"|"unavailable",total_bytes:number|null,used_bytes:number|null,free_bytes:number|null}}`。任务数由 SQL 聚合全部持久作业，独立于 view 最新100条：published 包含published/completed；processing 包含downloading/validating/metadata_ready/publishing/asset_indexed/library_verifying；queued 包含queued/retry_wait；attention 包含failed/unknown/auth_required/waiting_metadata；cancelled单列。storage 是本服务下载暂存目录所在磁盘容量，不是 Emby/Jellyfin 总媒体库容量；暂存目录尚未创建时读取最近存在的父目录所在磁盘，不创建目录、不扫描文件。不可读时state=unavailable且三个字节数均为null，响应不含路径。
+`Overview={jobs:{total:number,published:number,processing:number,queued:number,attention:number,cancelled:number},storage:{state:"available"|"unavailable"|"not_configured",volumes:Volume[]}}`。`Volume={storage_id,label,target_ids:string[],directories:string[],state:"available"|"unavailable",total_bytes:number|null,used_bytes:number|null,free_bytes:number|null}`。任务数由 SQL 聚合所有未隐藏作业，独立于 view 最新100条：published 包含published/completed；processing 包含downloading/validating/metadata_ready/publishing/asset_indexed/library_verifying；queued 包含queued/retry_wait；attention 包含failed/unknown/auth_required/waiting_metadata；cancelled单列。容量只来自当前直接媒体目标的实际directory，同设备合并；包含该磁盘其他文件。缺失目录不读取父目录、不冒称暂存盘容量；不可读容量为null；没有直接媒体目标为not_configured/空volumes。
 
 `Subscription={subscription_id,label,revision,source,account_id:string|null,target_id,initial_sync:"future_only"|"history",quality,rules,interval_seconds:number,state:"active"|"paused"|"auth_required"|"rule_error",baseline_ready:boolean,last_scan_at:number|null,next_scan_at:number,code,counts:{members:number,queued:number}}`。
 
-`Job={job_id,subscription_id:string|null,media_key,bvid,cid,selected_cids:string[],layout:"single"|"multipart",revision:number,title,creator,state,stage,code,progress:number|null,created_at:number,updated_at:number,target_id,quality,actual_quality:string|null,cancel_requested:boolean,can_retry:boolean,can_cancel:boolean,asset_receipt:object|null,library_results:object[]}`。progress 范围 0..1；一个 Job 是所选 P 的完整投稿包，cid 为首个所选 CID，selected_cids 为全部所选 CID（增量会并入已有成品 CID）。订阅从仅1P即固定multipart剧集布局；手动单P可single，同目标已存在single后改订阅会报 `layout_change_requires_migration`。
+`Job={job_id,subscription_id:string|null,media_key,bvid,cid,selected_cids:string[],layout:"single"|"multipart",revision:number,title,creator,state,stage,code,progress:number|null,created_at:number,updated_at:number,target_id,quality,actual_quality:string|null,cancel_requested:boolean,can_retry:boolean,can_cancel:boolean,can_delete:boolean,asset_receipt:object|null,library_results:object[]}`。progress 范围 0..1；一个 Job 是所选 P 的完整投稿包，cid 为首个所选 CID，selected_cids 为全部所选 CID（增量会并入已有成品 CID）。订阅从仅1P即固定multipart剧集布局；手动单P可single，同目标已存在single后改订阅会报 `layout_change_requires_migration`。
 
 Job.state/stage 来自持久台账：queued/downloading/validating/metadata_ready/publishing/asset_indexed/library_verifying/completed/published/auth_required/waiting_metadata/retry_wait/cancelled/failed/unknown。published 表示已发布且未配置媒体服务器；completed 只表示所配置服务器均核验通过。
 
@@ -37,6 +37,7 @@ Job.state/stage 来自持久台账：queued/downloading/validating/metadata_read
 | jobs/metadata | `{job_id,title:string,description:string,expected_revision:number,client_id}` | `{job:Job,replayed:boolean}`（展示覆盖，保留来源原文；waiting_metadata恢复暂存和发布。封面从已批准B站原图获取，不接任意图片URL） |
 | jobs/refresh_metadata | `{job_id,expected_revision:number,client_id}` | `{job:Job,replayed:boolean}`；waiting_metadata/failed/published/completed 可重新解析固定来源，旧快照保留在私有历史台账，所选CID必须仍存在；允许恢复来源作者缺项，不伪造MID；已发布成品走绑定owned base的版本更新 |
 | jobs/control | `{job_id,action:"cancel"|"retry",client_id}` | `{job:Job,replayed:boolean}` |
+| jobs/delete | `{job_id,expected_revision:number,client_id}` | `{deleted:true,job_id,replayed:boolean}`；仅隐藏终止任务信息。活动任务409 `job_not_deletable`；旧revision为409 `version_conflict`；隐藏后detail/任务中心404。保留成品、发布基线及来源成员/去重事实；同目录重新入队可产生可见新任务。 |
 | accounts/import | `{label,cookie,client_id}` | `{account:Account,replayed:boolean}`（先检查当前本人会话） |
 | accounts/check | `{account_id}` | `{account:Account}` |
 | accounts/revoke | `{account_id,expected_revision:number,client_id}` | `{account:Account,replayed:boolean}` |

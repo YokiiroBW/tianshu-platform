@@ -12,6 +12,7 @@ from .accounts import normalize_cookie, public_account
 from .config import quality, text
 from .metadata import normalize_bilibili
 from .runtime import public_job
+from .repository import VISIBLE
 from .subscriptions import job_payload
 from .destination import snapshot
 from .types import MetadataValidationError
@@ -80,6 +81,7 @@ class WebMedia:
             "jobs/control": self.job_control,
             "jobs/metadata": self.job_metadata,
             "jobs/refresh_metadata": self.refresh_metadata,
+            "jobs/delete": self.job_delete,
             "accounts/import": self.account_import,
             "accounts/check": self.account_check,
             "accounts/revoke": self.account_revoke,
@@ -402,7 +404,9 @@ class WebMedia:
         normalize_bilibili(resolved["snapshot"], overrides=previous.get("overrides"))
 
         def operation(db):
-            row = db.execute("SELECT body FROM jobs WHERE id=?", (body["job_id"],)).fetchone()
+            row = db.execute(
+                "SELECT body FROM jobs WHERE id=? AND " + VISIBLE, (body["job_id"],)
+            ).fetchone()
             current = json.loads(row[0]) if row else None
             require(
                 current and current["revision"] == body["expected_revision"],
@@ -469,7 +473,9 @@ class WebMedia:
         )
 
         def operation(db):
-            row = db.execute("SELECT body FROM jobs WHERE id=?", (body["job_id"],)).fetchone()
+            row = db.execute(
+                "SELECT body FROM jobs WHERE id=? AND " + VISIBLE, (body["job_id"],)
+            ).fetchone()
             require(row is not None, "not_found", 404)
             job = json.loads(row[0])
             public = public_job(job)
@@ -515,7 +521,9 @@ class WebMedia:
         )
 
         def operation(db):
-            row = db.execute("SELECT body FROM jobs WHERE id=?", (body["job_id"],)).fetchone()
+            row = db.execute(
+                "SELECT body FROM jobs WHERE id=? AND " + VISIBLE, (body["job_id"],)
+            ).fetchone()
             require(row is not None, "not_found", 404)
             job = json.loads(row[0])
             require(job["revision"] == body["expected_revision"], "version_conflict", 409)
@@ -558,6 +566,23 @@ class WebMedia:
         result = await self.receipt(body, "jobs/metadata", session, operation)
         self.media.wake.set()
         return result
+
+    async def job_delete(self, body, session):
+        require(
+            set(body) == {"job_id", "expected_revision", "client_id"}
+            and isinstance(body["job_id"], str)
+            and type(body["expected_revision"]) is int
+            and body["expected_revision"] > 0,
+            "invalid_input",
+            400,
+        )
+        require(body["job_id"] not in self.media.worker.active, "job_not_deletable", 409)
+        return await self.receipt(
+            body,
+            "jobs/delete",
+            session,
+            lambda db: self.media.repo.delete_job(body["job_id"], body["expected_revision"], db=db),
+        )
 
     async def account_import(self, body, session):
         require(set(body) == {"label", "cookie", "client_id"}, "invalid_input", 400)

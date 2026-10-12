@@ -20,7 +20,7 @@ targets 为目标列表（最多32），每项 target_id、label、library_id；
 
 平台数据库旁保存 `.media.sqlite` 及 `.media.sqlite.key`；Cookie 使用独立随机 AES-GCM 密钥加密，浏览器响应、事件和日志不含 Cookie/签名媒体 URL。保持数据库和 key 同步备份；遗失密钥不能猜测恢复账号。部署目录及挂载应仅让服务身份访问。
 
-staging_directory 需要同时作为 AssetLibrary 已信任 inbound 根的只读可见目录（AssetLibrary 自己管理最终库写入）。平台生成 `pkg_<UUID去横线>` 成品目录后才提交 manifest 原始 UTF8 字节；不把绝对路径传给 Asset API。下载临时目录、完整已验证下载及已发布 staging 保留供重启和增量版本组包，旧视频硬链接或复制为完整不可变新树，不能在仍引用时清理。备份包括 SQLite/key/staging；不要只备主平台数据库。
+历史 AssetLibrary 目标的staging_directory需作为对端已信任inbound根只读可见（对端管理最终库写入）；该路径继续保留发布缓存。直接媒体服务器目标生成`pkg_<UUID去横线>`，核验入库后从持久成品复用并精确清理成功缓存，失败/未知及活跃引用保留。完整生命周期、恢复与外部媒体卷独立备份见[媒体缓存维护](media-retention.md)。不要只备主平台数据库。
 
 每次发布 prepare→publish→GET 查询，同键恢复未知响应；成功 receipt 持久后才进入媒体服务器核验。新增 P 使用当前 owned base_operation_id/base_version，保留旧 CID/集号/路径/hash；显式质量变更 additionally replace_video_cids 允许对应视频字节更新。展示元数据修改同样发布新版本，原始快照及覆盖分离。AssetLibrary 负责完整目录备份和发布 journal，平台不直接写最终媒体根。
 
@@ -50,7 +50,7 @@ staging_directory 需要同时作为 AssetLibrary 已信任 inbound 根的只读
 
 先取得相同下载键的跨进程 OS 文件锁，再通过 Repository 领取 owner/generation/30秒租约；每5秒续全局与任务租约。OS锁阻止仍在下载但暂时失去心跳的进程被并发接管；进程退出自动释放锁，租约过期后接管使用新generation目录。用户取消终止引擎进程树并释放占用；等待者可取消，正常等待不增加失败重试次数。只有完整验证且成功提交的源才是ready，迟到旧generation不能写回。整理根锁争用在既有 Publications 中可取消地等待，仍由worker维护任务租约。
 
-成品包视频继续复用全局下载源；直接整理目标在自己的 `.tianshu-transfer/videos` 中保留按SHA256和长度验证的无扩展名共享文件。staging与媒体目标跨卷时首次复制一份到该目标卷，后续目录链接这一份；文件系统不支持链接时安全复制并报告实际模式。NFO/source/封面分别输出。服务从不原地改写已经验证的源视频，修订使用新文件和新目录，incoming恢复仍通过共享源安装。外部原地修改硬链接视频会影响所有引用，后续复用和整理核验会拒绝已变内容。缓存、旧下载及previous目录均不自动清理，备份需包含这些持久引用。
+成品包视频优先复用已验证媒体成品，再查全局下载源；直接整理目标在自己的 `.tianshu-transfer/videos` 中保留按SHA256和长度验证的无扩展名共享文件。staging与媒体目标跨卷时首次复制一份到该目标卷，后续目录链接这一份；文件系统不支持链接时安全复制并报告实际模式。NFO/source/封面分别输出。服务从不原地改写已经验证的源视频，修订使用新文件和新目录，incoming恢复仍通过共享源安装。外部原地修改硬链接视频会影响所有引用，后续复用和整理核验会拒绝已变内容。TS-127按[缓存维护](media-retention.md)清理成功任务的staging；未确认下载和previous目录保留。
 
 相关验证沿用 unittest：`python -m unittest discover -s tests/backend -p 'test_media*.py' -v`。新增全局源用例计数真正的 download 调用，覆盖两个独立进程和实例、租约/取消、旧记录/重启、损坏/缺失、best/exact/fallback；standalone夹具用真实FFmpeg视频完成两个中文目录、第二目标、独立NFO和订阅改目录/新增P。它们不证明真实B站账号下载或NAS大文件性能。
 

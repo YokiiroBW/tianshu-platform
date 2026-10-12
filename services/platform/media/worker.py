@@ -11,7 +11,6 @@ from pathlib import Path
 
 from ..contracts import Fault, require
 from .engine import file_record, validate_image
-from .download_cache import validate_download
 from .destination import head_key, snapshot
 from .metadata import normalize_bilibili
 from .sidecars import render_sidecars
@@ -305,6 +304,13 @@ class Worker:
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
+            # Retention is recoverable maintenance, never a reason to undo successful publication.
+            try:
+                current = await self.media.local(repo.job, identity, include_deleted=True)
+                if current and current["generation"] == generation:
+                    await self.media.local(self.media.retention.finish, current)
+            except (Fault, OSError):
+                pass
 
     async def download_parts(self, job, update, owner):
         base = await self.base(job)
@@ -317,7 +323,6 @@ class Worker:
             job = await update(
                 selected_cids=selected, snapshot=snapshot_value, base_job_id=base["job_id"]
             )
-        previous = {**(base.get("downloads", {}) if base else {}), **job.get("downloads", {})}
         cookie = await self.media.local(self.media.accounts.cookie, job["account_id"])
         if job["account_id"]:
             account = await self.media.local(self.media.repo.get, "account", job["account_id"])
@@ -329,20 +334,10 @@ class Worker:
             if cid not in job["selected_cids"]:
                 continue
             selected_quality = await self.media.download_cache.selected_quality(job, part, cookie)
-            downloaded = None
-            if cid in previous:
-                try:
-                    downloaded = await self.media.local(
-                        validate_download, previous[cid], cid, selected_quality
-                    )
-                except (Fault, OSError, KeyError, ValueError):
-                    pass
-            was_reused = downloaded is not None
-            if downloaded is None:
-                await update(state="downloading", stage="downloading", code="downloading")
-                downloaded, was_reused = await self.media.download_cache.obtain(
-                    job, part, cookie, owner, selected_quality
-                )
+            await update(state="downloading", stage="downloading", code="downloading")
+            downloaded, was_reused = await self.media.download_cache.obtain(
+                job, part, cookie, owner, selected_quality
+            )
             if was_reused:
                 reused.append(cid)
             if base and cid in base["selected_cids"]:
@@ -367,7 +362,7 @@ class Worker:
         head = await self.media.local(self.media.repo.get, "target_head", head_key(job))
         if head is None:
             return None
-        base = await self.media.local(self.media.repo.job, head["job_id"])
+        base = await self.media.local(self.media.repo.job, head["job_id"], include_deleted=True)
         require(
             base is not None and base.get("asset_receipt") and base.get("package"),
             "publication_base_unavailable",

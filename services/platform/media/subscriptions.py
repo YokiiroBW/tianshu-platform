@@ -250,7 +250,9 @@ class Subscriptions:
                             head_key({**subscription, "bvid": bvid}),
                         )
                         owned = (
-                            await self.media.local(self.media.repo.job, head["job_id"])
+                            await self.media.local(
+                                self.media.repo.job, head["job_id"], include_deleted=True
+                            )
                             if head
                             else None
                         )

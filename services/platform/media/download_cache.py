@@ -31,6 +31,10 @@ def validate_download(download, cid, quality):
 class DownloadCache:
     def __init__(self, media):
         self.media = media
+        if not hasattr(media, "retention"):
+            from .retention import Retention
+
+            media.retention = Retention(media)
 
     async def selected_quality(self, job, part, cookie):
         requested = job["quality"]
@@ -52,12 +56,9 @@ class DownloadCache:
         media, repo = self.media, self.media.repo
         bvid, cid = job["bvid"], part["cid"]
         key = (bvid, cid, quality)
-        directory = (
-            Path(media.config["staging_directory"])
-            / ".downloads"
-            / "global"
-            / digest({"bvid": bvid, "cid": cid, "quality": quality})
-        )
+        from .retention import source_directory
+
+        directory = source_directory(media.config["staging_directory"], bvid, cid, quality)
         while True:
             await media.local(repo.heartbeat, job["job_id"], owner, job["generation"])
             lock = library_lock(directory)
@@ -84,9 +85,27 @@ class DownloadCache:
             pulse = None
             finished = True
             generation = None
+            pending_file_work = None
+
+            async def locked_file_work(operation, *args, **kwargs):
+                nonlocal pending_file_work
+                pending_file_work = asyncio.create_task(media.local(operation, *args, **kwargs))
+                # Caller cancellation cannot unlock a file operation that is still
+                # copying/hashing in LocalWork's thread pool.
+                return await asyncio.shield(pending_file_work)
+
             try:
                 # Lock first: an expired database lease cannot steal from a process
                 # that is still downloading. Crashed processes release the OS lock.
+                try:
+                    retained = await locked_file_work(media.retention.source, *key, job=job)
+                except Fault as error:
+                    if error.code != "busy":
+                        raise
+                    await asyncio.sleep(0.25)
+                    continue
+                if retained:
+                    return retained, True
                 claim = await media.local(repo.download_claim, *key, owner)
                 if claim["state"] == "waiting":
                     await asyncio.sleep(0.25)
@@ -94,9 +113,17 @@ class DownloadCache:
                 generation = claim["generation"]
                 if claim["state"] == "ready":
                     try:
-                        return await media.local(
+                        require(
+                            Path(claim["download"]["file"]).is_relative_to(
+                                Path(media.config["staging_directory"])
+                            ),
+                            "download_cache_changed",
+                            409,
+                        )
+                        download = await locked_file_work(
                             validate_download, claim["download"], cid, quality
-                        ), True
+                        )
+                        return await locked_file_work(media.retention.pin, job, cid, download), True
                     except (Fault, OSError, KeyError, ValueError):
                         await media.local(repo.download_invalidate, *key, generation)
                         continue
@@ -120,12 +147,19 @@ class DownloadCache:
                 # a source, but only a matching, fully hashed download is accepted.
                 for previous in await media.local(repo.legacy_downloads, bvid, cid):
                     try:
-                        download = await media.local(validate_download, previous, cid, quality)
+                        require(
+                            Path(previous["file"]).is_relative_to(
+                                Path(media.config["staging_directory"])
+                            ),
+                            "download_cache_changed",
+                            409,
+                        )
+                        download = await locked_file_work(validate_download, previous, cid, quality)
                     except (Fault, OSError, KeyError, ValueError):
                         continue
                     await media.local(repo.download_finish, *key, owner, generation, download)
                     finished = True
-                    return download, True
+                    return await locked_file_work(media.retention.pin, job, cid, download), True
                 await media.engine.check()
                 require(media.engine.status["state"] == "ready", media.engine.status["code"], 503)
                 before = await media.connector.resolve(bvid, cookie, with_formats=False)
@@ -146,7 +180,7 @@ class DownloadCache:
                     "source_identity_changed",
                     409,
                 )
-                record = await media.local(
+                record = await locked_file_work(
                     file_record, Path(download["file"]), "cache", "video", cid
                 )
                 download.update(
@@ -155,11 +189,11 @@ class DownloadCache:
                     source_index=mapping[cid]["index"],
                     source_captured_at=before["snapshot"]["captured_at"],
                 )
-                download = await media.local(validate_download, download, cid, quality)
+                download = await locked_file_work(validate_download, download, cid, quality)
                 await media.local(repo.heartbeat, job["job_id"], owner, job["generation"])
                 await media.local(repo.download_finish, *key, owner, generation, download)
                 finished = True
-                return download, False
+                return await locked_file_work(media.retention.pin, job, cid, download), False
             finally:
                 try:
                     if pulse:
@@ -173,4 +207,16 @@ class DownloadCache:
                 finally:
                     # Unlock is a bounded descriptor operation. A second cancellation
                     # cannot leave the live process holding this download indefinitely.
-                    lock.__exit__(None, None, None)
+                    if pending_file_work and not pending_file_work.done():
+
+                        def release_after_files(task):
+                            try:
+                                task.result()
+                            except BaseException:
+                                pass
+                            finally:
+                                lock.__exit__(None, None, None)
+
+                        pending_file_work.add_done_callback(release_after_files)
+                    else:
+                        lock.__exit__(None, None, None)

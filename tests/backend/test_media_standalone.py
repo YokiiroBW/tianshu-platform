@@ -20,6 +20,9 @@ from services.platform.media.bilibili import Bilibili
 from services.platform.media.subscriptions import job_payload
 from services.platform.media.destination import head_key, snapshot
 from services.platform.media.repository import Repository
+from services.platform.media.retention import Retention
+from services.platform.media.runtime import Media
+from services.platform.contracts import digest
 from services.platform.server import create_app
 from services.platform.service import Platform
 from web_fixtures import PASSWORD
@@ -558,3 +561,341 @@ class StandaloneMediaTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn(saved["target_id"], self.media.config["targets"])
         self.assertEqual((root / "existing.mp4").read_bytes(), b"untouched")
+
+    async def test_success_cleans_cache_and_packages_then_reuses_persistent_video_after_restart(
+        self,
+    ):
+        self.upstream.parts[BV] = ["111111111"]
+        first = await self.run_job((await self.enqueue())["job_id"])
+        original = self.verify_output(first)
+        staging = Path(self.media.config["staging_directory"])
+        self.assertFalse((staging / first["package"]["staging_ref"]).exists())
+        self.assertFalse(Path(first["downloads"]["111111111"]["file"]).exists())
+        self.assertEqual(list((staging / ".downloads").rglob("download.mp4")), [])
+        self.assertEqual(
+            self.media.repo.get("media_retention", first["job_id"])["state"], "cleaned"
+        )
+        self.media.repo = Repository(self.media.repo.database)
+        self.media.publisher.organizer.repo = self.media.repo
+        self.media.retention = Retention(self.media)
+        resolved = await self.media.connector.resolve(BV, with_formats=False)
+        target = self.media.config["targets"]["test-server"]
+        payload = job_payload(
+            resolved,
+            self.upstream.parts[BV],
+            None,
+            "test-server",
+            dict(QUALITY),
+            **snapshot(target, "第三个目录"),
+        )
+        second = await self.run_job(self.media.repo.enqueue(payload)["job_id"])
+        destination = self.verify_output(second)
+        self.assertEqual(self.media.engine.calls, ["111111111"])
+        self.assertEqual(second["downloads"]["111111111"]["source"]["kind"], "library")
+        self.assertTrue((original / "video.mp4").samefile(destination / "video.mp4"))
+
+    async def test_cleanup_failure_preserves_success_and_recovers_historical_completed_jobs(self):
+        self.upstream.parts[BV] = ["111111111"]
+        with patch.object(self.media.retention, "cleanup", side_effect=PermissionError("fixture")):
+            first = await self.run_job((await self.enqueue())["job_id"])
+        self.assertEqual(first["state"], "completed")
+        self.assertEqual(
+            self.media.repo.get("media_retention", first["job_id"])["state"], "pending"
+        )
+        package = Path(self.media.config["staging_directory"]) / first["package"]["staging_ref"]
+        self.assertTrue(package.exists())
+        await self.media.retention.recover()
+        self.assertFalse(package.exists())
+        self.assertEqual(
+            self.media.repo.get("media_retention", first["job_id"])["state"], "cleaned"
+        )
+
+    async def test_library_verification_failure_and_partial_download_preserve_staging(self):
+        self.media.servers.verify.return_value = [{"server_id": "test-server", "state": "pending"}]
+        first = await self.run_job((await self.enqueue())["job_id"])
+        self.assertEqual(first["state"], "retry_wait")
+        self.assertTrue(
+            (
+                Path(self.media.config["staging_directory"]) / first["package"]["staging_ref"]
+            ).exists()
+        )
+        self.assertTrue(all(Path(d["file"]).exists() for d in first["downloads"].values()))
+        self.assertEqual(self.media.repo.list("media_source"), [])
+        self.media.repo.update_job(first["job_id"], {"state": "failed"})
+        self.media.engine.fail_cid = "222222222"
+        self.upstream.parts[BV] = ["111111111", "222222222"]
+        resolved = await self.media.connector.resolve(BV, with_formats=False)
+        target = self.media.config["targets"]["test-server"]
+        second = self.media.repo.enqueue(
+            job_payload(
+                resolved,
+                self.upstream.parts[BV],
+                None,
+                "test-server",
+                dict(QUALITY),
+                **snapshot(target, "部分失败"),
+            )
+        )
+        second = await self.run_job(second["job_id"])
+        self.assertEqual(second["state"], "retry_wait")
+        self.assertTrue(Path(second["downloads"]["111111111"]["file"]).exists())
+        self.assertIsNone(self.media.repo.get("media_retention", second["job_id"]))
+
+    async def test_corrupt_library_video_redownloads_and_removed_mapping_is_not_read(self):
+        self.upstream.parts[BV] = ["111111111"]
+        first = await self.run_job((await self.enqueue())["job_id"])
+        root = self.verify_output(first)
+        (root / "video.mp4").write_bytes(b"corrupt")
+        resolved = await self.media.connector.resolve(BV, with_formats=False)
+        target = self.media.config["targets"]["test-server"]
+        second = await self.run_job(
+            self.media.repo.enqueue(
+                job_payload(
+                    resolved,
+                    self.upstream.parts[BV],
+                    None,
+                    "test-server",
+                    dict(QUALITY),
+                    **snapshot(target, "损坏后新目录"),
+                )
+            )["job_id"]
+        )
+        self.verify_output(second)
+        self.assertEqual(self.media.engine.calls, ["111111111", "111111111"])
+        old_targets = dict(self.media.config["targets"])
+        self.media.config["targets"] = {}
+        with patch.object(
+            self.media.publisher.organizer,
+            "operation",
+            side_effect=AssertionError("removed root must not be touched"),
+        ):
+            self.assertIsNone(self.media.retention.source(BV, "111111111", "80"))
+        self.media.config["targets"] = old_targets
+
+    async def test_multiple_configured_roots_reuse_source_and_repointed_roots_are_not_read(self):
+        self.upstream.parts[BV] = ["111111111"]
+        first = await self.run_job((await self.enqueue())["job_id"])
+        target = self.media.config["targets"]["test-server"]
+        self.media.config["targets"]["another-server"] = {
+            **target,
+            "target_id": "another-server",
+            "directory": str(Path(self.temp.name) / "second-library"),
+            "library_id": str(uuid.uuid4()),
+        }
+        resolved = await self.media.connector.resolve(BV, with_formats=False)
+        second = await self.run_job(
+            self.media.repo.enqueue(
+                job_payload(
+                    resolved,
+                    self.upstream.parts[BV],
+                    None,
+                    "another-server",
+                    dict(QUALITY),
+                    **snapshot(self.media.config["targets"]["another-server"], "跨卷"),
+                )
+            )["job_id"]
+        )
+        self.assertEqual(second["state"], "completed", second["code"])
+        self.assertEqual(len(self.media.engine.calls), 1)
+        self.assertEqual(second["downloads"]["111111111"]["source"]["target_id"], "test-server")
+        self.media.config["targets"] = {
+            "test-server": {**target, "directory": str(Path(self.temp.name) / "repointed")}
+        }
+        with patch.object(
+            self.media.publisher.organizer,
+            "operation",
+            side_effect=AssertionError("repointed root must not be touched"),
+        ):
+            self.assertIsNone(self.media.retention.source(BV, "111111111", "80"))
+        self.assertTrue(self.media.repo.job(first["job_id"]))
+
+    async def test_independent_pins_survive_cleanup_before_peer_records_download(self):
+        self.upstream.parts[BV] = ["111111111"]
+        with patch.object(self.media.retention, "finish"):
+            first = await self.run_job((await self.enqueue())["job_id"])
+        resolved = await self.media.connector.resolve(BV, with_formats=False)
+        target = self.media.config["targets"]["test-server"]
+        second = self.media.repo.enqueue(
+            job_payload(
+                resolved,
+                self.upstream.parts[BV],
+                None,
+                "test-server",
+                dict(QUALITY),
+                **snapshot(target, "并发目录"),
+            )
+        )
+        claimed = self.media.repo.claim("peer")
+        downloaded, reused = await self.media.download_cache.obtain(
+            claimed, resolved["snapshot"]["parts"][0], None, "peer", "80"
+        )
+        self.assertTrue(reused)
+        self.assertNotIn("downloads", self.media.repo.job(second["job_id"]))
+        self.media.retention.finish(first)
+        self.assertTrue(Path(downloaded["file"]).exists())
+        self.media.repo.update_job(second["job_id"], {"downloads": {"111111111": downloaded}})
+        await self.media.worker.run(self.media.repo.job(second["job_id"]), "peer")
+        done = self.media.repo.job(second["job_id"])
+        self.assertEqual(done["state"], "completed", done["code"])
+        self.assertEqual(len(self.media.engine.calls), 1)
+
+    async def test_delete_receipt_hides_task_counts_and_reenqueue_preserves_publication_base(self):
+        self.upstream.parts[BV] = ["111111111"]
+        first = await self.run_job((await self.enqueue())["job_id"])
+        directory = self.verify_output(first)
+        command = {
+            "job_id": first["job_id"],
+            "expected_revision": first["revision"],
+            "client_id": str(uuid.uuid4()),
+        }
+        result = await self.post("jobs/delete", command)
+        self.assertTrue(result["deleted"])
+        self.assertTrue((await self.post("jobs/delete", command))["replayed"])
+        self.assertIsNone(self.media.repo.job(first["job_id"]))
+        self.assertIsNone(self.media.record(first["job_id"]))
+        self.assertEqual(self.media.repo.job_overview()["total"], 0)
+        self.assertEqual(self.media.repo.jobs(), ([], False))
+        self.assertTrue((directory / "video.mp4").is_file())
+        second = await self.run_job((await self.enqueue())["job_id"])
+        self.assertNotEqual(first["job_id"], second["job_id"])
+        self.assertEqual(second["state"], "completed", second["code"])
+        self.assertEqual(len(self.media.engine.calls), 1)
+
+    async def test_failed_delete_releases_dedupe_and_rejects_stale_revision_and_active_jobs(self):
+        job = await self.enqueue()
+        for revision in [job["revision"], job["revision"] + 1]:
+            async with self.client.post(
+                self.url + "/api/web/media/jobs/delete",
+                json={
+                    "job_id": job["job_id"],
+                    "expected_revision": revision,
+                    "client_id": str(uuid.uuid4()),
+                },
+                headers={"Origin": self.url, "X-CSRF-Token": self.csrf},
+            ) as response:
+                self.assertEqual(response.status, 409)
+        failed = self.media.repo.update_job(
+            job["job_id"], {"state": "failed", "code": "download_failed"}
+        )
+        await self.post(
+            "jobs/delete",
+            {
+                "job_id": failed["job_id"],
+                "expected_revision": failed["revision"],
+                "client_id": str(uuid.uuid4()),
+            },
+        )
+        replacement = await self.enqueue()
+        self.assertNotEqual(replacement["job_id"], failed["job_id"])
+        self.assertEqual(replacement["state"], "queued")
+        self.assertEqual(self.media.repo.job_count(), 1)
+
+    async def test_completed_generation_cleanup_preserves_same_job_new_generation_pin(self):
+        self.upstream.parts[BV] = ["111111111"]
+        with patch.object(self.media.retention, "finish"):
+            first = await self.run_job((await self.enqueue())["job_id"])
+        self.media.retention.register(first)
+        await self.post(
+            "jobs/metadata",
+            {
+                "job_id": first["job_id"],
+                "expected_revision": first["revision"],
+                "title": "并发修订",
+                "description": "新简介",
+                "client_id": str(uuid.uuid4()),
+            },
+        )
+        current = self.media.repo.claim("new-generation")
+        self.assertGreater(current["generation"], first["generation"])
+        part = current["snapshot"]["parts"][0]
+        pin, reused = await self.media.download_cache.obtain(
+            current, part, None, "new-generation", "80"
+        )
+        self.assertTrue(reused)
+        self.media.repo.update_job(current["job_id"], {"downloads": {part["cid"]: pin}})
+        self.media.retention.cleanup(first)
+        self.assertTrue(Path(pin["file"]).exists())
+        await self.media.worker.run(self.media.repo.job(current["job_id"]), "new-generation")
+        done = self.media.repo.job(current["job_id"])
+        self.assertEqual(done["state"], "completed", done["code"])
+        self.assertEqual(len(self.media.engine.calls), 1)
+
+    async def test_prepared_partial_input_is_recovered_after_later_success(self):
+        self.upstream.parts[BV] = ["111111111"]
+        with patch.object(self.media.retention, "finish"):
+            first = await self.run_job((await self.enqueue())["job_id"])
+        download = first["downloads"]["111111111"]
+        abandoned = (
+            Path(self.media.config["staging_directory"])
+            / ".inputs"
+            / first["job_id"]
+            / "0"
+            / "111111111.mp4"
+        )
+        identity = digest({"job": first["job_id"], "file": str(abandoned)})
+        self.media.repo.put(
+            "media_input",
+            identity,
+            {
+                **download,
+                "file": str(abandoned),
+                "job_id": first["job_id"],
+                "cid": "111111111",
+                "generation": 0,
+                "state": "prepared",
+            },
+        )
+        abandoned.parent.mkdir(parents=True)
+        abandoned.write_bytes(b"interrupted partial copy")
+        unknown = abandoned.parent / "unknown-user-file.txt"
+        unknown.write_bytes(b"preserved")
+        await self.media.retention.recover()
+        self.assertFalse(abandoned.exists())
+        self.assertEqual(unknown.read_bytes(), b"preserved")
+        self.assertEqual(
+            self.media.repo.get("media_retention", first["job_id"])["state"], "cleaned"
+        )
+
+    async def test_history_without_pins_cleans_known_legacy_and_global_download_paths(self):
+        self.upstream.parts[BV] = ["111111111"]
+        with patch.object(self.media.retention, "finish"):
+            first = await self.run_job((await self.enqueue())["job_id"])
+        record = self.media.repo.download_source(BV, "111111111", "80")["download"]
+        old = (
+            Path(self.media.config["staging_directory"])
+            / ".downloads"
+            / first["job_id"]
+            / "1"
+            / "111111111"
+            / "download.mp4"
+        )
+        old.parent.mkdir(parents=True)
+        os.link(record["file"], old)
+        Path(first["downloads"]["111111111"]["file"]).unlink()
+        with self.media.repo.transaction() as db:
+            db.execute("DELETE FROM documents WHERE kind='media_input'")
+        first = self.media.repo.update_job(
+            first["job_id"], {"downloads": {"111111111": {**record, "file": str(old)}}}
+        )
+        await self.media.retention.recover()
+        self.assertFalse(old.exists())
+        self.assertFalse(Path(record["file"]).exists())
+        self.assertFalse(
+            (
+                Path(self.media.config["staging_directory"]) / first["package"]["staging_ref"]
+            ).exists()
+        )
+        self.assertTrue(self.media.retention.source(BV, "111111111", "80"))
+
+    async def test_start_schedules_immediate_recovery_without_waiting_for_large_file_hashes(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_recovery():
+            entered.set()
+            await release.wait()
+
+        with patch.object(self.media.retention, "recover", side_effect=slow_recovery):
+            await asyncio.wait_for(Media.start(self.media), 1)
+            await asyncio.wait_for(entered.wait(), 1)
+            self.assertFalse(release.is_set())
+            await Media.close(self.media)

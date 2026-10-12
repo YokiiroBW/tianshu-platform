@@ -3,6 +3,7 @@
 import asyncio
 import multiprocessing
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -12,6 +13,8 @@ from services.platform.contracts import Fault
 from services.platform.media.destination import head_key, snapshot, subdirectory
 from services.platform.media.download_cache import DownloadCache
 from services.platform.media.repository import Repository
+from services.platform.media.organizer import library_lock
+from services.platform.media.retention import source_directory
 
 BV = "BV1xx411c7mD"
 CID = "123"
@@ -119,7 +122,8 @@ class GlobalDownloadTests(unittest.IsolatedAsyncioTestCase):
         results = await asyncio.gather(self.get(first, "one"), self.get(second, "two", other))
         self.assertEqual(sorted(reused for _, reused in results), [False, True])
         self.assertEqual((self.root / "actual-calls.txt").read_text().splitlines(), ["80"])
-        self.assertEqual(results[0][0]["file"], results[1][0]["file"])
+        self.assertNotEqual(results[0][0]["file"], results[1][0]["file"])
+        self.assertTrue(Path(results[0][0]["file"]).samefile(results[1][0]["file"]))
         self.assertNotIn("attempts", self.media.repo.job(second["job_id"]))
 
     async def test_separate_processes_download_once(self):
@@ -158,7 +162,8 @@ class GlobalDownloadTests(unittest.IsolatedAsyncioTestCase):
         second = self.claimed("new", "new")
         result, reused = await self.get(second, "new", restarted)
         self.assertTrue(reused)
-        self.assertEqual(result["file"], download["file"])
+        self.assertNotEqual(result["file"], download["file"])
+        self.assertTrue(Path(result["file"]).samefile(download["file"]))
         self.assertEqual(restarted.engine.calls, [])
         self.assertTrue(list(self.root.glob("media.sqlite.pre-media-*")))
 
@@ -171,6 +176,8 @@ class GlobalDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(reused)
         self.assertNotEqual(initial["file"], repaired["file"])
         Path(repaired["file"]).unlink()
+        source = self.media.repo.download_source(BV, CID, "80")
+        Path(source["download"]["file"]).unlink()
         third = self.claimed("third", "third")
         _, reused = await self.get(third, "third")
         self.assertFalse(reused)
@@ -246,6 +253,39 @@ class GlobalDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(reused)
         with self.assertRaises(Fault):
             self.media.repo.download_finish(BV, CID, "80", "crashed", old["generation"])
+
+    async def test_cancelled_caller_keeps_source_lock_until_threaded_pin_finishes(self):
+        job = self.claimed("one", "one")
+        cache = DownloadCache(self.media)
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        pin = self.media.retention.pin
+
+        def slow_pin(*args):
+            entered.set()
+            release.wait(5)
+            try:
+                return pin(*args)
+            finally:
+                finished.set()
+
+        self.media.retention.pin = slow_pin
+        running = asyncio.create_task(cache.obtain(job, PART, None, "one", "80"))
+        self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+        running.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await running
+        directory = source_directory(self.media.config["staging_directory"], BV, CID, "80")
+        try:
+            with self.assertRaises(Fault) as error:
+                with library_lock(directory):
+                    pass
+            self.assertEqual(error.exception.code, "busy")
+        finally:
+            release.set()
+        self.assertTrue(await asyncio.to_thread(finished.wait, 3))
+        await asyncio.sleep(0.05)
+        with library_lock(directory):
+            self.assertTrue(self.media.repo.job_inputs(job["job_id"]))
 
 
 class DestinationTests(unittest.TestCase):

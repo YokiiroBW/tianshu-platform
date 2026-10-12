@@ -1,4 +1,4 @@
-"""Dashboard counts cover the full ledger; disk readings expose only the staging volume."""
+"""Dashboard counts cover visible jobs; capacity is read from actual media roots."""
 
 import asyncio
 import json
@@ -11,7 +11,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from services.platform.media.repository import Repository
-from services.platform.media.runtime import Media, staging_storage
+from services.platform.media.runtime import Media
+from services.platform.media.storage import media_storage
 
 
 EMPTY_COUNTS = {
@@ -85,54 +86,83 @@ class RepositoryOverviewTests(unittest.TestCase):
         )
 
 
-class StagingStorageTests(unittest.TestCase):
+class MediaStorageTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
 
-    def test_existing_staging_volume_is_read_without_enumerating_files(self):
-        staging = self.root / "staging"
-        staging.mkdir()
-        usage = SimpleNamespace(total=1000, used=600, free=400)
-        with patch("services.platform.media.runtime.shutil.disk_usage", return_value=usage) as read:
-            self.assertEqual(
-                staging_storage(staging),
-                {"state": "available", "total_bytes": 1000, "used_bytes": 600, "free_bytes": 400},
-            )
-        read.assert_called_once_with(staging)
+    def target(self, directory, label="Media"):
+        return {"kind": "media_server", "directory": str(directory), "label": label}
 
-    def test_uncreated_staging_uses_nearest_existing_parent_without_creating_directories(self):
-        staging = self.root / "not-created" / "staging"
-        usage = SimpleNamespace(total=1000, used=200, free=800)
-        with patch("services.platform.media.runtime.shutil.disk_usage", return_value=usage) as read:
-            result = staging_storage(staging)
-        read.assert_called_once_with(self.root)
-        self.assertEqual(result["free_bytes"], 800)
-        self.assertFalse((self.root / "not-created").exists())
-        self.assertNotIn(str(self.root), json.dumps(result))
+    def test_existing_media_roots_on_one_device_share_capacity_without_enumerating_files(self):
+        first, second = self.root / "one", self.root / "two"
+        first.mkdir()
+        second.mkdir()
+        usage = SimpleNamespace(total=1000, used=600, free=400)
+        with patch("services.platform.media.storage.shutil.disk_usage", return_value=usage):
+            result = media_storage({"one": self.target(first), "two": self.target(second)})
+        self.assertEqual(result["state"], "available")
+        self.assertEqual(len(result["volumes"]), 1)
+        volume = result["volumes"][0]
+        self.assertEqual(volume["target_ids"], ["one", "two"])
+        self.assertEqual(volume["directories"], [str(first), str(second)])
+        self.assertEqual(
+            (volume["total_bytes"], volume["used_bytes"], volume["free_bytes"]), (1000, 600, 400)
+        )
+
+    def test_missing_root_never_reports_its_existing_parent_volume(self):
+        missing = self.root / "not-mounted" / "media"
+        with patch("services.platform.media.storage.shutil.disk_usage") as read:
+            result = media_storage({"missing": self.target(missing)})
+        read.assert_not_called()
+        self.assertEqual(result["state"], "unavailable")
+        self.assertIsNone(result["volumes"][0]["free_bytes"])
+        self.assertFalse(missing.exists())
+
+    def test_no_direct_media_targets_is_not_configured(self):
+        self.assertEqual(
+            media_storage({"remote": {"kind": "assetlibrary"}}),
+            {"state": "not_configured", "volumes": []},
+        )
+
+    def test_multiple_devices_are_separate_volumes(self):
+        with (
+            patch("services.platform.media.storage.Path.is_dir", return_value=True),
+            patch(
+                "services.platform.media.storage.Path.stat",
+                side_effect=[SimpleNamespace(st_dev=1), SimpleNamespace(st_dev=2)],
+            ),
+            patch(
+                "services.platform.media.storage.shutil.disk_usage",
+                return_value=SimpleNamespace(total=1000, used=600, free=400),
+            ),
+        ):
+            result = media_storage(
+                {"one": self.target(self.root / "one"), "two": self.target(self.root / "two")}
+            )
+        self.assertEqual(len(result["volumes"]), 2)
+        self.assertNotEqual(result["volumes"][0]["storage_id"], result["volumes"][1]["storage_id"])
 
     def test_unreadable_volume_returns_null_bytes_without_guessing_capacity(self):
         with patch(
-            "services.platform.media.runtime.shutil.disk_usage",
+            "services.platform.media.storage.shutil.disk_usage",
             side_effect=PermissionError("synthetic private path"),
         ):
-            result = staging_storage(self.root)
-        self.assertEqual(
-            result,
-            {"state": "unavailable", "total_bytes": None, "used_bytes": None, "free_bytes": None},
-        )
+            result = media_storage({"one": self.target(self.root)})
+        self.assertEqual(result["state"], "unavailable")
+        self.assertIsNone(result["volumes"][0]["total_bytes"])
         self.assertNotIn("synthetic", json.dumps(result))
 
     def test_stat_permission_failure_does_not_fall_back_to_an_unrelated_parent(self):
         with (
             patch(
-                "services.platform.media.runtime.Path.stat",
+                "services.platform.media.storage.Path.stat",
                 side_effect=PermissionError("synthetic"),
             ),
-            patch("services.platform.media.runtime.shutil.disk_usage") as read,
+            patch("services.platform.media.storage.shutil.disk_usage") as read,
         ):
-            result = staging_storage(self.root)
+            result = media_storage({"one": self.target(self.root)})
         self.assertEqual(result["state"], "unavailable")
         read.assert_not_called()
 
@@ -143,7 +173,15 @@ class MediaOverviewViewTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         self.media = object.__new__(Media)
         self.media.config = {
-            "targets": {},
+            "targets": {
+                "one": {
+                    "kind": "media_server",
+                    "target_id": "one",
+                    "label": "Media",
+                    "directory": self.directory.name,
+                    "servers": [],
+                }
+            },
             "staging_directory": str(Path(self.directory.name) / "future-staging"),
         }
         self.media.repo = Repository(Path(self.directory.name) / "media.sqlite")
@@ -164,7 +202,7 @@ class MediaOverviewViewTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(threading.get_ident(), event_loop_thread)
             return SimpleNamespace(total=1000, used=600, free=400)
 
-        with patch("services.platform.media.runtime.shutil.disk_usage", side_effect=disk_usage):
+        with patch("services.platform.media.storage.shutil.disk_usage", side_effect=disk_usage):
             view = await self.media.view()
         self.assertEqual(len(view["jobs"]), 100)
         self.assertEqual(
@@ -178,16 +216,16 @@ class MediaOverviewViewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_storage_failure_keeps_ledger_and_configured_view_available(self):
         with patch(
-            "services.platform.media.runtime.shutil.disk_usage", side_effect=OSError("synthetic")
+            "services.platform.media.storage.shutil.disk_usage", side_effect=OSError("synthetic")
         ):
             view = await self.media.view()
         self.assertTrue(view["configured"])
         self.assertEqual(view["overview"]["jobs"], EMPTY_COUNTS)
-        self.assertIsNone(view["overview"]["storage"]["total_bytes"])
+        self.assertIsNone(view["overview"]["storage"]["volumes"][0]["total_bytes"])
 
     async def test_unconfigured_view_has_no_overview_and_does_not_read_disk(self):
         self.media.config = None
-        with patch("services.platform.media.runtime.shutil.disk_usage") as read:
+        with patch("services.platform.media.storage.shutil.disk_usage") as read:
             view = await self.media.view()
         self.assertIsNone(view["overview"])
         self.assertFalse(view["configured"])

@@ -38,6 +38,7 @@ OVERVIEW_STATES = {
     "attention": ("failed", "unknown", "auth_required", "waiting_metadata"),
     "cancelled": ("cancelled",),
 }
+VISIBLE = "id NOT IN (SELECT id FROM documents WHERE kind='deleted_job')"
 
 
 class Repository:
@@ -175,7 +176,7 @@ class Repository:
                 return self.enqueue(payload, db=transaction)
         # The job is one complete selected-P package, with per-CID membership retained inside it.
         for existing in db.execute(
-            "SELECT body FROM jobs WHERE state NOT IN ('cancelled','failed')"
+            "SELECT body FROM jobs WHERE " + VISIBLE + " AND state NOT IN ('cancelled','failed')"
         ):
             prior = json.loads(existing[0])
             if (
@@ -224,13 +225,29 @@ class Repository:
         db.execute("INSERT INTO events VALUES(?,?,?,?)", (body["job_id"], "queued", "queued", now))
         return body
 
-    def job(self, identity):
+    def job(self, identity, *, include_deleted=False):
         with self.transaction() as db:
-            row = db.execute("SELECT body FROM jobs WHERE id=?", (identity,)).fetchone()
+            row = db.execute(
+                "SELECT body FROM jobs WHERE id=?" + ("" if include_deleted else " AND " + VISIBLE),
+                (identity,),
+            ).fetchone()
             return json.loads(row[0]) if row else None
 
+    def delete_job(self, identity, revision, *, db):
+        row = db.execute(
+            "SELECT body,owner FROM jobs WHERE id=? AND " + VISIBLE, (identity,)
+        ).fetchone()
+        require(row is not None, "not_found", 404)
+        job = json.loads(row["body"])
+        require(job["revision"] == revision, "version_conflict", 409)
+        require(job["state"] in TERMINAL and row["owner"] is None, "job_not_deletable", 409)
+        self.put("deleted_job", identity, {"deleted_at": self.clock()}, 0, db=db)
+        # Retain publication bases and membership, while freeing the command's unique key.
+        db.execute("UPDATE jobs SET dedupe=? WHERE id=?", ("deleted:" + identity, identity))
+        return {"deleted": True, "job_id": identity}
+
     def jobs(self, *, limit=100, after=None, states=None):
-        where, parameters = [], []
+        where, parameters = [VISIBLE], []
         if states is not None:
             if not states:
                 return [], False
@@ -253,12 +270,14 @@ class Repository:
 
     def job_count(self):
         with self.transaction() as db:
-            return db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+            return db.execute("SELECT COUNT(*) FROM jobs WHERE " + VISIBLE).fetchone()[0]
 
     def job_overview(self):
         """Count the whole ledger in SQL without loading any job documents."""
         with self.transaction() as db:
-            counts = dict(db.execute("SELECT state, COUNT(*) FROM jobs GROUP BY state"))
+            counts = dict(
+                db.execute("SELECT state, COUNT(*) FROM jobs WHERE " + VISIBLE + " GROUP BY state")
+            )
         return {
             "total": sum(counts.values()),
             **{
@@ -539,6 +558,49 @@ class Repository:
             for row in rows
             if cid in (body := json.loads(row[0])).get("downloads", {})
         ]
+
+    def media_sources(self, bvid, cid, quality):
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT body FROM documents WHERE kind='media_source' AND json_extract(body,'$.bvid')=? AND json_extract(body,'$.cid')=? AND json_extract(body,'$.actual_quality')=? ORDER BY rowid DESC",
+                (bvid, cid, quality),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def download_source(self, bvid, cid, quality):
+        with self.transaction() as db:
+            row = db.execute(
+                "SELECT body,generation FROM download_sources WHERE bvid=? AND cid=? AND quality=? AND state='ready'",
+                (bvid, cid, quality),
+            ).fetchone()
+        return {"download": json.loads(row[0]), "generation": row[1]} if row else None
+
+    def retention_jobs(self):
+        # Deleted information still owns recovery facts and retained files.
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT body FROM jobs WHERE state IN ('completed','published') ORDER BY updated DESC"
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def staging_referenced(self, file):
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT body FROM jobs WHERE state NOT IN ('completed','published')",
+            ).fetchall()
+        return any(
+            download.get("file") == file
+            for row in rows
+            for download in json.loads(row["body"]).get("downloads", {}).values()
+        )
+
+    def job_inputs(self, identity):
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT body FROM documents WHERE kind='media_input' AND json_extract(body,'$.job_id')=?",
+                (identity,),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
 
     def members(self, identity):
         with self.transaction() as db:
