@@ -84,6 +84,9 @@ class WebMedia:
             "accounts/revoke": self.account_revoke,
             "accounts/qr/start": self.qr_start,
             "accounts/qr/poll": self.qr_poll,
+            "targets/test": self.target_test,
+            "targets/save": self.target_save,
+            "targets/remove": self.target_remove,
         }.get(operation)
         require(method is not None, "not_found", 404)
         try:
@@ -99,6 +102,52 @@ class WebMedia:
             {"operation": name, "body": body},
             operation,
         )
+
+    async def target_test(self, body, session):
+        require(set(body) <= {"kind", "base_url", "token", "target_id"}, "invalid_input", 400)
+        connection = await self.media.local(self.media.targets.connection, body)
+        libraries = await self.media.servers.libraries(connection)
+        await self.live(session)
+        return {"libraries": libraries}
+
+    async def target_save(self, body, session):
+        require(
+            set(body)
+            == {
+                "target_id",
+                "expected_revision",
+                "label",
+                "kind",
+                "base_url",
+                "token",
+                "library_id",
+                "media_root",
+                "directory",
+                "client_id",
+            },
+            "invalid_input",
+            400,
+        )
+        connection = await self.media.local(self.media.targets.connection, body)
+        safe = self.media.targets.safe_command(body, connection)
+        result = await self.receipt(
+            safe, "targets/save", session, lambda db: self.media.targets.save(body, connection, db)
+        )
+        await self.media.local(self.media.targets.reload)
+        return result
+
+    async def target_remove(self, body, session):
+        require(
+            set(body) == {"target_id", "expected_revision", "client_id"}
+            and type(body["expected_revision"]) is int,
+            "invalid_input",
+            400,
+        )
+        result = await self.receipt(
+            body, "targets/remove", session, lambda db: self.media.targets.remove(body, db)
+        )
+        await self.media.local(self.media.targets.reload)
+        return result
 
     async def resolve(self, body, session):
         require(set(body) == {"url", "account_id"}, "invalid_input", 400)

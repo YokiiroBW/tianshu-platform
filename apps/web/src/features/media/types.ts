@@ -30,10 +30,20 @@ export type Account = {
   code: string;
 };
 export type Target = {
+  kind?: "media_server" | "assetlibrary";
+  revision?: number | null;
+  directory?: string | null;
   target_id: string;
   label: string;
   state: string;
-  servers: { server_id: string; label: string; kind: string }[];
+  servers: {
+    server_id: string;
+    label: string;
+    kind: string;
+    base_url?: string;
+    library_id?: string;
+    media_root?: string;
+  }[];
 };
 export type Subscription = {
   subscription_id: string;

@@ -2,6 +2,7 @@
 
 import re
 import sys
+import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -142,6 +143,7 @@ def configuration(settings):
     )
     targets = raw.get("targets", [])
     require(isinstance(targets, list) and len(targets) <= 32, "invalid_input", 400)
+    targets = [dict(target) if isinstance(target, dict) else target for target in targets]
     ids = set()
     for target in targets:
         require(isinstance(target, dict), "invalid_input", 400)
@@ -149,7 +151,40 @@ def configuration(settings):
         require(identity not in ids, "invalid_input", 400)
         ids.add(identity)
         text(target.get("label"), 128)
+        kind = target.setdefault(
+            "kind", "assetlibrary" if target.get("publisher") else "media_server"
+        )
+        require(kind in {"media_server", "assetlibrary"}, "invalid_input", 400)
+        if kind == "media_server":
+            require(not target.get("publisher"), "invalid_input", 400)
+            target.setdefault(
+                "library_id",
+                str(uuid.uuid5(uuid.NAMESPACE_URL, "tianshu-media-library:" + identity)),
+            )
+            directory = target.get("directory")
+            require(
+                isinstance(directory, str) and Path(directory).is_absolute(), "invalid_input", 400
+            )
+            target["directory"] = str(Path(directory).absolute())
+            root, staging_path = Path(directory).resolve(), Path(staging).resolve()
+            require(
+                root != staging_path
+                and root not in staging_path.parents
+                and staging_path not in root.parents,
+                "invalid_input",
+                400,
+            )
         require(isinstance(target.get("servers", []), list), "invalid_input", 400)
+    local_roots = [Path(t["directory"]).resolve() for t in targets if t["kind"] == "media_server"]
+    for index, root in enumerate(local_roots):
+        require(
+            not any(
+                root == other or root in other.parents or other in root.parents
+                for other in local_roots[index + 1 :]
+            ),
+            "invalid_input",
+            400,
+        )
     result = {
         "staging_directory": str(Path(staging).resolve()),
         "package_contract_directory": raw.get(

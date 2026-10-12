@@ -6,6 +6,7 @@ import { StatePanel } from "../../components/StatePanel";
 import { requestId } from "../../app/requestId";
 import type { Account, QrSession } from "./types";
 import type { MediaController } from "./useMediaController";
+import { TargetsPanel } from "./TargetsPanel";
 import { timestamp, tone, word } from "./wording";
 
 export function AccountsPanel({ media }: { media: MediaController }) {
@@ -148,7 +149,6 @@ export function AccountsPanel({ media }: { media: MediaController }) {
       media.setNotice("B 站会话已撤销，受影响的订阅和任务会要求重新登录。");
   };
   const accounts = media.view?.accounts ?? [];
-  const targets = media.view?.targets ?? [];
   return (
     <section className="media-stack" aria-label="账号与媒体库">
       <div className="media-section-head">
@@ -279,45 +279,7 @@ export function AccountsPanel({ media }: { media: MediaController }) {
           )}
         </div>
       </div>
-      <div className="media-section-head">
-        <h2>已登记媒体库</h2>
-      </div>
-      {!targets.length ? (
-        <StatePanel kind="unconfigured" title="尚未登记目标媒体库">
-          <p>
-            管理员登记 AssetLibrary 发布目标后，才可选择目标库创建下载和订阅。
-          </p>
-        </StatePanel>
-      ) : (
-        <div className="media-targets">
-          {targets.map((target) => (
-            <article className="media-card media-stack" key={target.target_id}>
-              <div className="media-section-head">
-                <h3>{target.label}</h3>
-                <StatusRail
-                  tone={tone(target.state)}
-                  label={word(target.state)}
-                />
-              </div>
-              <p className="muted">发布由资产库接收并校验成品。</p>
-              <div>
-                <h4>媒体服务器</h4>
-                {target.servers.length ? (
-                  target.servers.map((server) => (
-                    <p key={server.server_id}>
-                      {server.label} · {server.kind}
-                    </p>
-                  ))
-                ) : (
-                  <p className="muted">
-                    未配置 Emby 或 Jellyfin。任务只标记发布完成。
-                  </p>
-                )}
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
+      <TargetsPanel media={media} />
     </section>
   );
 }

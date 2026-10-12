@@ -7,7 +7,7 @@ import json
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from ..contracts import Fault, digest, canonical, require
@@ -45,7 +45,7 @@ class Repository:
         self.clock = clock
         self.database.parent.mkdir(parents=True, exist_ok=True)
         if self.database.exists():
-            with sqlite3.connect(self.database) as db:
+            with closing(sqlite3.connect(self.database)) as db:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
                 require(version in (0, 1), "media_store_unavailable", 503)
                 if (
@@ -55,7 +55,7 @@ class Repository:
                     backup = self.database.with_name(
                         self.database.name + ".pre-media-" + uuid.uuid4().hex
                     )
-                    with sqlite3.connect(backup) as target:
+                    with closing(sqlite3.connect(backup)) as target:
                         db.backup(target)
         with self.transaction() as db:
             db.executescript("""

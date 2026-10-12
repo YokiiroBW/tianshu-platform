@@ -288,6 +288,33 @@ export async function installMediaFixture(page: Page, initial = fixtureView()) {
       job.revision += 1;
       return reply({ job, replayed: false });
     }
+    if (operation === "targets/test")
+      return reply({
+        libraries: [
+          { library_id: "1", label: "网络视频", paths: ["/library/videos"] },
+        ],
+      });
+    if (operation === "targets/save") {
+      state.view.targets.push({
+        target_id: "saved-server",
+        revision: 1,
+        kind: "media_server",
+        state: "ready",
+        label: body.label as string,
+        directory: body.directory as string,
+        servers: [
+          {
+            server_id: "saved-server",
+            label: body.label as string,
+            kind: body.kind as string,
+            base_url: body.base_url as string,
+            library_id: body.library_id as string,
+            media_root: body.media_root as string,
+          },
+        ],
+      });
+      return reply({ target_id: "saved-server", revision: 1 });
+    }
     if (operation === "accounts/qr/start")
       return reply({
         qr_id: "synthetic-qr",

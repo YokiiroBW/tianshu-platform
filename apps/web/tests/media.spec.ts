@@ -604,3 +604,54 @@ test("media filter changes discard a delayed continuation", async ({
     page.getByRole("heading", { name: "旧筛选的迟到视频", exact: true }),
   ).toHaveCount(0);
 });
+
+test("external media servers can be added and selected without AssetLibrary", async ({
+  page,
+}) => {
+  const view = fixtureView();
+  view.targets = [];
+  view.jobs = [];
+  view.subscriptions = [];
+  const state = await installMediaFixture(page, view);
+  await page.goto("/#/subscriptions/3");
+  await expect(
+    page.getByText(
+      "尚未添加媒体服务器。添加后即可选择订阅和下载的目标媒体库。",
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("天枢媒体库", { exact: true })).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "添加媒体服务器", exact: true })
+    .click();
+  await page.getByLabel("显示名称", { exact: true }).fill("我的 Plex");
+  await page.getByLabel("服务器类型").selectOption("plex");
+  await page
+    .getByLabel("服务器地址", { exact: true })
+    .fill("http://127.0.0.1:32400");
+  await page.getByLabel("API Key / Plex Token").fill("synthetic-token");
+  await page.getByRole("button", { name: "测试连接并读取媒体库" }).click();
+  await page
+    .getByRole("combobox", { name: "服务器媒体库", exact: true })
+    .selectOption("1");
+  await expect(page.getByLabel("对应目录（媒体服务器可见）")).toHaveValue(
+    "/library/videos",
+  );
+  await page.getByLabel("整理目录（天枢可见）").fill("/media/videos");
+  await page.getByRole("button", { name: "保存媒体服务器" }).click();
+  await expect(
+    page.getByRole("heading", { name: "我的 Plex", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("API Key / Plex Token")).toHaveCount(0);
+  expect(
+    state.calls.find((call) => call.operation === "targets/save")?.body.kind,
+  ).toBe("plex");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
+    ),
+  ).toBe(true);
+  await selectMediaSection(page, "链接下载");
+  await expect(
+    page.getByLabel("目标媒体库").getByRole("option", { name: /我的 Plex/ }),
+  ).toHaveCount(1);
+});

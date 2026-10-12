@@ -14,7 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from services.platform.media.engine import file_record
-from services.platform.media.publication import MediaServers, Remote
+from services.platform.media.publication import Remote
+from services.platform.media.servers import MediaServers
 
 
 async def verify(fixtures, documents):

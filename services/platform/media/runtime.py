@@ -12,9 +12,12 @@ from jsonschema import Draft202012Validator
 from ..contracts import Fault, require
 from .accounts import Accounts
 from .bilibili import Bilibili
+from .servers import MediaServers
+from .targets import Targets
 from .config import SOURCE_KINDS, configuration
 from .engine import Engine
-from .publication import MediaServers, Publisher, Remote, validate_connection
+from .publication import Publisher, Remote, validate_connection
+from .organizer import FileOrganizer, Publications
 from .repository import Repository
 from .rules import RuleEvaluator
 from .subscriptions import Subscriptions
@@ -115,13 +118,15 @@ def validate_media(settings):
     if config is None:
         return None
     for target in config["targets"].values():
+        if target.get("kind") == "media_server":
+            require(bool(target.get("servers")), "invalid_input", 400)
         require(isinstance(target.get("library_id"), str), "invalid_input", 400)
         if target.get("publisher"):
             validate_connection(target["publisher"])
         for server in target.get("servers", []):
             validate_connection(server)
             require(
-                server.get("kind") in {"emby", "jellyfin"}
+                server.get("kind") in {"emby", "jellyfin", "plex"}
                 and isinstance(server.get("server_id"), str)
                 and isinstance(server.get("library_id"), str)
                 and isinstance(server.get("media_root"), str),
@@ -149,8 +154,13 @@ class Media:
         self.accounts = Accounts(self.repo)
         self.connector = Bilibili(clock=clock)
         self.engine = Engine(self.config["engine"])
-        self.remote = Remote()
-        self.publisher = Publisher(self.remote)
+        self.targets = Targets(self)
+        self.remote = Remote(self.targets.token)
+        self.publisher = Publications(
+            Publisher(self.remote),
+            FileOrganizer(self.repo, self.contract, self.config["staging_directory"]),
+            self.local,
+        )
         self.servers = MediaServers(self.remote)
         self.evaluator = RuleEvaluator()
         self.subscriptions = Subscriptions(self)
@@ -213,12 +223,22 @@ class Media:
                 {
                     "target_id": identity,
                     "label": target["label"],
-                    "state": "ready" if target.get("publisher") else "publisher_not_configured",
+                    "state": "ready"
+                    if target.get("kind") == "media_server" or target.get("publisher")
+                    else "publisher_not_configured",
+                    "kind": target.get("kind", "assetlibrary"),
+                    "revision": target.get("revision"),
+                    "directory": target.get("directory")
+                    if target.get("kind") == "media_server"
+                    else None,
                     "servers": [
                         {
                             "server_id": server["server_id"],
                             "label": server.get("label", server["server_id"]),
                             "kind": server["kind"],
+                            "base_url": server["base_url"],
+                            "library_id": server["library_id"],
+                            "media_root": server["media_root"],
                         }
                         for server in target.get("servers", [])
                     ],

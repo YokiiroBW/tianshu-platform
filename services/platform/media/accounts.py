@@ -39,7 +39,11 @@ class Accounts:
         self.repo = repository
         key = Path(str(repository.database) + ".key")
         if not key.exists():
-            require(not repository.list("account"), "media_credentials_unavailable", 503)
+            require(
+                not repository.list("account") and not repository.list("media_target"),
+                "media_credentials_unavailable",
+                503,
+            )
             try:
                 with key.open("xb") as handle:
                     os.chmod(key, 0o600)
@@ -64,9 +68,12 @@ class Accounts:
         ).decode()
 
     def _decrypt(self, account):
+        return self.unseal(account["account_id"], account["secret"])
+
+    def unseal(self, identity, secret):
         try:
-            raw = base64.b64decode(account["secret"], validate=True)
-            return self.cipher.decrypt(raw[:12], raw[12:], account["account_id"].encode()).decode()
+            raw = base64.b64decode(secret, validate=True)
+            return self.cipher.decrypt(raw[:12], raw[12:], identity.encode()).decode()
         except Exception:
             raise Fault("media_credentials_unavailable", 503) from None
 

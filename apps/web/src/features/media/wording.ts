@@ -5,7 +5,7 @@ export const stateWords: Record<string, string> = {
   metadata_ready: "元数据已就绪",
   metadata: "检查元数据",
   publishing: "正在发布",
-  asset_indexed: "资产已入库",
+  asset_indexed: "媒体已入库",
   library_verifying: "媒体服务器核对中",
   completed: "核对完成",
   published: "发布完成",
@@ -18,6 +18,7 @@ export const stateWords: Record<string, string> = {
   active: "订阅运行中",
   paused: "已暂停",
   rule_error: "规则需要修正",
+  library_files_verified: "媒体服务器已收录文件",
   ready: "可用",
   revoked: "已撤销",
   not_configured: "未配置",
@@ -63,6 +64,15 @@ export const reasonWords: Record<string, string> = {
   error_short_circuit: "前面的规则执行失败，后续规则未执行",
 };
 export const errorWords: Record<string, string> = {
+  directory_overlap: "整理目录不能与暂存目录或其他目标重叠",
+  target_mapping_in_use:
+    "已有任务使用此目录映射；更换目录或库请添加新的连接，原连接可继续更新密钥",
+  target_managed_by_config: "此连接通过部署配置维护",
+
+  unsafe_library_path: "媒体库目录包含链接或不安全路径，请检查目录配置。",
+  source_changed: "成品文件已变化，请重新校验后重试。",
+  target_exists: "目标目录已有不同文件，已保留原文件，请检查后重试。",
+  scope_changed: "媒体库配置已变化，请检查任务对应的目标库。",
   budget_exceeded: "请求超过媒体接口的 6 MiB 上限，请缩减本次输入。",
   media_not_configured: "此部署尚未登记视频订阅服务。",
   media_disabled: "此部署尚未启用视频订阅服务。",

@@ -1,7 +1,6 @@
 """Authenticated AssetLibrary publication and independent media-server observations."""
 
 import asyncio
-import base64
 import json
 import os
 import ssl
@@ -12,7 +11,6 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from ..contracts import Fault, require
-from .identity import item_key, media_key
 
 
 def validate_connection(value):
@@ -31,7 +29,9 @@ def validate_connection(value):
         400,
     )
     require(
-        isinstance(value.get("token_env"), str) and value["token_env"].isidentifier(),
+        (isinstance(value.get("token_env"), str) and value["token_env"].isidentifier())
+        or isinstance(value.get("token_ref"), str)
+        or isinstance(value.get("token"), str),
         "invalid_input",
         400,
     )
@@ -46,8 +46,14 @@ def validate_connection(value):
 
 
 class Remote:
-    def __init__(self):
+    def __init__(self, token_resolver=None):
         self.session = None
+        self.token_resolver = token_resolver
+
+    async def token(self, config):
+        if config.get("token_ref") and self.token_resolver:
+            return await asyncio.to_thread(self.token_resolver, config["token_ref"])
+        return config.get("token") or os.environ.get(config.get("token_env", ""))
 
     async def close(self):
         if self.session is not None:
@@ -56,7 +62,7 @@ class Remote:
 
     async def request(self, config, method, path, *, body=None, params=None, server=False):
         validate_connection(config)
-        token = os.environ.get(config["token_env"])
+        token = await self.token(config)
         require(token and token.strip(), "media_peer_not_configured", 503)
         if self.session is None:
             self.session = aiohttp.ClientSession(
@@ -73,6 +79,12 @@ class Remote:
             if server
             else {"Authorization": "Bearer " + token}
         )
+        if server and config.get("kind") == "plex":
+            headers = {
+                "X-Plex-Token": token,
+                "Accept": "application/json",
+                "X-Plex-Client-Identifier": "tianshu-media",
+            }
         try:
             async with self.session.request(
                 method,
@@ -121,7 +133,7 @@ class Remote:
 
     async def image(self, config, item_id):
         validate_connection(config)
-        token = os.environ.get(config["token_env"])
+        token = await self.token(config)
         require(token, "media_peer_not_configured", 503)
         if self.session is None:
             self.session = aiohttp.ClientSession(
@@ -278,141 +290,3 @@ class Publisher:
                 body={"expected_version": operation["version"]},
             )
         )
-
-
-class MediaServers:
-    def __init__(self, remote):
-        self.remote = remote
-
-    async def verify(self, target, job):
-        results = []
-        for server in target.get("servers", []):
-            result = {
-                "server_id": server["server_id"],
-                "kind": server["kind"],
-                "state": "unavailable",
-                "code": "media_server_unavailable",
-                "item_id": None,
-            }
-            try:
-                require(server["kind"] in {"emby", "jellyfin"}, "invalid_input", 400)
-                await self.remote.request(server, "POST", "/Library/Refresh", server=True)
-                receipt = job["asset_receipt"]
-                manifest = json.loads(base64.b64decode(job["package"]["manifest_base64"]))
-                root = (
-                    server["media_root"].replace("\\", "/").rstrip("/")
-                    + "/"
-                    + receipt["target_relative_path"]
-                )
-                expected_title = job.get("overrides", {}).get(
-                    "title", job["snapshot"].get("title") or ""
-                )
-                description = job.get("overrides", {}).get(
-                    "description", job["snapshot"].get("description") or ""
-                )
-                names = {
-                    creator["name"] for creator in job["snapshot"]["creators"] if creator["name"]
-                }
-                single = manifest["layout"] == "single"
-                identities = (
-                    [media_key(job["bvid"], job["selected_cids"][0])]
-                    if single
-                    else [item_key(job["bvid"])]
-                    + [media_key(job["bvid"], cid) for cid in job["selected_cids"]]
-                )
-                matched = True
-                missing = False
-                for index, identity in enumerate(identities):
-                    listing = await self.remote.request(
-                        server,
-                        "GET",
-                        "/Items",
-                        params={
-                            "ParentId": server["library_id"],
-                            "Recursive": "true",
-                            "AnyProviderIdEquals": "bilibili." + identity,
-                            "Fields": "Overview,ProviderIds,People,ImageTags,Path",
-                            "Limit": 200,
-                        },
-                        server=True,
-                    )
-                    items = listing.get("Items", []) if isinstance(listing, dict) else []
-                    item = next(
-                        (
-                            value
-                            for value in items
-                            if value.get("ProviderIds", {}).get("bilibili") == identity
-                        ),
-                        None,
-                    )
-                    if item is None:
-                        missing = True
-                        matched = False
-                        continue
-                    result["item_id"] = result["item_id"] or str(item.get("Id"))
-                    cid = (
-                        job["selected_cids"][0]
-                        if single
-                        else None
-                        if index == 0
-                        else job["selected_cids"][index - 1]
-                    )
-                    file = next(
-                        (
-                            value
-                            for value in manifest["files"]
-                            if value["kind"] == "video" and value["cid"] == cid
-                        ),
-                        None,
-                    )
-                    expected_path = root + ("/" + file["path"] if file else "")
-                    expected_name = (
-                        expected_title
-                        if single or cid is None
-                        else next(
-                            part.get("title") or ""
-                            for part in job["snapshot"]["parts"]
-                            if part["cid"] == cid
-                        )
-                    )
-                    observed_names = {person.get("Name") for person in item.get("People", [])}
-                    correct = (
-                        item.get("Path", "").replace("\\", "/").rstrip("/") == expected_path
-                        and item.get("Name") == expected_name
-                        and (not description or item.get("Overview") == description)
-                        and names <= observed_names
-                    )
-                    image = next(
-                        (
-                            value
-                            for value in manifest["files"]
-                            if value["kind"]
-                            == ("poster" if cid is None or single else "episode_thumb")
-                            and value["cid"] == (None if single else cid)
-                        ),
-                        None,
-                    )
-                    if image:
-                        require(item.get("Id"), "library_item_pending", 503)
-                        observed_image = await self.remote.image(server, str(item["Id"]))
-                        original = (
-                            Path(job["staging_directory"])
-                            / job["package"]["staging_ref"]
-                            / image["path"]
-                        )
-                        correct = correct and await asyncio.to_thread(
-                            matching_image, original.read_bytes(), observed_image
-                        )
-                    matched = matched and correct
-                result.update(
-                    state="verified" if matched else "pending" if missing else "mismatch",
-                    code="verified"
-                    if matched
-                    else "library_item_pending"
-                    if missing
-                    else "library_metadata_mismatch",
-                )
-            except Fault as error:
-                result["code"] = error.code
-            results.append(result)
-        return results

@@ -80,7 +80,11 @@ class Worker:
         try:
             if job["cancel_requested"]:
                 raise asyncio.CancelledError
-            require(target.get("publisher"), "publisher_not_configured", 503)
+            require(
+                target.get("kind") == "media_server" or target.get("publisher"),
+                "publisher_not_configured",
+                503,
+            )
             if job.get("asset_receipt") and not job.get("metadata_changed"):
                 await self.verify_libraries(job, update, target)
                 return
@@ -228,7 +232,9 @@ class Worker:
                 await update(asset_operation=operation)
             else:
                 operation = await self.media.publisher.read(target, operation["operation_id"])
-            if operation["status"] == "prepared":
+            if operation["status"] == "prepared" or (
+                target.get("kind") == "media_server" and operation["status"] == "publishing"
+            ):
                 try:
                     operation = await self.media.publisher.publish(target, operation)
                 except Fault as error:
