@@ -256,11 +256,11 @@ test("media storage shows distinct disks and unknown readings without fabricated
   };
   await page.getByRole("button", { name: "读取状态", exact: true }).click();
   await expect(disk.getByText("384 GiB", { exact: true })).toBeVisible();
-  await expect(disk.getByRole("progressbar")).toHaveCount(2);
-  await expect(disk.getByRole("progressbar").first()).toHaveAttribute(
-    "max",
-    String(1024 ** 4),
-  );
+  await expect(disk.locator(".overview-storage-bar")).toHaveCount(3);
+  await expect(disk.locator(".overview-storage-capacity strong")).toHaveText([
+    "1 TiB",
+    "2 TiB",
+  ]);
   await expect(disk).toContainText(
     "媒体目录所在的存储磁盘，容量包含同盘其他文件。同盘目录合并显示。",
   );
@@ -295,11 +295,16 @@ test("media storage distinguishes no target directory from actual zero free spac
   state.view.overview!.storage = fixtureView().overview!.storage;
   state.view.overview!.storage.volumes[0].free_bytes = 0;
   state.view.overview!.storage.volumes[0].used_bytes = 1024 ** 4;
+  state.view.overview!.storage.volumes[0].breakdown!.unused_bytes = 0;
+  state.view.overview!.storage.volumes[0].breakdown!.other_bytes =
+    1024 ** 3 * 640;
   await page.getByRole("button", { name: "读取状态", exact: true }).click();
   await expect(disk.getByText("0 B", { exact: true })).toBeVisible();
-  await expect(disk.getByRole("progressbar")).toHaveAttribute(
-    "value",
-    String(1024 ** 4),
+  await expect(
+    disk.locator(".overview-storage-segment[data-category='unused']"),
+  ).toHaveCount(0);
+  await expect(disk.locator(".overview-storage-capacity strong")).toHaveText(
+    "1 TiB",
   );
 });
 

@@ -1,3 +1,15 @@
+export const storageReasonWords: Record<string, string> = {
+  storage_scanning: "正在后台统计分类占用。",
+  storage_subscription_unavailable: "订阅媒体目录暂无法完整统计。",
+  storage_emby_unavailable: "Emby 媒体库暂不可读，容量尚未完整统计。",
+  storage_path_unmapped: "部分 Emby 媒体目录尚未映射，容量暂未知。",
+  storage_path_unavailable: "部分媒体目录暂不可读，容量尚未完整统计。",
+  storage_measurement_inconsistent:
+    "分类统计与磁盘容量不一致，暂不展示分类比例。",
+  storage_capacity_unavailable: "暂未取得磁盘容量。",
+  storage_logical_estimate: "按文件逻辑大小估算，分类占用为近似值。",
+};
+
 export const stateWords: Record<string, string> = {
   queued: "等待下载",
   downloading: "正在下载",

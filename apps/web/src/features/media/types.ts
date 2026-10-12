@@ -100,6 +100,17 @@ export type Job = {
     item_id: string | null;
   }[];
 };
+export type StorageBreakdown = {
+  state: "ready" | "scanning" | "partial" | "unavailable";
+  subscription_bytes: number | null;
+  emby_bytes: number | null;
+  other_bytes: number | null;
+  unused_bytes: number | null;
+  measured_at: number | null;
+  basis: "allocated" | "logical";
+  code: string | null;
+  refreshing: boolean;
+};
 export type StorageVolume = {
   storage_id: string;
   label: string;
@@ -109,6 +120,8 @@ export type StorageVolume = {
   total_bytes: number | null;
   used_bytes: number | null;
   free_bytes: number | null;
+  // An older snapshot has no breakdown; its categories remain unknown.
+  breakdown?: StorageBreakdown;
 };
 export type MediaStorage = {
   state: "available" | "unavailable" | "not_configured";

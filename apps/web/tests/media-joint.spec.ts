@@ -274,7 +274,27 @@ test("actual overview HTTP displays server totals and media storage disk facts",
   await refresh.click();
   const response = await reading;
   expect(response.ok()).toBe(true);
-  const view = (await response.json()) as MediaView;
+  let view = (await response.json()) as MediaView;
+  if (localServer) {
+    await expect
+      .poll(
+        async () => {
+          const updated = page.waitForResponse((result) =>
+            result.url().endsWith("/api/web/media/view"),
+          );
+          await refresh.click();
+          view = (await (await updated).json()) as MediaView;
+          return (
+            !!view.overview?.storage.volumes.length &&
+            view.overview.storage.volumes.every(
+              (volume) => volume.breakdown?.state === "ready",
+            )
+          );
+        },
+        { timeout: 15_000, intervals: [200, 500, 1000] },
+      )
+      .toBe(true);
+  }
   expect(view.configured).toBe(true);
   expect(view.overview).toBeTruthy();
   const { jobs, storage } = view.overview!;
@@ -329,23 +349,51 @@ test("actual overview HTTP displays server totals and media storage disk facts",
     }
     const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
     const unit =
-      volume.free_bytes! > 0
-        ? Math.min(Math.floor(Math.log(volume.free_bytes!) / Math.log(1024)), 5)
+      volume.total_bytes! > 0
+        ? Math.min(
+            Math.floor(Math.log(volume.total_bytes!) / Math.log(1024)),
+            5,
+          )
         : 0;
     await expect(
       displayed.locator(".overview-storage-capacity strong"),
     ).toHaveText(
-      `${(volume.free_bytes! / 1024 ** unit).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${units[unit]}`,
+      `${(volume.total_bytes! / 1024 ** unit).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${units[unit]}`,
     );
-    if (volume.total_bytes! > 0) {
-      await expect(displayed.getByRole("progressbar")).toHaveAttribute(
-        "max",
-        String(volume.total_bytes),
+    if (localServer) {
+      const breakdown = volume.breakdown!;
+      const values = [
+        breakdown.subscription_bytes!,
+        breakdown.emby_bytes!,
+        breakdown.other_bytes!,
+        breakdown.unused_bytes!,
+      ];
+      expect(values.reduce((total, value) => total + value, 0)).toBe(
+        volume.total_bytes,
       );
-      await expect(displayed.getByRole("progressbar")).toHaveAttribute(
-        "value",
-        String(volume.used_bytes),
+      expect(breakdown.unused_bytes).toBe(volume.free_bytes);
+      await expect(displayed.getByLabel("四类容量").locator("dt")).toHaveText([
+        "订阅占用",
+        "Emby占用",
+        "其他占用",
+        "未使用",
+      ]);
+      const formatted = values.map((value) => {
+        const index =
+          value > 0
+            ? Math.min(Math.floor(Math.log(value) / Math.log(1024)), 5)
+            : 0;
+        return `${(value / 1024 ** index).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${units[index]}`;
+      });
+      await expect(displayed.getByLabel("四类容量").locator("dd")).toHaveText(
+        formatted,
       );
+      await expect(displayed.locator(".overview-storage-segment")).toHaveCount(
+        values.filter((value) => value > 0).length,
+      );
+      await expect(displayed).toContainText("统计时间：");
+      if (breakdown.basis === "logical")
+        await expect(displayed).toContainText("按文件逻辑大小估算");
     }
   }
   if (!storage.volumes.length) {

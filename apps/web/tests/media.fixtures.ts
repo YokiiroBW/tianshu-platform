@@ -7,7 +7,23 @@ import {
   type MediaView,
   type Preview,
   type Subscription,
+  type StorageBreakdown,
 } from "../src/features/media/types";
+
+export const fixtureBreakdown = (
+  overrides: Partial<StorageBreakdown> = {},
+): StorageBreakdown => ({
+  state: "ready",
+  subscription_bytes: 1024 ** 3 * 128,
+  emby_bytes: 1024 ** 3 * 256,
+  other_bytes: 1024 ** 3 * 256,
+  unused_bytes: 1024 ** 3 * 384,
+  measured_at: 1791475200,
+  basis: "allocated",
+  code: null,
+  refreshing: false,
+  ...overrides,
+});
 
 export const fixtureJob = (overrides: Partial<Job> = {}): Job => ({
   job_id: "media-job-one",
@@ -122,6 +138,7 @@ export const fixtureView = (): MediaView => ({
           total_bytes: 1024 ** 4,
           used_bytes: 1024 ** 3 * 640,
           free_bytes: 1024 ** 3 * 384,
+          breakdown: fixtureBreakdown(),
         },
       ],
     },
