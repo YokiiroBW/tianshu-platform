@@ -16,6 +16,13 @@ from .organizer import library_lock
 from .video_storage import sync_directory
 
 
+def saved_url(record):
+    """Retry intentions retain the most recent URL even without a new job source."""
+    if not record:
+        return None
+    return cover_url(record.get("url")) or cover_url((record.get("previous") or {}).get("url"))
+
+
 class CreatorCache:
     def __init__(self, media, directory):
         self.media, self.directory = media, Path(directory)
@@ -82,8 +89,8 @@ class CreatorCache:
         try:
             previous = await local(self.media.repo.get, "creator_avatar", mid)
             url = cover_url(url)
-            if url is None and previous and previous["state"] == "ready":
-                url = previous["url"]
+            if url is None:
+                url = saved_url(previous)
             if (
                 previous
                 and previous["state"] == "ready"

@@ -99,6 +99,20 @@ class NfoCreatorTests(unittest.TestCase):
             ),
         }
 
+    def test_director_delimiters_are_display_safe_while_original_nickname_is_preserved(self):
+        nickname = "作者,甲|乙;丙/丁"
+        metadata = normalize_bilibili(
+            snapshot(creators=[{"mid": MID_UP, "name": nickname, "role": "uploader"}])
+        )
+        bundle = enrich_sidecars(
+            render_sidecars(metadata, single_request()), metadata, {CID_ONE: self.download("64")}
+        )
+        root = ElementTree.fromstring(bundle.text("movie.nfo"))
+        self.assertEqual("作者，甲｜乙；丙/丁（B站 UID " + MID_UP + "）", root.findtext("director"))
+        self.assertEqual(nickname, root.findtext("tianshu/creators/creator/name"))
+        self.assertEqual(nickname, json.loads(bundle.text("source.json"))["creators"][0]["name"])
+        self.assertEqual(nickname, metadata.creators[0].name)
+
     def test_single_director_identity_xml_escaping_actual_streams_and_source(self):
         metadata = normalize_bilibili(
             snapshot(creators=[{"mid": MID_UP, "name": "作者 & <同名>", "role": "uploader"}])
@@ -257,6 +271,39 @@ class CreatorCacheTests(unittest.IsolatedAsyncioTestCase):
             )
         missing = await self.cache.obtain("123", None)
         self.assertEqual("creator_avatar_source_missing", missing["code"])
+
+    async def test_expired_none_source_recovers_after_failure_and_cancel_with_saved_url(self):
+        with patch(
+            "services.platform.media.creator_cache.fetch_image", AsyncMock(return_value=picture())
+        ) as fetch:
+            first = await self.cache.obtain(MID_UP, self.url)
+            self.now += 86401
+            fetch.side_effect = Fault("cover_unavailable", 503)
+            retry = await self.cache.obtain(MID_UP, None)
+            self.assertEqual("retry", retry["state"])
+            self.assertEqual(self.url, retry["url"])
+            self.assertEqual(first["sha256"], retry["previous"]["sha256"])
+            fetch.side_effect = None
+            recovered = await self.cache.obtain(MID_UP, None)
+            self.assertEqual("ready", recovered["state"])
+            self.assertEqual(self.url, recovered["url"])
+            self.now += 86401
+            entered = asyncio.Event()
+
+            async def blocked(*args):
+                entered.set()
+                await asyncio.Event().wait()
+
+            fetch.side_effect = blocked
+            task = asyncio.create_task(self.cache.obtain(MID_UP, None))
+            await asyncio.wait_for(entered.wait(), 3)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            retry = self.media.repo.get("creator_avatar", MID_UP)
+            self.assertEqual(("retry", self.url), (retry["state"], retry["url"]))
+            fetch.side_effect = None
+            self.assertEqual("ready", (await self.cache.obtain(MID_UP, None))["state"])
 
     async def test_cancel_during_save_keeps_mid_lock_until_thread_finishes(self):
         entered, release = threading.Event(), threading.Event()

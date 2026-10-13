@@ -2,6 +2,8 @@
 
 新版受管下载/元数据刷新保留简介原文和展示覆盖，把 UP主写为标准 `<director>`，协作者继续写 `<actor>`。导演展示名统一为 `昵称（B站 UID MID）`；原昵称、MID、角色和来源链接保存在天枢扩展和 source.json。这样同昵称的 UP主和其他影视人物不会仅按裸昵称归并。UP主不再重复写裸昵称 actor，空姓名不造人物。
 
+Emby 的 NFO SplitNames 会拆 ASCII `,`、`|`、`;`；唯一 director_name 规则把它们转为全角 `，`、`｜`、`；`，不转换 `/`。这只影响导演展示名，snapshot、source.json 和 tianshu/creators 中的原昵称保持。
+
 纯 sidecars 仍不做文件、网络、数据库操作；`nfo_details` 只把应用已验证的逐 CID 下载/复用结果加入候选。Engine 保存一次真实 ffprobe 的实际观察，下载缓存复用该观察；没有观察的旧 cache/library 成品在已有 pin 后读取 ffprobe。结果绑定每个 CID 的实际 QN、SHA256 和 size，不用 job 最后一个 P 的 actual_quality、当前最大可选格式、分辨率或“最高”设置替代。
 
 ## NFO 与 source.json
@@ -74,11 +76,25 @@ Bilibili.resolve 从实际 owner.face 取得并沿用已约束的 HTTPS 图片 U
 
 失败记录 state=retry，code 为 creator_avatar_source_missing/creator_avatar_invalid/creator_avatar_unavailable/creator_avatar_pending，有旧成功事实时 previous 保留它。锁位于同 MID 的持久控制区，网络和文件均不进入 Repository 事务。取消时尚在执行的本地文件/数据库操作结束前不释放锁；下一次核验/任务重试恢复，不伪称图片 ready。
 
+无新 URL 时复用最近持久的有效 retry.url 或 previous.url；ready 到期后即使瞬断/取消留下 retry 意图，后续 None 来源仍能恢复，不会丢掉已知 URL。
+
 新版 package 外层记录 nfo_profile（不加入已冻结 media-package manifest）。MediaServers 仍按库、视频 ProviderId 和真实路径匹配 item；新版进一步要求 People.Type=Director、Name=统一 MID 名，且只有一个有效人物 Id。只针对该人物读取/上传图片；不做全局裸昵称搜索，不写 Emby people 目录/内部数据库。已有匹配画像不上传，缺失或变化使用原连接认证 `POST /Items/{personId}/Images/Primary`，body 是 base64 ASCII，Content-Type 为 image/jpeg/png；再 GET Primary，用现有 matching_image 核验。[官方 Emby 上传协议](https://dev.emby.media/reference/RestAPI/ImageService/postItemsByIdImagesByType.html)。
 
 library_results 新增 director_images，其中 mid/name/person_id/state/code/sha256 可查询。图片缺失、身份歧义、失败或读回不同保留 pending/unavailable/mismatch，整体库核验不标 verified，原 worker 的有界重试继续处理。相同导演在同次 show/episode 核验中合并图片观测。Jellyfin 只核新版导演类型/姓名，人物上传明确 not_supported；Plex 仍只核文件路径，不冒称两者导演图片实测。
 
 旧 package 没有 nfo_profile，继续原 People 姓名规则；升级服务不会把旧 actor 成品直接判失败。需通过正常元数据刷新重新生成、发布、核验新版 NFO，不手改 marker、回执或只读历史库。应用备份需同时保留媒体 SQLite 和上述持久头像目录；外部媒体仍需另备份。
+
+旧 completed 任务普通 jobs/metadata 编辑也能生成新版：Worker.creator_sources 在无头像来源且无缓存 URL 时，用已知 BV、原账号只读 resolve(with_formats=False)，核对 BV/UP MID 后仅补 creator_images。它不替换原 snapshot、用户 override、CID 或实际 QN，也不选新视频格式；后续核验重试共用同一调用。
+
+可用共享域方法单独验证冷缓存补源，下面的回调只合成内存 job，保持原任务台账不变，再缓存图片（不需启动 worker）：
+
+```python
+job = await media.local(media.repo.job, job_id)
+async def observe(**changes):
+    return {**job, **changes}
+prepared = await media.worker.creator_sources(job, observe)
+avatars = await media.creator_cache.prepare(prepared)
+```
 
 ## 元数据刷新维护入口
 
@@ -107,4 +123,4 @@ result = await media.metadata_refresh.refresh(
 python -m unittest test_media_nfo_creators media.test_sidecars media.test_purity test_media_engine test_media_imports test_media_download_cache test_media_runtime test_media_servers test_media_standalone -v
 ```
 
-共 141 项，模块计数 10/37/14/12/16/11/15/4/22。Windows 最终相关行为 140 通过、1 目录 symlink 能力条件跳过。纯测试 test_purity 需要同一提交的 media 源码供 AST 检查，仍检查所有原纯模块及新 creators/nfo_details/probe_details；没有放宽 IO 禁止。真实 FFmpeg、SQLite、回环 Emby HTTP/base64/图片读回和既有完整媒体包 schema 都在选择范围内，真实 Bilibili/Emby/NAS 由协调者另验。
+首发共 141 项，模块计数 10/37/14/12/16/11/15/4/22，Windows 140 通过、1 目录 symlink 能力条件跳过；协调者固定首发 Linux 已 141/141 通过。窄修新增 3 项后完整名称选择为 144，nfo_creators/standalone 分别为12/23，其余计数不变。本地只跑增量受影响的 nfo_creators12 + standalone 的旧冷缓存编辑、best刷新、网页网络后会话检查、Emby/Jellyfin四条关键路径，共16全部通过，不重复首发未变套件。纯测试 test_purity 需要同一提交的 media 源码供 AST 检查，仍检查所有原纯模块及新 creators/nfo_details/probe_details；没有放宽 IO 禁止。真实 FFmpeg、SQLite、回环 Emby HTTP/base64/图片读回和既有完整媒体包 schema 都在选择范围内，真实 Bilibili/Emby/NAS 由协调者另验。

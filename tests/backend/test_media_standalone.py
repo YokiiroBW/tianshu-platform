@@ -1012,3 +1012,84 @@ class StandaloneMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("session_expired", error.exception.code)
         self.media.connector.resolve.assert_awaited_once()
         self.assertEqual(done, self.media.repo.job(done["job_id"]))
+
+    async def test_legacy_cold_cache_metadata_edit_fetches_avatar_source_without_changing_video(
+        self,
+    ):
+        import hashlib
+
+        self.upstream.parts[BV] = ["111111111"]
+        done = await self.run_job((await self.enqueue())["job_id"])
+        video = self.verify_output(done) / "video.mp4"
+        before = (
+            video.stat().st_ino,
+            video.stat().st_size,
+            hashlib.sha256(video.read_bytes()).hexdigest(),
+        )
+        # Restore the precise pre-TS134 task shape and leave the avatar cache cold.
+        old = {
+            key: value
+            for key, value in done.items()
+            if key not in {"creator_images", "creator_avatars"}
+        }
+        old["package"] = {
+            key: value for key, value in old["package"].items() if key != "nfo_profile"
+        }
+        with self.media.repo.transaction() as db:
+            db.execute("UPDATE jobs SET body=? WHERE id=?", (json.dumps(old), old["job_id"]))
+            db.execute("DELETE FROM documents WHERE kind='creator_avatar'")
+        self.assertIsNone(self.media.repo.get("creator_avatar", "946974"))
+        source = await self.media.connector.resolve(BV, with_formats=False)
+        avatar_url = "https://i0.hdslb.com/bfs/face/synthetic-recovered.png"
+        source["creator_images"] = [{"mid": "946974", "url": avatar_url}]
+        source["snapshot"]["title"] = "upstream title must not replace override"
+        source["snapshot"]["description"] = "upstream description must not replace override"
+        resolve = AsyncMock(return_value=source)
+        self.media.connector.resolve = resolve
+        self.media.engine.download = AsyncMock(
+            side_effect=AssertionError("legacy edit must not download")
+        )
+        title, description = "人工标题 & <旧任务>", "人工简介保留"
+        await self.post(
+            "jobs/metadata",
+            {
+                "job_id": old["job_id"],
+                "title": title,
+                "description": description,
+                "expected_revision": old["revision"],
+                "client_id": str(uuid.uuid4()),
+            },
+        )
+        original_verify = self.media.servers.verify
+
+        async def verified(target, current):
+            self.assertEqual("ready", current["creator_avatars"][0]["state"])
+            self.assertEqual(avatar_url, current["creator_images"][0]["url"])
+            return await original_verify(target, current)
+
+        self.media.servers.verify = verified
+        with patch(
+            "services.platform.media.creator_cache.fetch_image",
+            AsyncMock(return_value=self.upstream.cover_bytes),
+        ):
+            updated = await self.run_job(old["job_id"])
+        self.assertEqual("completed", updated["state"], updated.get("code"))
+        resolve.assert_awaited_once_with(BV, None, with_formats=False)
+        self.media.engine.download.assert_not_called()
+        self.assertEqual(old["snapshot"], updated["snapshot"])
+        self.assertEqual({"title": title, "description": description}, updated["overrides"])
+        self.assertEqual(old["selected_cids"], updated["selected_cids"])
+        self.assertEqual(
+            old["downloads"]["111111111"]["actual_quality"],
+            updated["downloads"]["111111111"]["actual_quality"],
+        )
+        self.assertEqual("library", updated["downloads"]["111111111"]["source"]["kind"])
+        self.assertEqual(
+            before,
+            (
+                video.stat().st_ino,
+                video.stat().st_size,
+                hashlib.sha256(video.read_bytes()).hexdigest(),
+            ),
+        )
+        self.assertEqual("ready", self.media.repo.get("creator_avatar", "946974")["state"])

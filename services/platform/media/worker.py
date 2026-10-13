@@ -15,7 +15,9 @@ from .destination import head_key, snapshot
 from .metadata import normalize_bilibili
 from .sidecars import render_sidecars
 from .types import ImageBinding, RenderRequest
-from .creators import NFO_PROFILE
+from .creators import NFO_PROFILE, named_uploaders
+from .creator_cache import saved_url
+from .bilibili import cover_url
 from .image_fetch import fetch_image
 from .nfo_details import enrich_sidecars
 from .probe_details import media_details
@@ -520,6 +522,31 @@ class Worker:
                 package["replace_video_cids"] = job["replace_video_cids"]
         return package
 
+    async def creator_sources(self, job, update):
+        """Old manual metadata edits may have neither avatar sources nor a warm cache."""
+        sources = {entry["mid"]: entry for entry in job.get("creator_images", [])}
+        missing = []
+        for creator in named_uploaders(job["snapshot"]):
+            mid = creator["mid"]
+            if cover_url(sources.get(mid, {}).get("url")) is not None:
+                continue
+            cached = await self.media.local(self.media.repo.get, "creator_avatar", mid)
+            if saved_url(cached) is None:
+                missing.append(mid)
+        if not missing:
+            return job
+        cookie = await self.media.local(self.media.accounts.cookie, job["account_id"])
+        resolved = await self.media.connector.resolve(job["bvid"], cookie, with_formats=False)
+        require(resolved["snapshot"]["bvid"] == job["bvid"], "source_identity_changed", 409)
+        proven = {creator["mid"] for creator in named_uploaders(resolved["snapshot"])}
+        require(set(missing) <= proven, "creator_identity_changed", 409)
+        for source in resolved.get("creator_images", []):
+            if source["mid"] in missing and cover_url(source.get("url")) is not None:
+                sources[source["mid"]] = {"mid": source["mid"], "url": cover_url(source["url"])}
+        if sources != {entry["mid"]: entry for entry in job.get("creator_images", [])}:
+            return await update(creator_images=list(sources.values()))
+        return job
+
     async def verify_libraries(self, job, update, target):
         if not target.get("servers"):
             await update(state="published", stage="published", code="published_no_media_servers")
@@ -527,6 +554,7 @@ class Worker:
         await update(state="library_verifying", stage="library_verifying", code="library_verifying")
         current = await self.media.local(self.media.repo.job, job["job_id"])
         if current["package"].get("nfo_profile") == NFO_PROFILE:
+            current = await self.creator_sources(current, update)
             avatars = await self.media.creator_cache.prepare(current)
             await update(creator_avatars=avatars)
             current["creator_avatars"] = avatars

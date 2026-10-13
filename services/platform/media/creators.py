@@ -4,7 +4,8 @@ NFO_PROFILE = "bilibili-creators-v1"
 
 
 def director_name(name, mid):
-    return f"{name}（B站 UID {mid}）"
+    displayed = name.translate(str.maketrans({",": "，", "|": "｜", ";": "；"}))
+    return f"{displayed}（B站 UID {mid}）"
 
 
 def named_uploaders(snapshot):
