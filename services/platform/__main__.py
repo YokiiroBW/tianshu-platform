@@ -15,6 +15,7 @@ from aiohttp import web
 from . import diagnostics, diagnostics_config, runtime_health
 from .assets import REQUEST_LIMIT
 from .contracts import Fault, canonical, loads, require
+from .diagnostics_recovery import DiagnosticsRecovery
 from .server import create_app, create_console
 from .service import Platform, credential_present, registered_credentials, validate_settings
 from .transport import server_tls
@@ -78,7 +79,9 @@ async def serve_forever(
     """
     console = create_console(platform)
     runners = []
+    recovery = DiagnosticsRecovery(sink)
     try:
+        recovery.start()
         runner = web.AppRunner(create_app(platform, console=console), access_log=None)
         runners.append(runner)
         await runner.setup()
@@ -99,6 +102,7 @@ async def serve_forever(
         diagnostics.event("runtime.started", "INFO", "succeeded")
         await stop.wait()
     finally:
+        await recovery.stop()
         diagnostics.event("runtime.stopping", "INFO", "started")
         for runner in reversed(runners):
             await runner.cleanup()

@@ -451,6 +451,11 @@ class Diagnostics:
         self._queue = deque()
         self._stop_requested = False
         self._closed = False
+        self._stopping = False
+        self._recovery_lock = threading.Lock()
+        self._recovery_sequence = None
+        self._recovery_barrier = None
+        self._recovery_error = None
         self._owner_done = threading.Event()
         self._final_ok = None
         self._waiters = []
@@ -521,9 +526,18 @@ class Diagnostics:
         it. A real durability failure stops admission, and a sink that is shutting down refuses
         new work from the instant `close` was asked for rather than until it finishes.
         """
-        if self._closed:
-            return False
-        return self.state in (DURABLE, NON_DURABLE)
+        with self._condition:
+            return not (self._closed or self._stopping) and self.state in (DURABLE, NON_DURABLE)
+
+    def stop_admission(self):
+        """Retire admission and recovery while already-running work records its outcome.
+
+        Unlike `close`, this does not stop the file owner or refuse terminal events. The runtime
+        calls it before draining HTTP, so a recovery already waiting for fsync cannot reopen the
+        gate during shutdown.
+        """
+        with self._condition:
+            self._stopping = True
 
     @property
     def unconfirmed(self):
@@ -775,40 +789,78 @@ class Diagnostics:
         The sink therefore stays out of `durable` - and admission stays refused - for the whole of
         the attempt: `recovering` is a state that only a confirmed fsync can leave.
         """
-        if self.state == DURABLE:
-            return True
-        if self._sink is None or self._closed:
+        # Maintenance callers and the runtime worker share one attempt. A losing caller neither
+        # creates another probe nor commits another attempt's result.
+        if not self._recovery_lock.acquire(blocking=False):
             return False
-        with self._condition:
-            if self.state == UNAVAILABLE:
-                pending = self.error
+        try:
+            with self._condition:
+                if self._closed or self._stopping:
+                    return False
+                if self.state == DURABLE:
+                    return True
+                if self._sink is None or self.state != UNAVAILABLE:
+                    return False
+                if self._recovery_error is None:
+                    self._recovery_error = self.error
                 self.state = RECOVERING
                 self.error = None
                 self._condition.notify_all()
-            elif self.state == RECOVERING:
-                pending = self.error
-            else:
-                return False
-        # Held events are retried ahead of this one, so a sink that is still broken keeps the
-        # state out of `durable` and this probe runs out of its bound rather than claiming a false
-        # recovery.
-        if self.admit_durable("logging.recovered", "WARNING", "succeeded") is None:
+            # Retry the held queue ahead of one stable probe. A timeout never rewrites or resends
+            # its bytes: later attempts wait for the same sequence to really become durable.
+            if self._recovery_sequence is None:
+                self._recovery_sequence = self.emit("logging.recovered", "WARNING", "succeeded")
             with self._condition:
-                self.state = UNAVAILABLE
-                self.error = self.error or "log_write_failed"
+                # A retry may already have written the probe but failed its fsync. Ask the owner
+                # to sync again without appending its bytes again. An unresolved barrier is kept
+                # with the held queue; even a stuck disk cannot accumulate retry control items.
+                if self._recovery_sequence is not None and self.state == RECOVERING:
+                    if self._recovery_barrier is None or self._recovery_barrier.is_set():
+                        self._recovery_barrier = threading.Event()
+                        self._queue.append(("barrier", self._sequence, self._recovery_barrier))
+                        self._condition.notify_all()
+                    barrier = self._recovery_barrier
+                else:
+                    barrier = None
+            confirmed = False
+            deadline = self.clock() + self.admit_timeout
+            while barrier is not None:
+                remaining = deadline - self.clock()
+                if remaining <= 0:
+                    break
+                if barrier.wait(min(0.05, remaining)):
+                    confirmed = True
+                    break
+                with self._condition:
+                    if self.state != RECOVERING or self._closed or self._stopping:
+                        break
+            if not confirmed:
+                if self._recovery_sequence is not None:
+                    self._note_unconfirmed(self._recovery_sequence)
+                self._fail("log_flush_timeout")
+            with self._condition:
+                if not confirmed or self._closed or self._stopping or self.state != RECOVERING:
+                    if self.state == RECOVERING:
+                        self.state = UNAVAILABLE
+                        self.error = self._recovery_error or "log_write_failed"
+                        self._condition.notify_all()
+                    return False
+                pending = self._recovery_error
+                self._recovery_sequence = None
+                self._recovery_barrier = None
+                self._recovery_error = None
+                self.state = DURABLE
+                self.error = None
+                self._warned = False
                 self._condition.notify_all()
-            return False
-        with self._condition:
-            self.state = DURABLE
-            self.error = None
-            self._warned = False
-            self._condition.notify_all()
-        # The gap itself is then recorded, so the outage stays reconcilable in the log's own terms.
-        if pending in ("log_capacity_exhausted", "log_directory_unusable"):
-            self.emit("logging.capacity_exhausted", "ERROR", "degraded", error_code=pending)
-        elif pending is not None:
-            self.emit("logging.unavailable", "ERROR", "failed", error_code=pending)
-        return True
+            # The gap itself is then recorded, so the outage stays reconcilable in the log's terms.
+            if pending in ("log_capacity_exhausted", "log_directory_unusable"):
+                self.emit("logging.capacity_exhausted", "ERROR", "degraded", error_code=pending)
+            elif pending is not None:
+                self.emit("logging.unavailable", "ERROR", "failed", error_code=pending)
+            return True
+        finally:
+            self._recovery_lock.release()
 
     def flush(self, timeout=2.0):
         """Bounded drain: ask the owner to reach the current sequence, and wait for its answer.
