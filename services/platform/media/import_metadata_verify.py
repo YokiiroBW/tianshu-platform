@@ -145,6 +145,16 @@ async def verify_plan(media, plan, server_id, library_id, server_root, refresh):
                 item = items[0]
                 result["item_id"] = item.get("Id")
                 require(entry.get("snapshot"), "import_metadata_source_unavailable", 503)
+                named_snapshot = {
+                    **entry["snapshot"],
+                    "creators": [
+                        creator
+                        for creator in entry["snapshot"]["creators"]
+                        if isinstance(creator.get("name"), str)
+                    ],
+                }
+                uploaders = named_uploaders(named_snapshot)
+                require(uploaders, "director_source_missing", 503)
                 description = nfo.findtext("plot") or nfo.findtext("outline")
                 require(
                     not description or item.get("Overview") == description,
@@ -156,10 +166,7 @@ async def verify_plan(media, plan, server_id, library_id, server_root, refresh):
                     (person.get("Type"), person.get("Name")) for person in item.get("People", [])
                 }
                 require(
-                    all(
-                        ("Director", creator["director_name"]) in people
-                        for creator in named_uploaders(entry["snapshot"])
-                    ),
+                    all(("Director", creator["director_name"]) in people for creator in uploaders),
                     "director_pending",
                     503,
                 )
@@ -172,7 +179,7 @@ async def verify_plan(media, plan, server_id, library_id, server_root, refresh):
                     media.remote,
                     media.creator_cache,
                     server,
-                    {"snapshot": entry["snapshot"], "creator_avatars": avatars},
+                    {"snapshot": named_snapshot, "creator_avatars": avatars},
                     item,
                     checked_images,
                 )

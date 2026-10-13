@@ -542,6 +542,50 @@ class ImportMetadataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("library_identity_conflict", report["files"][0]["code"])
         self.media.remote.upload_image.assert_not_awaited()
 
+    async def test_verify_missing_named_uploader_is_pending_and_never_uploads_other_person(self):
+        self.video()
+        path = self.nfo()
+        row = {
+            "Id": "legacy-video",
+            "Type": "Movie",
+            "Path": "/legacy/movie.mp4",
+            "Name": "Original title",
+            "Overview": "new description",
+            "People": [{"Id": "foreign", "Type": "Director", "Name": "Other author"}],
+            "MediaStreams": [
+                {"Type": "Video", "Codec": "h264", "Width": 1920, "Height": 1080},
+                {"Type": "Audio", "Codec": "aac", "Channels": 2},
+            ],
+        }
+        self.media.remote.request.return_value = {"Items": [row], "TotalRecordCount": 1}
+        for index, creators in enumerate(([], [{"mid": MID_UP, "name": "", "role": "uploader"}])):
+            with self.subTest(creators=creators):
+                path.write_bytes(MOVIE)
+                resolved = copy.deepcopy(self.resolved)
+                resolved["snapshot"]["creators"] = creators
+                plan_id = "missing-author-" + str(index)
+                plan = await self.media.import_metadata.prepare(
+                    "old", plan_id=plan_id, resolved_by_bvid={BV: resolved}, request_interval=0
+                )
+                self.assertEqual("ready", plan["files"][0]["state"])
+                self.assertEqual("Old author", self.xml(plan["files"][0]).findtext("actor/name"))
+                path.write_bytes(base64.b64decode(plan["files"][0]["content_base64"]))
+                report = await self.media.import_metadata.verify(
+                    plan_id,
+                    server_id="emby",
+                    library_id="legacy-library",
+                    server_root="/legacy",
+                    refresh=False,
+                )
+                self.assertEqual("partial", report["state"])
+                self.assertEqual(
+                    ("pending", "director_source_missing"),
+                    (report["files"][0]["state"], report["files"][0]["code"]),
+                )
+                self.assertEqual([], report["files"][0]["director_images"])
+                self.media.remote.image.assert_not_awaited()
+                self.media.remote.upload_image.assert_not_awaited()
+
 
 class LegacyNfoPureTests(unittest.TestCase):
     def test_confirmed_quality_is_per_file_and_director_delimiters_keep_raw_name(self):
