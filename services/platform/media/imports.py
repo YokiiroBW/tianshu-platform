@@ -6,63 +6,13 @@ from pathlib import Path
 
 from ..contracts import Fault, digest, require
 from .engine import file_record
+from .probe_details import media_details
 from .import_records import imported_path, inventory, manifest_entries, observation, same_identity
 from .organizer import library_lock
 
 
 def item_id(root_id, relative):
     return digest({"root_id": root_id, "relative_path": relative})
-
-
-def media_details(info):
-    try:
-        duration = float(info.get("format", {}).get("duration", 0))
-    except (ValueError, TypeError):
-        duration = None
-    return {
-        "duration_seconds": duration,
-        "rawffprobe_streams": info["streams"],
-        "video_streams": [
-            {
-                key: stream.get(key)
-                for key in (
-                    "index",
-                    "codec_name",
-                    "profile",
-                    "width",
-                    "height",
-                    "pix_fmt",
-                    "r_frame_rate",
-                    "avg_frame_rate",
-                    "color_range",
-                    "color_space",
-                    "color_transfer",
-                    "color_primaries",
-                    "side_data_list",
-                )
-            }
-            for stream in info["streams"]
-            if stream.get("codec_type") == "video"
-        ],
-        "audio_tracks": [
-            {
-                key: stream.get(key)
-                for key in (
-                    "index",
-                    "codec_name",
-                    "profile",
-                    "sample_rate",
-                    "channels",
-                    "channel_layout",
-                    "bits_per_raw_sample",
-                    "tags",
-                    "disposition",
-                )
-            }
-            for stream in info["streams"]
-            if stream.get("codec_type") == "audio"
-        ],
-    }
 
 
 def nfo_bvid(path):

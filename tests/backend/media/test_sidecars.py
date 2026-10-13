@@ -126,14 +126,11 @@ class SingleLayoutTest(unittest.TestCase):
         self.assertIsNone(root.find("thumb"))
         self.assertIsNone(root.find("poster"))
 
-    def test_actor_carries_nickname_and_role_but_never_a_numeric_name(self):
+    def test_uploader_is_a_mid_qualified_director_without_duplicate_actor(self):
         root = xml_of("movie.nfo", self.bundle)
         actors = root.findall("actor")
-        self.assertEqual(len(actors), 1)
-        self.assertEqual(actors[0].findtext("name"), fx.UP_NAME)
-        self.assertEqual(actors[0].find("role").text, "UP主")  # type: ignore[union-attr]
-        self.assertEqual(actors[0].find("role").get("name"), "uploader")  # type: ignore[union-attr]
-        self.assertNotEqual(actors[0].findtext("name"), MID_UP)
+        self.assertEqual(actors, [])
+        self.assertEqual(root.findtext("director"), fx.UP_NAME + "（B站 UID " + MID_UP + "）")
 
     def test_unique_id_is_the_stable_media_key_and_no_external_id_is_invented(self):
         root = xml_of("movie.nfo", self.bundle)
@@ -189,13 +186,14 @@ class MultipartLayoutTest(unittest.TestCase):
         self.assertEqual([node.text for node in unique], [f"bilibili:video:{BV}"])
         self.assertEqual(
             [node.text for node in root.findall("actor/name")],
-            [fx.UP_NAME, fx.JOINT_NAME],
+            [fx.JOINT_NAME],
         )
         self.assertEqual(
             [node.get("name") for node in root.findall("actor/role")],
-            ["uploader", "collaborator"],
+            ["collaborator"],
         )
-        self.assertEqual([node.text for node in root.findall("actor/role")], ["UP主", "联合创作者"])
+        self.assertEqual([node.text for node in root.findall("actor/role")], ["联合创作者"])
+        self.assertEqual(root.findtext("director"), fx.UP_NAME + "（B站 UID " + MID_UP + "）")
         self.assertIsNone(root.find("season"))
 
     def test_a_person_without_a_nickname_gets_no_actor_node_but_stays_in_the_source_record(self):

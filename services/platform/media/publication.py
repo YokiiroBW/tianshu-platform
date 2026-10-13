@@ -1,12 +1,13 @@
 """Authenticated AssetLibrary publication and independent media-server observations."""
 
 import asyncio
+import base64
 import json
 import os
 import ssl
 from pathlib import Path
 from io import BytesIO
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import aiohttp
 
@@ -161,6 +162,40 @@ class Remote:
                 return bytes(data)
         except (aiohttp.ClientError, TimeoutError):
             raise Fault("library_image_unavailable", 503) from None
+
+    async def upload_image(self, config, item_id, raw, extension):
+        """Emby ImageService expects base64 ASCII with an image MIME type, not JSON."""
+        validate_connection(config)
+        require(config.get("kind") == "emby" and extension in {"jpg", "png"}, "invalid_input", 400)
+        require(len(raw) <= 32 * 1024**2, "creator_avatar_invalid", 503)
+        token = await self.token(config)
+        require(token and token.strip(), "media_peer_not_configured", 503)
+        if self.session is None:
+            self.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15),
+                cookie_jar=aiohttp.DummyCookieJar(),
+                trust_env=False,
+            )
+        headers = {
+            "X-Emby-Token": token,
+            "Content-Type": "image/jpeg" if extension == "jpg" else "image/png",
+        }
+        try:
+            async with self.session.post(
+                config["base_url"].rstrip("/")
+                + "/Items/"
+                + quote(item_id, safe="")
+                + "/Images/Primary",
+                data=base64.b64encode(raw),
+                headers=headers,
+                allow_redirects=False,
+                ssl=ssl.create_default_context(cafile=config.get("ca_file")),
+            ) as response:
+                require(response.status in {200, 201, 202, 204}, "director_image_unavailable", 503)
+                async for _ in response.content.iter_chunked(16384):
+                    pass
+        except (aiohttp.ClientError, TimeoutError):
+            raise Fault("director_image_unavailable", 503) from None
 
 
 def matching_image(original, observed):

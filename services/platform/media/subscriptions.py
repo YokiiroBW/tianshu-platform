@@ -45,6 +45,7 @@ def job_payload(
         "quality": requested_quality,
         "snapshot": snapshot,
         "cover_url": resolved["video"]["cover_url"],
+        "creator_images": resolved.get("creator_images", []),
         "overrides": {},
         "rule_evidence": rule_evidence,
     }

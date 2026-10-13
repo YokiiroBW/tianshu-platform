@@ -560,6 +560,52 @@ class Repository:
             if cid in (body := json.loads(row[0])).get("downloads", {})
         ]
 
+    def refresh_metadata(self, identity, revision, resolved, *, db):
+        row = db.execute("SELECT body FROM jobs WHERE id=? AND " + VISIBLE, (identity,)).fetchone()
+        current = json.loads(row[0]) if row else None
+        require(current and current["revision"] == revision, "version_conflict", 409)
+        self.put(
+            "snapshot_history",
+            str(uuid.uuid4()),
+            {"job_id": identity, "snapshot": current["snapshot"], "recorded_at": self.clock()},
+            db=db,
+        )
+        changes = {
+            "snapshot": resolved["snapshot"],
+            "cover_url": resolved["video"]["cover_url"],
+            "creator_images": resolved.get("creator_images", []),
+            "title": current.get("overrides", {}).get("title", resolved["video"]["title"]),
+            "creator": resolved["video"]["creator"]["name"],
+            "state": "queued",
+            "stage": "metadata",
+            "code": "source_metadata_refreshed",
+            "package": None,
+            "asset_operation": None,
+            "metadata_changed": True,
+            "edition": current.get("edition", 0) + 1,
+            "attempts": 0,
+            "library_attempts": 0,
+        }
+        if current.get("asset_receipt"):
+            changes["base_edition"] = {
+                key: current.get(key)
+                for key in (
+                    "package",
+                    "asset_operation",
+                    "asset_receipt",
+                    "selected_cids",
+                    "downloads",
+                    "snapshot",
+                    "quality",
+                    "bvid",
+                    "target_id",
+                    "destination_subdirectory",
+                    "destination_directory",
+                    "job_id",
+                )
+            }
+        return self.update_job(identity, changes, db=db)
+
     def media_sources(self, bvid, cid, quality):
         with self.transaction() as db:
             rows = db.execute(

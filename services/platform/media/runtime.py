@@ -26,6 +26,8 @@ from .subscriptions import Subscriptions
 from .worker import Worker
 from .download_cache import DownloadCache
 from .imports import Imports
+from .creator_cache import CreatorCache
+from .metadata_refresh import MetadataRefresh
 
 JOB_FIELDS = (
     "job_id",
@@ -141,13 +143,17 @@ class Media:
             FileOrganizer(self.repo, self.contract, self.config["staging_directory"]),
             self.local,
         )
-        self.servers = MediaServers(self.remote)
+        self.creator_cache = CreatorCache(
+            self, Path(settings["database_path"]).with_suffix(".media-avatars")
+        )
+        self.servers = MediaServers(self.remote, self.creator_cache)
         self.evaluator = RuleEvaluator()
         self.subscriptions = Subscriptions(self)
         self.worker = Worker(self)
         self.retention = Retention(self)
         self.download_cache = DownloadCache(self)
         self.imports = Imports(self)
+        self.metadata_refresh = MetadataRefresh(self, public_job)
         self.storage_breakdown = StorageBreakdown(self, clock=clock)
 
     async def start(self):

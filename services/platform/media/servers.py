@@ -11,11 +11,14 @@ from .identity import item_key, media_key
 from .publication import matching_image
 from .destination import safe_path
 from .engine import file_record
+from .creators import NFO_PROFILE, director_name
+from .creator_images import verify_creator_images
 
 
 class MediaServers:
-    def __init__(self, remote):
+    def __init__(self, remote, creator_cache=None):
         self.remote = remote
+        self.creator_cache = creator_cache
 
     async def libraries(self, server):
         try:
@@ -139,6 +142,20 @@ class MediaServers:
                 names = {
                     creator["name"] for creator in job["snapshot"]["creators"] if creator["name"]
                 }
+                profile = job["package"].get("nfo_profile") == NFO_PROFILE
+                expected_people = (
+                    {
+                        ("Director", director_name(creator["name"], creator["mid"]))
+                        if creator["role"] == "uploader"
+                        else ("Actor", creator["name"])
+                        for creator in job["snapshot"]["creators"]
+                        if creator["name"]
+                    }
+                    if profile
+                    else set()
+                )
+                checked_images = {}
+                director_results = []
                 single = manifest["layout"] == "single"
                 identities = (
                     [media_key(job["bvid"], job["selected_cids"][0])]
@@ -204,11 +221,27 @@ class MediaServers:
                         )
                     )
                     observed_names = {person.get("Name") for person in item.get("People", [])}
+                    observed_people = {
+                        (person.get("Type"), person.get("Name"))
+                        for person in item.get("People", [])
+                    }
                     correct = (
                         item.get("Name") == expected_name
                         and (not description or item.get("Overview") == description)
-                        and names <= observed_names
+                        and (
+                            expected_people <= observed_people
+                            if profile
+                            else names <= observed_names
+                        )
                     )
+                    if profile and server["kind"] == "emby" and correct:
+                        directors = await verify_creator_images(
+                            self.remote, self.creator_cache, server, job, item, checked_images
+                        )
+                        director_results.extend(directors)
+                        correct = correct and all(
+                            director["state"] == "verified" for director in directors
+                        )
                     image = next(
                         (
                             value
@@ -249,6 +282,21 @@ class MediaServers:
                     if missing
                     else "library_metadata_mismatch",
                 )
+                if profile:
+                    result["director_images"] = (
+                        director_results
+                        if server["kind"] == "emby"
+                        else [
+                            {
+                                "state": "not_supported",
+                                "code": "director_image_server_not_supported",
+                            }
+                        ]
+                    )
+                    if director_results and not all(
+                        director["state"] == "verified" for director in director_results
+                    ):
+                        result.update(state="pending", code="director_image_pending")
             except Fault as error:
                 result["code"] = error.code
             except OSError:

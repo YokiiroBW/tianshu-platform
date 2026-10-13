@@ -15,6 +15,10 @@ from .destination import head_key, snapshot
 from .metadata import normalize_bilibili
 from .sidecars import render_sidecars
 from .types import ImageBinding, RenderRequest
+from .creators import NFO_PROFILE
+from .image_fetch import fetch_image
+from .nfo_details import enrich_sidecars
+from .probe_details import media_details
 
 
 class Worker:
@@ -333,11 +337,25 @@ class Worker:
             cid = part["cid"]
             if cid not in job["selected_cids"]:
                 continue
-            selected_quality = await self.media.download_cache.selected_quality(job, part, cookie)
+            if (
+                job.get("metadata_changed")
+                and base
+                and job["quality"] == base["quality"]
+                and cid in base["selected_cids"]
+            ):
+                selected_quality = base["downloads"][cid]["actual_quality"]
+            else:
+                selected_quality = await self.media.download_cache.selected_quality(
+                    job, part, cookie
+                )
             await update(state="downloading", stage="downloading", code="downloading")
             downloaded, was_reused = await self.media.download_cache.obtain(
                 job, part, cookie, owner, selected_quality
             )
+            if not downloaded.get("media"):
+                downloaded["media"] = media_details(
+                    await self.media.engine.verify(downloaded["file"], part.get("duration_seconds"))
+                )
             if was_reused:
                 reused.append(cid)
             if base and cid in base["selected_cids"]:
@@ -373,18 +391,9 @@ class Worker:
     async def cover(self, url):
         if url is None:
             return None
-        await self.media.connector.start()
-        try:
-            async with self.media.connector.session.get(url, allow_redirects=False) as response:
-                require(response.status == 200, "cover_unavailable", 503)
-                raw = bytearray()
-                async for chunk in response.content.iter_chunked(16384):
-                    raw.extend(chunk)
-                    require(len(raw) <= 32 * 1024**2, "cover_invalid", 503)
-                extension = await self.media.local(validate_image, bytes(raw))
-                return bytes(raw), extension
-        except (TimeoutError, OSError):
-            raise Fault("cover_unavailable", 503) from None
+        raw = await fetch_image(self.media.connector, url)
+        extension = await self.media.local(validate_image, raw)
+        return raw, extension
 
     async def package(self, job, target):
         repo = self.media.repo
@@ -412,7 +421,7 @@ class Worker:
             else {},
             images=images,
         )
-        bundle = render_sidecars(metadata, request)
+        bundle = enrich_sidecars(render_sidecars(metadata, request), metadata, job["downloads"])
         package_id = str(uuid.uuid4())
         staging_ref = "pkg_" + package_id.replace("-", "")
         root = Path(self.media.config["staging_directory"])
@@ -495,6 +504,7 @@ class Worker:
                 "manifest_base64": base64.b64encode(raw).decode(),
                 "manifest_digest": hashlib.sha256(raw).hexdigest(),
                 "cover_present": bool(image),
+                "nfo_profile": NFO_PROFILE,
             }
 
         package = await self.media.local(build)
@@ -516,6 +526,10 @@ class Worker:
             return
         await update(state="library_verifying", stage="library_verifying", code="library_verifying")
         current = await self.media.local(self.media.repo.job, job["job_id"])
+        if current["package"].get("nfo_profile") == NFO_PROFILE:
+            avatars = await self.media.creator_cache.prepare(current)
+            await update(creator_avatars=avatars)
+            current["creator_avatars"] = avatars
         current["staging_directory"] = self.media.config["staging_directory"]
         results = await self.media.servers.verify(target, current)
         complete = all(result["state"] == "verified" for result in results)

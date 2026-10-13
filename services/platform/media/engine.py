@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..contracts import Fault, require
 from .config import ENGINE_VERSION
+from .probe_details import media_details
 
 
 def private_environment():
@@ -293,11 +294,12 @@ class Engine:
                 "quality_mismatch",
                 503,
             )
-            await self.verify(files[0], part.get("duration_seconds"))
+            observed = await self.verify(files[0], part.get("duration_seconds"))
             return {
                 "file": str(files[0]),
                 "actual_quality": actual,
                 "extension": files[0].suffix[1:],
+                "media": media_details(observed),
             }
         except TimeoutError:
             raise Fault("download_timeout", 503) from None

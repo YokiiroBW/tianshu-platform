@@ -330,7 +330,7 @@ class StandaloneMediaTests(unittest.IsolatedAsyncioTestCase):
 
         from services.platform.media.servers import MediaServers
 
-        self.media.servers = MediaServers(self.media.remote)
+        self.media.servers = MediaServers(self.media.remote, self.media.creator_cache)
         self.upstream.parts[BV] = ["111111111"]
         self.media.worker.cover = AsyncMock(return_value=(self.upstream.cover_bytes, "png"))
         library = Path(self.config["media"]["targets"][0]["directory"])
@@ -350,6 +350,8 @@ class StandaloneMediaTests(unittest.IsolatedAsyncioTestCase):
                 return web.Response(
                     body=(directory / "poster.png").read_bytes(), content_type="image/png"
                 )
+            if request.path == "/Items/creator-fixture/Images/Primary":
+                return web.Response(body=self.upstream.cover_bytes, content_type="image/png")
             return web.json_response(
                 {
                     "Items": [
@@ -358,7 +360,13 @@ class StandaloneMediaTests(unittest.IsolatedAsyncioTestCase):
                             "Name": "合成投稿 " + BV,
                             "Overview": self.upstream.description,
                             "ProviderIds": {"bilibili": media_key(BV, "111111111")},
-                            "People": [{"Name": "测试UP主"}],
+                            "People": [
+                                {
+                                    "Name": "测试UP主（B站 UID 946974）",
+                                    "Type": "Director",
+                                    "Id": "creator-fixture",
+                                }
+                            ],
                             "Path": (directory / "video.mp4").as_posix(),
                         }
                     ]
@@ -378,6 +386,15 @@ class StandaloneMediaTests(unittest.IsolatedAsyncioTestCase):
 
         self.media.remote.request = server_only
         self.media.remote.image = remote.image
+        self.media.remote.upload_image = remote.upload_image
+        with patch(
+            "services.platform.media.creator_cache.fetch_image",
+            AsyncMock(return_value=self.upstream.cover_bytes),
+        ):
+            await self.media.creator_cache.obtain(
+                "946974", "https://i0.hdslb.com/bfs/face/synthetic.png"
+            )
+        # A previously cached identical director portrait is observed directly, without a POST.
         with patch.dict(os.environ, {"LOCAL_MEDIA_SERVER_TOKEN": "synthetic-only"}):
             self.media.config["targets"]["test-server"]["servers"] = [
                 {
@@ -899,3 +916,99 @@ class StandaloneMediaTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(entered.wait(), 1)
             self.assertFalse(release.is_set())
             await Media.close(self.media)
+
+    async def test_trusted_metadata_refresh_keeps_best_job_actual_quality_and_persistent_avatar(
+        self,
+    ):
+        import hashlib
+        from unittest.mock import patch
+
+        self.upstream.parts[BV] = ["111111111"]
+        with patch(
+            "services.platform.media.creator_cache.fetch_image",
+            AsyncMock(return_value=self.upstream.cover_bytes),
+        ):
+            avatar = await self.media.creator_cache.obtain(
+                "946974", "https://i0.hdslb.com/bfs/face/synthetic.png"
+            )
+        resolved = await self.media.connector.resolve(BV, with_formats=False)
+        best = {"mode": "best", "quality_id": None, "allow_fallback": False}
+        first = self.media.repo.enqueue(
+            job_payload(resolved, self.upstream.parts[BV], None, "test-server", best)
+        )
+        done = await self.run_job(first["job_id"])
+        self.assertEqual("completed", done["state"])
+        directory = self.verify_output(done)
+        video = directory / "video.mp4"
+        before = (
+            video.stat().st_ino,
+            video.stat().st_size,
+            hashlib.sha256(video.read_bytes()).hexdigest(),
+        )
+        cache = self.media.repo.download_source(BV, "111111111", "80")
+        self.assertIsNone(cache)  # successful retention already removed the global source
+        calls = list(self.media.engine.calls)
+        self.media.engine.formats = AsyncMock(
+            side_effect=AssertionError("metadata refresh must not select a new best format")
+        )
+        self.media.engine.download = AsyncMock(
+            side_effect=AssertionError("metadata refresh must reuse old verified video")
+        )
+        self.upstream.description = "新的简介 & <metadata>"
+        client_id = str(uuid.uuid4())
+        request = dict(
+            job_id=done["job_id"], expected_revision=done["revision"], client_id=client_id
+        )
+        refreshed = await self.media.metadata_refresh.refresh(**request)
+        self.assertEqual("queued", refreshed["job"]["state"])
+        self.assertTrue((await self.media.metadata_refresh.refresh(**request))["replayed"])
+        new = await self.run_job(done["job_id"])
+        self.assertEqual("completed", new["state"], new.get("code"))
+        self.assertEqual(calls, self.media.engine.calls)
+        self.media.engine.formats.assert_not_called()
+        self.media.engine.download.assert_not_called()
+        self.assertEqual("80", new["downloads"]["111111111"]["actual_quality"])
+        self.assertEqual("library", new["downloads"]["111111111"]["source"]["kind"])
+        self.assertEqual(
+            before,
+            (
+                video.stat().st_ino,
+                video.stat().st_size,
+                hashlib.sha256(video.read_bytes()).hexdigest(),
+            ),
+        )
+        self.assertEqual(
+            avatar["sha256"], hashlib.sha256(Path(avatar["file"]).read_bytes()).hexdigest()
+        )
+        from xml.etree import ElementTree
+
+        nfo = ElementTree.fromstring((directory / "movie.nfo").read_bytes())
+        self.assertEqual(self.upstream.description, nfo.findtext("plot"))
+        self.assertEqual("测试UP主（B站 UID 946974）", nfo.findtext("director"))
+        self.assertEqual("80", nfo.findtext("tianshu/source/actual_quality"))
+        self.assertEqual("mpeg4", nfo.findtext("fileinfo/streamdetails/video/codec"))
+
+    async def test_web_refresh_keeps_post_network_session_recheck_without_committing(self):
+        from types import SimpleNamespace
+        from services.platform.contracts import Fault
+        from services.platform.media.web import WebMedia
+
+        self.upstream.parts[BV] = ["111111111"]
+        done = await self.run_job((await self.enqueue())["job_id"])
+        resolved = await self.media.connector.resolve(BV, with_formats=False)
+        self.media.connector.resolve = AsyncMock(return_value=resolved)
+        console = SimpleNamespace(session_valid=lambda session: False)
+        domain = WebMedia(self.media, console)
+        client_id = str(uuid.uuid4())
+        with self.assertRaises(Fault) as error:
+            await domain.refresh_metadata(
+                {
+                    "job_id": done["job_id"],
+                    "expected_revision": done["revision"],
+                    "client_id": client_id,
+                },
+                "expired-after-network",
+            )
+        self.assertEqual("session_expired", error.exception.code)
+        self.media.connector.resolve.assert_awaited_once()
+        self.assertEqual(done, self.media.repo.job(done["job_id"]))

@@ -17,6 +17,8 @@ import json
 from pathlib import PurePosixPath
 from xml.etree import ElementTree
 
+from .creators import director_name
+
 from .identity import (
     creator_key,
     episode_video_name,
@@ -199,7 +201,7 @@ def _element(root: ElementTree.Element, tag: str, text: object, forced: bool = F
 
 
 def _add_creators(root: ElementTree.Element, metadata: MediaMetadata) -> None:
-    """One ``actor`` per *named* person, in metadata order.
+    """Named uploaders are MID-qualified directors; collaborators remain actors.
 
     A person without a nickname stays in the normalized record and in ``source.json`` with an
     ``author_name_missing`` issue, but produces no ``actor`` node here: an empty actor would be a
@@ -209,6 +211,9 @@ def _add_creators(root: ElementTree.Element, metadata: MediaMetadata) -> None:
     order = 0
     for creator in metadata.creators:
         if not creator.name_present:
+            continue
+        if creator.role == "uploader":
+            ElementTree.SubElement(root, "director").text = director_name(creator.name, creator.mid)
             continue
         actor = ElementTree.SubElement(root, "actor")
         ElementTree.SubElement(actor, "name").text = creator.name

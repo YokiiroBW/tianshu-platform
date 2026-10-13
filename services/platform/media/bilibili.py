@@ -348,6 +348,9 @@ class Bilibili:
             )
         return {
             "snapshot": snapshot,
+            "creator_images": [
+                {"mid": creators[0]["mid"], "url": cover_url(data.get("owner", {}).get("face"))}
+            ],
             "video": {
                 "bvid": bvid,
                 "title": data.get("title") or "",

@@ -377,90 +377,13 @@ class WebMedia:
         }
 
     async def refresh_metadata(self, body, session):
-        require(set(body) == {"job_id", "expected_revision", "client_id"}, "invalid_input", 400)
-        replay = await self.media.local(
-            self.media.repo.replay,
-            body["client_id"],
-            {"operation": "jobs/refresh_metadata", "body": body},
+        domain = self.media.metadata_refresh
+        prepared = await domain.prepare(body)
+        if prepared.get("replay"):
+            return prepared["replay"]
+        result = await self.receipt(
+            body, "jobs/refresh_metadata", session, lambda db: domain.commit(body, prepared, db)
         )
-        if replay:
-            return replay
-        previous = await self.media.local(self.media.repo.job, body["job_id"])
-        require(previous is not None, "not_found", 404)
-        require(previous["revision"] == body["expected_revision"], "version_conflict", 409)
-        require(
-            previous["state"] in {"waiting_metadata", "failed", "published", "completed"},
-            "job_action_conflict",
-            409,
-        )
-        cookie = await self.media.local(self.media.accounts.cookie, previous["account_id"])
-        resolved = await self.media.connector.resolve(previous["bvid"], cookie, with_formats=False)
-        require(
-            set(previous["selected_cids"])
-            <= {part["cid"] for part in resolved["snapshot"]["parts"]},
-            "source_cid_removed",
-            409,
-        )
-        normalize_bilibili(resolved["snapshot"], overrides=previous.get("overrides"))
-
-        def operation(db):
-            row = db.execute(
-                "SELECT body FROM jobs WHERE id=? AND " + VISIBLE, (body["job_id"],)
-            ).fetchone()
-            current = json.loads(row[0]) if row else None
-            require(
-                current and current["revision"] == body["expected_revision"],
-                "version_conflict",
-                409,
-            )
-            self.media.repo.put(
-                "snapshot_history",
-                str(uuid.uuid4()),
-                {
-                    "job_id": current["job_id"],
-                    "snapshot": current["snapshot"],
-                    "recorded_at": self.media.repo.clock(),
-                },
-                db=db,
-            )
-            changes = {
-                "snapshot": resolved["snapshot"],
-                "cover_url": resolved["video"]["cover_url"],
-                "title": current.get("overrides", {}).get("title", resolved["video"]["title"]),
-                "creator": resolved["video"]["creator"]["name"],
-                "state": "queued",
-                "stage": "metadata",
-                "code": "source_metadata_refreshed",
-                "package": None,
-                "asset_operation": None,
-                "metadata_changed": True,
-                "edition": current.get("edition", 0) + 1,
-                "attempts": 0,
-                "library_attempts": 0,
-            }
-            if current.get("asset_receipt"):
-                changes["base_edition"] = {
-                    key: current.get(key)
-                    for key in (
-                        "package",
-                        "asset_operation",
-                        "asset_receipt",
-                        "selected_cids",
-                        "downloads",
-                        "snapshot",
-                        "quality",
-                        "bvid",
-                        "target_id",
-                        "destination_subdirectory",
-                        "destination_directory",
-                        "job_id",
-                    )
-                }
-            return {
-                "job": public_job(self.media.repo.update_job(current["job_id"], changes, db=db))
-            }
-
-        result = await self.receipt(body, "jobs/refresh_metadata", session, operation)
         self.media.wake.set()
         return result
 

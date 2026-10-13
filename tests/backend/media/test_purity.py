@@ -71,6 +71,7 @@ ALLOWED_MODULES = frozenset(
         "__future__",
         "dataclasses",
         "datetime",
+        "fractions",
         "json",
         "pathlib",
         "re",
@@ -102,7 +103,16 @@ def production_files() -> list[Path]:
     # beside it; their presence must not make a renderer-purity test forbid the requested runtime.
     return [
         PRODUCTION_DIR / name
-        for name in ("__init__.py", "identity.py", "metadata.py", "sidecars.py", "types.py")
+        for name in (
+            "__init__.py",
+            "identity.py",
+            "metadata.py",
+            "sidecars.py",
+            "types.py",
+            "creators.py",
+            "nfo_details.py",
+            "probe_details.py",
+        )
     ]
 
 
@@ -124,7 +134,16 @@ class StaticPurityTest(unittest.TestCase):
         modules = production_files()
         self.assertEqual(
             [path.name for path in modules],
-            ["__init__.py", "identity.py", "metadata.py", "sidecars.py", "types.py"],
+            [
+                "__init__.py",
+                "identity.py",
+                "metadata.py",
+                "sidecars.py",
+                "types.py",
+                "creators.py",
+                "nfo_details.py",
+                "probe_details.py",
+            ],
         )
         for path in modules:
             with self.subTest(module=path.name):
@@ -287,11 +306,7 @@ class IndependentExpectationTest(unittest.TestCase):
             "  <premiered>2019-08-02</premiered>\n"
             "  <tag>测试</tag>\n"
             "  <tag>动画</tag>\n"
-            "  <actor>\n"
-            f"    <name>{_escape(fx.UP_NAME)}</name>\n"
-            '    <role infoset="true" name="uploader" language="zh-CN">UP主</role>\n'
-            "    <order>0</order>\n"
-            "  </actor>\n"
+            f"  <director>{_escape(fx.UP_NAME)}（B站 UID {fx.MID_UP}）</director>\n"
             "  <runtime>12</runtime>\n"
             '  <thumb aspect="poster">poster.jpg</thumb>\n'
             '  <uniqueid type="bilibili" default="true">'
