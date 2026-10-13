@@ -28,6 +28,7 @@ from .download_cache import DownloadCache
 from .imports import Imports
 from .creator_cache import CreatorCache
 from .metadata_refresh import MetadataRefresh
+from .import_metadata import ImportMetadata
 
 JOB_FIELDS = (
     "job_id",
@@ -154,6 +155,9 @@ class Media:
         self.download_cache = DownloadCache(self)
         self.imports = Imports(self)
         self.metadata_refresh = MetadataRefresh(self, public_job)
+        self.import_metadata = ImportMetadata(
+            self, Path(settings["database_path"]).with_suffix(".media-import-metadata")
+        )
         self.storage_breakdown = StorageBreakdown(self, clock=clock)
 
     async def start(self):
