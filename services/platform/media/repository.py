@@ -642,33 +642,178 @@ class Repository:
             )
             saved = self.put("media_import", identity, record, expected, db=db)
             if saved["state"] == "verified":
-                source = {
-                    key: saved[key]
-                    for key in (
-                        "root_id",
-                        "directory",
-                        "relative_path",
-                        "bvid",
-                        "cid",
-                        "actual_quality",
-                        "sha256",
-                        "evidence_digest",
-                    )
-                }
-                source.update(
-                    kind="import",
-                    import_record_id=identity,
-                    import_record_revision=saved["revision"],
-                    entry={
-                        "path": saved["relative_path"],
-                        "kind": "video",
-                        "cid": saved["cid"],
-                        "sha256": saved["sha256"],
-                        "size_bytes": saved["observation"]["size_bytes"],
-                    },
+                self.put(
+                    "media_source",
+                    "import:" + identity,
+                    self._import_source(identity, saved),
+                    db=db,
                 )
-                self.put("media_source", "import:" + identity, source, db=db)
             return saved
+
+    @staticmethod
+    def _import_source(identity, record):
+        source = {
+            key: record[key]
+            for key in (
+                "root_id",
+                "directory",
+                "relative_path",
+                "bvid",
+                "cid",
+                "actual_quality",
+                "sha256",
+                "evidence_digest",
+            )
+        }
+        return {
+            **source,
+            "kind": "import",
+            "import_record_id": identity,
+            "import_record_revision": record["revision"],
+            "entry": {
+                "path": record["relative_path"],
+                "kind": "video",
+                "cid": record["cid"],
+                "sha256": record["sha256"],
+                "size_bytes": record["observation"]["size_bytes"],
+            },
+        }
+
+    def import_relocate(self, plan):
+        """CAS the complete old root and all its reuse references in one transaction.
+
+        File proofs are produced by ImportRelocation before calling this storage operation.
+        Historical metadata plans/receipts deliberately keep their original paths.
+        """
+        with self.transaction() as db:
+            migration_id = plan["migration_id"]
+            entries = plan["entries"]
+            prepared = self._document(db, "import_relocation_plan", migration_id)
+            require(prepared == plan, "import_relocation_plan_changed", 409)
+            receipt = self._document(db, "import_relocation", migration_id)
+            if receipt:
+                require(receipt["fingerprint"] == plan["fingerprint"], "idempotency_conflict", 409)
+                return {**receipt, "replayed": True}
+            old_records = {
+                row["id"]: json.loads(row["body"])
+                for row in db.execute(
+                    "SELECT id,body FROM documents WHERE kind='media_import' "
+                    "AND json_extract(body,'$.root_id')=? AND json_extract(body,'$.directory')=?",
+                    (plan["root_id"], plan["old_directory"]),
+                )
+            }
+            require(
+                old_records
+                == {entry["old_record_id"]: entry["expected_record"] for entry in entries},
+                "version_conflict",
+                409,
+            )
+            sources = [
+                (row["id"], json.loads(row["body"]))
+                for row in db.execute("SELECT id,body FROM documents WHERE kind='media_source'")
+            ]
+            for entry in entries:
+                require(
+                    entry["new_record_id"] == entry["old_record_id"]
+                    or (
+                        self._document(db, "media_import", entry["new_record_id"]) is None
+                        and self._document(db, "media_source", "import:" + entry["new_record_id"])
+                        is None
+                    ),
+                    "import_relocation_path_conflict",
+                    409,
+                )
+            result_entries = []
+            for entry in entries:
+                old_id, new_id = entry["old_record_id"], entry["new_record_id"]
+                saved = {**entry["record"], "revision": entry["expected_record"]["revision"] + 1}
+                db.execute(
+                    "UPDATE documents SET id=?,revision=?,body=? WHERE kind='media_import' AND id=?",
+                    (new_id, saved["revision"], json.dumps(saved, ensure_ascii=False), old_id),
+                )
+                changed_sources, removed_sources = [], []
+                for source_id, source in sources:
+                    if source.get("kind") != "import" or source.get("import_record_id") != old_id:
+                        continue
+                    if saved["state"] != "verified":
+                        # import_commit can leave a stale reference after invalidation. Never revive it.
+                        db.execute(
+                            "DELETE FROM documents WHERE kind='media_source' AND id=?", (source_id,)
+                        )
+                        removed_sources.append({"source_id": source_id, "record": source})
+                        continue
+                    expected_source = self._import_source(old_id, entry["expected_record"])
+                    require(
+                        all(source.get(key) == value for key, value in expected_source.items()),
+                        "import_source_changed",
+                        409,
+                    )
+                    destination_id = (
+                        "import:" + new_id if source_id == "import:" + old_id else source_id
+                    )
+                    updated = {
+                        **source,
+                        **self._import_source(new_id, saved),
+                        "revision": source["revision"] + 1,
+                    }
+                    db.execute(
+                        "UPDATE documents SET id=?,revision=?,body=? WHERE kind='media_source' AND id=?",
+                        (
+                            destination_id,
+                            updated["revision"],
+                            json.dumps(updated, ensure_ascii=False),
+                            source_id,
+                        ),
+                    )
+                    changed_sources.append(
+                        {
+                            "old_source_id": source_id,
+                            "new_source_id": destination_id,
+                            "record": updated,
+                        }
+                    )
+                if saved["state"] == "verified" and not changed_sources:
+                    updated = self.put(
+                        "media_source",
+                        "import:" + new_id,
+                        self._import_source(new_id, saved),
+                        0,
+                        db=db,
+                    )
+                    changed_sources.append(
+                        {
+                            "old_source_id": None,
+                            "new_source_id": "import:" + new_id,
+                            "record": updated,
+                        }
+                    )
+                result_entries.append(
+                    {
+                        **entry,
+                        "record": saved,
+                        "updated_sources": changed_sources,
+                        "removed_stale_sources": removed_sources,
+                    }
+                )
+            receipt = self.put(
+                "import_relocation",
+                migration_id,
+                {
+                    "schema_version": 1,
+                    "migration_id": migration_id,
+                    "root_id": plan["root_id"],
+                    "old_directory": plan["old_directory"],
+                    "new_directory": plan["new_directory"],
+                    "fingerprint": plan["fingerprint"],
+                    "state": "committed",
+                    "committed_at": self.clock(),
+                    "entries": result_entries,
+                    "historical_metadata": plan["historical_metadata"],
+                },
+                0,
+                db=db,
+            )
+            return {**receipt, "replayed": False}
 
     def download_source(self, bvid, cid, quality):
         with self.transaction() as db:
