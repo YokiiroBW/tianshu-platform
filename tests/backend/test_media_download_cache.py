@@ -10,7 +10,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from services.platform.contracts import Fault
-from services.platform.media.destination import head_key, snapshot, subdirectory
+from services.platform.media.destination import (
+    head_key,
+    snapshot,
+    source_subdirectory,
+    subdirectory,
+)
 from services.platform.media.download_cache import DownloadCache
 from services.platform.media.repository import Repository
 from services.platform.media.organizer import library_lock
@@ -72,7 +77,7 @@ def media_for(root, *, clock=time.time, delay=0):
     )
 
 
-def enqueue(media, target, quality=None):
+def enqueue(media, target, quality=None, destination=None):
     return media.repo.enqueue(
         {
             "bvid": BV,
@@ -83,6 +88,7 @@ def enqueue(media, target, quality=None):
             "layout": "single",
             "snapshot": {"parts": [PART]},
             "account_id": None,
+            **(destination or {}),
         }
     )
 
@@ -241,6 +247,26 @@ class GlobalDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.media.engine.release.set()
         results = await asyncio.gather(owned, waiting)
         self.assertEqual(sorted(reused for _, reused in results), [False, True])
+        self.assertEqual(self.media.engine.calls, ["80"])
+
+    async def test_source_directories_keep_independent_jobs_and_one_global_download(self):
+        target = {"kind": "media_server", "directory": str(self.root / "library")}
+        downloads = []
+        jobs = []
+        for kind, identity in (("uploader", "123"), ("favorite", "456")):
+            destination = snapshot(
+                target, source_subdirectory({"kind": kind, "id": identity}, "同名")
+            )
+            created = enqueue(self.media, "same-library", destination=destination)
+            job = self.media.repo.claim(kind)
+            self.assertEqual(created["job_id"], job["job_id"])
+            downloads.append(await self.get(job, kind))
+            jobs.append(job)
+        self.assertNotEqual(jobs[0]["job_id"], jobs[1]["job_id"])
+        self.assertNotEqual(head_key(jobs[0]), head_key(jobs[1]))
+        self.assertFalse(downloads[0][1])
+        self.assertTrue(downloads[1][1])
+        self.assertTrue(Path(downloads[0][0]["file"]).samefile(downloads[1][0]["file"]))
         self.assertEqual(self.media.engine.calls, ["80"])
 
     async def test_expired_crashed_lease_can_be_taken_over_and_stale_finish_is_fenced(self):

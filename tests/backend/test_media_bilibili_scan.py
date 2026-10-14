@@ -3,6 +3,7 @@
 import unittest
 from unittest.mock import patch
 
+from aiohttp import web
 from media_runtime_fixtures import BV, OTHER_BV, Upstream, favorite_page
 from services.platform.contracts import Fault
 from services.platform.media.bilibili import Bilibili
@@ -116,3 +117,72 @@ class BilibiliScanTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(Fault) as caught:
                         await self.connector.scan({"kind": kind, "id": identity}, None)
                     self.assertEqual(caught.exception.code, "source_scan_incomplete")
+
+    async def test_watch_later_complete_empty_and_cookie_authentication(self):
+        recorded = []
+
+        async def toview(request):
+            recorded.append((request.path, request.query_string, request.headers.get("Cookie")))
+            if request.headers.get("Cookie") != "SESSDATA=synthetic-watch-later":
+                return web.json_response({"code": -101, "data": {}})
+            return web.json_response({"code": 0, "data": self.watch_later_data})
+
+        app = web.Application()
+        app.router.add_get("/x/v2/history/toview", toview)
+        from fixtures import start_http
+
+        runner, url = await start_http(app)
+        self.addAsyncCleanup(runner.cleanup)
+        connector = Bilibili(api=url)
+        self.addAsyncCleanup(connector.close)
+        value = {"kind": "watch_later", "id": "self"}
+        for members in ([BV, OTHER_BV], [], None):
+            self.watch_later_data = {
+                "count": len(members or []),
+                "list": [{"bvid": bvid} for bvid in members] if members is not None else None,
+            }
+            self.assertEqual(
+                await connector.scan(value, "SESSDATA=synthetic-watch-later"), set(members or [])
+            )
+        self.assertTrue(
+            all(path == "/x/v2/history/toview" and not query for path, query, _ in recorded)
+        )
+        for cookie in (None, "SESSDATA=expired"):
+            with self.subTest(cookie=cookie), self.assertRaises(Fault) as caught:
+                await connector.scan(value, cookie)
+            self.assertEqual(caught.exception.code, "auth_required")
+
+    async def test_watch_later_refuses_unconfirmed_lists_and_item_budget(self):
+        cases = [
+            ({}, "source_invalid_response"),
+            ({"count": 0}, "source_invalid_response"),
+            ({"count": True, "list": []}, "source_invalid_response"),
+            ({"count": -1, "list": []}, "source_invalid_response"),
+            ({"count": 1, "list": None}, "source_invalid_response"),
+            ({"count": 1, "list": []}, "source_scan_incomplete"),
+            ({"count": 0, "list": [{"bvid": BV}]}, "source_scan_incomplete"),
+            ({"count": 2, "list": [{"bvid": BV}, {"bvid": BV}]}, "source_scan_incomplete"),
+            ({"count": 1, "list": [{}]}, "source_member_unavailable"),
+            ({"count": 1, "list": [{"bvid": ""}]}, "source_member_unavailable"),
+            ({"count": 1, "list": [None]}, "source_invalid_response"),
+        ]
+        for data, code in cases:
+            with (
+                self.subTest(data=data),
+                patch.object(self.connector, "request", return_value=data),
+                self.assertRaises(Fault) as caught,
+            ):
+                await self.connector.scan({"kind": "watch_later", "id": "self"}, "synthetic")
+            self.assertEqual(caught.exception.code, code)
+        with (
+            patch.object(
+                self.connector,
+                "request",
+                return_value={"count": 2, "list": [{"bvid": BV}, {"bvid": OTHER_BV}]},
+            ),
+            self.assertRaises(Fault) as caught,
+        ):
+            await self.connector.scan(
+                {"kind": "watch_later", "id": "self"}, "synthetic", item_limit=1
+            )
+        self.assertEqual(caught.exception.code, "source_budget_exceeded")

@@ -2,10 +2,66 @@
 
 import hashlib
 import os
+import unicodedata
 from pathlib import Path
 
 from ..contracts import require
 from .identity import looks_like_windows_device_name, require_relative_path
+
+DESTINATION_MODES = ("source", "custom")
+
+
+def supports_subdirectory(target):
+    return target.get("kind") == "media_server" and bool(target.get("directory"))
+
+
+def source_subdirectory(source_value, label):
+    """A portable source name, with an untruncated identity suffix to separate namesakes."""
+    kind, identity = source_value["kind"], source_value["id"]
+    if kind == "watch_later":
+        return "稍后再看"
+    category, suffix = {
+        "uploader": ("UP主", f" [UID{identity}]"),
+        "favorite": ("收藏夹", f" [FID{identity}]"),
+        "collection": ("合集", f" [合集{identity.replace(':', '-')}]"),
+        "series": ("合集", f" [系列{identity.replace(':', '-')}]"),
+    }[kind]
+    name = unicodedata.normalize("NFC", label)
+    name = "".join(
+        "_" if ord(c) < 32 or 0xD800 <= ord(c) <= 0xDFFF or c in '/\\:<>"|?*' else c for c in name
+    )
+    name = " ".join(name.split()).strip(" .") or "未命名"
+    if looks_like_windows_device_name(name):
+        name = "_" + name
+    maximum = 255 - len(suffix.encode("utf-8"))
+    name = name.encode("utf-8")[:maximum].decode("utf-8", errors="ignore").rstrip(" .")
+    return subdirectory(f"{category}/{name or '未命名'}{suffix}")
+
+
+def subscription_snapshot(target, source_value, label, mode, value=None, current=None):
+    """Resolve source/custom through the same path validator used by jobs and publication."""
+    require(isinstance(mode, str) and mode in DESTINATION_MODES, "invalid_input", 400)
+    current = current or {}
+    determined = current.get("source_subdirectory")
+    if mode == "source":
+        require(supports_subdirectory(target), "destination_not_supported", 409)
+        determined = (
+            determined
+            or (
+                current.get("destination_subdirectory")
+                if current.get("destination_mode") == "source"
+                else None
+            )
+            or source_subdirectory(source_value, label)
+        )
+        value = determined
+    elif value is None:
+        value = current.get("destination_subdirectory", "")
+    return {
+        "destination_mode": mode,
+        **snapshot(target, value),
+        "source_subdirectory": determined,
+    }
 
 
 def subdirectory(value=""):
@@ -60,7 +116,7 @@ def safe_path(root, relative):
 
 def snapshot(target, value=""):
     value = subdirectory(value)
-    require(not value or target.get("kind") == "media_server", "destination_not_supported", 409)
+    require(not value or supports_subdirectory(target), "destination_not_supported", 409)
     root = target.get("directory")
     path = safe_path(Path(root), value) if root and value else Path(root) if root else None
     if path:

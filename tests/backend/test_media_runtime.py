@@ -129,6 +129,182 @@ class MediaRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await self.media.connector.account(None)
         self.assertEqual(caught.exception.code, "auth_required")
 
+    async def test_destination_preview_persistence_old_requests_and_job_snapshots(self):
+        for identity in ("source-library", "second-library"):
+            self.media.config["targets"][identity] = {
+                "kind": "media_server",
+                "label": identity,
+                "directory": str(Path(self.temp.name) / identity),
+                "servers": [],
+            }
+        body = subscription()
+        body.update(
+            target_id="source-library",
+            label="我的/收藏:* .",
+            destination_mode="source",
+            destination_subdirectory="browser-suggested-path-is-ignored",
+        )
+        preview_body = {key: body[key] for key in ("source", "label", "account_id", "target_id")}
+        preview = await self.post("subscriptions/destination-preview", preview_body)
+        saved = await self.save(body)
+        self.assertEqual(preview["destination_mode"], "source")
+        self.assertEqual(preview["destination_subdirectory"], "收藏夹/我的_收藏__ [FID123]")
+        self.assertEqual(saved["destination_subdirectory"], preview["destination_subdirectory"])
+        self.assertEqual(saved["destination_directory"], preview["destination_directory"])
+        await self.media.subscriptions.scan(saved["subscription_id"])
+        jobs, _ = self.media.repo.jobs()
+        original_jobs = {job["job_id"]: job for job in jobs}
+        body.update(
+            subscription_id=saved["subscription_id"],
+            expected_revision=saved["revision"],
+            client_id=str(uuid.uuid4()),
+            label="改后的显示名称",
+            target_id="second-library",
+        )
+        renamed = await self.save(body)
+        self.assertEqual(renamed["destination_subdirectory"], saved["destination_subdirectory"])
+        self.assertNotEqual(renamed["destination_directory"], saved["destination_directory"])
+        preview_body.update(
+            subscription_id=renamed["subscription_id"],
+            label=body["label"],
+            target_id=body["target_id"],
+        )
+        stable_preview = await self.post("subscriptions/destination-preview", preview_body)
+        self.assertEqual(stable_preview["destination_directory"], renamed["destination_directory"])
+        for identity, job in original_jobs.items():
+            self.assertEqual(self.media.repo.job(identity), job)
+        body.update(
+            expected_revision=renamed["revision"],
+            destination_mode="custom",
+            destination_subdirectory="自定义/学习",
+            client_id=str(uuid.uuid4()),
+        )
+        custom = await self.save(body)
+        self.assertEqual(custom["destination_subdirectory"], "自定义/学习")
+        body.update(expected_revision=custom["revision"], client_id=str(uuid.uuid4()))
+        del body["destination_mode"]
+        del body["destination_subdirectory"]
+        old_request = await self.save(body)
+        self.assertEqual(old_request["destination_mode"], "custom")
+        self.assertEqual(old_request["destination_directory"], custom["destination_directory"])
+        body.update(
+            expected_revision=old_request["revision"],
+            destination_mode="source",
+            client_id=str(uuid.uuid4()),
+        )
+        restored = await self.save(body)
+        self.assertEqual(restored["destination_subdirectory"], saved["destination_subdirectory"])
+
+    async def test_destination_capabilities_remote_rejection_and_legacy_projection(self):
+        legacy = await self.save()
+        # An actual stored document without the new fields still reads as custom.
+        legacy.pop("destination_mode")
+        legacy.pop("source_subdirectory")
+        self.media.repo.put("subscription", legacy["subscription_id"], legacy)
+        view = await self.post("view", {})
+        self.assertIn("watch_later", view["capabilities"]["source_kinds"])
+        self.assertEqual(view["capabilities"]["destination_modes"], ["source", "custom"])
+        self.assertFalse(view["targets"][0]["destination_subdirectory_supported"])
+        self.assertEqual(view["subscriptions"][0]["destination_mode"], "custom")
+        self.assertEqual(view["subscriptions"][0]["destination_subdirectory"], "")
+        body = subscription()
+        body["destination_mode"] = "source"
+        preview_body = {key: body[key] for key in ("source", "label", "account_id", "target_id")}
+        for operation, request in (
+            ("subscriptions/destination-preview", preview_body),
+            ("subscriptions/save", body),
+        ):
+            rejected = await self.post(operation, request, 409)
+            self.assertEqual(rejected["code"], "destination_not_supported")
+        preview_body.update(destination_mode="custom", destination_subdirectory="")
+        preview = await self.post("subscriptions/destination-preview", preview_body)
+        self.assertEqual(
+            preview,
+            {
+                "destination_mode": "custom",
+                "destination_subdirectory": "",
+                "destination_directory": None,
+            },
+        )
+
+    async def test_watch_later_incremental_baseline_errors_and_account_identity(self):
+        body = subscription("future_only", {"kind": "watch_later", "id": "self"})
+        rejected = await self.post("subscriptions/save", body, 409)
+        self.assertEqual(rejected["code"], "auth_required")
+        first = self.media.accounts.save(
+            "合成稍后再看账号", "SESSDATA=synthetic-watch-later", {"mid": "946974"}
+        )
+        second = self.media.accounts.save(
+            "另一合成账号", "SESSDATA=synthetic-watch-later-two", {"mid": "946975"}
+        )
+        body["account_id"] = first["account_id"]
+        saved = await self.save(body)
+        original = self.media.connector.request
+        recorded = []
+        watch_data = {"count": 1, "list": [{"bvid": BV}]}
+
+        async def watch_response(path, **kwargs):
+            if path == "/x/v2/history/toview":
+                recorded.append(kwargs["cookie"])
+                if isinstance(watch_data, Fault):
+                    raise watch_data
+                return watch_data
+            return await original(path, **kwargs)
+
+        with patch.object(self.media.connector, "request", watch_response):
+            baseline = await self.media.subscriptions.scan(saved["subscription_id"])
+            self.assertEqual(baseline["queued"], 0)
+            self.assertTrue(baseline["subscription"]["baseline_ready"])
+            watch_data = {"count": 2, "list": [{"bvid": BV}, {"bvid": OTHER_BV}]}
+            incremental = await self.media.subscriptions.scan(saved["subscription_id"])
+            self.assertEqual(incremental["queued"], 1)
+            self.assertEqual(self.media.repo.jobs()[0][0]["bvid"], OTHER_BV)
+            for data, code in (
+                ({"count": 2, "list": []}, "source_scan_incomplete"),
+                (Fault("auth_required", 503), "auth_required"),
+            ):
+                watch_data = data
+                with self.assertRaises(Fault) as caught:
+                    await self.media.subscriptions.scan(saved["subscription_id"])
+                self.assertEqual(caught.exception.code, code)
+                current = self.media.repo.get("subscription", saved["subscription_id"])
+                self.assertTrue(current["baseline_ready"])
+                self.assertEqual(self.media.repo.members(saved["subscription_id"]), {BV, OTHER_BV})
+            body.update(
+                subscription_id=current["subscription_id"],
+                expected_revision=current["revision"],
+                client_id=str(uuid.uuid4()),
+            )
+            resumed = await self.save(body)
+            watch_data = {"count": 0, "list": []}
+            empty = await self.media.subscriptions.scan(saved["subscription_id"])
+            self.assertEqual(empty["queued"], 0)
+            self.assertEqual(empty["subscription"]["counts"]["members"], 2)
+            body.update(
+                expected_revision=resumed["revision"],
+                account_id=second["account_id"],
+                client_id=str(uuid.uuid4()),
+            )
+            rejected = await self.post("subscriptions/save", body, 409)
+            self.assertEqual(rejected["code"], "subscription_account_immutable")
+            preview_body = {
+                key: body[key]
+                for key in ("subscription_id", "source", "label", "account_id", "target_id")
+            }
+            preview_body["destination_mode"] = "custom"
+            rejected = await self.post("subscriptions/destination-preview", preview_body, 409)
+            self.assertEqual(rejected["code"], "subscription_account_immutable")
+            body.update(subscription_id=None, expected_revision=0, client_id=str(uuid.uuid4()))
+            other = await self.save(body)
+            self.assertFalse(other["baseline_ready"])
+            self.assertEqual(self.media.repo.members(other["subscription_id"]), set())
+            watch_data = {"count": 1, "list": [{"bvid": OTHER_BV}]}
+            self.assertEqual(
+                (await self.media.subscriptions.scan(other["subscription_id"]))["queued"], 0
+            )
+        self.assertEqual(recorded[-1], "SESSDATA=synthetic-watch-later-two")
+        self.assertEqual(self.media.repo.members(saved["subscription_id"]), {BV, OTHER_BV})
+
     async def test_membership_new_p_old_favorite_readd_and_cross_subscription_count(self):
         first = await self.save(subscription("future_only"))
         self.assertEqual(

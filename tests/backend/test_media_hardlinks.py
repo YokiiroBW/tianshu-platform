@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from test_media_organizer import OrganizerFixture
 from services.platform.contracts import Fault
-from services.platform.media.destination import subdirectory
+from services.platform.media.destination import source_subdirectory, subdirectory
 from services.platform.media.organizer import FileOrganizer, MARKER, library_lock
 from services.platform.media.video_storage import VideoStorage, copy_file
 
@@ -58,8 +58,16 @@ class HardlinkStorageTests(OrganizerFixture, unittest.TestCase):
             patch("services.platform.media.video_storage.os.link", cross_volume),
             patch("services.platform.media.video_storage.copy_file", wraps=copy_file) as copies,
         ):
-            first = self.publish_in("UP主/音乐", "up", title="UP主标题")
-            second = self.publish_in("收藏夹/音乐", "fav", title="收藏夹标题")
+            first = self.publish_in(
+                source_subdirectory({"kind": "uploader", "id": "123"}, "音乐"),
+                "up",
+                title="UP主标题",
+            )
+            second = self.publish_in(
+                source_subdirectory({"kind": "favorite", "id": "456"}, "音乐"),
+                "fav",
+                title="收藏夹标题",
+            )
         self.assertEqual(len(copies.call_args_list), 1)
         self.assert_shared(first, second)
         self.video(first).unlink()

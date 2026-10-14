@@ -364,6 +364,8 @@ class Bilibili:
     async def scan(self, source_value, cookie, *, page_limit=200, item_limit=5000):
         source_value = source(source_value)
         kind, identity = source_value["kind"], source_value["id"]
+        if kind == "watch_later":
+            return await self.scan_watch_later(cookie, item_limit=item_limit)
         seen, expected = set(), None
         for page in range(1, page_limit + 1):
             if kind == "favorite":
@@ -444,6 +446,36 @@ class Bilibili:
                 return seen
             require(items, "source_scan_incomplete", 503)
         raise Fault("source_budget_exceeded", 503)
+
+    async def scan_watch_later(self, cookie, *, item_limit):
+        """toview returns the entire authenticated list; count must confirm its completeness."""
+        require(bool(cookie), "auth_required", 503)
+        data = await self.request("/x/v2/history/toview", cookie=cookie)
+        require(
+            isinstance(data, dict)
+            and type(data.get("count")) is int
+            and data["count"] >= 0
+            and "list" in data,
+            "source_invalid_response",
+            503,
+        )
+        total = data["count"]
+        items = [] if data["list"] is None and total == 0 else data["list"]
+        require(isinstance(items, list), "source_invalid_response", 503)
+        require(total <= item_limit, "source_budget_exceeded", 503)
+        require(len(items) == total, "source_scan_incomplete", 503)
+        seen = set()
+        for item in items:
+            require(isinstance(item, dict), "source_invalid_response", 503)
+            bvid = item.get("bvid")
+            require(isinstance(bvid, str), "source_member_unavailable", 503)
+            try:
+                require_bvid(bvid)
+            except MetadataValidationError:
+                raise Fault("source_member_unavailable", 503) from None
+            require(bvid not in seen, "source_scan_incomplete", 503)
+            seen.add(bvid)
+        return seen
 
     async def qr_start(self):
         data = await self.request("/x/passport-login/web/qrcode/generate", passport=True)

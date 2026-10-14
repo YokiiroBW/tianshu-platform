@@ -8,7 +8,7 @@ from dataclasses import asdict
 from ..contracts import Fault, canonical, digest, require
 from .config import quality, source, text
 from .metadata import normalize_bilibili
-from .destination import head_key, snapshot, subdirectory
+from .destination import head_key, snapshot, subdirectory, subscription_snapshot
 from .rules import RuleValidationError, parse_policy
 
 
@@ -56,9 +56,76 @@ class Subscriptions:
         self.media = media
         self.locks = {}
 
+    def _destination(self, body, db, *, default_mode="custom", require_current=False):
+        source_value = source(body["source"])
+        label = text(body["label"], 128)
+        require(
+            isinstance(body["target_id"], str)
+            and body["target_id"] in self.media.config["targets"],
+            "target_not_configured",
+            409,
+        )
+        if "destination_subdirectory" in body:
+            require(
+                isinstance(body["destination_subdirectory"], str),
+                "invalid_destination_subdirectory",
+                400,
+            )
+        account_id = body["account_id"]
+        require(
+            account_id is None or isinstance(account_id, str) and 0 < len(account_id) <= 64,
+            "invalid_input",
+            400,
+        )
+        require(
+            source_value["kind"] != "watch_later" or account_id is not None, "auth_required", 409
+        )
+        if account_id is not None:
+            account = self.media.repo._document(db, "account", account_id)
+            require(account and account["state"] == "ready", "auth_required", 409)
+        identity = body.get("subscription_id")
+        require(
+            identity is None or isinstance(identity, str) and len(identity) <= 64,
+            "invalid_input",
+            400,
+        )
+        current = self.media.repo._document(db, "subscription", identity) if identity else None
+        if identity and require_current:
+            require(current is not None, "not_found", 404)
+        if current:
+            require(current["source"] == source_value, "subscription_source_immutable", 409)
+            require(
+                source_value["kind"] != "watch_later" or current["account_id"] == account_id,
+                "subscription_account_immutable",
+                409,
+            )
+        destination = subscription_snapshot(
+            self.media.config["targets"][body["target_id"]],
+            source_value,
+            label,
+            body.get("destination_mode", default_mode),
+            body.get("destination_subdirectory"),
+            current,
+        )
+        return source_value, label, current, destination
+
+    def destination_preview(self, body):
+        require(
+            isinstance(body, dict)
+            and set(body) - {"subscription_id", "destination_mode", "destination_subdirectory"}
+            == {"source", "label", "account_id", "target_id"},
+            "invalid_input",
+            400,
+        )
+        with self.media.repo.transaction() as db:
+            _, _, _, destination = self._destination(
+                body, db, default_mode="source", require_current=True
+            )
+        return {key: value for key, value in destination.items() if key != "source_subdirectory"}
+
     def save(self, body, db):
         require(
-            set(body) - {"destination_subdirectory"}
+            set(body) - {"destination_subdirectory", "destination_mode"}
             == {
                 "subscription_id",
                 "expected_revision",
@@ -82,10 +149,6 @@ class Subscriptions:
         )
         identity = body["subscription_id"] or str(uuid.uuid4())
         require(isinstance(identity, str) and len(identity) <= 64, "invalid_input", 400)
-        require(body["target_id"] in self.media.config["targets"], "target_not_configured", 409)
-        if body["account_id"] is not None:
-            account = self.media.repo._document(db, "account", body["account_id"])
-            require(account and account["state"] == "ready", "auth_required", 409)
         try:
             parse_policy(body["rules"])
         except RuleValidationError:
@@ -96,22 +159,16 @@ class Subscriptions:
             "invalid_input",
             400,
         )
-        current = self.media.repo._document(db, "subscription", identity)
-        destination = snapshot(
-            self.media.config["targets"][body["target_id"]],
-            body.get("destination_subdirectory", ""),
-        )
-        source_value = source(body["source"])
+        source_value, label, current, destination = self._destination(body, db)
         if current is not None:
             require(
-                current["source"] == source_value
-                and current["initial_sync"] == body["initial_sync"],
+                current["initial_sync"] == body["initial_sync"],
                 "subscription_source_immutable",
                 409,
             )
         result = {
             "subscription_id": identity,
-            "label": text(body["label"], 128),
+            "label": label,
             "source": source_value,
             "account_id": body["account_id"],
             "target_id": body["target_id"],

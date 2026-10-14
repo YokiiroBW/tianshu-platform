@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 from ..contracts import require
 
 ENGINE_VERSION = "2026.08.19"
-SOURCE_KINDS = ("favorite", "collection", "series", "uploader")
+SOURCE_KINDS = ("favorite", "collection", "series", "uploader", "watch_later")
 EMPTY_RULES = {"schema_version": 1, "revision": 1, "whitelist": [], "blacklist": []}
 
 
@@ -41,6 +41,9 @@ def source(value):
     require(value["kind"] in SOURCE_KINDS, "invalid_input", 400)
     identity = value["id"]
     require(isinstance(identity, str) and len(identity) <= 2048, "invalid_input", 400)
+    if value["kind"] == "watch_later":
+        require(identity == "self", "invalid_input", 400)
+        return {"kind": "watch_later", "id": "self"}
     if identity.startswith("https://"):
         parsed = urlsplit(identity)
         require(

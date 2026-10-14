@@ -74,6 +74,7 @@ class WebMedia:
             "enqueue": self.enqueue,
             "rules/preview": self.rules_preview,
             "subscriptions/save": self.subscription_save,
+            "subscriptions/destination-preview": self.subscription_destination_preview,
             "subscriptions/control": self.subscription_control,
             "subscriptions/scan": self.subscription_scan,
             "jobs/detail": self.job_detail,
@@ -279,6 +280,11 @@ class WebMedia:
             lambda db: {"subscription": self.media.subscriptions.save(body, db)},
         )
         self.media.wake.set()
+        return result
+
+    async def subscription_destination_preview(self, body, session):
+        result = await self.media.local(self.media.subscriptions.destination_preview, body)
+        await self.live(session)
         return result
 
     async def subscription_control(self, body, session):

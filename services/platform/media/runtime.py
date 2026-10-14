@@ -14,6 +14,7 @@ from .bilibili import Bilibili
 from .servers import MediaServers
 from .targets import Targets
 from .config import SOURCE_KINDS, configuration
+from .destination import DESTINATION_MODES, supports_subdirectory
 from .engine import Engine
 from .publication import Publisher, Remote, validate_connection
 from .organizer import FileOrganizer, Publications
@@ -190,7 +191,11 @@ class Media:
         if self.config is None:
             return {
                 "configured": False,
-                "capabilities": {"provider": "bilibili", "source_kinds": list(SOURCE_KINDS)},
+                "capabilities": {
+                    "provider": "bilibili",
+                    "source_kinds": list(SOURCE_KINDS),
+                    "destination_modes": list(DESTINATION_MODES),
+                },
                 "engine": {
                     "state": "not_configured",
                     "version": None,
@@ -215,7 +220,11 @@ class Media:
         }
         return {
             "configured": True,
-            "capabilities": {"provider": "bilibili", "source_kinds": list(SOURCE_KINDS)},
+            "capabilities": {
+                "provider": "bilibili",
+                "source_kinds": list(SOURCE_KINDS),
+                "destination_modes": list(DESTINATION_MODES),
+            },
             "engine": dict(self.engine.status),
             "accounts": [public_account(account) for account in accounts],
             "targets": [
@@ -226,6 +235,7 @@ class Media:
                     if target.get("kind") == "media_server" or target.get("publisher")
                     else "publisher_not_configured",
                     "kind": target.get("kind", "assetlibrary"),
+                    "destination_subdirectory_supported": supports_subdirectory(target),
                     "revision": target.get("revision"),
                     "directory": target.get("directory")
                     if target.get("kind") == "media_server"
@@ -245,7 +255,11 @@ class Media:
                 for identity, target in self.config["targets"].items()
             ],
             "subscriptions": [
-                {**item, "destination_subdirectory": item.get("destination_subdirectory", "")}
+                {
+                    **item,
+                    "destination_mode": item.get("destination_mode", "custom"),
+                    "destination_subdirectory": item.get("destination_subdirectory", ""),
+                }
                 for item in subscriptions
             ],
             "jobs": [public_job(job) for job in jobs],
