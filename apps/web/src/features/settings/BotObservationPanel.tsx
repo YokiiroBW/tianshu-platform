@@ -502,6 +502,7 @@ export function BotObservationPanel({
             >
               <option value="astrbot">AstrBot</option>
               <option value="nonebot">NoneBot</option>
+              <option value="onebot">OneBot / NapCat</option>
             </select>
           </label>
           <label>
@@ -512,6 +513,12 @@ export function BotObservationPanel({
               value={address}
               onChange={(event) => setAddress(event.target.value)}
             />
+            {adapter === "onebot" && (
+              <span className="muted">
+                填写天枢 OneBot 接入服务的 HTTP 地址；QQ 账号由该服务连接的
+                NapCat 等 OneBot 实现提供。
+              </span>
+            )}
           </label>
           <label>
             观察服务密钥

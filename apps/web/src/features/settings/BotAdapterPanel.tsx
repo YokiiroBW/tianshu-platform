@@ -6,6 +6,7 @@ import { StatusRail } from "../../components/StatusRail";
 import {
   AdapterApiError,
   adapterErrorMessage,
+  adapterLabel,
   adapterPost,
   type AdapterConnection,
   type AdapterKind,
@@ -18,10 +19,6 @@ import "./bots.css";
 
 const protocol = "tianshu.bot-adapter/v1";
 type Receipt = { connection: AdapterConnection };
-
-function label(kind: AdapterKind) {
-  return kind === "astrbot" ? "AstrBot" : "NoneBot";
-}
 
 function formatTime(value: string | null) {
   if (!value) return "尚无";
@@ -700,6 +697,7 @@ export function BotAdapterPanel() {
                       >
                         <option value="astrbot">AstrBot</option>
                         <option value="nonebot">NoneBot</option>
+                        <option value="onebot">OneBot / NapCat</option>
                       </select>
                     </label>
                     <label>
@@ -717,7 +715,9 @@ export function BotAdapterPanel() {
                       />
                     </label>
                     <p className="muted">
-                      填写插件监听地址即可，协议路径会自动补全。
+                      {adapter === "onebot"
+                        ? "填写天枢 OneBot 接入服务的 HTTP 地址。NapCat 通过反向 WebSocket 连接该服务；这里不填 NapCat 管理页面地址。"
+                        : "填写插件监听地址即可，协议路径会自动补全。"}
                     </p>
                     <label>
                       插件连接密钥
@@ -772,7 +772,7 @@ export function BotAdapterPanel() {
                     <div className="bot-probe-result">
                       <h4>检测结果</h4>
                       <p>
-                        {label(adapter)} 插件已响应。检测草稿有效至{" "}
+                        {adapterLabel(adapter)} 插件已响应。检测草稿有效至{" "}
                         {formatTime(probe.expires_at)}。
                       </p>
                       {expired ? (
@@ -922,7 +922,7 @@ export function BotAdapterPanel() {
                         <div>
                           <strong>{connection.name}</strong>
                           <p>
-                            {label(connection.adapter)} · 机器人{" "}
+                            {adapterLabel(connection.adapter)} · 机器人{" "}
                             {connection.account_id} ·{" "}
                             {connection.conversation.kind === "group"
                               ? "群"

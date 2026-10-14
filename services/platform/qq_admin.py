@@ -77,7 +77,11 @@ def validate_profiles_configuration(settings, other_credentials):
 
 async def observe_alias(platform, body):
     c = platform.settings.get("qq_alias_memory")
-    if c is None or body["schema_version"] != 2 or not (body["nickname"] or body["group_card"]):
+    if (
+        c is None
+        or body["schema_version"] not in (2, 3)
+        or not (body["nickname"] or body["group_card"])
+    ):
         return False
     token = secret(c["token_env"])
     require(token is not None, "dependency_unavailable", 503)
@@ -220,7 +224,7 @@ class QQAdmin:
             }
 
     def queue_alias(self, body):
-        if self.p.settings.get("qq_alias_memory") is None or body["schema_version"] != 2:
+        if self.p.settings.get("qq_alias_memory") is None or body["schema_version"] not in (2, 3):
             return
         key = hashlib.sha256(
             canonical([body["connection_id"], body["event_id"], body["account_id"]]).encode()

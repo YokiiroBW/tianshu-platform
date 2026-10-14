@@ -53,6 +53,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.acked = []
         self.sends = []
         self.receipts = {}
+        self.adapter_kind = "nonebot"
 
         async def handler(request):
             if request.headers.get("Authorization") != "Bearer synthetic-plugin-key-123456789":
@@ -63,7 +64,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 return web.json_response(
                     {
                         "protocol": "tianshu.bot-adapter/v1",
-                        "adapter": "nonebot",
+                        "adapter": self.adapter_kind,
                         "instance_id": "sdk:one",
                         "accounts": [{"id": "42", "platform": "qq", "label": "Synthetic QQ"}],
                         "capabilities": ["text"],
@@ -253,7 +254,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         session = {}
         probe = await manager.probe(
             {
-                "adapter": "nonebot",
+                "adapter": self.adapter_kind,
                 "address": self.address,
                 "access_key": "synthetic-plugin-key-123456789",
                 "allow_private_http": True,
@@ -318,6 +319,18 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 payload,
             )
         self.assertEqual("invalid_input", oversized_control.exception.code)
+
+    async def test_onebot_direct_connection_uses_existing_management_and_binding(self):
+        self.adapter_kind = "onebot"
+        row, _ = await self._created()
+        self.assertEqual(row["adapter"], "onebot")
+        enabled = await self.platform.bot_adapters.change(
+            "enable",
+            {"id": row["id"], "expected_revision": row["revision"], "client_id": str(uuid.uuid4())},
+        )
+        self.assertEqual(enabled["state"], "ready")
+        self.assertTrue(enabled["enabled"])
+        self.assertEqual(self.platform.bot_adapters._project(enabled)["adapter"], "onebot")
 
     async def test_probe_persist_enable_unknown_reconcile_restart_disable(self):
         manager = self.platform.bot_adapters

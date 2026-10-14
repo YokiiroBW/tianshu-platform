@@ -51,6 +51,57 @@ function json(route: Route, value: unknown, status = 200) {
   return route.fulfill({ status, json: value });
 }
 
+test("OneBot direct connection explains the service address and probes the selected adapter", async ({
+  page,
+}, testInfo) => {
+  await signedIn(page);
+  let probed = false;
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const operation = new URL(route.request().url()).pathname.split("/").pop();
+    if (operation === "view") {
+      return json(route, {
+        available: true,
+        unlocked: true,
+        actors: [actor],
+        connections: [],
+      });
+    }
+    if (operation === "probe") {
+      expect(route.request().postDataJSON()).toMatchObject({
+        adapter: "onebot",
+        address: "https://onebot.example.test",
+        access_key: "synthetic-key",
+      });
+      probed = true;
+      return json(route, {
+        draft_id: "draft:onebot",
+        expires_at: expiry(),
+        protocol: "tianshu.bot-adapter/v1",
+        instance_id: "host:onebot",
+        accounts: [account],
+      });
+    }
+    throw new Error(`Unexpected OneBot request: ${operation}`);
+  });
+  await page.goto("/#/settings/3");
+  await page.getByText("高级兼容：精确范围适配器", { exact: true }).click();
+  const panel = page.getByRole("region", { name: "机器人适配器管理" });
+  await panel.getByRole("button", { name: "添加适配器" }).click();
+  await panel.getByLabel("机器人平台").selectOption("onebot");
+  await expect(
+    panel.getByText(/填写天枢 OneBot 接入服务的 HTTP 地址/),
+  ).toBeVisible();
+  await panel.getByLabel("插件地址").fill("https://onebot.example.test");
+  await panel.getByLabel("插件连接密钥").fill("synthetic-key");
+  await panel.getByRole("button", { name: "检测连接并读取账号" }).click();
+  await expect(panel.getByLabel("回复角色")).toBeVisible();
+  expect(probed).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("onebot-direct.png"),
+    fullPage: true,
+  });
+});
+
 test("backend adapter fault codes have actionable Chinese messages", () => {
   const cases: Record<string, string> = {
     adapter_unauthorized: "连接密钥",

@@ -359,7 +359,7 @@ class BotAdapters:
         now = time.time()
         self.drafts = {key: item for key, item in self.drafts.items() if item[1] > now}
         require(len(self.drafts) < 128, "queue_full", 429)
-        require(body["adapter"] in {"astrbot", "nonebot"}, "invalid_input", 400)
+        require(body["adapter"] in {"astrbot", "nonebot", "onebot"}, "invalid_input", 400)
         require(type(body["allow_private_http"]) is bool, "invalid_input", 400)
         address = _url(body["address"], "home", body["allow_private_http"])
         require(address.startswith("https://") or body["allow_private_http"], "invalid_input", 400)

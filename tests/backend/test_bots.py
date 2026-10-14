@@ -334,6 +334,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         second = await bot.event(self.token, {**self.event("1002"), "event_id": "sdk:102"})
         self.assertEqual(second["state"], "accepted")
         self.assertEqual(self.platform.sources.dispatch.await_count, 2)
+
         self.assertEqual(
             bot.event_status(
                 self.token,
@@ -367,6 +368,58 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         )
         await bot.event(self.token, {**self.event(), "event_id": "sdk:unknown"})
         self.assertEqual(self.platform.sources.dispatch.await_count, 1)
+
+    async def test_structured_reply_and_mentions_reach_registered_source_without_changing_author(
+        self,
+    ):
+        self.platform.sources.dispatch = AsyncMock(
+            return_value={"outcomes": [{"actor_id": "actor:a", "state": "accepted"}]}
+        )
+        first = await self.platform.bots.event(self.token, self.event("1002"))
+        request = {
+            **self.event(),
+            "schema_version": 3,
+            "event_id": "sdk:102",
+            "nickname": None,
+            "group_card": None,
+            "message_context": {"reply_ids": ["sdk:101"], "mentioned_accounts": ["1002", "4242"]},
+        }
+        result = await self.platform.bots.event(self.token, request)
+        self.assertEqual(result["state"], "accepted")
+        sent = self.platform.sources.dispatch.call_args.args[1]["input"]
+        self.assertEqual(sent["author"]["immutable_account_id"], "1001")
+        self.assertEqual(
+            sent["reply_refs"],
+            [
+                dict(
+                    channel=sent["message_key"]["channel"],
+                    message_id=first["message_id"],
+                    revision=1,
+                )
+            ],
+        )
+        self.assertEqual(
+            sent["mentioned_accounts"],
+            [
+                dict(namespace="qq", immutable_account_id="1002"),
+                dict(namespace="qq", immutable_account_id="4242"),
+            ],
+        )
+        await self.platform.bots.event(self.token, request)
+        self.assertEqual(self.platform.sources.dispatch.await_count, 2)
+        with self.assertRaises(Fault):
+            await self.platform.bots.event(
+                self.token, {**request, "event_id": "sdk:103", "account_id": "1009"}
+            )
+        with self.assertRaises(Fault):
+            await self.platform.bots.event(
+                self.token,
+                {
+                    **request,
+                    "event_id": "sdk:104",
+                    "message_context": {"reply_ids": [], "mentioned_accounts": ["1002", "1002"]},
+                },
+            )
 
     async def test_reply_claim_ack_reconcile_restart_and_conflicts(self):
         bot = self.platform.bots

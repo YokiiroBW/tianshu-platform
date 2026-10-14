@@ -36,7 +36,7 @@ def validate_bot_settings(settings, auth, sources, contracts):
         require(
             isinstance(slot, dict)
             and set(slot) == {"adapter", "platform_id", "self_id", "input_entry_ids", "label"}
-            and slot["adapter"] in {"nonebot", "astrbot"}
+            and slot["adapter"] in {"nonebot", "astrbot", "onebot"}
             and isinstance(slot["platform_id"], str)
             and 1 <= len(slot["platform_id"]) <= 128
             and isinstance(slot["self_id"], str)
@@ -490,13 +490,16 @@ class Bots:
             "text",
         }
         require(
-            set(body) == base_fields | ({"nickname", "group_card"} if version == 2 else set()),
+            set(body)
+            == base_fields
+            | ({"nickname", "group_card"} if version in (2, 3) else set())
+            | ({"message_context"} if version == 3 else set()),
             "invalid_input",
             400,
         )
         require(
             type(body["schema_version"]) is int
-            and body["schema_version"] in (1, 2)
+            and body["schema_version"] in (1, 2, 3)
             and type(body["revision"]) is int
             and body["revision"] == 1,
             "invalid_input",
@@ -518,7 +521,7 @@ class Bots:
             "invalid_input",
             400,
         )
-        if version == 2:
+        if version in (2, 3):
             require(conversation[0] == "group" or body["group_card"] is None, "invalid_input", 400)
             for value in (body["nickname"], body["group_card"]):
                 require(
@@ -538,8 +541,14 @@ class Bots:
                     400,
                 )
             require(
-                body["nickname"] is not None or body["group_card"] is not None, "invalid_input", 400
+                version == 3 or body["nickname"] is not None or body["group_card"] is not None,
+                "invalid_input",
+                400,
             )
+        if version == 3:
+            from .bot_message_context import validate
+
+            validate(body["message_context"])
         require(
             isinstance(body["text"], str)
             and 1 <= len(body["text"].strip()) <= 8000
@@ -569,6 +578,14 @@ class Bots:
             "reply_refs": [],
             "mentioned_accounts": [],
         }
+        if version == 3:
+            from .bot_message_context import source_fields
+
+            data.update(
+                await self.p.local_work.run(
+                    source_fields, self._db, connection_id, channel, body["message_context"]
+                )
+            )
         result, state = [], "unknown"
         try:
             platform_header = self._platform_header()

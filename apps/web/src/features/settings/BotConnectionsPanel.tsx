@@ -2,12 +2,13 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useAuth } from "../../app/Auth";
 import { integrationPost, readFailure } from "../../app/integrationApi";
 import { StatusRail } from "../../components/StatusRail";
+import { adapterLabel, type AdapterKind } from "./botAdapterApi";
 import "./bots.css";
 
 type Slot = {
   slot_id: string;
   label: string;
-  adapter: "nonebot" | "astrbot";
+  adapter: AdapterKind;
   platform_id: string;
   self_id: string;
   namespace: "qq" | "tg";
@@ -19,7 +20,7 @@ type Slot = {
 type Connection = {
   connection_id: string;
   slot_id: string;
-  adapter: "nonebot" | "astrbot";
+  adapter: AdapterKind;
   actor_ids: string[];
   enabled: boolean;
   state: "online" | "pending" | "disabled" | "failed";
@@ -273,8 +274,7 @@ export function BotConnectionsPanel() {
                         .filter((item) => !item.created)
                         .map((item) => (
                           <option key={item.slot_id} value={item.slot_id}>
-                            {item.label} ·{" "}
-                            {item.adapter === "nonebot" ? "NoneBot" : "AstrBot"}
+                            {item.label} · {adapterLabel(item.adapter)}
                           </option>
                         ))}
                     </select>
@@ -325,10 +325,8 @@ export function BotConnectionsPanel() {
                         {selectedSlot?.label ?? connection.slot_id}
                       </strong>
                       <p>
-                        {connection.adapter === "nonebot"
-                          ? "NoneBot"
-                          : "AstrBot"}{" "}
-                        · {selectedSlot?.conversation_id} · 角色{" "}
+                        {adapterLabel(connection.adapter)} ·{" "}
+                        {selectedSlot?.conversation_id} · 角色{" "}
                         {connection.actor_ids.join("、")}
                       </p>
                       <small>

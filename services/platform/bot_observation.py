@@ -756,9 +756,11 @@ class BotObservation:
         require(
             type(event) is dict
             and type(event.get("schema_version")) is int
-            and event["schema_version"] in (2, 3)
+            and event["schema_version"] in (2, 3, 4)
             and set(event)
-            == base_fields | ({"nickname", "group_card"} if event["schema_version"] == 3 else set())
+            == base_fields
+            | ({"nickname", "group_card"} if event["schema_version"] >= 3 else set())
+            | ({"message_context"} if event["schema_version"] == 4 else set())
             and event.get("platform_id") == row["instance_id"]
             and event.get("self_id") == row["account_id"]
             and event.get("namespace") == "qq"
@@ -774,7 +776,7 @@ class BotObservation:
             502,
         )
         kind = conversation.split(":", 1)[0]
-        if event["schema_version"] == 3:
+        if event["schema_version"] >= 3:
             require(kind == "group" or event["group_card"] is None, "adapter_incompatible", 502)
             for name in (event["nickname"], event["group_card"]):
                 require(
@@ -793,6 +795,10 @@ class BotObservation:
                     "adapter_incompatible",
                     502,
                 )
+        if event["schema_version"] == 4:
+            from .bot_message_context import validate
+
+            validate(event["message_context"])
         with closing(self._db()) as db:
             version = db.execute(
                 "SELECT * FROM observation_versions WHERE observation_id=? AND revision=?",
@@ -1098,6 +1104,24 @@ class BotObservation:
             "sent_at": event["sent_at"],
             "text": event["text"],
         }
+        if event["schema_version"] >= 3:
+            body.update(
+                schema_version=2, nickname=event["nickname"], group_card=event["group_card"]
+            )
+            if body["nickname"] is None and body["group_card"] is None:
+                body = {
+                    key: value
+                    for key, value in body.items()
+                    if key not in {"nickname", "group_card"}
+                }
+                body["schema_version"] = 1
+        if event["schema_version"] == 4:
+            body.update(
+                schema_version=3,
+                nickname=event["nickname"],
+                group_card=event["group_card"],
+                message_context=event["message_context"],
+            )
         outcome = await self.p.bots.event("Bearer " + token, body)
         if outcome["state"] == "accepted":
             return True

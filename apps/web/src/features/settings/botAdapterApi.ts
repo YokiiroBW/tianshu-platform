@@ -1,6 +1,11 @@
 import { webFetch } from "../../app/sessionTransport";
 
-export type AdapterKind = "astrbot" | "nonebot";
+export type AdapterKind = "astrbot" | "nonebot" | "onebot";
+export function adapterLabel(kind: AdapterKind): string {
+  return { astrbot: "AstrBot", nonebot: "NoneBot", onebot: "OneBot / NapCat" }[
+    kind
+  ];
+}
 export type AdapterAccount = { id: string; platform: string; label: string };
 export type AdapterConnection = {
   id: string;
