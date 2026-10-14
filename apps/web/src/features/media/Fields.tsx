@@ -6,11 +6,13 @@ export function AccountField({
   value,
   onChange,
   disabled,
+  required = false,
 }: {
   accounts: Account[];
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  required?: boolean;
 }) {
   return (
     <label>
@@ -19,8 +21,11 @@ export function AccountField({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled}
+        required={required}
       >
-        <option value="">公开访问（未登录 B 站）</option>
+        <option value="">
+          {required ? "请选择有效 B 站账号" : "公开访问（未登录 B 站）"}
+        </option>
         {accounts
           .filter((account) => account.state !== "revoked")
           .map((account) => (

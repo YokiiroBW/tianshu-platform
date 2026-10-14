@@ -161,6 +161,9 @@ test("media subscriptions keep independent subdirectories under one target", asy
     await page.getByRole("button", { name: "下一步", exact: true }).click();
     await page.getByRole("button", { name: "下一步", exact: true }).click();
     await page.getByLabel("目标媒体库").selectOption("test-library");
+    await page
+      .getByRole("combobox", { name: "整理方式", exact: true })
+      .selectOption("custom");
     await expect(page.locator("#media-subdirectory-preview")).toHaveText(
       "整理路径预览：/media/Bilibili",
     );
@@ -289,6 +292,9 @@ test("media subdirectory errors keep the editor input for correction", async ({
   await page.getByRole("button", { name: "下一步", exact: true }).click();
   await page.getByRole("button", { name: "下一步", exact: true }).click();
   await page.getByLabel("目标媒体库").selectOption("test-library");
+  await page
+    .getByRole("combobox", { name: "整理方式", exact: true })
+    .selectOption("custom");
   for (const invalid of ["/绝对目录", "../越界目录"]) {
     await page.getByLabel("整理子目录（可选）").fill(invalid);
     await expect(page.getByLabel("整理子目录（可选）")).toHaveAttribute(
@@ -346,6 +352,9 @@ test("media AssetLibrary targets explain managed directories and retain input wh
   await page.getByRole("button", { name: "下一步", exact: true }).click();
   await page.getByRole("button", { name: "下一步", exact: true }).click();
   await page.getByLabel("目标媒体库").selectOption("test-library");
+  await page
+    .getByRole("combobox", { name: "整理方式", exact: true })
+    .selectOption("custom");
   await page.getByLabel("整理子目录（可选）").fill("收藏夹/学习");
   await page.getByRole("button", { name: "保存订阅", exact: true }).click();
   await expect(

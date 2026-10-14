@@ -18,8 +18,14 @@ export type Rules = {
   blacklist: Group[];
 };
 export type Source = {
-  kind: "favorite" | "collection" | "series" | "uploader";
+  kind: "favorite" | "collection" | "series" | "uploader" | "watch_later";
   id: string;
+};
+export type DestinationMode = "source" | "custom";
+export type DestinationPreview = {
+  destination_mode: DestinationMode;
+  destination_subdirectory: string;
+  destination_directory: string | null;
 };
 export type Account = {
   account_id: string;
@@ -33,6 +39,7 @@ export type Target = {
   kind?: "media_server" | "assetlibrary";
   revision?: number | null;
   directory?: string | null;
+  destination_subdirectory_supported?: boolean;
   target_id: string;
   label: string;
   state: string;
@@ -54,6 +61,8 @@ export type Subscription = {
   target_id: string;
   initial_sync: "future_only" | "history";
   destination_subdirectory?: string;
+  destination_mode?: DestinationMode;
+  destination_directory?: string | null;
   quality: Quality;
   rules: Rules;
   state: "active" | "paused" | "auth_required" | "rule_error";
@@ -129,7 +138,11 @@ export type MediaStorage = {
 };
 export type MediaView = {
   configured: boolean;
-  capabilities: { provider: string; source_kinds: string[] };
+  capabilities: {
+    provider: string;
+    source_kinds: string[];
+    destination_modes?: DestinationMode[];
+  };
   engine: { state: string; version: string | null; code: string };
   accounts: Account[];
   targets: Target[];

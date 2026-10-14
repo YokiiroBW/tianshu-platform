@@ -29,6 +29,11 @@ export function useMediaController() {
     active.current.get(slot)?.abort();
     active.current.delete(slot);
   }, []);
+  const clearError = useCallback((slot?: string) => {
+    if (slot && errorSlot.current !== slot) return;
+    setError("");
+    errorSlot.current = "";
+  }, []);
   const request = useCallback(
     async <T>(
       slot: string,
@@ -194,10 +199,7 @@ export function useMediaController() {
     refresh,
     cancel,
     setNotice,
-    clearError: () => {
-      setError("");
-      errorSlot.current = "";
-    },
+    clearError,
   };
 }
 export type MediaController = ReturnType<typeof useMediaController>;

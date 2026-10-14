@@ -45,6 +45,11 @@ export const sourceWords: Record<string, string> = {
   collection: "合集",
   series: "系列",
   uploader: "UP 主投稿",
+  watch_later: "稍后再看",
+};
+export const destinationModeWords = {
+  source: "按来源自动归类",
+  custom: "自定义目录",
 };
 export const reasonWords: Record<string, string> = {
   eligible: "符合规则，可以下载",
@@ -98,6 +103,8 @@ export const errorWords: Record<string, string> = {
   operator_not_authorized: "当前账号没有视频订阅管理权限。",
   auth_required: "B 站会话已失效，请在账号页重新登录。",
   account_not_found: "这个 B 站账号已不存在，请重新选择。",
+  subscription_account_immutable:
+    "此订阅跟随该账号的稍后再看，其他账号可新建订阅。",
   invalid_input: "请检查填写的链接、来源和规则。",
   invalid_url: "请输入支持的 B 站视频链接。",
   unsupported_source: "这个来源类型目前不可用。",

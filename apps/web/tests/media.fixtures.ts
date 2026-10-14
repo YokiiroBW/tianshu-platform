@@ -8,7 +8,46 @@ import {
   type Preview,
   type Subscription,
   type StorageBreakdown,
+  type Source,
+  type DestinationPreview,
 } from "../src/features/media/types";
+import {
+  destinationPath,
+  normalizeSubdirectory,
+} from "../src/features/media/destination";
+
+// Fixed owner responses; fixture source names intentionally do not come from the draft.
+export const fixtureSourceDirectories = {
+  uploader: "UP主/服务器确认的作者 [UID123456]",
+  favorite: "收藏夹/服务器确认的收藏 [FID123456]",
+  collection: "合集/服务器确认的合集 [合集123456-7890]",
+  series: "合集/服务器确认的系列 [系列123456-7890]",
+  watch_later: "稍后再看",
+};
+function fixtureDestination(
+  body: Record<string, unknown>,
+  view: MediaView,
+): DestinationPreview {
+  const mode = body.destination_mode === "custom" ? "custom" : "source";
+  const existing = view.subscriptions.find(
+    (item) => item.subscription_id === body.subscription_id,
+  );
+  const subdirectory =
+    mode === "source"
+      ? existing?.destination_mode === "source"
+        ? (existing.destination_subdirectory ?? "")
+        : fixtureSourceDirectories[(body.source as Source).kind]
+      : normalizeSubdirectory((body.destination_subdirectory as string) ?? "");
+  const target = view.targets.find((item) => item.target_id === body.target_id);
+  return {
+    destination_mode: mode,
+    destination_subdirectory: subdirectory,
+    destination_directory:
+      target?.kind === "assetlibrary"
+        ? null
+        : destinationPath(target?.directory, subdirectory),
+  };
+}
 
 export const fixtureBreakdown = (
   overrides: Partial<StorageBreakdown> = {},
@@ -86,7 +125,14 @@ export const fixtureView = (): MediaView => ({
   configured: true,
   capabilities: {
     provider: "bilibili",
-    source_kinds: ["favorite", "collection", "series", "uploader"],
+    source_kinds: [
+      "favorite",
+      "collection",
+      "series",
+      "uploader",
+      "watch_later",
+    ],
+    destination_modes: ["source", "custom"],
   },
   engine: { state: "ready", version: "synthetic", code: "" },
   accounts: [
@@ -104,6 +150,7 @@ export const fixtureView = (): MediaView => ({
       target_id: "test-library",
       label: "隔离网络视频库",
       directory: "/media/Bilibili",
+      destination_subdirectory_supported: true,
       state: "ready",
       servers: [
         {
@@ -174,6 +221,7 @@ export async function installMediaFixture(page: Page, initial = fixtureView()) {
     detailHandler: null as ((route: Route) => Promise<void>) | null,
     listHandler: null as ((route: Route) => Promise<void>) | null,
     deleteHandler: null as ((route: Route) => Promise<void>) | null,
+    destinationHandler: null as ((route: Route) => Promise<void>) | null,
   };
   await page.route("**/api/web/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -272,9 +320,17 @@ export async function installMediaFixture(page: Page, initial = fixtureView()) {
           },
         ],
       });
+    if (operation === "subscriptions/destination-preview")
+      return state.destinationHandler
+        ? state.destinationHandler(route)
+        : reply(fixtureDestination(body, state.view));
     if (operation === "subscriptions/save") {
       const subscription: Subscription = {
         ...(body as unknown as Subscription),
+        ...fixtureDestination(
+          { ...body, destination_mode: body.destination_mode ?? "custom" },
+          state.view,
+        ),
         subscription_id:
           (body.subscription_id as string) ||
           `subscription-${state.view.subscriptions.length}`,
