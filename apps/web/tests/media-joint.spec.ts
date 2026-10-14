@@ -7,7 +7,11 @@ import {
 } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { selectMediaSection, expectMediaSection } from "./media.fixtures";
-import type { MediaView } from "../src/features/media/types";
+import type {
+  DestinationPreview,
+  MediaView,
+  Subscription,
+} from "../src/features/media/types";
 
 const BV = "BV1xx411c7mD";
 const OTHER = "BV1Ab4y1z7Qs";
@@ -179,11 +183,15 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
     }
     await page.getByRole("button", { name: "下一步", exact: true }).click();
     await page.getByLabel("目标媒体库").selectOption("synthetic-network-video");
+    await page
+      .getByRole("combobox", { name: "整理方式", exact: true })
+      .selectOption("custom");
     if (localServer)
       await page
         .getByLabel("整理子目录（可选）")
         .fill(`joint/${info.project.name}/${kind}/${randomUUID().slice(0, 6)}`);
     await page.getByRole("button", { name: "保存订阅", exact: true }).click();
+    await page.getByLabel("查找订阅").fill(label);
     const card = page
       .locator("article.media-card")
       .filter({ has: page.getByRole("heading", { name: label, exact: true }) });
@@ -198,6 +206,7 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
   const favorite = page.locator("article.media-card").filter({
     has: page.getByRole("heading", { name: labels.favorite, exact: true }),
   });
+  await page.getByLabel("查找订阅").fill(labels.favorite);
   await favorite.getByRole("button", { name: "立即扫描", exact: true }).click();
   await expect(favorite).toContainText("完整 · 2 个成员");
   await expect(favorite).toContainText("1 个任务");
@@ -220,6 +229,155 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
+});
+
+test("actual source destination HTTP previews saves scans and preserves directories after rename", async ({
+  page,
+}, info) => {
+  test.skip(
+    !localServer,
+    "Source destinations require the isolated local media-server target.",
+  );
+  await login(page);
+  const account = `目录联验 ${info.project.name} ${randomUUID().slice(0, 6)}`;
+  await selectMediaSection(page, "账号与媒体库");
+  await page.getByLabel("账号显示名称").fill(account);
+  await page.getByText("使用本人会话恢复登录", { exact: true }).click();
+  await page
+    .getByLabel("本人 B 站 Cookie")
+    .fill("SESSDATA=synthetic-directory-joint-only; DedeUserID=946974");
+  await page
+    .getByRole("button", { name: "校验并导入会话", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: account, exact: true }),
+  ).toBeVisible();
+  await selectMediaSection(page, "视频订阅");
+  const sources = [
+    {
+      kind: "uploader",
+      category: "UP主",
+      url: "https://space.bilibili.com/946974/video",
+    },
+    {
+      kind: "favorite",
+      category: "收藏夹",
+      url: "https://space.bilibili.com/946974/favlist?fid=123",
+    },
+    {
+      kind: "collection",
+      category: "合集",
+      url: "https://space.bilibili.com/946974/lists/456?type=season",
+    },
+    { kind: "watch_later", category: "稍后再看", url: null },
+  ];
+  const originalPaths = new Set<string>();
+  for (const source of sources) {
+    const label = `${info.project.name} 来源目录 ${source.kind} ${randomUUID().slice(0, 6)}`;
+    await page.getByRole("button", { name: "新建订阅", exact: true }).click();
+    await page.getByLabel("订阅名称").fill(label);
+    await page.getByLabel("来源类型").selectOption(source.kind);
+    await page
+      .getByLabel("B 站账号")
+      .selectOption({ label: `${account} · 可用` });
+    if (source.url)
+      await page.getByLabel("来源链接或 ID", { exact: true }).fill(source.url);
+    else
+      await expect(
+        page.getByLabel("来源链接或 ID", { exact: true }),
+      ).toHaveCount(0);
+    await page.getByLabel("扫描间隔（分钟）").fill("60");
+    await page.getByRole("button", { name: "下一步", exact: true }).click();
+    await page.getByRole("button", { name: "下一步", exact: true }).click();
+    await expect(
+      page.getByRole("combobox", { name: "整理方式", exact: true }),
+    ).toHaveValue("source");
+    const previewing = page.waitForResponse((response) =>
+      response
+        .url()
+        .endsWith("/api/web/media/subscriptions/destination-preview"),
+    );
+    await page.getByLabel("目标媒体库").selectOption("synthetic-network-video");
+    const previewResponse = await previewing;
+    expect(previewResponse.ok()).toBe(true);
+    const preview = (await previewResponse.json()) as DestinationPreview;
+    expect(preview.destination_mode).toBe("source");
+    expect(preview.destination_subdirectory.split("/")[0]).toBe(
+      source.category,
+    );
+    expect(preview.destination_directory).toBeTruthy();
+    await expect(page.locator("#media-subdirectory-preview")).toHaveText(
+      `整理路径预览：${preview.destination_directory}`,
+    );
+    const saving = page.waitForResponse((response) =>
+      response.url().endsWith("/api/web/media/subscriptions/save"),
+    );
+    await page.getByRole("button", { name: "保存订阅", exact: true }).click();
+    const saveResponse = await saving;
+    expect(saveResponse.ok()).toBe(true);
+    const subscription = (await saveResponse.json())
+      .subscription as Subscription;
+    expect(subscription).toMatchObject(preview);
+    expect(subscription.source.kind).toBe(source.kind);
+    if (source.kind === "watch_later") {
+      expect(subscription.source.id).toBe("self");
+      expect(subscription.account_id).toBe("bilibili-946974");
+    }
+    originalPaths.add(subscription.destination_directory!);
+    await page.getByLabel("查找订阅").fill(label);
+    const card = page
+      .locator(".media-subscriptions > article")
+      .filter({ has: page.getByRole("heading", { name: label, exact: true }) });
+    await expect(card).toContainText(subscription.destination_directory!);
+    await card.getByRole("button", { name: "立即扫描", exact: true }).click();
+    await expect(card).toContainText("完整 · 1 个成员");
+    await card.getByRole("button", { name: "编辑", exact: true }).click();
+    const renamed = `${label} 已更名`;
+    await page.getByLabel("订阅名称").fill(renamed);
+    const renamedPreviewing = page.waitForResponse((response) =>
+      response
+        .url()
+        .endsWith("/api/web/media/subscriptions/destination-preview"),
+    );
+    await page.getByRole("button", { name: "下一步", exact: true }).click();
+    await page.getByRole("button", { name: "下一步", exact: true }).click();
+    const renamedPreviewResponse = await renamedPreviewing;
+    expect(renamedPreviewResponse.ok()).toBe(true);
+    expect(await renamedPreviewResponse.json()).toEqual(preview);
+    await expect(page.locator("#media-subdirectory-preview")).toHaveText(
+      `整理路径预览：${preview.destination_directory}`,
+    );
+    const renamedSaving = page.waitForResponse((response) =>
+      response.url().endsWith("/api/web/media/subscriptions/save"),
+    );
+    await page.getByRole("button", { name: "保存订阅", exact: true }).click();
+    const renamedSaveResponse = await renamedSaving;
+    expect(renamedSaveResponse.ok()).toBe(true);
+    const renamedSubscription = (await renamedSaveResponse.json())
+      .subscription as Subscription;
+    expect(renamedSubscription).toMatchObject({
+      ...preview,
+      subscription_id: subscription.subscription_id,
+      label: renamed,
+      baseline_ready: true,
+    });
+    await page.getByLabel("查找订阅").fill(renamed);
+    await expect(page.locator(".media-subscriptions > article")).toContainText(
+      preview.destination_directory!,
+    );
+  }
+  expect(originalPaths.size).toBe(4);
+  await page.getByLabel("查找订阅").fill(`${info.project.name} 来源目录`);
+  await expect(page.locator(".media-subscriptions > article")).toHaveCount(4);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: info.outputPath(`source-destination-http-${info.project.name}.png`),
+    fullPage: true,
+  });
 });
 
 test("actual media HTTP restores a waiting metadata job with an explicit override", async ({

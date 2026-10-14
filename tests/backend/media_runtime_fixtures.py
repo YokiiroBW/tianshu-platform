@@ -120,6 +120,11 @@ class Upstream:
                 "page": {"count": len(self.members)},
                 "list": {"vlist": [{"bvid": bvid} for bvid in self.members]},
             }
+        elif path == "/x/v2/history/toview":
+            data = {
+                "count": len(self.members),
+                "list": [{"bvid": bvid} for bvid in self.members],
+            }
         elif path in {"/x/polymer/web-space/seasons_archives_list", "/x/series/archives"}:
             data = {
                 "page": {"total": len(self.members)},
