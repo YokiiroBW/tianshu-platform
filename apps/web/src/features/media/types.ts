@@ -114,6 +114,7 @@ export type Job = {
   audio_quality?: import("./music/types").AudioQuality | null;
   audio_unlock?: import("./music/types").AudioUnlock | null;
   audio_attempts?: import("./music/types").AudioAttempt[];
+  audio_routing?: import("./music/types").AudioRouting | null;
   audio_receipt?: {
     files: { path: string; kind: string }[];
     warnings: string[];

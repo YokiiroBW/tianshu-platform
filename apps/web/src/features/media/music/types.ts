@@ -66,6 +66,20 @@ export type AudioAttempt = {
   code: string;
   unlock?: AudioUnlock | null;
 };
+export type AudioRouting = {
+  policy: "highest_available";
+  providers: {
+    provider: keyof typeof providerNames;
+    matches: number;
+    available_levels: string[];
+    failures: string[];
+  }[];
+  selected?: {
+    provider: keyof typeof providerNames;
+    quality: AudioQuality;
+    reused: boolean;
+  };
+};
 export type MusicSettings = {
   directory: string;
   layout: "artist_album" | "album_artist_album";

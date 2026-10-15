@@ -30,7 +30,7 @@ def record(path):
     return {"sha256": checksum.hexdigest(), "size_bytes": size}
 
 
-async def probe(path, track, engine):
+async def inspect_audio(path, engine):
     code, raw, _ = await run_process(
         [
             executable_path(engine["ffprobe"]),
@@ -69,9 +69,6 @@ async def probe(path, track, engine):
         }.get(codec)
         require(extension is not None, "music_format_unsupported", 409)
         duration = float(data["format"].get("duration", stream.get("duration", 0)))
-        expected = float(track.get("duration_ms") or 0) / 1000 if track is not None else duration
-        require(duration > 0 and expected > 0, "music_duration_unknown", 409)
-        require(abs(duration - expected) <= max(2, expected * 0.02), "music_preview_rejected", 409)
         observed = {
             "codec": codec,
             "extension": extension,
@@ -85,6 +82,15 @@ async def probe(path, track, engine):
         }
     except (ValueError, KeyError, TypeError):
         raise Fault("music_audio_invalid", 409) from None
+    return observed
+
+
+async def probe(path, track, engine):
+    observed = await inspect_audio(path, engine)
+    duration = observed["duration_seconds"]
+    expected = float(track.get("duration_ms") or 0) / 1000 if track is not None else duration
+    require(duration > 0 and expected > 0, "music_duration_unknown", 409)
+    require(abs(duration - expected) <= max(2, expected * 0.02), "music_preview_rejected", 409)
     code, decoded, errors = await run_process(
         [
             executable_path(engine["ffmpeg"]),

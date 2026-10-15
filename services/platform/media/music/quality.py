@@ -3,18 +3,12 @@
 from ...contracts import require
 
 LEVELS = {"standard": 0, "higher": 1, "exhigh": 2, "lossless": 3, "hires": 4}
-DEFAULT = {"level": "lossless", "allow_fallback": True}
+DEFAULT = {"level": "best", "allow_fallback": True}
 
 
 def requested_levels(requested):
-    highest = "hires" if requested["level"] == "best" else requested["level"]
-    if requested["level"] != "best" and not requested["allow_fallback"]:
-        return [highest]
-    return [
-        level
-        for level in reversed(LEVELS)
-        if requested.get("minimum_level", 0) <= LEVELS[level] <= LEVELS[highest]
-    ]
+    minimum = minimum_level(requested)
+    return [level for level in reversed(LEVELS) if minimum <= LEVELS[level]]
 
 
 def aggregate(policies):
@@ -26,11 +20,26 @@ def aggregate(policies):
     return {"level": highest["level"], "allow_fallback": True, "minimum_level": minimum}
 
 
-def satisfies(requested, artifact):
-    actual = LEVELS[artifact["quality"]["level"]]
+def minimum_level(requested):
     minimum = requested.get("minimum_level", 0)
     if not requested["allow_fallback"] and requested["level"] != "best":
         minimum = max(minimum, LEVELS[requested["level"]])
+    return minimum
+
+
+def quality_rank(quality):
+    lossless = quality.get("codec") in {"flac", "alac"}
+    return (
+        LEVELS[quality["level"]],
+        quality.get("bits_per_sample", 0) if lossless else 0,
+        quality.get("sample_rate", 0) if lossless else 0,
+        0 if lossless else quality.get("bit_rate", 0),
+    )
+
+
+def satisfies(requested, artifact):
+    actual = LEVELS[artifact["quality"]["level"]]
+    minimum = minimum_level(requested)
     if actual < minimum:
         return False
     desired = LEVELS.get(requested["level"], 4)
@@ -58,24 +67,23 @@ def policy(value=None):
 
 def verify_quality(requested, offered, observed):
     lossless = observed["codec"] in {"flac", "alac"}
-    if offered == "observed":
-        offered = (
-            (
-                "hires"
-                if observed["bits_per_sample"] > 16 or observed["sample_rate"] > 48000
-                else "lossless"
-            )
-            if lossless
-            else (
-                "exhigh"
-                if observed["bit_rate"] >= 280000
-                else "higher"
-                if observed["bit_rate"] >= 160000
-                else "standard"
-            )
+    actual = (
+        (
+            "hires"
+            if observed["bits_per_sample"] > 16 or observed["sample_rate"] > 48000
+            else "lossless"
         )
-    require(offered in LEVELS, "music_quality_unknown", 409)
-    require(LEVELS[offered] < 3 or lossless, "music_quality_mismatch", 409)
+        if lossless
+        else (
+            "exhigh"
+            if observed["bit_rate"] >= 280000
+            else "higher"
+            if observed["bit_rate"] >= 160000
+            else "standard"
+        )
+    )
+    require(offered == "observed" or offered in LEVELS, "music_quality_unknown", 409)
+    require(offered == "observed" or LEVELS[offered] < 3 or lossless, "music_quality_mismatch", 409)
     if offered == "hires":
         require(
             observed["bits_per_sample"] > 16 or observed["sample_rate"] > 48000,
@@ -83,11 +91,12 @@ def verify_quality(requested, offered, observed):
             409,
         )
     if requested["level"] != "best" and not requested["allow_fallback"]:
-        require(LEVELS[offered] >= LEVELS[requested["level"]], "music_quality_unavailable", 409)
-    require(LEVELS[offered] >= requested.get("minimum_level", 0), "music_quality_unavailable", 409)
+        require(LEVELS[actual] >= LEVELS[requested["level"]], "music_quality_unavailable", 409)
+    require(LEVELS[actual] >= requested.get("minimum_level", 0), "music_quality_unavailable", 409)
     return {
         **observed,
-        "level": offered,
+        "level": actual,
+        "offered_level": offered,
         "lossless": lossless,
-        "fallback": requested["level"] != "best" and LEVELS[offered] < LEVELS[requested["level"]],
+        "fallback": requested["level"] != "best" and LEVELS[actual] < LEVELS[requested["level"]],
     }

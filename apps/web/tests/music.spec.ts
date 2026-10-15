@@ -354,6 +354,42 @@ test("mixed download list renders audio evidence without video editing controls"
       warnings: ["music_lyrics_unavailable"],
     },
     audio_reused: true,
+    audio_routing: {
+      policy: "highest_available",
+      providers: [
+        {
+          provider: "kugou",
+          matches: 1,
+          available_levels: ["observed"],
+          failures: [],
+        },
+        {
+          provider: "netease",
+          matches: 1,
+          available_levels: ["lossless"],
+          failures: [],
+        },
+        {
+          provider: "qq",
+          matches: 1,
+          available_levels: ["standard"],
+          failures: [],
+        },
+      ],
+      selected: {
+        provider: "netease",
+        quality: {
+          level: "lossless",
+          codec: "flac",
+          sample_rate: 44100,
+          channels: 2,
+          bits_per_sample: 16,
+          bit_rate: 900000,
+          fallback: false,
+        },
+        reused: true,
+      },
+    },
     audio_unlock: {
       state: "decoded",
       format: "ncm",
@@ -396,6 +432,15 @@ test("mixed download list renders audio evidence without video editing controls"
   ).toBeVisible();
   await expect(
     detail.getByText("已自动解锁 · NCM", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail.getByText("聚合比较：已检查 3 个账号，优先最高可用音质。", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await detail.getByText("各平台查询结果", { exact: true }).click();
+  await expect(
+    detail.getByText("QQ 音乐：标准", { exact: true }),
   ).toBeVisible();
   await detail.getByText("其他来源的处理结果", { exact: true }).click();
   await expect(

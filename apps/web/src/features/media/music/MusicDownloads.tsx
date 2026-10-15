@@ -5,6 +5,7 @@ import {
   type AudioQuality,
   type AudioUnlock,
   type AudioAttempt,
+  type AudioRouting,
   type MusicPlaylist,
   type MusicQuality,
 } from "./types";
@@ -47,12 +48,12 @@ export function MusicDownloads({
   refresh: () => Promise<void>;
 }) {
   const [quality, setQuality] = useState<MusicQuality>(
-    playlist.quality ?? { level: "lossless", allow_fallback: true },
+    playlist.quality ?? { level: "best", allow_fallback: true },
   );
   const [automatic, setAutomatic] = useState(playlist.auto_download ?? false);
   const [exporting, setExporting] = useState(false);
   useEffect(() => {
-    setQuality(playlist.quality ?? { level: "lossless", allow_fallback: true });
+    setQuality(playlist.quality ?? { level: "best", allow_fallback: true });
     setAutomatic(playlist.auto_download ?? false);
   }, [playlist.revision]);
   const download = async () => {
@@ -74,7 +75,7 @@ export function MusicDownloads({
     <div className="media-stack music-downloads">
       <p className="muted">
         {playlist.auto_download ? "同步后自动下载新增歌曲" : "手动下载"} ·{" "}
-        {musicLevels[playlist.quality?.level ?? "lossless"]}
+        {musicLevels[playlist.quality?.level ?? "best"]}
       </p>
       <div className="music-actions">
         <button
@@ -170,7 +171,8 @@ export function MusicDownloads({
             同步后自动下载新增歌曲
           </label>
           <p className="muted">
-            自动检查已连接账号的下载权限，并对加密音源解锁、写标签和查重归档。解锁失败时会继续尝试其他可用来源，处理结果保存在任务中。暂停歌单同步后不再自动加入新歌曲，已排队任务可在下载任务中取消。
+            每次先搜索所有已登录平台，从 Hi-Res
+            开始检查可下载音质，统一比较后选择最高可用音源；所选期望音质不会限制更高音质。已有同等或更高音质文件直接复用，需要时自动解锁、写标签并归档。关闭降级时，低于期望音质的结果不会归档。
           </p>
           <button
             className="button"
@@ -188,9 +190,11 @@ export function MusicAudioReceipt({
   receipt,
   unlock,
   attempts,
+  routing,
 }: {
   unlock?: AudioUnlock | null;
   attempts?: AudioAttempt[];
+  routing?: AudioRouting | null;
   receipt:
     | {
         files: { path: string; kind: string }[];
@@ -203,6 +207,41 @@ export function MusicAudioReceipt({
   return (
     <section className="media-stack">
       <h4>音乐归档</h4>
+      {routing && (
+        <div className="media-stack">
+          <p>
+            聚合比较：已检查 {routing.providers.length}{" "}
+            个账号，优先最高可用音质。
+          </p>
+          {routing.selected && (
+            <p>
+              {routing.selected.reused
+                ? "复用已有文件"
+                : `选择 ${providerNames[routing.selected.provider]}`}{" "}
+              · {audioQualityText(routing.selected.quality)}
+            </p>
+          )}
+          <details>
+            <summary>各平台查询结果</summary>
+            {routing.providers.map((provider, index) => (
+              <p key={index}>
+                {providerNames[provider.provider]}：
+                {provider.available_levels.length
+                  ? provider.available_levels
+                      .map((level) => musicLevels[level] ?? "待核验音质")
+                      .join("、")
+                  : provider.matches === 0
+                    ? "未找到可确认的同版本歌曲"
+                    : "未取得可用音源"}
+                {provider.failures
+                  .filter((code) => code !== "music_download_forbidden")
+                  .map((code) => ` · ${word(code)}`)
+                  .join("")}
+              </p>
+            ))}
+          </details>
+        </div>
+      )}
       {(unlock || receipt?.unlock) && (
         <p>{unlockText(unlock || receipt?.unlock)}</p>
       )}

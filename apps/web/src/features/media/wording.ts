@@ -62,6 +62,7 @@ export const reasonWords: Record<string, string> = {
   music_match_unavailable: "其他已连接平台尚未找到可确认的同版本歌曲。",
   music_match_ambiguous: "找到多个版本，暂未自动替换；可检查歌名、专辑和时长。",
   music_unlocking: "正在自动解锁音频，完成后校验、写标签并归档。",
+  music_comparing: "正在聚合查询各平台并比较最高可用音质。",
   music_decode_failed:
     "解锁未成功，可能是文件不完整或加密版本无法识别。原件已保留。",
   music_decode_key_required:

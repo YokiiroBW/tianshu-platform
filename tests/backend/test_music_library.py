@@ -107,7 +107,7 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         result = await self.run_job()
         self.assertEqual(result["state"], "completed", result.get("code"))
         self.assertTrue(result["audio_reused"])
-        self.assertEqual(self.api.download_calls, 0)
+        self.assertEqual(self.audio_transfers, 0)
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual(self.file(result), path)
         path.rename(self.library_root / "改名原件.flac")
@@ -139,7 +139,7 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.queue()
         downloaded = await self.run_job()
         self.assertTrue(downloaded["audio_reused"])
-        self.assertEqual(self.api.download_calls, 0)
+        self.assertEqual(self.audio_transfers, 0)
         self.assertEqual(self.file(imported), self.file(downloaded))
         self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
 
@@ -278,7 +278,7 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         reused = await self.run_job()
         self.assertEqual(reused["state"], "completed", reused.get("code"))
         self.assertTrue(reused["audio_reused"])
-        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.audio_transfers, 1)
         self.assertEqual(self.file(reused).read_bytes(), original)
         self.assertTrue(self.library.catalog.file(reused["recording_id"])["content_id"])
 
@@ -368,7 +368,7 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         def busy(*args):
             raise Fault("busy", 409)
 
-        with patch.object(self.music.downloads.storage, "reuse", busy):
+        with patch.object(self.music.downloads.storage, "publish", busy):
             await self.media.worker.run(job, "fixture")
         result = self.repo.job(job["job_id"])
         self.assertEqual(result["state"], "retry_wait")

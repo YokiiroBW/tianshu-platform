@@ -11,6 +11,7 @@ from .audio import cover, probe, record, write_tags
 from .decoding import Decoder
 from .quality import verify_quality, satisfies
 from .resolver import Resolver
+from .selection import Selection
 from .storage import AudioStorage
 from .transfer import Transfer
 
@@ -42,43 +43,13 @@ class Downloads:
         self.storage, self.transfer = AudioStorage(music), Transfer()
         self.decoder = Decoder(self.media, self.storage)
         self.resolver = Resolver(music)
+        self.selection = Selection(self)
         self.publication_lock = asyncio.Lock()
 
     async def exclusive(self, operation, *args):
         # Cooperate within this worker pool; the filesystem lock still coordinates processes.
         async with self.publication_lock:
             return await settled(self.media.local, operation, *args)
-
-    async def package(self, job, update):
-        failure = None
-        attempts = []
-        for candidate in await self.resolver.offers(job):
-            try:
-                account = candidate["account"]
-                await update(
-                    acquisition_account_id=account["account_id"],
-                    acquisition_account_revision=account["revision"],
-                    audio_unlock=None,
-                    state="downloading",
-                    stage="downloading",
-                    code="downloading",
-                )
-                return await self.acquire(job, candidate, update)
-            except Fault as error:
-                if error.code in {"job_cancelled", "lease_conflict", "scope_changed"}:
-                    raise
-                failure = error
-                current = await self.media.local(self.media.repo.job, job["job_id"])
-                attempts.append(
-                    {
-                        "provider": candidate["provider"],
-                        "source_id": candidate["track"]["source_id"],
-                        "code": error.code,
-                        "unlock": current.get("audio_unlock"),
-                    }
-                )
-                await update(audio_attempts=attempts)
-        raise failure or Fault("music_download_forbidden", 409)
 
     async def acquire(self, job, candidate, update):
         provider, cookie = candidate["provider"], candidate["cookie"]
@@ -298,35 +269,53 @@ class Downloads:
             )
             await self.music.imports.ensure_indexed(job, update)
             await self.storage.refresh_file(job)
-            reused = await self.exclusive(self.storage.reuse, job, owner)
-            if reused:
-                job = reused
+            intent = await local(repo.get, "music_publication", identity)
+            receipt = job.get("audio_receipt") or {}
+
+            def signatures(files):
+                return sorted((f["path"], f["sha256"], f["size_bytes"]) for f in files)
+
+            unsettled = intent and (
+                intent["state"] == "prepared"
+                or signatures(intent["files"]) != signatures(receipt.get("files", []))
+            )
+            if (
+                unsettled
+                and intent["state"] != "retired"
+                and satisfies(job["quality"], intent)
+                and await local(self.storage.matches, intent)
+            ):
+                job = await self.exclusive(self.storage.publish, job, owner)
             else:
-                intent = await local(repo.get, "music_publication", identity)
-                if (
-                    intent
-                    and intent["state"] != "retired"
-                    and satisfies(job["quality"], intent)
-                    and await local(self.storage.matches, intent)
-                ):
-                    job = await self.exclusive(self.storage.publish, job, owner)
+                existing = await local(self.storage.available, job)
+                prepared = job.get("audio_package")
+                if not await local(self.package_present, prepared):
+                    prepared = None
+                package, reused = await self.selection.choose(job, update, existing, prepared)
+                if reused:
+                    completed = await self.exclusive(self.storage.reuse, job, owner, reused)
+                    require(completed is not None, "music_staging_changed", 409)
+                    job = completed
                 else:
-                    if not await local(
-                        self.package_present, job.get("audio_package")
-                    ) or not satisfies(job["quality"], job["audio_package"]):
-                        # Keep the old intent as history and retain any surviving files.
-                        # A rebuilt package gets a fresh collision-safe destination.
-                        if intent:
-                            await local(self.storage.retire, job)
-                        package = await self.package(job, update)
-                        await update(
-                            audio_package=package,
-                            actual_quality=package["quality"]["level"],
-                            audio_quality=package["quality"],
-                            download_provider=package["download_provider"],
-                            download_source_id=package["download_source_id"],
-                        )
-                    await update(state="publishing", stage="publishing", code="publishing")
+                    resume = (
+                        intent
+                        and package is prepared
+                        and intent["state"] == "prepared"
+                        and await local(self.storage.matches, intent, True)
+                    )
+                    if intent and not resume:
+                        await local(self.storage.retire, job)
+                    await update(
+                        audio_package=package,
+                        actual_quality=package["quality"]["level"],
+                        audio_quality=package["quality"],
+                        download_provider=package["download_provider"],
+                        download_source_id=package["download_source_id"],
+                        audio_unlock=package.get("unlock"),
+                        state="publishing",
+                        stage="publishing",
+                        code="publishing",
+                    )
                     job = await self.exclusive(self.storage.publish, job, owner)
             try:
                 await self.exclusive(self.storage.cleanup, job)

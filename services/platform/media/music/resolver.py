@@ -32,17 +32,21 @@ class Resolver:
             )
         return binding
 
-    async def offers(self, job):
+    async def offers(self, job, *, report=None):
         local, library = self.music.media.local, self.music.library
         accounts = [
             a for a in await local(self.repo.list, "music_account") if a["state"] == "ready"
         ]
+        report = report if report is not None else {}
+        report.update(policy="highest_available", providers=[], candidates=[])
         require(accounts, "music_auth_required", 409)
         offers, failures = [], []
         original = {**job["track"], "provider": job.get("provider", "netease")}
         for account in accounts:
             provider = account["provider"]
             client = self.music.client(provider)
+            checked = {"provider": provider, "matches": 0, "available_levels": [], "failures": []}
+            report["providers"].append(checked)
             try:
                 account, cookie = await local(library.account, account["account_id"])
                 if provider == original["provider"]:
@@ -61,6 +65,7 @@ class Resolver:
                         require(len(candidates) <= 1, "music_match_ambiguous", 409)
                     for track in candidates:
                         await local(self.bind, provider, track, job["recording_id"])
+                checked["matches"] = len(candidates)
                 for track in candidates:
                     for level in requested_levels(job["quality"]):
                         try:
@@ -78,10 +83,12 @@ class Resolver:
                                     "offered": offered,
                                 }
                             )
+                            checked["available_levels"].append(offered["level"])
                             # One provider's best available offer is enough; actual audio is checked below.
                             break
                         except Fault as error:
                             failures.append(error.code)
+                            checked["failures"].append(error.code)
                             if error.code not in {
                                 "music_download_forbidden",
                                 "music_preview_rejected",
@@ -89,9 +96,9 @@ class Resolver:
                             }:
                                 break
             except (Fault, TimeoutError) as error:
-                failures.append(
-                    error.code if isinstance(error, Fault) else "music_upstream_unavailable"
-                )
+                code = error.code if isinstance(error, Fault) else "music_upstream_unavailable"
+                failures.append(code)
+                checked["failures"].append(code)
         offers.sort(key=lambda item: LEVELS.get(item["offered"]["level"], -1), reverse=True)
         if not offers:
             if failures and all(

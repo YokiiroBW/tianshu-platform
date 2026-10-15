@@ -26,7 +26,7 @@ from services.platform.media.music.audio import number, record
 from services.platform.media.music.downloads import settled
 from services.platform.media.music.runtime import Music
 from services.platform.media.music.storage import component, stem
-from services.platform.media.music.transfer import Transfer, cdn_url
+from services.platform.media.music.transfer import Transfer, cdn_url, media_url
 from services.platform.media.repository import Repository
 from services.platform.media.worker import Worker
 
@@ -95,12 +95,15 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.library_root.mkdir()
         self.repo = Repository(self.root / "media.sqlite")
         self.received = []
+        self.audio_transfers = 0
         self.file_bytes = self.audio["flac"]
         self.level = "lossless"
         self.offered_md5 = None
 
         async def serve(request):
             self.received.append(dict(request.headers))
+            if request.path == "/file" and "Range" not in request.headers:
+                self.audio_transfers += 1
             return web.Response(body=self.image if request.path == "/cover" else self.file_bytes)
 
         app = web.Application()
@@ -259,7 +262,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         second = await self.run_job()
         self.assertEqual(second["job_id"], job["job_id"])
         self.assertTrue(second["audio_reused"])
-        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.audio_transfers, 1)
         self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
         detail = self.library.detail(playlist["playlist_id"], 0)
         self.assertEqual([t["source_id"] for t in detail["tracks"]], ["qqmid101", "qqmid101"])
@@ -276,7 +279,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         second = await self.run_job()
         self.assertEqual(second["state"], "completed", second.get("code"))
         self.assertTrue(second["audio_reused"])
-        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.audio_transfers, 1)
         self.assertEqual(self.file(second).read_bytes(), edited)
 
     async def test_local_file_reused_after_source_account_revoked(self):
@@ -294,7 +297,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         second = await self.run_job()
         self.assertEqual(second["state"], "completed", second.get("code"))
         self.assertEqual(self.file(first), self.file(second))
-        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.audio_transfers, 1)
 
     async def test_real_flac_tags_sidecars_ordered_export_and_cleanup(self):
         result = self.queue()
@@ -337,6 +340,16 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
                 value = self.value([str(201 + index)])
                 value["playlist"]["source_id"] = str(901 + index)
                 playlist = self.subscribe(value)
+                with self.repo.transaction() as db:
+                    playlist = self.library.downloads(
+                        {
+                            "playlist_id": playlist["playlist_id"],
+                            "expected_revision": playlist["revision"],
+                            "auto_download": False,
+                            "quality": {"level": "lossless", "allow_fallback": True},
+                        },
+                        db,
+                    )["playlist"]
                 self.file_bytes, self.level = self.audio[extension], "exhigh"
                 self.queue(playlist)
                 job = await self.run_job()
@@ -394,15 +407,25 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
 
         async def download(identity, level, cookie):
             levels.append(level)
-            if level == "lossless":
+            if level in {"hires", "lossless"}:
                 raise Fault("music_download_forbidden", 409)
             return await original(identity, level, cookie)
 
         self.api.download = download
+        with self.repo.transaction() as db:
+            self.playlist = self.library.downloads(
+                {
+                    "playlist_id": self.playlist["playlist_id"],
+                    "expected_revision": self.playlist["revision"],
+                    "auto_download": False,
+                    "quality": {"level": "lossless", "allow_fallback": True},
+                },
+                db,
+            )["playlist"]
         self.queue()
         job = await self.run_job()
         self.assertEqual(job["state"], "completed", job)
-        self.assertEqual(levels, ["lossless", "exhigh"])
+        self.assertEqual(levels, ["hires", "lossless", "exhigh"])
         self.assertTrue(job["audio_quality"]["fallback"])
 
     async def test_false_lossless_claim_and_preview_rejected(self):
@@ -423,7 +446,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["code"], "music_download_incomplete")
         self.assertFalse(list(self.library_root.rglob("*.flac")))
 
-    async def test_reuse_across_playlists_and_manual_retry_no_network(self):
+    async def test_reuse_across_playlists_rechecks_offers_without_full_download(self):
         self.queue()
         job = await self.run_job()
         before = record(self.file(job))
@@ -434,7 +457,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.repo.jobs()[0]), 1)
         job = await self.run_job()
         self.assertTrue(job["audio_reused"])
-        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.audio_transfers, 1)
         self.assertEqual(record(self.file(job)), before)
         detail = self.library.detail(playlist["playlist_id"], 0)
         self.assertEqual(detail["tracks"][0]["audio_state"], "completed")
@@ -463,7 +486,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.queue()
         job = await self.run_job()
         self.assertEqual(job["state"], "completed", job)
-        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.audio_transfers, 1)
         self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
 
     async def test_partial_publication_recovers_without_duplicate_audio(self):
@@ -485,7 +508,8 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.queue()
         job = await self.run_job()
         self.assertEqual(job["state"], "completed", job)
-        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.audio_transfers, 1)
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
 
     async def test_tampered_or_missing_published_file_gets_new_copy_without_overwrite(self):
         self.queue()
@@ -497,7 +521,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["state"], "completed", job)
         self.assertNotEqual(original, self.file(job))
         self.assertEqual(original.read_bytes(), b"externally-changed")
-        self.assertEqual(self.api.download_calls, 2)
+        self.assertEqual(self.audio_transfers, 2)
 
     async def test_auto_sync_only_adds_new_jobs_and_preserves_audio_facts(self):
         with self.repo.transaction() as db:
@@ -537,7 +561,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
             )
         job = await self.run_job()
         self.assertEqual(job["code"], "scope_changed")
-        self.assertEqual(self.api.download_calls, 0)
+        self.assertEqual(self.audio_transfers, 0)
 
     async def test_revoked_account_blocks_pending_download(self):
         self.queue()
@@ -551,7 +575,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
             )
         job = await self.run_job()
         self.assertEqual(job["state"], "auth_required")
-        self.assertEqual(self.api.download_calls, 0)
+        self.assertEqual(self.audio_transfers, 0)
 
     async def test_optional_lyrics_failure_is_explicit_and_does_not_lose_audio(self):
         async def failed(*args):
@@ -573,7 +597,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         second = await self.run_job()
         self.assertNotEqual(first["job_id"], second["job_id"])
         self.assertTrue(second["audio_reused"])
-        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.audio_transfers, 1)
 
     async def test_mixed_queue_claims_do_not_use_fake_bvid(self):
         self.queue()
@@ -643,7 +667,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.queue()
         final = await self.run_job()
         self.assertEqual(final["state"], "completed", final)
-        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.audio_transfers, 1)
 
     def test_portable_names_and_only_netease_cdn(self):
         self.assertEqual(component("CON"), "_CON")
@@ -659,3 +683,20 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(value=value), self.assertRaises(Fault):
                 cdn_url(value)
+
+    def test_qq_official_aqqmusic_cdn_is_https_and_domain_scoped(self):
+        self.assertEqual(
+            media_url("http://aqqmusic.tc.qq.com/fixture.flac?key=synthetic", "qq"),
+            "https://aqqmusic.tc.qq.com/fixture.flac?key=synthetic",
+        )
+        for value in (
+            "https://aqqmusic.tc.qq.com.evil.example/fixture",
+            "https://notaqqmusic.tc.qq.com/fixture",
+            "https://u:p@aqqmusic.tc.qq.com/fixture",
+            "https://aqqmusic.tc.qq.com:8443/fixture",
+            "file://aqqmusic.tc.qq.com/fixture",
+        ):
+            with self.subTest(value=value), self.assertRaises(Fault):
+                media_url(value, "qq")
+        with self.assertRaises(Fault):
+            media_url("https://aqqmusic.tc.qq.com/fixture", "kugou")

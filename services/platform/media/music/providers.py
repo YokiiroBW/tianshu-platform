@@ -51,6 +51,14 @@ def track(row, provider):
             "album_id",
             "album_audio_id",
             "mixsongid",
+            "sq_hash",
+            "hq_hash",
+            "res_hash",
+            "file_hash",
+            "ogg_320_hash",
+            "ogg_128_hash",
+            "audio_id",
+            "privilege",
         }
         and isinstance(value, (str, int))
     }
@@ -81,6 +89,10 @@ def track(row, provider):
 
 
 def bridge_song(value, provider):
+    extra = dict(value.get("provider_data", {}))
+    if provider == "kugou" and extra.get("res_hash"):
+        # The upstream adapter tries hash first, then SQ/HQ fallbacks.
+        extra["hash"] = extra["res_hash"]
     return {
         "id": value["source_id"],
         "source": provider,
@@ -89,7 +101,7 @@ def bridge_song(value, provider):
         "album": value.get("album", ""),
         "album_id": value.get("album_id") or "",
         "duration": int((value.get("duration_ms") or 0) / 1000),
-        "extra": value.get("provider_data", {}),
+        "extra": extra,
     }
 
 

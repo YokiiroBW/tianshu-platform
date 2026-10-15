@@ -11,7 +11,7 @@ from ..identity import looks_like_windows_device_name
 from ..organizer import library_lock
 from ..video_storage import copy_file, sync_directory, sync_file
 from .audio import record, probe
-from .quality import satisfies
+from .quality import satisfies, quality_rank
 
 
 def component(value, fallback="未知", maximum=100):
@@ -49,6 +49,8 @@ class AudioStorage:
 
     def stage(self, job, name):
         root = Path(self.media.config["staging_directory"])
+        if "candidate_index" in job:
+            name = f"candidate-{job['candidate_index']}/{name}"
         relative = f".music/{job['job_id']}/{job['generation']}/{name}"
         path = safe_path(root, relative)
         with self.repo.transaction() as db:
@@ -118,18 +120,19 @@ class AudioStorage:
         except (Fault, OSError, StopIteration):
             return
 
-    def matches(self, artifact):
+    def matches(self, artifact, allow_missing=False):
         root = Path(artifact["directory"])
         try:
             return bool(artifact["files"]) and all(
-                record(safe_path(root, item["path"]))
+                (allow_missing and not safe_path(root, item["path"]).exists())
+                or record(safe_path(root, item["path"]))
                 == {k: item[k] for k in ("sha256", "size_bytes")}
                 for item in artifact["files"]
             )
         except (OSError, Fault):
             return False
 
-    def reusable(self, job):
+    def available(self, job):
         self.check_scope(job)
         artifact = self.music.library.catalog.file(job["recording_id"])
         if not artifact:
@@ -138,10 +141,13 @@ class AudioStorage:
             artifact
             and artifact["directory"] == job["destination_directory"]
             and self.matches(artifact)
-            and satisfies(job["quality"], artifact)
         ):
             return artifact
         return None
+
+    def reusable(self, job):
+        artifact = self.available(job)
+        return artifact if artifact and satisfies(job["quality"], artifact) else None
 
     def finish_job(self, job, owner, artifact, *, reused=False):
         # Files have crossed the publication point. A late cancel cannot undo that fact.
@@ -197,10 +203,16 @@ class AudioStorage:
                 db=db,
             )
 
-    def reuse(self, job, owner):
+    def reuse(self, job, owner, compared=None):
         self.guard(job, owner)
         with library_lock(job["destination_directory"]):
-            artifact = self.reusable(job)
+            artifact = self.available(job) if compared else self.reusable(job)
+            if (
+                compared
+                and artifact
+                and quality_rank(artifact["quality"]) < quality_rank(compared["quality"])
+            ):
+                return None
             if artifact:
                 self.guard(job, owner)
                 return self.finish_job(job, owner, artifact, reused=True)
@@ -212,14 +224,18 @@ class AudioStorage:
         with library_lock(job["destination_directory"]) as (root, control):
             catalog = self.music.library.catalog
             existing = self.reusable(job)
-            if existing:
+            if existing and quality_rank(existing["quality"]) >= quality_rank(package["quality"]):
                 return self.finish_job(job, owner, existing, reused=True)
             duplicate = (
                 catalog.content_file(package.get("content_id"), str(root))
                 if package.get("content_id")
                 else None
             )
-            if duplicate and self.matches(duplicate) and satisfies(job["quality"], duplicate):
+            if (
+                duplicate
+                and self.matches(duplicate)
+                and quality_rank(duplicate["quality"]) >= quality_rank(package["quality"])
+            ):
                 with self.repo.transaction() as db:
                     catalog.merge(job["recording_id"], duplicate["recording_id"], db)
                 return self.finish_job(job, owner, duplicate, reused=True)

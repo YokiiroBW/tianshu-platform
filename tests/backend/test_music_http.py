@@ -117,6 +117,46 @@ class MusicHttpTests(unittest.IsolatedAsyncioTestCase):
             await self.media.worker.run(claimed, "http-fixture")
         detail = await self.post("jobs/detail", {"job_id": job["job_id"]})
         self.assertEqual(detail["job"]["code"], "music_download_forbidden")
+        unlock = {"state": "key_required", "format": "mflac"}
+        attempts = [
+            {
+                "provider": "qq",
+                "source_id": "synthetic",
+                "code": "music_decode_key_required",
+                "unlock": unlock,
+            }
+        ]
+        routing = {
+            "policy": "highest_available",
+            "providers": [
+                {"provider": "qq", "matches": 1, "available_levels": ["lossless"], "failures": []},
+                {
+                    "provider": "netease",
+                    "matches": 1,
+                    "available_levels": ["hires"],
+                    "failures": [],
+                },
+            ],
+            "candidates": [],
+        }
+        self.media.repo.update_job(
+            job["job_id"],
+            {
+                "audio_unlock": unlock,
+                "audio_attempts": attempts,
+                "audio_routing": routing,
+                "code": "music_decode_key_required",
+            },
+        )
+        detail = await self.post("jobs/detail", {"job_id": job["job_id"]})
+        self.assertEqual(detail["job"]["audio_unlock"], unlock)
+        self.assertEqual(detail["job"]["audio_attempts"], attempts)
+        self.assertEqual(detail["job"]["audio_routing"], routing)
+        listed = await self.post("jobs/list", {"states": None, "cursor": None, "page_size": 10})
+        projected = next(row for row in listed["jobs"] if row["job_id"] == job["job_id"])
+        self.assertEqual(projected["audio_unlock"], unlock)
+        self.assertEqual(projected["audio_attempts"], attempts)
+        self.assertEqual(projected["audio_routing"], routing)
         async with self.client.post(
             self.url + "/api/web/tasks/detail",
             json={"task_id": "media:" + job["job_id"]},
