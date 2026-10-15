@@ -112,9 +112,12 @@ export type Job = {
   provider?: string;
   source_id?: string;
   audio_quality?: import("./music/types").AudioQuality | null;
+  audio_unlock?: import("./music/types").AudioUnlock | null;
+  audio_attempts?: import("./music/types").AudioAttempt[];
   audio_receipt?: {
     files: { path: string; kind: string }[];
     warnings: string[];
+    unlock?: import("./music/types").AudioUnlock | null;
   } | null;
   audio_reused?: boolean;
   job_id: string;

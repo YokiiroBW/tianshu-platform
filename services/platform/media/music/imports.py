@@ -10,27 +10,10 @@ from ...contracts import Fault, digest, require
 from ..destination import safe_path
 from ..organizer import library_lock
 from ..video_storage import copy_file
-from . import tools
-from .audio import cover, probe, record
+from .audio import probe, record
+from .decoding import ENCRYPTED, PLAIN, encrypted_format
 from .downloads import settled
 from .quality import verify_quality
-
-PLAIN = {".flac", ".mp3", ".m4a"}
-ENCRYPTED = {
-    ".ncm",
-    ".qmc0",
-    ".qmc3",
-    ".qmcflac",
-    ".qmcogg",
-    ".mflac",
-    ".mflac0",
-    ".mgg",
-    ".mgg0",
-    ".kgm",
-    ".kgma",
-    ".vpr",
-    ".kgg",
-}
 
 
 def stamp(path):
@@ -231,7 +214,10 @@ class Imports:
                 continue
             result = {**item, "directory": str(root), "checked_at": self.repo.clock()}
             try:
-                if Path(item["path"]).suffix.lower() in ENCRYPTED:
+                if Path(item["path"]).suffix.lower() in ENCRYPTED or (
+                    item["path"].startswith(".incoming/")
+                    and await local(encrypted_format, safe_path(root, item["path"]))
+                ):
                     queued = await local(self.enqueue, item=item)
                     result.update(**queued)
                     counts["queued"] += 1
@@ -324,19 +310,14 @@ class Imports:
             "music_file_too_large",
             409,
         )
-        raw = await local(storage.stage, job, "decoded.part")
-        picture = await local(storage.stage, job, "decoded.cover")
         staged = await local(storage.stage, job, "original" + source.suffix.lower())
-        for path in (raw, picture, staged):
-            await local(path.unlink, missing_ok=True)
+        await local(staged.unlink, missing_ok=True)
         await settled(local, copy_file, source, staged)
         require(
             await local(record, source) == await local(record, staged), "music_source_changed", 409
         )
-        data = await tools.invoke(
-            "musicdecode",
-            {"input": str(staged), "output": str(raw), "cover": str(picture)},
-            timeout=600,
+        raw, data, unlock, artwork, warnings = await downloads.decoder.prepare(
+            job, staged, update, hints=(source.name,)
         )
         observed = await probe(raw, None, self.media.config["engine"])
         track = await local(metadata, raw, observed["content_id"], source.stem)
@@ -357,12 +338,19 @@ class Imports:
                 return self.catalog.register("local", track, db)
 
         binding = await local(bind)
-        job = await update(recording_id=binding["recording_id"], track=track)
+        quality = verify_quality(job["quality"], "observed", observed)
+        # An imported original has one observed quality, not a provider's untried "best".
+        # Reuse an identical existing recording without demanding a hypothetical upgrade.
+        job = await update(
+            recording_id=binding["recording_id"],
+            track=track,
+            quality={"level": quality["level"], "allow_fallback": False},
+        )
         reused = await downloads.exclusive(storage.reuse, job, owner)
         if not reused:
-            artwork = await local(lambda: cover(picture.read_bytes())) if picture.exists() else None
-            quality = verify_quality(job["quality"], "observed", observed)
-            package = await downloads.prepare_package(job, track, raw, observed, quality, artwork)
+            package = await downloads.prepare_package(
+                job, track, raw, observed, quality, artwork, warnings=warnings, unlock=unlock
+            )
             job = await update(
                 audio_package=package, state="publishing", stage="publishing", code="publishing"
             )

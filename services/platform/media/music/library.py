@@ -321,6 +321,9 @@ class MusicLibrary:
                         if job
                         else None,
                         "audio_quality": artifact.get("quality") if artifact else None,
+                        "audio_unlock": (artifact or {}).get("unlock")
+                        if state == "completed"
+                        else (job or {}).get("audio_unlock"),
                         "download_provider": artifact.get("download_provider")
                         if artifact
                         else None,

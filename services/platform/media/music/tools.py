@@ -58,6 +58,8 @@ async def invoke(name, request, *, timeout=120):
                 "music_upstream_invalid",
                 "music_upstream_unavailable",
                 "music_decode_failed",
+                "music_decode_key_required",
+                "music_decode_unsupported",
                 "invalid_input",
             }
             raise Fault(code if code in allowed else "music_tool_failed", 409)

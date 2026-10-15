@@ -16,6 +16,7 @@ export const stateWords: Record<string, string> = {
   queued: "等待下载",
   downloading: "正在下载",
   validating: "校验成品",
+  decoding: "自动解锁音频",
   metadata_ready: "元数据已就绪",
   metadata: "检查元数据",
   publishing: "正在发布",
@@ -60,8 +61,12 @@ export const reasonWords: Record<string, string> = {
     "天枢没有读取此文件的权限，原文件已保留；修复目录权限后重新扫描。",
   music_match_unavailable: "其他已连接平台尚未找到可确认的同版本歌曲。",
   music_match_ambiguous: "找到多个版本，暂未自动替换；可检查歌名、专辑和时长。",
+  music_unlocking: "正在自动解锁音频，完成后校验、写标签并归档。",
   music_decode_failed:
-    "无法解码此原件：格式不受支持、文件不完整或缺少客户端密钥。原件已保留。",
+    "解锁未成功，可能是文件不完整或加密版本无法识别。原件已保留。",
+  music_decode_key_required:
+    "此加密版本需要官方客户端的文件密钥，当前无法解锁。原件已保留。",
+  music_decode_unsupported: "当前解锁工具尚不支持此加密版本。原件已保留。",
   music_tool_unavailable: "音乐工具不可用，请检查服务安装。",
   music_tool_failed: "音乐工具暂时未能完成请求。",
   music_download_forbidden:

@@ -1,5 +1,6 @@
 """Probe/decode originals and write portable tags on private staging copies only."""
 
+import base64
 import hashlib
 import io
 import json
@@ -9,6 +10,8 @@ import mutagen
 from mutagen.flac import FLAC, Picture
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
+from mutagen.oggopus import OggOpus
+from mutagen.oggvorbis import OggVorbis
 from mutagen.id3 import APIC, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TXXX, USLT
 from PIL import Image, UnidentifiedImageError
 
@@ -56,7 +59,14 @@ async def probe(path, track, engine):
         )
         stream = audio[0]
         codec = stream["codec_name"]
-        extension = {"flac": "flac", "mp3": "mp3", "aac": "m4a", "alac": "m4a"}.get(codec)
+        extension = {
+            "flac": "flac",
+            "mp3": "mp3",
+            "aac": "m4a",
+            "alac": "m4a",
+            "vorbis": "ogg",
+            "opus": "opus",
+        }.get(codec)
         require(extension is not None, "music_format_unsupported", 409)
         duration = float(data["format"].get("duration", stream.get("duration", 0)))
         expected = float(track.get("duration_ms") or 0) / 1000 if track is not None else duration
@@ -145,10 +155,12 @@ def write_tags(path, track, artwork, lyrics):
     }.get(provider, "") + track["source_id"]
     try:
         audio = mutagen.File(path)
-        require(isinstance(audio, (FLAC, MP3, MP4)), "music_format_unsupported", 409)
+        require(
+            isinstance(audio, (FLAC, MP3, MP4, OggVorbis, OggOpus)), "music_format_unsupported", 409
+        )
         if audio.tags is None:
             audio.add_tags()
-        if isinstance(audio, FLAC):
+        if isinstance(audio, (FLAC, OggVorbis, OggOpus)):
             values = {
                 "title": [title],
                 "artist": artists,
@@ -167,8 +179,13 @@ def write_tags(path, track, artwork, lyrics):
             if artwork:
                 picture = Picture()
                 picture.type, picture.mime, picture.data = 3, "image/jpeg", artwork
-                audio.clear_pictures()
-                audio.add_picture(picture)
+                if isinstance(audio, FLAC):
+                    audio.clear_pictures()
+                    audio.add_picture(picture)
+                else:
+                    audio["metadata_block_picture"] = [
+                        base64.b64encode(picture.write()).decode("ascii")
+                    ]
         elif isinstance(audio, MP3):
             for key in ("TIT2", "TPE1", "TALB", "TPE2", "TDRC", "TRCK", "TPOS", "USLT", "APIC"):
                 audio.tags.delall(key)

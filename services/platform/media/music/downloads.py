@@ -1,4 +1,4 @@
-"""NetEase audio worker. Queue, leases, cancellation and retry remain owned by Media."""
+"""Music acquisition worker. Queue, leases, cancellation and retry remain owned by Media."""
 
 import asyncio
 import json
@@ -8,6 +8,7 @@ from ...contracts import Fault, require
 from ..destination import safe_path
 from ..video_storage import sync_file
 from .audio import cover, probe, record, write_tags
+from .decoding import Decoder
 from .quality import verify_quality, satisfies
 from .resolver import Resolver
 from .storage import AudioStorage
@@ -39,6 +40,7 @@ class Downloads:
     def __init__(self, music):
         self.music, self.media = music, music.media
         self.storage, self.transfer = AudioStorage(music), Transfer()
+        self.decoder = Decoder(self.media, self.storage)
         self.resolver = Resolver(music)
         self.publication_lock = asyncio.Lock()
 
@@ -49,18 +51,33 @@ class Downloads:
 
     async def package(self, job, update):
         failure = None
+        attempts = []
         for candidate in await self.resolver.offers(job):
             try:
                 account = candidate["account"]
                 await update(
                     acquisition_account_id=account["account_id"],
                     acquisition_account_revision=account["revision"],
+                    audio_unlock=None,
+                    state="downloading",
+                    stage="downloading",
+                    code="downloading",
                 )
                 return await self.acquire(job, candidate, update)
             except Fault as error:
                 if error.code in {"job_cancelled", "lease_conflict", "scope_changed"}:
                     raise
                 failure = error
+                current = await self.media.local(self.media.repo.job, job["job_id"])
+                attempts.append(
+                    {
+                        "provider": candidate["provider"],
+                        "source_id": candidate["track"]["source_id"],
+                        "code": error.code,
+                        "unlock": current.get("audio_unlock"),
+                    }
+                )
+                await update(audio_attempts=attempts)
         raise failure or Fault("music_download_forbidden", 409)
 
     async def acquire(self, job, candidate, update):
@@ -80,7 +97,7 @@ class Downloads:
         raw.unlink(
             missing_ok=True
         )  # Generation-owned scratch only; retries start a fresh transfer.
-        await self.transfer.fetch(
+        transferred = await self.transfer.fetch(
             offered["url"],
             raw,
             maximum=maximum,
@@ -90,9 +107,21 @@ class Downloads:
             provider=provider,
         )
         await update(state="validating", stage="validating", code="validating")
+        raw, _, unlock, artwork, warnings = await self.decoder.prepare(
+            job,
+            raw,
+            update,
+            provider=provider,
+            hints=(
+                offered.get("format"),
+                offered["url"],
+                (transferred or {}).get("filename"),
+                (transferred or {}).get("path"),
+            ),
+        )
         observed = await probe(raw, track, self.media.config["engine"])
         quality = verify_quality(job["quality"], offered["level"], observed)
-        warnings, artwork, lyrics = [], None, {}
+        lyrics = {}
         if track.get("album_id") and hasattr(connector, "album"):
             try:
                 track.update(await connector.album(track["album_id"], cookie))
@@ -121,11 +150,21 @@ class Downloads:
             except Fault:
                 warnings.append("music_cover_unavailable")
         return await self.prepare_package(
-            job, track, raw, observed, quality, artwork, lyrics, warnings
+            job, track, raw, observed, quality, artwork, lyrics, warnings, unlock=unlock
         )
 
     async def prepare_package(
-        self, job, track, raw, observed, quality, artwork=None, lyrics=None, warnings=None
+        self,
+        job,
+        track,
+        raw,
+        observed,
+        quality,
+        artwork=None,
+        lyrics=None,
+        warnings=None,
+        *,
+        unlock=None,
     ):
         local = self.media.local
         provider = track.get("provider", "local")
@@ -163,6 +202,7 @@ class Downloads:
                 "metadata": track,
                 "quality": quality,
                 "warnings": warnings,
+                "unlock": unlock,
             },
             ensure_ascii=False,
             indent=2,
@@ -190,6 +230,7 @@ class Downloads:
             "requested_quality": job["quality"],
             "quality": quality,
             "warnings": warnings,
+            "unlock": unlock,
             "files": [
                 {
                     "staging": path.relative_to(self.media.config["staging_directory"]).as_posix(),
@@ -252,6 +293,8 @@ class Downloads:
                 processing_request_version=request_version,
                 acquisition_account_id=None,
                 acquisition_account_revision=None,
+                audio_unlock=None,
+                audio_attempts=[],
             )
             await self.music.imports.ensure_indexed(job, update)
             await self.storage.refresh_file(job)

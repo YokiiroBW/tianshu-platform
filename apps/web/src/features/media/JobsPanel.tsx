@@ -577,7 +577,11 @@ export function JobsPanel({ media }: { media: MediaController }) {
                   </dl>
                   {detail.job.media_kind === "audio" ? (
                     <>
-                      <MusicAudioReceipt receipt={detail.job.audio_receipt} />
+                      <MusicAudioReceipt
+                        receipt={detail.job.audio_receipt}
+                        unlock={detail.job.audio_unlock}
+                        attempts={detail.job.audio_attempts}
+                      />
                       {detail.job.audio_reused && (
                         <p className="muted">已校验并复用现有音频文件。</p>
                       )}

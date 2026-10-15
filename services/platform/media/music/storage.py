@@ -188,6 +188,7 @@ class AudioStorage:
                     "progress": 1,
                     "actual_quality": artifact["quality"]["level"],
                     "audio_quality": artifact["quality"],
+                    "audio_unlock": job.get("audio_unlock") or artifact.get("unlock"),
                     "download_provider": artifact.get("download_provider"),
                     "download_source_id": artifact.get("download_source_id"),
                     "cancel_requested": False,
@@ -261,6 +262,7 @@ class AudioStorage:
                                 "requested_quality",
                                 "download_provider",
                                 "download_source_id",
+                                "unlock",
                             )
                         },
                         "managed": True,
@@ -307,6 +309,7 @@ class AudioStorage:
                         "requested_quality",
                         "download_provider",
                         "download_source_id",
+                        "unlock",
                     )
                 }
             )

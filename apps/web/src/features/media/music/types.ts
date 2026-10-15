@@ -47,6 +47,25 @@ export type AudioQuality = {
   bit_rate: number;
   fallback: boolean;
 };
+export type AudioUnlock = {
+  state:
+    | "not_needed"
+    | "decoding"
+    | "decoded"
+    | "key_required"
+    | "unsupported"
+    | "interrupted"
+    | "failed";
+  format?: string;
+  tool?: string;
+  version?: string;
+};
+export type AudioAttempt = {
+  provider: keyof typeof providerNames;
+  source_id: string;
+  code: string;
+  unlock?: AudioUnlock | null;
+};
 export type MusicSettings = {
   directory: string;
   layout: "artist_album" | "album_artist_album";
@@ -85,6 +104,7 @@ export type PlaylistDetail = {
     audio_state: string;
     audio_code?: string;
     audio_quality?: AudioQuality | null;
+    audio_unlock?: AudioUnlock | null;
     download_provider?: keyof typeof providerNames | null;
     download_source_id?: string | null;
     file?: string | null;

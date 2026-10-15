@@ -4,7 +4,7 @@ import type { MediaController } from "../useMediaController";
 import { timestamp, word } from "../wording";
 import { MusicAccounts } from "./MusicAccounts";
 import { MusicStorage } from "./MusicStorage";
-import { audioQualityText, MusicDownloads } from "./MusicDownloads";
+import { audioQualityText, MusicDownloads, unlockText } from "./MusicDownloads";
 import type {
   MusicPlaylist,
   MusicView,
@@ -385,6 +385,11 @@ export function MusicPanel({ media }: { media: MediaController }) {
                         </p>
                       )}
                       {track.file && <p className="music-file">{track.file}</p>}
+                      {track.audio_unlock && (
+                        <p className="muted">
+                          {unlockText(track.audio_unlock)}
+                        </p>
+                      )}
                       {track.download_provider && (
                         <p className="muted">
                           文件来源：{providerNames[track.download_provider]}

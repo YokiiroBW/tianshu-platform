@@ -14,10 +14,21 @@ are included, and the wrapper's HTTP transport denies network requests.
 Build: `go build -trimpath -mod=readonly -o tianshu-musicdecode .` using Go 1.27.2.
 Version request: `{"operation":"version"}`. Decode request contains absolute
 `input`, new `output`, and optional new `cover` paths, all prepared by Platform.
-It never deletes the original. Platform verifies the actual audio stream before
-tagging and publishing. Unsupported/corrupt/missing-key inputs remain failed.
+It never deletes the original. Platform's shared automatic acquisition/import
+pipeline detects encrypted headers or source filename hints, supplies a private
+staging copy with the correct suffix, and verifies the entire actual audio stream
+before tagging and publishing. Ordinary audio bypasses the decoder.
+
+Missing-key QMC STag/MusicEx and KGM v5 return `music_decode_key_required`;
+unknown KGM versions return `music_decode_unsupported`. Invalid inputs return
+`music_decode_failed`. The wrapper bounds NCM frames and validates KGM v3
+audio offsets before invoking upstream code. No missing vault or KGG key is
+invented. A failed download candidate may fall back to another entitled source.
 
 The Docker build packages corresponding helper source and vendored dependencies.
 Python integration tests generate synthetic NCM from a sine wave and exercise
 the real executable, tags, shared recording identity, reuse and corrupt-input
-retention. This is not verification against the user's encrypted music files.
+retention. QMC synthetic OGG exercises real decoding and portable Vorbis tags;
+Opus bypass retains the original codec. Go checks QMC byte preservation and
+external-key/version error classification. This is not verification against the
+user's encrypted music files.

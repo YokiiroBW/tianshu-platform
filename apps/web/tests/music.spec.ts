@@ -354,6 +354,20 @@ test("mixed download list renders audio evidence without video editing controls"
       warnings: ["music_lyrics_unavailable"],
     },
     audio_reused: true,
+    audio_unlock: {
+      state: "decoded",
+      format: "ncm",
+      tool: "unlock-music/cli",
+      version: "v0.2.12",
+    },
+    audio_attempts: [
+      {
+        provider: "kugou",
+        source_id: "synthetic",
+        code: "music_decode_key_required",
+        unlock: { state: "key_required", format: "kgm" },
+      },
+    ],
   });
   // Real audio API documents have no BVID or selected CIDs.
   Object.assign(audio, { bvid: null, selected_cids: null, cid: null });
@@ -379,6 +393,13 @@ test("mixed download list renders audio evidence without video editing controls"
   });
   await expect(
     detail.getByRole("heading", { name: "音乐归档", exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail.getByText("已自动解锁 · NCM", { exact: true }),
+  ).toBeVisible();
+  await detail.getByText("其他来源的处理结果", { exact: true }).click();
+  await expect(
+    detail.getByText(/酷狗音乐：此加密版本需要官方客户端的文件密钥/),
   ).toBeVisible();
   await expect(
     detail.getByText("合成艺术家/合成专辑/合成歌曲.flac", { exact: true }),

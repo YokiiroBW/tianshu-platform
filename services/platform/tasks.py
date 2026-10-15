@@ -324,6 +324,8 @@ class Tasks:
                 },
             }
             if document.get("media_kind") == "audio":
+                if document["state"] == "validating" and document.get("stage") == "decoding":
+                    stage = "decoding"
                 built["request"] = {
                     "job_id": document["job_id"],
                     "provider": document.get("provider", "netease"),
@@ -337,6 +339,7 @@ class Tasks:
                     "downloaded": document.get("actual_quality") is not None,
                     "audio_archived": document.get("audio_receipt") is not None,
                     "audio_quality": document.get("audio_quality"),
+                    "audio_unlock": document.get("audio_unlock"),
                 }
         else:
             status, stage = MODEL_STATUS[record["state"]]

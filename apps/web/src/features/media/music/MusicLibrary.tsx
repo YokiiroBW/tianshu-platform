@@ -1,8 +1,8 @@
 import { useState } from "react";
 import type { MediaController } from "../useMediaController";
 import { timestamp, word } from "../wording";
-import { providerNames, type AudioQuality } from "./types";
-import { audioQualityText } from "./MusicDownloads";
+import { providerNames, type AudioQuality, type AudioUnlock } from "./types";
+import { audioQualityText, unlockText } from "./MusicDownloads";
 
 type Catalog = {
   offset: number;
@@ -14,6 +14,7 @@ type Catalog = {
     file: {
       download_provider?: keyof typeof providerNames;
       quality: AudioQuality;
+      unlock?: AudioUnlock | null;
       files: { kind: string; path: string }[];
     } | null;
   }[];
@@ -51,9 +52,10 @@ export function MusicLibrary({
       <div>
         <h3>统一音乐曲库</h3>
         <p className="muted">
-          已有 FLAC、MP3、M4A 原位登记，保留原文件。把 NCM、QMC、KGM
+          已有 FLAC、MP3、M4A、OGG、Opus
+          原位登记，保留原文件。下载遇到加密音源时自动解锁。也可把 NCM、QMC、KGM
           原件放入音乐目录的 .incoming
-          文件夹后，会自动尝试解码并归档；原件保留，需要客户端密钥的版本会显示失败原因。
+          文件夹，定时扫描后自动解锁、写标签并查重归档，也可点击下方立即扫描。原件保留，需要客户端密钥的版本会明确提示。
         </p>
       </div>
       <p className="muted">
@@ -129,6 +131,11 @@ export function MusicLibrary({
                             }{" "}
                             · {audioQualityText(item.file.quality)}
                           </p>
+                          {item.file.unlock && (
+                            <p className="muted">
+                              {unlockText(item.file.unlock)}
+                            </p>
+                          )}
                           <p className="music-file">
                             {
                               item.file.files.find(

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -28,6 +29,43 @@ type request struct {
 	Operation string `json:"operation"`
 }
 type offline struct{}
+
+var errKeyRequired = errors.New("client key required")
+var errUnsupported = errors.New("unsupported encryption version")
+
+func validateEnvelope(f *os.File, extension string, size int64) error {
+	if extension == ".ncm" {
+		return validateNCM(f, size)
+	}
+	if extension == ".kgm" || extension == ".kgma" || extension == ".kgg" || extension == ".vpr" {
+		header := make([]byte, 60)
+		if _, err := io.ReadFull(f, header); err != nil {
+			return err
+		}
+		switch binary.LittleEndian.Uint32(header[20:24]) {
+		case 5:
+			return errKeyRequired // This build has no client KGG database.
+		case 3:
+			offset := int64(binary.LittleEndian.Uint32(header[16:20]))
+			if offset < 60 || offset >= size {
+				return errors.New("invalid kgm audio offset")
+			}
+		default:
+			return errUnsupported
+		}
+	} else if size >= 8 {
+		_, _ = f.Seek(-8, io.SeekEnd)
+		tail := make([]byte, 8)
+		if _, err := io.ReadFull(f, tail); err != nil {
+			return err
+		}
+		if string(tail[4:]) == "STag" || string(tail) == "musicex\x00" {
+			return errKeyRequired
+		}
+	}
+	_, err := f.Seek(0, io.SeekStart)
+	return err
+}
 
 func (offline) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("offline decoder")
@@ -78,15 +116,18 @@ func decode(r request) (map[string]any, error) {
 	if err != nil || !stat.Mode().IsRegular() || stat.Size() > 1<<30 {
 		return nil, errors.New("invalid input")
 	}
-	if filepath.Ext(r.Input) == ".ncm" {
-		if err := validateNCM(f, stat.Size()); err != nil {
-			return nil, err
-		}
+	extension := strings.ToLower(filepath.Ext(r.Input))
+	if err := validateEnvelope(f, extension, stat.Size()); err != nil {
+		return nil, err
 	}
 	var dec common.Decoder
-	for _, factory := range common.GetDecoder(r.Input, true) {
+	factories := common.GetDecoder(r.Input, true)
+	if len(factories) == 0 {
+		return nil, errUnsupported
+	}
+	for _, factory := range factories {
 		_, _ = f.Seek(0, io.SeekStart)
-		candidate := factory.Create(&common.DecoderParams{Reader: f, Extension: filepath.Ext(r.Input), FilePath: r.Input, Logger: zap.NewNop()})
+		candidate := factory.Create(&common.DecoderParams{Reader: f, Extension: extension, FilePath: r.Input, Logger: zap.NewNop()})
 		if candidate.Validate() == nil {
 			dec = candidate
 			break
@@ -167,6 +208,11 @@ func main() {
 	if err != nil {
 		output["ok"] = false
 		output["code"] = "music_decode_failed"
+		if errors.Is(err, errKeyRequired) {
+			output["code"] = "music_decode_key_required"
+		} else if errors.Is(err, errUnsupported) {
+			output["code"] = "music_decode_unsupported"
+		}
 		return
 	}
 	output["ok"] = true

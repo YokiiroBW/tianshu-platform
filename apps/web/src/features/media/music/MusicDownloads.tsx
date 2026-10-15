@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import type { MediaController } from "../useMediaController";
-import type { AudioQuality, MusicPlaylist, MusicQuality } from "./types";
+import {
+  providerNames,
+  type AudioQuality,
+  type AudioUnlock,
+  type AudioAttempt,
+  type MusicPlaylist,
+  type MusicQuality,
+} from "./types";
 import { word } from "../wording";
 
 export const musicLevels: Record<string, string> = {
@@ -14,6 +21,19 @@ export const musicLevels: Record<string, string> = {
 export function audioQualityText(quality?: AudioQuality | null) {
   if (!quality) return "尚未核验";
   return `${musicLevels[quality.level] ?? quality.level} · ${quality.codec.toUpperCase()} · ${quality.sample_rate / 1000} kHz${quality.bits_per_sample ? ` / ${quality.bits_per_sample} bit` : ""}${quality.fallback ? "（已降级）" : ""}`;
+}
+export function unlockText(unlock?: AudioUnlock | null) {
+  if (!unlock) return "";
+  const labels = {
+    not_needed: "普通音频，无需解锁",
+    decoding: "正在自动解锁",
+    decoded: "已自动解锁",
+    key_required: "解锁需要客户端密钥",
+    unsupported: "暂不支持此加密版本",
+    interrupted: "解锁已中断",
+    failed: "解锁失败",
+  };
+  return `${labels[unlock.state]}${unlock.format ? ` · ${unlock.format.toUpperCase()}` : ""}`;
 }
 export function MusicDownloads({
   media,
@@ -150,7 +170,7 @@ export function MusicDownloads({
             同步后自动下载新增歌曲
           </label>
           <p className="muted">
-            按账号可下载的完整音源保存；实际音质与降级结果会显示在任务中。暂停歌单同步后不再自动加入新歌曲，已排队任务可在下载任务中取消。
+            自动检查已连接账号的下载权限，并对加密音源解锁、写标签和查重归档。解锁失败时会继续尝试其他可用来源，处理结果保存在任务中。暂停歌单同步后不再自动加入新歌曲，已排队任务可在下载任务中取消。
           </p>
           <button
             className="button"
@@ -166,15 +186,36 @@ export function MusicDownloads({
 
 export function MusicAudioReceipt({
   receipt,
+  unlock,
+  attempts,
 }: {
+  unlock?: AudioUnlock | null;
+  attempts?: AudioAttempt[];
   receipt:
-    | { files: { path: string; kind: string }[]; warnings: string[] }
+    | {
+        files: { path: string; kind: string }[];
+        warnings: string[];
+        unlock?: AudioUnlock | null;
+      }
     | null
     | undefined;
 }) {
   return (
     <section className="media-stack">
       <h4>音乐归档</h4>
+      {(unlock || receipt?.unlock) && (
+        <p>{unlockText(unlock || receipt?.unlock)}</p>
+      )}
+      {!!attempts?.length && (
+        <details>
+          <summary>其他来源的处理结果</summary>
+          {attempts.map((attempt, index) => (
+            <p key={index}>
+              {providerNames[attempt.provider]}：{word(attempt.code)}
+            </p>
+          ))}
+        </details>
+      )}
       {receipt ? (
         <>
           {receipt.files.map((file) => (

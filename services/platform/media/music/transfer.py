@@ -114,7 +114,11 @@ class Transfer:
                             "music_download_incomplete",
                             502,
                         )
-                        return
+                        disposition = response.content_disposition
+                        return {
+                            "filename": disposition.filename if disposition else None,
+                            "path": response.url.path,
+                        }
                 raise Fault("music_download_url_invalid", 502)
             except (aiohttp.ClientError, TimeoutError):
                 raise Fault("music_download_unavailable", 502) from None
