@@ -87,6 +87,7 @@ export type MusicSettings = {
   revision: number;
 };
 export type MusicView = {
+  navidrome?: NavidromeView;
   imports?: {
     state: string;
     checked_at?: number;
@@ -105,6 +106,41 @@ export type MusicView = {
   accounts: MusicAccount[];
   playlists: MusicPlaylist[];
   settings: MusicSettings;
+};
+export type NavidromeConnection = {
+  revision: number;
+  connection_id: string;
+  base_url: string;
+  username: string;
+  enabled: boolean;
+  music_folder_id: string;
+  music_directory: string;
+  local_directory: string;
+  version: string;
+  can_scan: boolean;
+  folders: { id: string; name: string }[];
+  checked_at: number;
+};
+export type NavidromePlaylist = {
+  link_id: string;
+  playlist_id: string;
+  revision: number;
+  name: string;
+  name_observed?: string;
+  remote_id: string | null;
+  public: boolean;
+  auto_sync: boolean;
+  status: string;
+  code: string;
+  total: number;
+  synced_count: number;
+  checked_at?: number;
+  problem_count: number;
+  problems: { position: number; title: string; code: string }[];
+};
+export type NavidromeView = {
+  connection: NavidromeConnection | null;
+  playlists: NavidromePlaylist[];
 };
 export type PlaylistDetail = {
   playlist: MusicPlaylist;

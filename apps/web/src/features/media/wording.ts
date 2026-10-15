@@ -191,6 +191,23 @@ export const errorWords: Record<string, string> = {
   music_subscription_paused: "此歌单已暂停，请先恢复同步。",
   music_directory_absolute: "请填写音乐目录的完整路径。",
   music_directory_unavailable: "音乐目录暂不可访问，请检查目录路径。",
+  navidrome_auth_required: "Navidrome 登录未通过，请检查用户名和密码。",
+  navidrome_not_configured: "请先保存并启用 Navidrome 连接。",
+  navidrome_unavailable: "Navidrome 暂时无法连接，稍后会重新检查。",
+  navidrome_invalid_response: "Navidrome 返回的数据不完整，已保留同步记录。",
+  navidrome_server_required: "此地址未识别为 Navidrome 服务。",
+  navidrome_folder_missing: "音乐库已变化，请重新测试连接并选择音乐库。",
+  navidrome_mapping_changed: "天枢音乐目录已变化，请更新 Navidrome 目录映射。",
+  navidrome_forbidden: "Navidrome 账号没有执行此操作的权限。",
+  navidrome_not_found: "Navidrome 中这份歌单已不存在，可以重新创建。",
+  navidrome_playlist_conflict: "无法唯一确认这份 Navidrome 歌单的归属。",
+  navidrome_readonly_playlist: "Navidrome 将这份歌单标为只读，无法更新。",
+  navidrome_catalog_incomplete: "Navidrome 曲库未读取完整，已保留原歌单。",
+  navidrome_creation_unverified:
+    "创建结果尚未确认，正在查找原请求创建的歌单，避免重复创建。",
+  navidrome_sync_unverified: "同步后读回的歌单与预期不一致，尚未标记成功。",
+  navidrome_scanning: "Navidrome 正在扫描音乐库，完成后自动补齐。",
+  navidrome_request_failed: "Navidrome 未能完成请求，请检查服务状态。",
 };
 export function timestamp(seconds: number | null | undefined) {
   if (seconds == null || !Number.isFinite(seconds)) return "尚无记录";

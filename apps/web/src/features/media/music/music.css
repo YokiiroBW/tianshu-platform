@@ -103,3 +103,10 @@
 .music-downloads details form {
   padding-top: 1rem;
 }
+.navidrome-form {
+  padding-top: 1rem;
+}
+.navidrome-playlist {
+  padding: 0.75rem 0 1rem;
+  overflow-wrap: anywhere;
+}

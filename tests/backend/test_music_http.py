@@ -14,6 +14,97 @@ class MusicHttpTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = existing.MediaRuntimeTests.asyncSetUp
     post = existing.MediaRuntimeTests.post
 
+    async def test_navidrome_connection_playlist_receipts_and_auth(self):
+        from test_music_navidrome import SyntheticNavidrome
+
+        server = SyntheticNavidrome()
+        await server.start()
+        self.addAsyncCleanup(server.close)
+        account = await self.login_music()
+        await self.post(
+            "music/settings/save",
+            {
+                "directory": self.temp.name,
+                "layout": "artist_album",
+                "expected_revision": 0,
+                "client_id": str(uuid.uuid4()),
+            },
+        )
+        playlist = (
+            await self.post(
+                "music/playlists/subscribe",
+                {
+                    "account_id": account["account_id"],
+                    "source_id": "900",
+                    "interval_seconds": 3600,
+                    "expected_revision": 0,
+                    "client_id": str(uuid.uuid4()),
+                },
+            )
+        )["playlist"]
+        connection = {"base_url": server.url, "username": "synthetic", "password": server.password}
+        checked = await self.post("music/navidrome/test", connection)
+        self.assertEqual(checked["folders"][0]["id"], "1")
+        command = {
+            **connection,
+            "music_folder_id": "1",
+            "music_directory": "/music/音乐存档",
+            "expected_revision": 0,
+            "client_id": str(uuid.uuid4()),
+        }
+        saved = await self.post("music/navidrome/save", command)
+        calls = len(server.calls)
+        self.assertTrue((await self.post("music/navidrome/save", command))["replayed"])
+        self.assertEqual(len(server.calls), calls)
+        self.assertNotIn(server.password, json.dumps(saved))
+        link_command = {
+            "playlist_id": playlist["playlist_id"],
+            "name": "我的本地歌单",
+            "public": False,
+            "auto_sync": True,
+            "expected_revision": 0,
+            "client_id": str(uuid.uuid4()),
+        }
+        linked = (await self.post("music/navidrome/playlists/save", link_command))["playlist"]
+        self.assertTrue(
+            (await self.post("music/navidrome/playlists/save", link_command))["replayed"]
+        )
+        await self.media.music.navidrome.tick()
+        view = (await self.post("music/view", {}))["navidrome"]
+        self.assertEqual(view["playlists"][0]["status"], "partial")
+        self.assertEqual(len(server.playlists), 1)
+        await self.post(
+            "music/navidrome/playlists/control",
+            {
+                "link_id": linked["link_id"],
+                "action": "pause",
+                "expected_revision": linked["revision"],
+                "client_id": str(uuid.uuid4()),
+            },
+        )
+        await self.post(
+            "music/navidrome/playlists/control",
+            {
+                "link_id": linked["link_id"],
+                "action": "resume",
+                "expected_revision": linked["revision"],
+                "client_id": str(uuid.uuid4()),
+            },
+            409,
+        )
+        self.assertNotIn(server.password.encode(), self.media.repo.database.read_bytes())
+        self.assertNotIn("secret", json.dumps(view))
+        before = len(server.calls)
+        async with self.client.post(
+            self.url + "/api/web/media/music/navidrome/test",
+            json=connection,
+            headers={"Origin": self.url},
+        ) as response:
+            self.assertEqual(response.status, 403)
+        self.client.cookie_jar.clear()
+        await self.post("music/navidrome/test", connection, 401)
+        self.assertEqual(len(server.calls), before)
+
     async def test_qq_qr_account_isolated_provider_and_catalog_routes(self):
         class ThirdParty(SyntheticNetease):
             async def qr_start(self, login_type):

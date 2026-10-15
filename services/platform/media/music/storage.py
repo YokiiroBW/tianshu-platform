@@ -12,6 +12,7 @@ from ..organizer import library_lock
 from ..video_storage import copy_file, sync_directory, sync_file
 from .audio import record, probe
 from .quality import satisfies, quality_rank
+from .navidrome.state import mark_dirty
 
 
 def component(value, fallback="未知", maximum=100):
@@ -408,6 +409,8 @@ class AudioStorage:
                 self.repo.put("music_retired_file", key, {**retired, "state": "cleaned"})
 
     def export_related(self, job):
+        with self.repo.transaction() as db:
+            mark_dirty(self.repo, db)
         playlists = set()
         for key in job.get("request_ids", []):
             request = self.repo.get("music_request", key)

@@ -5,6 +5,7 @@ import uuid
 
 from ...contracts import Fault, require
 from .providers import identity as source_id, PROVIDERS
+from .navidrome.web import route as navidrome_route
 
 
 class WebMusic:
@@ -18,6 +19,8 @@ class WebMusic:
             return {"configured": False, "accounts": [], "playlists": []}
         music = self.media.music
         library, connector, local = music.library, music.connector, self.media.local
+        if operation.startswith("navidrome/"):
+            return await navidrome_route(self.web, operation[len("navidrome/") :], body, session)
         if operation == "view":
             require(body == {}, "invalid_input", 400)
             return {
@@ -25,6 +28,7 @@ class WebMusic:
                 "providers": music.capabilities(),
                 "routing": "automatic",
                 "imports": await local(music.imports.view),
+                "navidrome": await local(music.navidrome.state.view),
             }
         if operation == "library/scan":
             self.fields(body, set())

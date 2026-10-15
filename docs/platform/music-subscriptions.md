@@ -45,20 +45,33 @@ Music Tag Web 修改标签后，重新核验音频身份并更新文件哈希，
 
 解码能力以文件版本为准：QMC STag/MusicEx 需要外部密钥、KGM v5/KGG 需要客户端数据库时，显示“需要客户端密钥”；未知加密版本与损坏输入分别报错，保留原件。归档编码支持 FLAC、MP3、M4A（AAC/ALAC）、OGG（Vorbis）及 Opus，不保证所有后缀的文件都可解码。NCM、QMC 使用合成音频经过真实工具及归档流程验证；没有使用用户商业音乐加密原件验证全部版本。会员下载权限与文件解锁能力分别检查。
 
+## Navidrome 歌单
+
+在音乐订阅页的“Navidrome 播放与歌单”填写服务地址、用户名和密码，测试连接后选择音乐库，并填写 Navidrome 容器中音乐存档的路径。天枢与 Navidrome 读取同一份存档；例如天枢 `/media/Music` 对应 Navidrome `/music/音乐存档`。密码使用现有媒体 AES-GCM 密钥加密，更新连接时留空保留；不会通过页面投影或请求 URL 返回密码。
+
+每份天枢歌单可以创建一份关联的 Navidrome 歌单，保存远端 ID 后持续更新。支持跟随原名称或自定义名称、默认私有/显式共享、立即同步、自动同步、暂停和删除。来源成员变化、归档和质量升级会通知同步器；已经连好的歌单也会定期核对。暂停平台订阅与暂停 Navidrome 同步是两个独立控制。删除仅作用于该关联的 Navidrome 歌单，保留天枢歌单和音频。
+
+同步复用统一曲库的当前文件，不下载、复制或重新编码歌曲。优先用 Navidrome 真实文件路径与文件大小匹配；默认返回虚拟路径时，需要唯一的标题、艺人、专辑、时长、格式和精确文件大小匹配。相同标题不足以匹配，歧义和未入库分别记录。歌单保留来源顺序与重复位置，只提交已归档且已匹配的成员；未下载/缺失/待入库条目保留在天枢并自动补齐。管理员连接可以触发扫库；普通账号等待 Navidrome 自身扫描。长扫描在重试时继续观察。
+
+创建前持久化意图，用唯一临时名称恢复丢失回执，远端 ID 入账后再设置显示名称。未知创建结果不会直接重发；已知歌单被外部删除时由“重新创建”按钮恢复。更新采用整份有序成员替换，并读回验证名称、可见性与成员顺序。只有本连接所有、已关联的歌单会被改动。天枢为这些歌单的成员权威，Navidrome 侧手工修改会在下次同步时更新为天枢内容。
+
+接口使用 [Navidrome 支持的 Subsonic API](https://www.navidrome.org/docs/developers/subsonic-api/)，包括 [createPlaylist](https://opensubsonic.netlify.app/docs/endpoints/createplaylist/) 和 [updatePlaylist](https://opensubsonic.netlify.app/docs/endpoints/updateplaylist/)。不直写 Navidrome 数据库，也不依赖尚在设计中的原生 API v1。运行实现位于 `music/navidrome/`，复用 Repository 的文档、回执、扫描租约和音乐运行生命周期。
+
 ## 实现归属
 
 继续使用 `<database_path>.media.sqlite` 的 Repository/schema 2、共用 jobs/租约/取消重试/Retention。没有第二个音乐数据库、外置 API 服务或下载守护进程。
 
-| 文档                                                 | 用途                                   |
-| ---------------------------------------------------- | -------------------------------------- |
-| music_account                                        | 平台主体、状态及 AES-GCM 加密会话      |
-| music_playlist / music_track                         | 按账号隔离的有序歌单及来源资料         |
-| music_recording / music_source                       | 统一录音身份、跨平台来源绑定与匹配方法 |
-| music_match_index / music_source_index               | 按元数据查找录音、按录音查找来源       |
-| music_library_file / music_content_index             | 共用成品及解码音频身份                 |
-| music_request / music_playlist_jobs                  | 各歌单需求及共享任务关系               |
-| music_publication / music_stage / music_retired_file | 原子发布、暂存与升级恢复清理           |
-| music_file_observation / music_import_scan           | 文件变化及索引扫描进度                 |
+| 文档                                                 | 用途                                           |
+| ---------------------------------------------------- | ---------------------------------------------- |
+| music_account                                        | 平台主体、状态及 AES-GCM 加密会话              |
+| music_playlist / music_track                         | 按账号隔离的有序歌单及来源资料                 |
+| music_recording / music_source                       | 统一录音身份、跨平台来源绑定与匹配方法         |
+| music_match_index / music_source_index               | 按元数据查找录音、按录音查找来源               |
+| music_library_file / music_content_index             | 共用成品及解码音频身份                         |
+| music_request / music_playlist_jobs                  | 各歌单需求及共享任务关系                       |
+| music_publication / music_stage / music_retired_file | 原子发布、暂存与升级恢复清理                   |
+| music_file_observation / music_import_scan           | 文件变化及索引扫描进度                         |
+| music_navidrome / music_navidrome_playlist           | 加密连接、有序远端成员映射、创建意图及同步结果 |
 
 账号密钥沿用媒体 `.key`，备份需要同时包含媒体数据库与原密钥。公开页面和来源 JSON 不包含会话、密文或临时下载 URL。歌曲身份与账号下载凭据分别保存；复用本地成品无需再次取得原下载账号会话。
 
@@ -70,18 +83,21 @@ Music Tag Web 修改标签后，重新核验音频身份并更新文件哈希，
 
 所有操作为 `POST /api/web/media/music/<operation>`，复用控制台会话、Origin、CSRF 和幂等回执；不新增权限层。
 
-| operation                                            | 输入与用途                                                               |
-| ---------------------------------------------------- | ------------------------------------------------------------------------ |
-| view                                                 | 账号、歌单、设置、平台可用能力、automatic 选路及扫描状态                 |
-| accounts/qr/start                                    | provider，QQ 可带 login_type=qq/wx；空对象兼容网易云                     |
-| accounts/qr/poll                                     | qr_id，仅同控制台会话可使用                                              |
-| accounts/revoke                                      | account_id、expected_revision、client_id                                 |
-| playlists/list / subscribe / scan / detail / control | 沿用完整快照、分页、周期及暂停接口                                       |
-| playlists/downloads / download / export              | 歌单音质与自动下载、立即排队、导出                                       |
-| settings/save / inspect                              | 音乐根与布局、目录样本                                                   |
-| library/view                                         | offset，每页最多 100 个录音及当前共用文件                                |
-| library/scan                                         | 空对象；幂等排入一次曲库扫描                                             |
-| library/link                                         | source_key、recording_id、expected_revision、client_id；显式纠正来源绑定 |
+| operation                                            | 输入与用途                                                                       |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------- |
+| view                                                 | 账号、歌单、设置、平台可用能力、automatic 选路及扫描状态                         |
+| accounts/qr/start                                    | provider，QQ 可带 login_type=qq/wx；空对象兼容网易云                             |
+| accounts/qr/poll                                     | qr_id，仅同控制台会话可使用                                                      |
+| accounts/revoke                                      | account_id、expected_revision、client_id                                         |
+| playlists/list / subscribe / scan / detail / control | 沿用完整快照、分页、周期及暂停接口                                               |
+| playlists/downloads / download / export              | 歌单音质与自动下载、立即排队、导出                                               |
+| settings/save / inspect                              | 音乐根与布局、目录样本                                                           |
+| library/view                                         | offset，每页最多 100 个录音及当前共用文件                                        |
+| library/scan                                         | 空对象；幂等排入一次曲库扫描                                                     |
+| library/link                                         | source_key、recording_id、expected_revision、client_id；显式纠正来源绑定         |
+| navidrome/test / save / disable                      | 检测账号与音乐库、保存加密连接/目录映射、停用连接                                |
+| navidrome/playlists/save                             | playlist_id、name、public、auto_sync、expected_revision、client_id；关联并排队   |
+| navidrome/playlists/control                          | link_id、action、expected_revision、client_id；sync/pause/resume/delete/recreate |
 
 ## 验证边界
 

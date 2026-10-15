@@ -10,6 +10,7 @@ from .netease import Netease
 from .downloads import Downloads
 from .providers import Bridge, PROVIDERS
 from .imports import Imports
+from .navidrome import Navidrome
 from . import tools
 
 
@@ -23,6 +24,7 @@ class Music:
         self.qr = {}
         self.downloads = Downloads(self)
         self.imports = Imports(self)
+        self.navidrome = Navidrome(self)
 
     def client(self, provider):
         require(provider in PROVIDERS, "invalid_input", 400)
@@ -42,6 +44,7 @@ class Music:
     async def close(self):
         self.qr.clear()
         await self.connector.close()
+        await self.navidrome.close()
         for client in self.connectors.values():
             await client.close()
 
@@ -102,3 +105,4 @@ class Music:
         async with asyncio.TaskGroup() as group:
             group.create_task(pump_scans(self.media, "music_playlist", "playlist_id", self.scan))
             group.create_task(self.imports.pump())
+            group.create_task(self.navidrome.pump())

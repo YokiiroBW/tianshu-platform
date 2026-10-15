@@ -53,6 +53,7 @@ async function musicFixture(page: Page, connected = true) {
       ],
       accounts: connected ? [account] : [],
       playlists: [],
+      navidrome: { connection: null, playlists: [] },
       settings: {
         revision: 0,
         directory: "",
@@ -74,6 +75,82 @@ async function musicFixture(page: Page, connected = true) {
         body: JSON.stringify(value),
       });
     if (operation === "view") return reply(state.view);
+    if (operation === "navidrome/test")
+      return reply({
+        version: "synthetic",
+        folders: [{ id: "1", name: "NAS 音乐库" }],
+        can_scan: true,
+      });
+    if (operation === "navidrome/save") {
+      const nav = state.view.navidrome!;
+      nav.connection = {
+        connection_id: "synthetic",
+        revision: (nav.connection?.revision ?? 0) + 1,
+        enabled: true,
+        base_url: String(body.base_url),
+        username: String(body.username),
+        music_folder_id: String(body.music_folder_id),
+        music_directory: String(body.music_directory),
+        local_directory: "/synthetic/music",
+        version: "synthetic",
+        can_scan: true,
+        folders: [{ id: "1", name: "NAS 音乐库" }],
+        checked_at: 1792000000,
+      };
+      return reply({ connection: nav.connection });
+    }
+    if (operation === "navidrome/playlists/save") {
+      const nav = state.view.navidrome!;
+      const previous = nav.playlists[0];
+      nav.playlists = [
+        {
+          link_id: "nav-link",
+          playlist_id: String(body.playlist_id),
+          revision: (previous?.revision ?? 0) + 1,
+          name: String(body.name),
+          remote_id: "remote-playlist",
+          public: Boolean(body.public),
+          auto_sync: Boolean(body.auto_sync),
+          status: "partial",
+          code: "partial",
+          synced_count: 3,
+          total: 4,
+          problem_count: 1,
+          problems: [
+            { position: 4, title: "尚未入库的歌曲", code: "waiting_index" },
+          ],
+        },
+      ];
+      return reply({ playlist: nav.playlists[0] });
+    }
+    if (operation === "navidrome/playlists/control") {
+      const nav = state.view.navidrome!;
+      const linked = nav.playlists[0];
+      expect(body.expected_revision).toBe(linked.revision);
+      linked.revision++;
+      if (body.action === "pause") {
+        linked.auto_sync = false;
+        linked.status = "paused";
+      }
+      if (body.action === "resume") {
+        linked.auto_sync = true;
+        linked.status = "partial";
+      }
+      if (body.action === "sync") {
+        linked.status = "synced";
+        linked.synced_count = 4;
+        linked.problem_count = 0;
+        linked.problems = [];
+      }
+      linked.code = linked.status;
+      if (body.action === "delete") nav.playlists = [];
+      return reply({ playlist: linked });
+    }
+    if (operation === "navidrome/disable") {
+      state.view.navidrome!.connection!.enabled = false;
+      state.view.navidrome!.connection!.revision++;
+      return reply({ connection: state.view.navidrome!.connection });
+    }
     if (operation === "library/scan")
       return reply({ job_id: "music-scan-fixture", state: "queued" });
     if (operation === "library/view")
@@ -216,6 +293,90 @@ async function subscribe(page: Page) {
       .getByText("夜晚的收藏", { exact: true }),
   ).toBeVisible();
 }
+
+test("Navidrome connection creates and controls one shared-file playlist", async ({
+  page,
+}, info) => {
+  const state = await musicFixture(page);
+  await page.goto("/#/subscriptions/5");
+  await page
+    .getByLabel("Navidrome 地址", { exact: true })
+    .fill("http://127.0.0.1:4533");
+  await page.getByLabel("Navidrome 用户名", { exact: true }).fill("synthetic");
+  await page
+    .getByLabel("Navidrome 密码", { exact: true })
+    .fill("synthetic-password");
+  await page
+    .getByLabel("Navidrome 中的音乐存档路径", { exact: true })
+    .fill("/music/音乐存档");
+  await page
+    .getByRole("button", { name: "测试连接并读取音乐库", exact: true })
+    .click();
+  await expect(
+    page.getByText("连接成功 · synthetic", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "保存 Navidrome 连接", exact: true })
+    .click();
+  const connection = page.getByRole("region", {
+    name: "Navidrome 连接",
+    exact: true,
+  });
+  await expect(connection).toContainText("已连接 · synthetic");
+  await connection.getByText("编辑连接", { exact: true }).click();
+  await expect(page.getByLabel("Navidrome 密码", { exact: true })).toHaveValue(
+    "",
+  );
+  await subscribe(page);
+  const playlist = page.getByRole("region", {
+    name: "夜晚的收藏的 Navidrome 歌单",
+    exact: true,
+  });
+  await playlist.getByText("创建 Navidrome 歌单", { exact: true }).click();
+  await playlist
+    .getByLabel("Navidrome 歌单名称", { exact: true })
+    .fill("本地夜晚");
+  await playlist
+    .getByRole("button", { name: "创建并同步歌单", exact: true })
+    .click();
+  await expect(playlist).toContainText("3/4 首");
+  await playlist.getByText("查看待补齐歌曲（1 首）", { exact: true }).click();
+  await expect(playlist).toContainText("等待 Navidrome 入库");
+  expect(state.view.navidrome!.playlists[0].public).toBe(false);
+  await playlist
+    .getByRole("button", { name: "暂停 Navidrome 自动同步", exact: true })
+    .click();
+  await expect(
+    playlist.getByRole("button", {
+      name: "开启 Navidrome 自动同步",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await playlist
+    .getByRole("button", { name: "同步至 Navidrome", exact: true })
+    .click();
+  await expect(playlist).toContainText("4/4 首");
+  await playlist.getByText("Navidrome 歌单设置", { exact: true }).click();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: info.outputPath(`navidrome-${info.project.name}.png`),
+    fullPage: true,
+  });
+  await playlist
+    .getByRole("button", { name: "删除 Navidrome 歌单", exact: true })
+    .click();
+  await expect(
+    playlist.getByText("创建 Navidrome 歌单", { exact: true }),
+  ).toBeVisible();
+  expect(state.view.playlists).toHaveLength(1);
+  expect(state.calls.some((c) => c.operation === "playlists/download")).toBe(
+    false,
+  );
+});
 
 test("music entry offers account login and audio archiving", async ({
   page,

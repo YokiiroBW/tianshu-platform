@@ -42,7 +42,8 @@ class Accounts:
             require(
                 not repository.list("account")
                 and not repository.list("media_target")
-                and not repository.list("music_account"),
+                and not repository.list("music_account")
+                and not repository.list("music_navidrome"),
                 "media_credentials_unavailable",
                 503,
             )
@@ -60,6 +61,8 @@ class Accounts:
             for account in repository.list("account") + repository.list("music_account"):
                 if account.get("secret"):
                     self._decrypt(account)
+            for connection in repository.list("music_navidrome"):
+                self.unseal(connection["connection_id"], connection["secret"])
         except (ValueError, OSError):
             raise Fault("media_credentials_unavailable", 503) from None
 

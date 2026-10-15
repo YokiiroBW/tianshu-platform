@@ -10,6 +10,7 @@ from .catalog import Catalog, source_key
 from .providers import PROVIDERS, identity
 from .quality import policy, satisfies
 from .queue import enqueue_playlist
+from .navidrome.state import mark_dirty
 
 
 def public_account(account):
@@ -256,6 +257,7 @@ class MusicLibrary:
         )
         if result["auto_download"]:
             enqueue_playlist(self, identity, db)
+        mark_dirty(self.repo, db, identity)
         return {"playlist": summary(result)}
 
     def complete_scan(self, account, subscription, snapshot, owner, generation):

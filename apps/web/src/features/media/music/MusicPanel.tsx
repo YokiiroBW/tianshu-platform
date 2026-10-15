@@ -14,6 +14,8 @@ import type {
 import "./music.css";
 import { providerNames } from "./types";
 import { MusicLibrary } from "./MusicLibrary";
+import { NavidromeConnection } from "./NavidromeConnection";
+import { NavidromePlaylist } from "./NavidromePlaylist";
 
 export function MusicPanel({ media }: { media: MediaController }) {
   const [view, setView] = useState<MusicView | null>(null);
@@ -64,6 +66,7 @@ export function MusicPanel({ media }: { media: MediaController }) {
         "music-export",
         "music-library",
         "music-library-scan",
+        "navidrome-test",
         "command",
       ])
         current.current.cancel(slot);
@@ -149,6 +152,12 @@ export function MusicPanel({ media }: { media: MediaController }) {
         />
       </div>
       <MusicLibrary media={media} status={view.imports} refresh={refresh} />
+      <NavidromeConnection
+        key={view.navidrome?.connection?.revision ?? 0}
+        media={media}
+        connection={view.navidrome?.connection}
+        refresh={refresh}
+      />
       <section className="media-card media-stack" aria-label="选择音乐歌单">
         <div>
           <h3>选择歌单</h3>
@@ -328,6 +337,21 @@ export function MusicPanel({ media }: { media: MediaController }) {
               configured={!!view.settings.directory}
               refresh={refresh}
             />
+            {view.navidrome?.connection?.enabled && (
+              <NavidromePlaylist
+                key={
+                  view.navidrome.playlists.find(
+                    (link) => link.playlist_id === item.playlist_id,
+                  )?.revision ?? 0
+                }
+                media={media}
+                playlist={item}
+                refresh={refresh}
+                link={view.navidrome.playlists.find(
+                  (link) => link.playlist_id === item.playlist_id,
+                )}
+              />
+            )}
           </article>
         ))}
       </section>
