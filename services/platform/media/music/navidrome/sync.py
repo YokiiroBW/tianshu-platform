@@ -7,6 +7,7 @@ import uuid
 from ....contracts import Fault, digest, require
 from .client import Client, object_field
 from .matching import mapped_members
+from .exports import prepare_exports
 from .state import CONNECTION, LINK, State
 
 
@@ -105,6 +106,12 @@ class Navidrome:
             link.update(result)
 
         await guard()
+        if not catalog.get("exports_prepared"):
+            try:
+                await local(prepare_exports, self.repo, connection)
+            except OSError:
+                raise Fault("navidrome_export_unavailable", 409) from None
+            catalog["exports_prepared"] = True
         deleting = link["status"] == "deleting"
         if deleting and not link.get("remote_id") and not link.get("create_sent"):
             await patch(status="deleted", code="deleted", checked_at=self.repo.clock())
@@ -164,14 +171,26 @@ class Navidrome:
         comment = link["marker"] + "\n" + playlist["description"][:2000]
         await guard()
         if [r["id"] for r in target.get("entry", [])] != wanted:
-            await self.client.request(
-                connection,
-                "createPlaylist",
-                [
-                    ("playlistId", target["id"]),
-                    *(("songId", identity) for identity in wanted),
-                ],
-            )
+            if wanted:
+                await self.client.request(
+                    connection,
+                    "createPlaylist",
+                    [
+                        ("playlistId", target["id"]),
+                        *(("songId", identity) for identity in wanted),
+                    ],
+                )
+            else:
+                # Navidrome 0.64.2 keeps old members for createPlaylist without
+                # songId. Removing the observed positions correctly empties it.
+                await self.client.request(
+                    connection,
+                    "updatePlaylist",
+                    [
+                        ("playlistId", target["id"]),
+                        *(("songIndexToRemove", i) for i in range(len(target.get("entry", [])))),
+                    ],
+                )
         if (
             target.get("name") != name
             or target.get("comment", "") != comment

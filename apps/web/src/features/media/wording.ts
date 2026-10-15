@@ -208,6 +208,8 @@ export const errorWords: Record<string, string> = {
   navidrome_sync_unverified: "同步后读回的歌单与预期不一致，尚未标记成功。",
   navidrome_scanning: "Navidrome 正在扫描音乐库，完成后自动补齐。",
   navidrome_request_failed: "Navidrome 未能完成请求，请检查服务状态。",
+  navidrome_export_unavailable:
+    "无法更新歌单导出目录的 Navidrome 导入规则，请检查存档目录权限。",
 };
 export function timestamp(seconds: number | null | undefined) {
   if (seconds == null || !Number.isFinite(seconds)) return "尚无记录";

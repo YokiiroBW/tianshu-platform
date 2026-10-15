@@ -13,6 +13,7 @@ from ..video_storage import copy_file, sync_directory, sync_file
 from .audio import record, probe
 from .quality import satisfies, quality_rank
 from .navidrome.state import mark_dirty
+from .navidrome.exports import ignore_export
 
 
 def component(value, fallback="未知", maximum=100):
@@ -478,6 +479,9 @@ class AudioStorage:
                 {"directory": str(root), "relative": folder, "playlist_id": identity},
             )
             directory.mkdir(parents=True, exist_ok=True)
+            navidrome = self.repo.get("music_navidrome", "server")
+            if navidrome and navidrome["enabled"]:
+                ignore_export(directory)
             for name, content in payloads.items():
                 temporary = safe_path(control, "music-export-" + digest(identity)[:20] + ".tmp")
                 temporary.write_text(content, encoding="utf-8", newline="\n")

@@ -88,14 +88,21 @@ class SyntheticNavidrome:
                     "readonly": self.readonly,
                 }
             target = self.playlists[identity]
-            target["entry"] = [{"id": i} for i in body.getall("songId", [])]
+            # Observed Navidrome 0.64.2 semantics: empty replacement is a no-op.
+            if not body.get("playlistId") or "songId" in body:
+                target["entry"] = [{"id": i} for i in body.getall("songId", [])]
             if self.drop_create and not body.get("playlistId"):
                 return web.Response(status=503)
             result["playlist"] = target
         elif method == "updatePlaylist":
-            self.playlists[body["playlistId"]].update(
-                name=body["name"], comment=body["comment"], public=body["public"] == "true"
-            )
+            target = self.playlists[body["playlistId"]]
+            positions = {int(i) for i in body.getall("songIndexToRemove", [])}
+            target["entry"] = [
+                row for i, row in enumerate(target.get("entry", [])) if i not in positions
+            ]
+            for key in ("name", "comment", "public"):
+                if key in body:
+                    target[key] = body[key] == "true" if key == "public" else body[key]
         elif method == "deletePlaylist":
             self.playlists.pop(body["id"], None)
         elif method in {"getScanStatus", "startScan"}:
@@ -395,3 +402,50 @@ class NavidromeTests(unittest.IsolatedAsyncioTestCase):
         await self.nav.tick()
         self.assertEqual(self.repo.get(LINK, self.link_id)["code"], "navidrome_invalid_response")
         self.assertEqual(self.server.playlists, before)
+
+    async def test_managed_exports_are_excluded_without_ignoring_shared_audio(self):
+        from services.platform.contracts import digest
+        from services.platform.media.music.navidrome.exports import prepare_exports
+
+        folder = "歌单/" + digest(self.playlist["playlist_id"])[:20]
+        directory = self.directory / folder
+        directory.mkdir(parents=True)
+        playlist_file = directory / "playlist.m3u8"
+        playlist_file.write_text("#EXTM3U\n../../合成艺术家/合成专辑/101.flac\n", encoding="utf-8")
+        before = playlist_file.read_bytes()
+        ignore = directory / ".ndignore"
+        ignore.write_text("# User rule\n*.tmp\n", encoding="utf-8")
+        original_ignore = ignore.read_bytes()
+        self.repo.put(
+            "music_export",
+            "fixture-export",
+            {
+                "directory": str(self.directory),
+                "relative": folder,
+                "playlist_id": self.playlist["playlist_id"],
+            },
+        )
+        prepare_exports(self.repo, self.nav.state.connection())
+        first = ignore.read_bytes()
+        prepare_exports(self.repo, self.nav.state.connection())
+        self.assertEqual(ignore.read_bytes(), first)
+        self.assertTrue(first.startswith(original_ignore))
+        self.assertTrue(first.endswith(b"playlist.m3u8\n"))
+        self.assertEqual(playlist_file.read_bytes(), before)
+        self.assertFalse((self.directory / ".ndignore").exists())
+        self.assertEqual(len(list(self.directory.rglob("*.flac"))), 2)
+
+    async def test_source_becomes_empty_removes_all_remote_positions(self):
+        self.link()
+        await self.nav.tick()
+        current = self.repo.get("music_playlist", self.playlist["playlist_id"])
+        with self.repo.transaction() as db:
+            self.library.install_snapshot(
+                self.account, current["playlist_id"], snapshot([]), current, db
+            )
+        await self.nav.tick()
+        row = self.repo.get(LINK, self.link_id)
+        self.assertEqual(row["status"], "synced")
+        self.assertEqual(row["total"], 0)
+        self.assertEqual(self.server.playlists[row["remote_id"]]["entry"], [])
+        self.assertEqual(len(list(self.directory.rglob("*.flac"))), 2)

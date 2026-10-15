@@ -57,6 +57,8 @@ Music Tag Web 修改标签后，重新核验音频身份并更新文件哈希，
 
 接口使用 [Navidrome 支持的 Subsonic API](https://www.navidrome.org/docs/developers/subsonic-api/)，包括 [createPlaylist](https://opensubsonic.netlify.app/docs/endpoints/createplaylist/) 和 [updatePlaylist](https://opensubsonic.netlify.app/docs/endpoints/updateplaylist/)。不直写 Navidrome 数据库，也不依赖尚在设计中的原生 API v1。运行实现位于 `music/navidrome/`，复用 Repository 的文档、回执、扫描租约和音乐运行生命周期。
 
+连接启用后，天枢为自己登记的 M3U8 导出目录添加精确的 `playlist.m3u8` 忽略规则，防止 Navidrome 自动导入与 API 同步重复创建歌单；仅处理本应用登记的导出文件，保留已有忽略规则和音乐文件。此规则使用 Navidrome 官方的 [`.ndignore` 机制](https://www.navidrome.org/docs/usage/library/exclude-content/)，不修改服务器全局自动导入设置。
+
 ## 实现归属
 
 继续使用 `<database_path>.media.sqlite` 的 Repository/schema 2、共用 jobs/租约/取消重试/Retention。没有第二个音乐数据库、外置 API 服务或下载守护进程。
