@@ -46,7 +46,10 @@ def match_file(track, artifact, audio, by_path, by_size, connection):
         return {"code": "ambiguous"}
     # Navidrome normally reports a synthetic Artist/Album path. Require unique,
     # corroborated metadata AND the exact archived byte size/format in that mode.
-    metadata = {**track, "duration_ms": artifact.get("quality", {}).get("duration", 0) * 1000}
+    metadata = {
+        **track,
+        "duration_ms": artifact.get("quality", {}).get("duration_seconds", 0) * 1000,
+    }
     candidates = []
     for song in by_size.get((audio["size_bytes"], path.suffix[1:].lower()), []):
         if not isinstance(song.get("duration"), (int, float)):

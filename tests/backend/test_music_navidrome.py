@@ -165,7 +165,7 @@ class NavidromeTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "directory": str(self.directory),
                     "files": [audio],
-                    "quality": {"duration": 10.5, "level": "lossless"},
+                    "quality": {"duration_seconds": 10.5, "level": "lossless"},
                 },
                 db,
             )

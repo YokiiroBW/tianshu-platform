@@ -334,6 +334,31 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
             self.origin + "/file", self.repo.database.read_bytes().decode("utf-8", errors="ignore")
         )
 
+    async def test_navidrome_matches_real_archived_audio_with_virtual_path(self):
+        from services.platform.media.music.navidrome.matching import mapped_members
+
+        self.queue()
+        job = await self.run_job()
+        self.assertEqual(job["state"], "completed", job.get("code"))
+        path = self.file(job)
+        tags = FLAC(path)
+        song = {
+            "id": "navidrome-real-audio-fixture",
+            "path": "Virtual Artist/Virtual Album/01 - Track.flac",
+            "title": tags["title"][0],
+            "album": tags["album"][0],
+            "artists": [{"name": name} for name in tags["artist"]],
+            "duration": int(tags.info.length),
+            "size": path.stat().st_size,
+            "suffix": "flac",
+        }
+        _, tracks = self.library.export_snapshot(self.playlist["playlist_id"])
+        members = mapped_members(tracks, [song], {"music_directory": "/music/archive"})
+        self.assertEqual([m["song_id"] for m in members], [song["id"], song["id"], None])
+        self.assertEqual(members[0]["method"], "metadata_size")
+        self.assertEqual(self.audio_transfers, 1)
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+
     async def test_mp3_and_m4a_tags_keep_actual_lossy_quality(self):
         for index, extension in enumerate(("mp3", "m4a")):
             with self.subTest(extension=extension):
