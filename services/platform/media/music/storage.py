@@ -10,7 +10,8 @@ from ..destination import safe_path
 from ..identity import looks_like_windows_device_name
 from ..organizer import library_lock
 from ..video_storage import copy_file, sync_directory, sync_file
-from .audio import record
+from .audio import record, probe
+from .quality import satisfies
 
 
 def component(value, fallback="未知", maximum=100):
@@ -77,8 +78,45 @@ class AudioStorage:
     def guard(self, job, owner):
         self.check_scope(job)
         self.repo.heartbeat(job["job_id"], owner, job["generation"])
-        account, _ = self.music.library.account(job["account_id"])
-        require(account["revision"] == job["account_revision"], "account_changed", 409)
+        if job.get("acquisition_account_id"):
+            account, _ = self.music.library.account(job["acquisition_account_id"])
+            require(
+                account["revision"] == job["acquisition_account_revision"], "account_changed", 409
+            )
+
+    async def refresh_file(self, job):
+        """Music Tag Web may change tags; decoded audio identity remains the authority."""
+        local, catalog = self.media.local, self.music.library.catalog
+        artifact = await local(catalog.file, job["recording_id"])
+        if (
+            not artifact
+            or artifact["directory"] != job["destination_directory"]
+            or await local(self.matches, artifact)
+        ):
+            return
+        if not artifact.get("content_id"):
+            return
+        try:
+            root = Path(artifact["directory"])
+            audio = next(f for f in artifact["files"] if f["kind"] == "audio")
+            observed = await probe(
+                safe_path(root, audio["path"]), None, self.media.config["engine"]
+            )
+            if observed["content_id"] != artifact["content_id"]:
+                return
+            files = []
+            for item in artifact["files"]:
+                path = safe_path(root, item["path"])
+                if path.is_file():
+                    files.append({**item, **await local(record, path)})
+
+            def save():
+                with self.repo.transaction() as db:
+                    catalog.store_file(job["recording_id"], {**artifact, "files": files}, db)
+
+            await local(save)
+        except (Fault, OSError, StopIteration):
+            return
 
     def matches(self, artifact):
         root = Path(artifact["directory"])
@@ -93,11 +131,14 @@ class AudioStorage:
 
     def reusable(self, job):
         self.check_scope(job)
-        artifact = self.repo.get("music_artifact", job["audio_key"])
+        artifact = self.music.library.catalog.file(job["recording_id"])
+        if not artifact:
+            artifact = self.repo.get("music_artifact", job["audio_key"])
         if (
             artifact
             and artifact["directory"] == job["destination_directory"]
             and self.matches(artifact)
+            and satisfies(job["quality"], artifact)
         ):
             return artifact
         return None
@@ -106,7 +147,7 @@ class AudioStorage:
         # Files have crossed the publication point. A late cancel cannot undo that fact.
         with self.repo.transaction() as db:
             row = db.execute(
-                "SELECT owner,generation FROM jobs WHERE id=?", (job["job_id"],)
+                "SELECT owner,generation,body FROM jobs WHERE id=?", (job["job_id"],)
             ).fetchone()
             require(
                 row and row["owner"] == owner and row["generation"] == job["generation"],
@@ -114,17 +155,41 @@ class AudioStorage:
                 409,
             )
             self.repo.put("music_artifact", job["audio_key"], artifact, db=db)
+            catalog = self.music.library.catalog
+            old = catalog.file(job["recording_id"], db=db)
+            artifact = catalog.store_file(job["recording_id"], artifact, db)
+            if (
+                old
+                and old.get("managed")
+                and old["directory"] == artifact["directory"]
+                and old["files"] != artifact["files"]
+            ):
+                self.repo.put(
+                    "music_retired_file",
+                    digest({"recording": job["recording_id"], "files": old["files"]}),
+                    {
+                        **old,
+                        "replacement_recording_id": artifact["recording_id"],
+                        "state": "pending",
+                    },
+                    db=db,
+                )
+            pending = json.loads(row["body"]).get("request_version", 0) != job.get(
+                "processing_request_version", 0
+            )
             return self.repo.update_job(
                 job["job_id"],
                 {
-                    "state": "completed",
-                    "stage": "completed",
-                    "code": "music_archived",
+                    "state": "queued" if pending else "completed",
+                    "stage": "queued" if pending else "completed",
+                    "code": "queued" if pending else "music_archived",
                     "audio_receipt": artifact,
                     "audio_reused": reused,
                     "progress": 1,
                     "actual_quality": artifact["quality"]["level"],
                     "audio_quality": artifact["quality"],
+                    "download_provider": artifact.get("download_provider"),
+                    "download_source_id": artifact.get("download_source_id"),
                     "cancel_requested": False,
                 },
                 generation=job["generation"],
@@ -144,6 +209,19 @@ class AudioStorage:
         self.guard(job, owner)
         package = job["audio_package"]
         with library_lock(job["destination_directory"]) as (root, control):
+            catalog = self.music.library.catalog
+            existing = self.reusable(job)
+            if existing:
+                return self.finish_job(job, owner, existing, reused=True)
+            duplicate = (
+                catalog.content_file(package.get("content_id"), str(root))
+                if package.get("content_id")
+                else None
+            )
+            if duplicate and self.matches(duplicate) and satisfies(job["quality"], duplicate):
+                with self.repo.transaction() as db:
+                    catalog.merge(job["recording_id"], duplicate["recording_id"], db)
+                return self.finish_job(job, owner, duplicate, reused=True)
             intent = self.repo.get("music_publication", job["job_id"])
             if intent is None or intent["state"] == "retired":
                 expected_revision = intent["revision"] if intent else 0
@@ -151,7 +229,7 @@ class AudioStorage:
                 # Existing files (including unregistered originals) always keep their names and bytes.
                 for suffix in (
                     "",
-                    f" [网易云{job['source_id']}-{job['audio_key'][:8]}]",
+                    f" [{job['provider']}-{job['source_id']}-{job['audio_key'][:8]}]",
                     f" [{job['job_id']}-{job['generation']}]",
                 ):
                     proposed = base + suffix
@@ -176,6 +254,16 @@ class AudioStorage:
                         "quality": package["quality"],
                         "state": "prepared",
                         "warnings": package["warnings"],
+                        **{
+                            key: package.get(key)
+                            for key in (
+                                "content_id",
+                                "requested_quality",
+                                "download_provider",
+                                "download_source_id",
+                            )
+                        },
+                        "managed": True,
                         "files": [{**f, "path": proposed + f["suffix"]} for f in package["files"]],
                     },
                     expected_revision,
@@ -212,6 +300,18 @@ class AudioStorage:
             require(self.matches(intent), "music_publication_unverified", 409)
             artifact = {k: intent[k] for k in ("directory", "source_id", "quality", "warnings")}
             artifact.update(
+                {
+                    k: intent.get(k)
+                    for k in (
+                        "content_id",
+                        "requested_quality",
+                        "download_provider",
+                        "download_source_id",
+                    )
+                }
+            )
+            artifact["managed"] = True
+            artifact.update(
                 published_at=self.repo.clock(),
                 files=[
                     {k: f[k] for k in ("path", "sha256", "size_bytes", "kind")}
@@ -237,6 +337,7 @@ class AudioStorage:
                 )
 
     def cleanup(self, job):
+        self.cleanup_retired()
         stage = self.repo.get("music_stage", job["job_id"])
         if not stage or stage["state"] == "cleaned":
             return
@@ -253,6 +354,44 @@ class AudioStorage:
                 pass
         self.repo.put("music_stage", job["job_id"], {**stage, "state": "cleaned"})
 
+    def cleanup_retired(self):
+        for retired in self.repo.list("music_retired_file"):
+            if retired["state"] != "pending":
+                continue
+            current = self.music.library.catalog.file(retired["replacement_recording_id"])
+            if not current or not self.matches(current):
+                continue
+            with library_lock(retired["directory"]):
+                keep = {f["path"] for f in current["files"]}
+                for item in retired["files"]:
+                    path = safe_path(Path(retired["directory"]), item["path"])
+                    if (
+                        item["path"] not in keep
+                        and path.is_file()
+                        and record(path) == {k: item[k] for k in ("sha256", "size_bytes")}
+                    ):
+                        path.unlink()
+                key = digest({"recording": retired["recording_id"], "files": retired["files"]})
+                self.repo.put("music_retired_file", key, {**retired, "state": "cleaned"})
+
+    def export_related(self, job):
+        playlists = set()
+        for key in job.get("request_ids", []):
+            request = self.repo.get("music_request", key)
+            if request:
+                playlists.add(request["playlist_id"])
+        # Also refresh older exports when a shared recording upgrades or changes location.
+        playlists.update(
+            p["playlist_id"]
+            for p in self.repo.list("music_export")
+            if p["directory"] == job["destination_directory"]
+        )
+        for identity in playlists:
+            try:
+                self.export(identity)
+            except (Fault, OSError):
+                pass  # An export failure must not undo verified audio publication.
+
     def export(self, identity):
         settings = self.music.library.settings()
         require(
@@ -264,18 +403,19 @@ class AudioStorage:
             playlist, tracks = self.music.library.export_snapshot(identity)
             exported, lines, verified = [], ["#EXTM3U"], {}
             for track in tracks:
-                job = track.pop("job", None)
-                artifact = job.get("audio_receipt") if job else None
+                track.pop("job", None)
+                artifact = track.pop("artifact", None)
                 audio = (
                     next((f for f in artifact["files"] if f["kind"] == "audio"), None)
                     if artifact
                     else None
                 )
-                if job and job["job_id"] not in verified:
-                    verified[job["job_id"]] = (
+                key = artifact.get("recording_id") if artifact else None
+                if key and key not in verified:
+                    verified[key] = (
                         artifact and artifact["directory"] == str(root) and self.matches(artifact)
                     )
-                valid = verified.get(job["job_id"]) if job else False
+                valid = verified.get(key)
                 relative = "../../" + audio["path"] if valid and audio else None
                 exported.append({**track, "file": relative})
                 if relative:

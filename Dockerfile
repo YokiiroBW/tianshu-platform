@@ -10,6 +10,12 @@ RUN npm ci
 COPY apps/web/ ./apps/web/
 RUN npm run build
 
+FROM --platform=linux/amd64 python:3.12.11-slim-bookworm@sha256:c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49 AS music-tools
+WORKDIR /build
+COPY tools/ ./tools/
+COPY scripts/build/music_tools.py ./scripts/build/music_tools.py
+RUN python scripts/build/music_tools.py
+
 FROM --platform=linux/amd64 python:3.12.11-slim-bookworm@sha256:c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49 AS builder
 WORKDIR /build
 COPY scripts/build/tools.lock scripts/build/runtime.lock ./
@@ -35,6 +41,8 @@ RUN groupadd --gid 10001 tianshu \
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH=/opt/tianshu-venv/bin:$PATH
 WORKDIR /srv/tianshu
 COPY --from=builder /opt/tianshu-venv /opt/tianshu-venv
+COPY --from=music-tools /build/music-tools/tianshu-musicbridge /build/music-tools/tianshu-musicdecode /usr/local/bin/
+COPY --from=music-tools /build/music-tools/corresponding-source.tar.gz /usr/share/tianshu-music-tools/corresponding-source.tar.gz
 # Input must be a coordinator-verified raw-byte contract snapshot.
 COPY contracts/ ./contracts/
 COPY --from=console /build/apps/web/dist/ ./web/

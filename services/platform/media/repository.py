@@ -355,7 +355,14 @@ class Repository:
         if left.get("media_kind") == "audio" or right.get("media_kind") == "audio":
             return (
                 left.get("media_kind") == right.get("media_kind") == "audio"
-                and left["source_id"] == right["source_id"]
+                and (
+                    left.get("recording_id")
+                    and left.get("recording_id") == right.get("recording_id")
+                    or (
+                        left.get("provider") == right.get("provider")
+                        and left["source_id"] == right["source_id"]
+                    )
+                )
                 and left["destination_directory"] == right["destination_directory"]
             )
         return left["bvid"] == right["bvid"] and same_destination(left, right)

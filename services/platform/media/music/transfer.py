@@ -9,6 +9,31 @@ import aiohttp
 from ...contracts import Fault, require
 
 
+def media_url(value, provider, *, artwork=False):
+    if provider == "netease":
+        return cdn_url(value)
+    hosts = {
+        "qq": ("qqmusic.qq.com", "qqmusic.tc.qq.com", "music.tc.qq.com"),
+        "kugou": ("kugou.com", "kugou.net"),
+    }.get(provider, ())
+    if artwork and provider == "qq":
+        hosts += ("gtimg.cn", "qlogo.cn", "qpic.cn")
+    try:
+        url = urlsplit(value)
+        host = (url.hostname or "").lower()
+        valid = (
+            url.scheme in {"http", "https"}
+            and any(host == suffix or host.endswith("." + suffix) for suffix in hosts)
+            and not url.username
+            and not url.password
+            and url.port in {None, 80, 443}
+        )
+    except (ValueError, TypeError):
+        valid = False
+    require(valid, "music_download_url_invalid", 502)
+    return url._replace(scheme="https", netloc=host, fragment="").geturl()
+
+
 def cdn_url(value):
     try:
         url = urlsplit(value)
@@ -30,7 +55,16 @@ class Transfer:
         self.validate_url = validate_url
 
     async def fetch(
-        self, url, destination, *, maximum, expected_size=None, expected_md5=None, progress=None
+        self,
+        url,
+        destination,
+        *,
+        maximum,
+        expected_size=None,
+        expected_md5=None,
+        progress=None,
+        provider=None,
+        artwork=False,
     ):
         # A fresh, empty jar: even redirects cannot receive the account's MUSIC_U cookie.
         async with aiohttp.ClientSession(
@@ -39,7 +73,11 @@ class Transfer:
         ) as session:
             try:
                 for _ in range(5):
-                    url = self.validate_url(url)
+                    url = (
+                        media_url(url, provider, artwork=artwork)
+                        if provider and self.validate_url is cdn_url
+                        else self.validate_url(url)
+                    )
                     async with session.get(url, allow_redirects=False) as response:
                         if response.status in {301, 302, 303, 307, 308}:
                             url = urljoin(url, response.headers.get("Location", ""))

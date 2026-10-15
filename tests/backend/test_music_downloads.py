@@ -224,6 +224,78 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(value=value):
                 self.assertEqual(number(value), expected)
 
+    async def test_qq_playlist_uses_netease_permission_and_all_playlists_share_one_file(self):
+        from services.platform.media.music.catalog import same_recording
+
+        original = copy.deepcopy(self.api.value["tracks"][0])
+
+        async def search(query, cookie):
+            return [original]
+
+        self.api.search = search
+        qq = SyntheticNetease()
+
+        async def forbidden(identity, level, cookie):
+            raise Fault("music_download_forbidden", 409)
+
+        qq.download = forbidden
+        self.music.connectors["qq"] = qq
+        saved = self.library.save_account(
+            {"user_id": "456", "label": "QQ 夹具"}, {"cookie": "synthetic-qq"}, "qq"
+        )
+        account, _ = self.library.account(saved["account_id"])
+        value = self.value(["qqmid101", "qqmid101"])
+        value["tracks"][0].update(original, source_id="qqmid101")
+        self.assertTrue(same_recording(original, value["tracks"][0]))
+        with self.repo.transaction() as db:
+            playlist = self.library.subscribe(account, value, 3600, 0, db)["playlist"]
+        self.queue(playlist)
+        job = await self.run_job()
+        self.assertEqual(job["state"], "completed", job.get("code"))
+        self.assertEqual(job["provider"], "qq")
+        self.assertEqual(job["download_provider"], "netease")
+        self.assertEqual(job["download_source_id"], "101")
+        self.queue()
+        second = await self.run_job()
+        self.assertEqual(second["job_id"], job["job_id"])
+        self.assertTrue(second["audio_reused"])
+        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+        detail = self.library.detail(playlist["playlist_id"], 0)
+        self.assertEqual([t["source_id"] for t in detail["tracks"]], ["qqmid101", "qqmid101"])
+        self.assertEqual({t["download_provider"] for t in detail["tracks"]}, {"netease"})
+
+    async def test_tag_only_external_edit_reuses_audio_without_download(self):
+        self.queue()
+        first = await self.run_job()
+        tags = FLAC(self.file(first))
+        tags["comment"] = ["Music Tag Web editing fixture"]
+        tags.save()
+        edited = self.file(first).read_bytes()
+        self.queue()
+        second = await self.run_job()
+        self.assertEqual(second["state"], "completed", second.get("code"))
+        self.assertTrue(second["audio_reused"])
+        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.file(second).read_bytes(), edited)
+
+    async def test_local_file_reused_after_source_account_revoked(self):
+        self.queue()
+        first = await self.run_job()
+        self.queue()
+        with self.repo.transaction() as db:
+            self.library.revoke(
+                {
+                    "account_id": self.account["account_id"],
+                    "expected_revision": self.account["revision"],
+                },
+                db,
+            )
+        second = await self.run_job()
+        self.assertEqual(second["state"], "completed", second.get("code"))
+        self.assertEqual(self.file(first), self.file(second))
+        self.assertEqual(self.api.download_calls, 1)
+
     async def test_real_flac_tags_sidecars_ordered_export_and_cleanup(self):
         result = self.queue()
         self.assertEqual((result["total"], result["unavailable"]), (1, 1))
@@ -376,7 +448,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         job = await self.run_job()
         self.assertEqual(job["state"], "completed", job)
         self.assertNotEqual(self.file(job), original)
-        self.assertIn("网易云101", self.file(job).name)
+        self.assertIn("netease-101", self.file(job).name)
         self.assertEqual(original.read_bytes(), b"original-not-managed")
 
     async def test_lost_publication_ack_recovers_without_redownload(self):

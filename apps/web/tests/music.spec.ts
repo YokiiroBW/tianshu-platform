@@ -31,6 +31,26 @@ async function musicFixture(page: Page, connected = true) {
     view: {
       configured: true,
       audio_download_available: true,
+      providers: [
+        {
+          provider: "netease",
+          label: "网易云音乐",
+          available: true,
+          login_types: ["qr"],
+        },
+        {
+          provider: "qq",
+          label: "QQ 音乐",
+          available: true,
+          login_types: ["qq", "wx"],
+        },
+        {
+          provider: "kugou",
+          label: "酷狗音乐",
+          available: true,
+          login_types: ["qr"],
+        },
+      ],
       accounts: connected ? [account] : [],
       playlists: [],
       settings: {
@@ -54,6 +74,37 @@ async function musicFixture(page: Page, connected = true) {
         body: JSON.stringify(value),
       });
     if (operation === "view") return reply(state.view);
+    if (operation === "library/scan")
+      return reply({ job_id: "music-scan-fixture", state: "queued" });
+    if (operation === "library/view")
+      return reply({
+        offset: 0,
+        more: false,
+        counts: { music_recording: 1, music_source: 3, music_library_file: 1 },
+        items: [
+          {
+            recording_id: "one",
+            metadata: {
+              title: "跨平台合成歌曲",
+              artists: ["合成艺术家"],
+              album: "合成专辑",
+            },
+            file: {
+              download_provider: "netease",
+              quality: {
+                level: "lossless",
+                codec: "flac",
+                sample_rate: 44100,
+                bits_per_sample: 16,
+                channels: 2,
+                bit_rate: 900000,
+                fallback: false,
+              },
+              files: [{ kind: "audio", path: "合成艺术家/合成专辑/共用.flac" }],
+            },
+          },
+        ],
+      });
     if (operation === "accounts/qr/start")
       return reply({
         qr_id: "synthetic-qr",
@@ -175,13 +226,60 @@ test("music entry offers account login and audio archiving", async ({
   await expect(
     page.getByText("尚未连接音乐账号。", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(/自动写入歌曲标签、封面和歌词/)).toBeVisible();
+  await expect(page.getByText(/整理标签、封面和歌词/)).toBeVisible();
   await expect(
     page.getByRole("button", { name: "读取账号歌单", exact: true }),
   ).toBeDisabled();
   expect(
     state.calls.some((call) => call.operation.startsWith("accounts/qr")),
   ).toBe(false);
+});
+
+test("music unified providers and library use automatic routing without priority settings", async ({
+  page,
+}, info) => {
+  const state = await musicFixture(page, false);
+  await page.goto("/#/subscriptions/5");
+  await page
+    .getByRole("combobox", { name: "音乐平台", exact: true })
+    .selectOption("qq");
+  await page
+    .getByRole("combobox", { name: "登录方式", exact: true })
+    .selectOption("wx");
+  await page
+    .getByRole("button", { name: "QQ 音乐扫码登录", exact: true })
+    .click();
+  await expect(page.getByAltText("QQ 音乐登录二维码")).toBeVisible();
+  expect(
+    state.calls.find((call) => call.operation === "accounts/qr/start")?.body,
+  ).toEqual({ provider: "qq", login_type: "wx" });
+  await page
+    .getByRole("combobox", { name: "音乐平台", exact: true })
+    .selectOption("kugou");
+  await expect(page.getByAltText("QQ 音乐登录二维码")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "酷狗音乐扫码登录", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "查看统一曲库", exact: true }).click();
+  await expect(
+    page.getByText("1 首歌曲 · 3 个来源 · 1 份已登记音频", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("合成艺术家/合成专辑/共用.flac", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "扫描音乐存档", exact: true }).click();
+  expect(state.calls.some((call) => call.operation === "library/scan")).toBe(
+    true,
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: info.outputPath("music-unified.png"),
+    fullPage: true,
+  });
 });
 
 test("music download policy, manual queue and ordered exports", async ({
@@ -268,7 +366,9 @@ test("mixed download list renders audio evidence without video editing controls"
     });
   await page.goto("/#/subscriptions/2");
   await expect(page.getByText("合成歌曲", { exact: true })).toBeVisible();
-  await expect(page.getByText("网易云 101", { exact: false })).toBeVisible();
+  await expect(
+    page.getByText("网易云音乐 101", { exact: false }),
+  ).toBeVisible();
   await page
     .locator('[data-job-id="audio-one"]')
     .getByRole("button", { name: "查看任务详情", exact: true })
@@ -309,20 +409,20 @@ test("NetEase QR shows waiting then connected and survives reload", async ({
   const state = await musicFixture(page, false);
   await page.goto("/#/subscriptions/5");
   await page
-    .getByRole("button", { name: "网易云扫码登录", exact: true })
+    .getByRole("button", { name: "网易云音乐扫码登录", exact: true })
     .click();
   await expect(page.getByAltText("网易云音乐登录二维码")).toBeVisible();
   await expect(page.getByText("等待扫码", { exact: true })).toBeVisible();
   state.qrState = "ready";
   await expect(
     page
-      .getByRole("region", { name: "网易云账号", exact: true })
+      .getByRole("region", { name: "音乐账号", exact: true })
       .getByText("合成网易云账号", { exact: true }),
   ).toBeVisible({ timeout: 10000 });
   await page.reload();
   await expect(
     page
-      .getByRole("region", { name: "网易云账号", exact: true })
+      .getByRole("region", { name: "音乐账号", exact: true })
       .getByText("合成网易云账号", { exact: true }),
   ).toBeVisible();
 });
@@ -332,7 +432,7 @@ test("expired NetEase QR can be regenerated", async ({ page }) => {
   state.qrState = "expired";
   await page.goto("/#/subscriptions/5");
   await page
-    .getByRole("button", { name: "网易云扫码登录", exact: true })
+    .getByRole("button", { name: "网易云音乐扫码登录", exact: true })
     .click();
   await expect(page.getByText("二维码已过期", { exact: true })).toBeVisible();
   await expect(page.getByAltText("网易云音乐登录二维码")).toHaveCount(0);

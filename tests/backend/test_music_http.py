@@ -14,6 +14,32 @@ class MusicHttpTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = existing.MediaRuntimeTests.asyncSetUp
     post = existing.MediaRuntimeTests.post
 
+    async def test_qq_qr_account_isolated_provider_and_catalog_routes(self):
+        class ThirdParty(SyntheticNetease):
+            async def qr_start(self, login_type):
+                self.login_type = login_type
+                return await super().qr_start()
+
+            async def qr_poll(self, key, cookie):
+                return "ready", {"cookie": "synthetic-qq-session"}
+
+        client = ThirdParty()
+        self.media.music.connectors["qq"] = client
+        qr = await self.post("music/accounts/qr/start", {"provider": "qq", "login_type": "wx"})
+        account = (await self.post("music/accounts/qr/poll", {"qr_id": qr["qr_id"]}))["account"]
+        self.assertEqual(account["provider"], "qq")
+        self.assertEqual(account["account_id"], "qq:123")
+        self.assertEqual(client.login_type, "wx")
+        playlists = await self.post("music/playlists/list", {"account_id": account["account_id"]})
+        self.assertEqual(len(playlists["playlists"]), 1)
+        view = await self.post("music/view", {})
+        self.assertEqual(view["routing"], "automatic")
+        self.assertEqual({p["provider"] for p in view["providers"]}, {"netease", "qq", "kugou"})
+        self.assertNotIn("synthetic-qq-session", json.dumps(view))
+        catalog = await self.post("music/library/view", {"offset": 0})
+        self.assertEqual(catalog["items"], [])
+        await self.post("music/accounts/qr/start", {"provider": "soda"}, 400)
+
     async def login_music(self):
         self.media.music.connector = SyntheticNetease()
         qr = await self.post("music/accounts/qr/start", {})

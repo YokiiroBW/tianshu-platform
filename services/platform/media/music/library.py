@@ -6,8 +6,9 @@ from pathlib import Path
 
 from ...contracts import require
 from ..config import text
-from .netease import source_id
-from .quality import policy
+from .catalog import Catalog, source_key
+from .providers import PROVIDERS, identity
+from .quality import policy, satisfies
 from .queue import enqueue_playlist
 
 
@@ -25,6 +26,7 @@ def summary(playlist):
 class MusicLibrary:
     def __init__(self, repository, accounts):
         self.repo, self.accounts = repository, accounts
+        self.catalog = Catalog(repository)
 
     def account(self, identity):
         require(isinstance(identity, str), "invalid_input", 400)
@@ -43,23 +45,27 @@ class MusicLibrary:
             409,
         )
 
-    def save_account(self, profile, cookie):
-        identity = "netease:" + source_id(profile["user_id"])
+    def save_account(self, profile, cookie, provider="netease"):
+        require(provider in PROVIDERS, "invalid_input", 400)
+        account_id = provider + ":" + identity(profile["user_id"])
         require(
-            isinstance(cookie.get("MUSIC_U"), str) and cookie["MUSIC_U"], "music_auth_required", 409
+            isinstance(cookie.get("MUSIC_U" if provider == "netease" else "cookie"), str)
+            and cookie.get("MUSIC_U" if provider == "netease" else "cookie"),
+            "music_auth_required",
+            409,
         )
         with self.repo.transaction() as db:
             account = self.repo.put(
                 "music_account",
-                identity,
+                account_id,
                 {
-                    "account_id": identity,
-                    "provider": "netease",
+                    "account_id": account_id,
+                    "provider": provider,
                     "user_id": profile["user_id"],
-                    "label": profile["label"] or "网易云音乐",
+                    "label": profile["label"] or PROVIDERS[provider],
                     "state": "ready",
                     "checked_at": self.repo.clock(),
-                    "secret": self.accounts.seal(identity, json.dumps(cookie)),
+                    "secret": self.accounts.seal(account_id, json.dumps(cookie)),
                 },
                 db=db,
             )
@@ -217,6 +223,9 @@ class MusicLibrary:
     def install_snapshot(self, account, identity, snapshot, current, db):
         self.check_account(account, db)
         for track in snapshot["tracks"]:
+            track = {**track, "provider": account["provider"]}
+            if track.get("availability") == "known":
+                track.update(self.catalog.register(account["provider"], track, db))
             track_id = account["account_id"] + ":track:" + track["source_id"]
             previous = self.repo._document(db, "music_track", track_id)
             if previous and track["availability"] == "unavailable":
@@ -229,7 +238,7 @@ class MusicLibrary:
             {
                 **snapshot["playlist"],
                 "playlist_id": identity,
-                "provider": "netease",
+                "provider": account["provider"],
                 "account_id": account["account_id"],
                 "entries": snapshot["entries"],
                 "member_count": len(snapshot["entries"]),
@@ -290,25 +299,34 @@ class MusicLibrary:
                     "SELECT body FROM jobs WHERE id=?", (mapping.get(source, ""),)
                 ).fetchone()
                 job = json.loads(job_row[0]) if job_row else None
-                audio = (
-                    next(
-                        (
-                            f
-                            for f in (job.get("audio_receipt") or {}).get("files", [])
-                            if f["kind"] == "audio"
-                        ),
-                        None,
-                    )
-                    if job
-                    else None
+                artifact = self.artifact(track, row["provider"], db)
+                audio = next(
+                    (f for f in (artifact or {}).get("files", []) if f["kind"] == "audio"), None
                 )
+                state = job["state"] if job else "not_downloaded"
+                if audio and (
+                    state in {"completed", "not_downloaded"}
+                    or state in {"failed", "auth_required", "cancelled"}
+                    and satisfies(policy(row.get("quality")), artifact)
+                ):
+                    state = "completed"
                 tracks.append(
                     {
                         **track,
                         "position": index + 1,
-                        "audio_state": job["state"] if job else "not_downloaded",
-                        "audio_code": job["code"] if job else None,
-                        "audio_quality": job.get("audio_quality") if job else None,
+                        "audio_state": state if audio or state != "completed" else "not_downloaded",
+                        "audio_code": "music_archived"
+                        if state == "completed" and audio
+                        else job["code"]
+                        if job
+                        else None,
+                        "audio_quality": artifact.get("quality") if artifact else None,
+                        "download_provider": artifact.get("download_provider")
+                        if artifact
+                        else None,
+                        "download_source_id": artifact.get("download_source_id")
+                        if artifact
+                        else None,
                         "file": audio["path"] if audio else None,
                         "job_id": job["job_id"] if job else None,
                     }
@@ -319,6 +337,18 @@ class MusicLibrary:
                 "offset": offset,
                 "more": offset + len(tracks) < len(row["entries"]),
             }
+
+    def artifact(self, track, provider, db):
+        binding = self.catalog.source(source_key(provider, track["source_id"]), db=db)
+        artifact = self.catalog.file(binding["recording_id"], db=db) if binding else None
+        settings = self.repo._document(db, "music_settings", "library") or {}
+        return (
+            artifact
+            if artifact
+            and not artifact.get("missing")
+            and artifact["directory"] == settings.get("directory")
+            else None
+        )
 
     def downloads(self, body, db):
         row = self.repo._document(db, "music_playlist", body["playlist_id"])
@@ -365,6 +395,9 @@ class MusicLibrary:
                         "title": track["title"],
                         "artists": track["artists"],
                         "album": track["album"],
+                        "provider": playlist["provider"],
+                        "recording_id": track.get("recording_id"),
+                        "artifact": self.artifact(track, playlist["provider"], db),
                         "job": json.loads(row[0]) if row else None,
                     }
                 )

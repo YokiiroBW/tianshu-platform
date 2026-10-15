@@ -55,8 +55,15 @@ export const destinationModeWords = {
 };
 export const reasonWords: Record<string, string> = {
   music_archived: "音乐及元数据已归档",
+  music_indexed: "本地曲库已登记",
+  music_match_unavailable: "其他已连接平台尚未找到可确认的同版本歌曲。",
+  music_match_ambiguous: "找到多个版本，暂未自动替换；可检查歌名、专辑和时长。",
+  music_decode_failed:
+    "无法解码此原件：格式不受支持、文件不完整或缺少客户端密钥。原件已保留。",
+  music_tool_unavailable: "音乐工具不可用，请检查服务安装。",
+  music_tool_failed: "音乐工具暂时未能完成请求。",
   music_download_forbidden:
-    "当前账号没有此歌曲的完整下载音源，请检查购买或会员权益。",
+    "已连接的账号均未取得此歌曲的完整下载权限，请检查购买或会员权益。",
   music_preview_rejected: "上游返回试听片段或时长不符，未作为完整歌曲归档。",
   music_quality_unavailable:
     "当前音源未达到所选音质，可修改降级设置后重新下载。",
@@ -65,7 +72,7 @@ export const reasonWords: Record<string, string> = {
   invalid_music_quality: "请选择有效的音乐音质。",
   music_duration_unknown: "缺少完整歌曲时长，无法核验下载结果。",
   music_download_unavailable: "音源暂不可下载，稍后重试。",
-  music_download_url_invalid: "音源返回的下载地址不符合网易云来源。",
+  music_download_url_invalid: "音源返回的下载地址不符合所选平台来源。",
   music_download_incomplete: "下载大小或摘要不匹配，请重试。",
   music_audio_invalid: "音频不完整或无法正常解码。",
   music_format_unsupported: "当前音频格式暂不支持标签整理。",
@@ -163,15 +170,16 @@ export const errorWords: Record<string, string> = {
   too_many_requests: "尝试过于频繁，请稍后重试。",
   not_found: "找不到这条记录，请重新读取。",
   invalid_music_id: "歌曲或歌单标识无效，请重新读取。",
-  music_auth_required: "网易云登录已失效，请重新扫码登录。",
-  music_account_unavailable: "网易云账号已断开，请重新连接。",
-  music_upstream_unavailable: "网易云暂时无法连接，请稍后重试。",
-  music_upstream_invalid: "网易云返回的数据不完整，本次未替换已保存歌单。",
-  music_upstream_rejected: "网易云未能返回所请求的内容，请检查账号状态后重试。",
+  music_auth_required: "音乐账号登录已失效，请重新扫码登录。",
+  music_account_unavailable: "音乐账号已断开，请重新连接。",
+  music_upstream_unavailable: "音乐平台暂时无法连接，请稍后重试。",
+  music_upstream_invalid: "音乐平台返回的数据不完整，本次未替换已保存歌单。",
+  music_upstream_rejected:
+    "音乐平台未能返回所请求的内容，请检查账号状态后重试。",
   music_scan_incomplete: "歌单未读取完整，已保留上次同步结果。",
   music_source_changed: "读取期间歌单发生变化，请重新同步。",
   music_snapshot_too_large: "歌单超过本次读取范围，已保留原记录。",
-  music_rate_limited: "网易云请求暂受限制，请稍后重试。",
+  music_rate_limited: "音乐平台请求暂受限制，请稍后重试。",
   music_subscription_paused: "此歌单已暂停，请先恢复同步。",
   music_directory_absolute: "请填写音乐目录的完整路径。",
   music_directory_unavailable: "音乐目录暂不可访问，请检查目录路径。",

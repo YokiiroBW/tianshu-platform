@@ -8,19 +8,42 @@ from ..scheduling import pump_scans, scan_due
 from .library import MusicLibrary
 from .netease import Netease
 from .downloads import Downloads
+from .providers import Bridge, PROVIDERS
+from .imports import Imports
+from . import tools
 
 
 class Music:
     def __init__(self, media):
         self.media = media
         self.library = MusicLibrary(media.repo, media.accounts)
+        self.library.catalog.bootstrap()
         self.connector = Netease()
+        self.connectors = {name: Bridge(name) for name in ("qq", "kugou")}
         self.qr = {}
         self.downloads = Downloads(self)
+        self.imports = Imports(self)
+
+    def client(self, provider):
+        require(provider in PROVIDERS, "invalid_input", 400)
+        return self.connector if provider == "netease" else self.connectors[provider]
+
+    def capabilities(self):
+        return [
+            {
+                "provider": name,
+                "label": label,
+                "available": name == "netease" or bool(tools.executable("musicbridge")),
+                "login_types": ["qq", "wx"] if name == "qq" else ["qr"],
+            }
+            for name, label in PROVIDERS.items()
+        ]
 
     async def close(self):
         self.qr.clear()
         await self.connector.close()
+        for client in self.connectors.values():
+            await client.close()
 
     async def scan(self, identity):
         media, repo = self.media, self.media.repo
@@ -39,7 +62,7 @@ class Music:
         pulse = asyncio.create_task(heartbeat())
         try:
             async with asyncio.timeout(120):
-                snapshot = await self.connector.snapshot(
+                snapshot = await self.client(account["provider"]).snapshot(
                     subscription["source_id"], account["user_id"], cookie
                 )
             return await media.local(
@@ -76,4 +99,6 @@ class Music:
         await scan_due(self.media, "music_playlist", "playlist_id", self.scan)
 
     async def pump(self):
-        await pump_scans(self.media, "music_playlist", "playlist_id", self.scan)
+        async with asyncio.TaskGroup() as group:
+            group.create_task(pump_scans(self.media, "music_playlist", "playlist_id", self.scan))
+            group.create_task(self.imports.pump())

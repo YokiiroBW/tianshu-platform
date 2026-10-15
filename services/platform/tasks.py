@@ -326,7 +326,10 @@ class Tasks:
             if document.get("media_kind") == "audio":
                 built["request"] = {
                     "job_id": document["job_id"],
-                    "provider": "netease",
+                    "provider": document.get("provider", "netease"),
+                    "download_provider": document.get("download_provider"),
+                    "download_source_id": document.get("download_source_id"),
+                    "audio_operation": document.get("audio_operation", "download"),
                     "source_id": document["source_id"],
                     "quality": document["quality"],
                 }

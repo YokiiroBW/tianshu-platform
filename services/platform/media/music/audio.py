@@ -12,7 +12,7 @@ from mutagen.mp4 import MP4, MP4Cover
 from mutagen.id3 import APIC, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TXXX, USLT
 from PIL import Image, UnidentifiedImageError
 
-from ...contracts import Fault, require
+from ...contracts import Fault, digest, require
 from ..engine import executable_path, run_process
 from ..video_storage import sync_file
 
@@ -59,7 +59,7 @@ async def probe(path, track, engine):
         extension = {"flac": "flac", "mp3": "mp3", "aac": "m4a", "alac": "m4a"}.get(codec)
         require(extension is not None, "music_format_unsupported", 409)
         duration = float(data["format"].get("duration", stream.get("duration", 0)))
-        expected = float(track.get("duration_ms") or 0) / 1000
+        expected = float(track.get("duration_ms") or 0) / 1000 if track is not None else duration
         require(duration > 0 and expected > 0, "music_duration_unknown", 409)
         require(abs(duration - expected) <= max(2, expected * 0.02), "music_preview_rejected", 409)
         observed = {
@@ -75,7 +75,7 @@ async def probe(path, track, engine):
         }
     except (ValueError, KeyError, TypeError):
         raise Fault("music_audio_invalid", 409) from None
-    code, _, errors = await run_process(
+    code, decoded, errors = await run_process(
         [
             executable_path(engine["ffmpeg"]),
             "-nostdin",
@@ -86,13 +86,26 @@ async def probe(path, track, engine):
             str(path),
             "-map",
             "0:a:0",
+            "-c:a",
+            "pcm_s32le",
             "-f",
-            "null",
+            "hash",
+            "-hash",
+            "SHA256",
             "-",
         ],
         timeout=600,
     )
     require(code == 0 and not errors.strip(), "music_audio_invalid", 409)
+    checksum = decoded.decode().strip() if isinstance(decoded, bytes) else decoded.strip()
+    require(re.fullmatch(r"SHA256=[0-9a-f]{64}", checksum), "music_audio_invalid", 409)
+    observed["content_id"] = digest(
+        {
+            "pcm_s32le": checksum,
+            "sample_rate": observed["sample_rate"],
+            "channels": observed["channels"],
+        }
+    )
     return observed
 
 
@@ -121,7 +134,15 @@ def write_tags(path, track, artwork, lyrics):
     title, album = track.get("title") or track["source_id"], track.get("album") or "未知专辑"
     date = track.get("date", "")
     index, disc = number(track.get("track_number")), number(track.get("disc"))
-    source = "https://music.163.com/#/song?id=" + track["source_id"]
+    provider = track.get("provider", "netease")
+    id_tag = {"netease": "NETEASEID", "qq": "QQMUSICID", "kugou": "KUGOUHASH"}.get(
+        provider, "TIANSHUSOURCEID"
+    )
+    source = {
+        "netease": "https://music.163.com/#/song?id=",
+        "qq": "https://y.qq.com/n/ryqq/songDetail/",
+        "kugou": "https://www.kugou.com/song/#hash=",
+    }.get(provider, "") + track["source_id"]
     try:
         audio = mutagen.File(path)
         require(isinstance(audio, (FLAC, MP3, MP4)), "music_format_unsupported", 409)
@@ -136,7 +157,7 @@ def write_tags(path, track, artwork, lyrics):
                 "date": [date],
                 "tracknumber": [index],
                 "discnumber": [disc],
-                "neteaseid": [track["source_id"]],
+                id_tag: [track["source_id"]],
                 "website": [source],
                 "lyrics": [lyrics],
             }
@@ -162,7 +183,7 @@ def write_tags(path, track, artwork, lyrics):
             ):
                 if any(value):
                     audio.tags.add(cls(encoding=3, text=value))
-            audio.tags.add(TXXX(encoding=3, desc="NETEASEID", text=[track["source_id"]]))
+            audio.tags.add(TXXX(encoding=3, desc=id_tag, text=[track["source_id"]]))
             audio.tags.add(TXXX(encoding=3, desc="SOURCE", text=[source]))
             if lyrics:
                 audio.tags.add(USLT(encoding=3, lang="und", desc="", text=lyrics))
@@ -183,7 +204,7 @@ def write_tags(path, track, artwork, lyrics):
                 audio["trkn"] = [(int(index), 0)]
             if disc:
                 audio["disk"] = [(int(disc), 0)]
-            audio["----:com.apple.iTunes:NETEASEID"] = [track["source_id"].encode()]
+            audio["----:com.apple.iTunes:" + id_tag] = [track["source_id"].encode()]
             if artwork:
                 audio["covr"] = [MP4Cover(artwork, imageformat=MP4Cover.FORMAT_JPEG)]
         audio.save()

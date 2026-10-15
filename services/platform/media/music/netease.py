@@ -183,6 +183,17 @@ class Netease:
             "label": clean_text(profile.get("nickname"), 256),
         }
 
+    async def search(self, query, cookie):
+        require(isinstance(query, str) and 0 < len(query) <= 512, "invalid_input", 400)
+        value, _ = await self.request(
+            "/api/cloudsearch/pc", {"s": query, "type": 1, "limit": 30, "offset": 0}, cookie
+        )
+        result = value.get("result") or {}
+        require(isinstance(result, dict), "music_upstream_invalid", 502)
+        rows = result.get("songs") or []
+        require(isinstance(rows, list), "music_upstream_invalid", 502)
+        return [track_info(row) for row in rows[:30]]
+
     async def download(self, identity, level, cookie):
         value, _ = await self.request(
             "/api/song/enhance/download/url/v1",

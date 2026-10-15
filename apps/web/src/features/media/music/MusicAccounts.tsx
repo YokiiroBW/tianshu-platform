@@ -3,26 +3,42 @@ import qrcode from "qrcode-generator";
 import { QrCode } from "lucide-react";
 import type { MediaController } from "../useMediaController";
 import { timestamp, word } from "../wording";
-import type { MusicAccount } from "./types";
+import {
+  providerNames,
+  type MusicAccount,
+  type MusicProvider,
+  type MusicView,
+} from "./types";
 
-type Qr = { qr_id: string; url: string; expires_at: number };
+type Qr = {
+  qr_id: string;
+  url: string;
+  image?: string | null;
+  expires_at: number;
+};
 
 export function MusicAccounts({
   media,
   accounts,
   refresh,
+  providers,
 }: {
   media: MediaController;
   accounts: MusicAccount[];
   refresh: () => Promise<void>;
+  providers?: MusicView["providers"];
 }) {
   const [qr, setQr] = useState<Qr | null>(null);
+  const [provider, setProvider] = useState<MusicProvider>("netease");
+  const [loginType, setLoginType] = useState("qq");
   const [state, setState] = useState("waiting");
   const [starting, setStarting] = useState(false);
   const current = useRef({ media, refresh });
   current.current = { media, refresh };
   const image = useMemo(() => {
     if (!qr) return null;
+    if (qr.image?.startsWith("data:image/")) return qr.image;
+    if (!qr.url) return null;
     const code = qrcode(0, "M");
     code.addData(qr.url);
     code.make();
@@ -49,9 +65,7 @@ export function MusicAccounts({
         setState(value.state);
         if (value.state === "ready") {
           setQr(null);
-          current.current.media.setNotice(
-            "网易云账号已连接，可以选择歌单同步。",
-          );
+          current.current.media.setNotice("音乐账号已连接，可以选择歌单同步。");
           await current.current.refresh();
           return;
         }
@@ -82,7 +96,7 @@ export function MusicAccounts({
     const value = await media.request<Qr>(
       "music-qr-start",
       "music/accounts/qr/start",
-      {},
+      { provider, login_type: provider === "qq" ? loginType : "qr" },
     );
     setStarting(false);
     if (value) {
@@ -91,18 +105,70 @@ export function MusicAccounts({
     }
   }
   return (
-    <section className="media-card media-stack" aria-label="网易云账号">
+    <section className="media-card media-stack" aria-label="音乐账号">
       <div>
-        <h3>网易云音乐</h3>
-        <p className="muted">用网易云音乐 App 扫码，连接自己的歌单。</p>
+        <h3>连接音乐账号</h3>
+        <p className="muted">
+          扫码连接歌单。下载时自动检查已连接账号的权限，无需设置渠道优先级。
+        </p>
       </div>
+      <label>
+        音乐平台
+        <select
+          value={provider}
+          disabled={starting}
+          onChange={(event) => {
+            setQr(null);
+            setProvider(event.target.value as MusicProvider);
+          }}
+        >
+          {(
+            providers ?? [
+              {
+                provider: "netease" as const,
+                label: "网易云音乐",
+                available: true,
+              },
+            ]
+          ).map((item) => (
+            <option
+              key={item.provider}
+              value={item.provider}
+              disabled={!item.available}
+            >
+              {item.label}
+              {item.available ? "" : "（工具不可用）"}
+            </option>
+          ))}
+        </select>
+      </label>
+      {provider === "qq" && (
+        <label>
+          登录方式
+          <select
+            value={loginType}
+            disabled={starting}
+            onChange={(event) => {
+              setQr(null);
+              setLoginType(event.target.value);
+            }}
+          >
+            <option value="qq">QQ 扫码</option>
+            <option value="wx">微信扫码</option>
+          </select>
+        </label>
+      )}
       <button
         className="button primary"
         disabled={starting || !!media.busy}
         onClick={() => void start()}
       >
         <QrCode aria-hidden="true" />
-        {starting ? "正在生成…" : qr ? "重新生成二维码" : "网易云扫码登录"}
+        {starting
+          ? "正在生成…"
+          : qr
+            ? "重新生成二维码"
+            : `${providerNames[provider]}扫码登录`}
       </button>
       {qr && (
         <div className="media-qr">
@@ -115,7 +181,7 @@ export function MusicAccounts({
             }[state] ?? "正在读取登录状态"}
           </p>
           {state !== "expired" && image && (
-            <img src={image} alt="网易云音乐登录二维码" />
+            <img src={image} alt={`${providerNames[provider]}登录二维码`} />
           )}
           <p className="muted">有效至 {timestamp(qr.expires_at)}</p>
         </div>
@@ -126,7 +192,8 @@ export function MusicAccounts({
           <div>
             <strong>{account.label}</strong>
             <p className="muted">
-              {word(account.state)} · 网易云 ID {account.user_id}
+              {word(account.state)} · {providerNames[account.provider]} ID{" "}
+              {account.user_id}
             </p>
           </div>
           {account.state !== "revoked" && (

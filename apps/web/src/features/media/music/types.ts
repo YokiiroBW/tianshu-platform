@@ -1,6 +1,13 @@
+export const providerNames = {
+  netease: "网易云音乐",
+  qq: "QQ 音乐",
+  kugou: "酷狗音乐",
+  local: "本地导入",
+};
+export type MusicProvider = "netease" | "qq" | "kugou";
 export type MusicAccount = {
   account_id: string;
-  provider: "netease";
+  provider: MusicProvider;
   user_id: string;
   label: string;
   state: "ready" | "auth_required" | "revoked";
@@ -47,6 +54,19 @@ export type MusicSettings = {
   revision: number;
 };
 export type MusicView = {
+  imports?: {
+    state: string;
+    checked_at?: number;
+    total?: number;
+    failed?: number;
+    queued?: number;
+  };
+  providers?: {
+    provider: MusicProvider;
+    label: string;
+    available: boolean;
+    login_types: string[];
+  }[];
   configured: boolean;
   audio_download_available: boolean;
   accounts: MusicAccount[];
@@ -65,6 +85,8 @@ export type PlaylistDetail = {
     audio_state: string;
     audio_code?: string;
     audio_quality?: AudioQuality | null;
+    download_provider?: keyof typeof providerNames | null;
+    download_source_id?: string | null;
     file?: string | null;
     job_id?: string | null;
   }[];

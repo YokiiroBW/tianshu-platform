@@ -1,0 +1,306 @@
+import asyncio
+import base64
+import copy
+import json
+import os
+import struct
+import unittest
+
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from mutagen.flac import FLAC
+
+import test_music_downloads as fixtures
+from services.platform.contracts import Fault
+from services.platform.media.music.catalog import same_recording
+from services.platform.media.music.quality import aggregate, requested_levels
+
+
+def encrypted_ncm(audio, title, artists, album, image):
+    """Synthetic original: generated sine audio, never a commercial recording."""
+
+    def aes(value, key):
+        pad = padding.PKCS7(128).padder()
+        encrypt = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+        return encrypt.update(pad.update(value) + pad.finalize()) + encrypt.finalize()
+
+    key = b"synthetic-stream-key"
+    core = bytes(v ^ 0x64 for v in aes(b"neteasecloudmusic" + key, b"hzHRAmso5kInbaxW"))
+    metadata = json.dumps(
+        {"format": "flac", "musicName": title, "artist": [[a, 1] for a in artists], "album": album}
+    ).encode()
+    meta = bytes(
+        v ^ 0x63
+        for v in b"163 key(Don't modify):"
+        + base64.b64encode(aes(b"music:" + metadata, b"#14ljk_!\\]&0U<'("))
+    )
+    box, j = list(range(256)), 0
+    for i in range(256):
+        j = (box[i] + j + key[i % len(key)]) & 255
+        box[i], box[j] = box[j], box[i]
+    mask = [
+        box[(box[(i + 1) & 255] + box[((i + 1) + box[(i + 1) & 255]) & 255]) & 255]
+        for i in range(256)
+    ]
+    payload = bytes(value ^ mask[index & 255] for index, value in enumerate(audio))
+    return (
+        b"CTENFDAM\x00\x00"
+        + struct.pack("<I", len(core))
+        + core
+        + struct.pack("<I", len(meta))
+        + meta
+        + bytes(5)
+        + struct.pack("<II", len(image), len(image))
+        + image
+        + payload
+    )
+
+
+class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
+    setUpClass = classmethod(fixtures.MusicDownloadTests.setUpClass.__func__)
+    asyncSetUp = fixtures.MusicDownloadTests.asyncSetUp
+    fixture_url = fixtures.MusicDownloadTests.fixture_url
+    value = fixtures.MusicDownloadTests.value
+    subscribe = fixtures.MusicDownloadTests.subscribe
+    queue = fixtures.MusicDownloadTests.queue
+    run_job = fixtures.MusicDownloadTests.run_job
+    file = fixtures.MusicDownloadTests.file
+
+    def test_versions_and_ambiguous_missing_metadata_are_not_merged(self):
+        original = self.api.value["tracks"][0]
+        for changes in (
+            {"title": original["title"] + " (Live)"},
+            {"album": "另一版本"},
+            {"duration_ms": 14000},
+            {"artists": ["翻唱歌手"]},
+            {"duration_ms": None},
+        ):
+            self.assertFalse(same_recording(original, {**original, **changes}))
+        matched = {**original, "isrc": "CN-A01-26-00001"}
+        self.assertTrue(same_recording(matched, {**matched, "album": "精选集", "track_number": 9}))
+
+    def test_strict_playlist_quality_is_not_weakened_by_another_playlist(self):
+        combined = aggregate(
+            [
+                {"level": "best", "allow_fallback": True},
+                {"level": "lossless", "allow_fallback": False},
+            ]
+        )
+        self.assertEqual(requested_levels(combined), ["hires", "lossless"])
+
+    async def test_existing_tagged_file_is_indexed_and_reused_without_modification(self):
+        path = self.library_root / "Music Tag Web 原件.flac"
+        path.write_bytes(self.audio["flac"])
+        tags = FLAC(path)
+        track = self.api.value["tracks"][0]
+        for key, value in {
+            "title": track["title"],
+            "artist": track["artists"],
+            "album": track["album"],
+        }.items():
+            tags[key] = value
+        tags.save()
+        before = path.read_bytes()
+        self.queue()
+        result = await self.run_job()
+        self.assertEqual(result["state"], "completed", result.get("code"))
+        self.assertTrue(result["audio_reused"])
+        self.assertEqual(self.api.download_calls, 0)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.file(result), path)
+        path.rename(self.library_root / "改名原件.flac")
+        self.music.imports.enqueue()
+        scan = await self.run_job()
+        self.assertEqual(scan["state"], "completed", scan.get("code"))
+        detail = self.library.detail(self.playlist["playlist_id"], 0)
+        self.assertEqual(detail["tracks"][0]["file"], "改名原件.flac")
+
+    async def test_real_decoder_ncm_import_reuses_recording_and_retains_original(self):
+        if not os.environ.get("TIANSHU_MUSICDECODE"):
+            self.skipTest("Real pinned decoder executable required")
+        inbox = self.library_root / ".incoming"
+        inbox.mkdir()
+        track = self.api.value["tracks"][0]
+        raw = encrypted_ncm(
+            self.audio["flac"], track["title"], track["artists"], track["album"], self.image
+        )
+        path = inbox / "synthetic.ncm"
+        path.write_bytes(raw)
+        self.music.imports.enqueue()
+        scan = await self.run_job()
+        self.assertEqual(scan["state"], "completed", scan.get("code"))
+        imported = await self.run_job()
+        self.assertEqual(imported["state"], "completed", imported.get("code"))
+        self.assertEqual(FLAC(self.file(imported))["title"], [track["title"]])
+        self.assertEqual(FLAC(self.file(imported))["artist"], track["artists"])
+        self.assertEqual(path.read_bytes(), raw)
+        self.queue()
+        downloaded = await self.run_job()
+        self.assertTrue(downloaded["audio_reused"])
+        self.assertEqual(self.api.download_calls, 0)
+        self.assertEqual(self.file(imported), self.file(downloaded))
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+
+    async def test_cross_platform_search_rejects_wrong_recording(self):
+        original = copy.deepcopy(self.api.value["tracks"][0])
+
+        async def denied(*args):
+            raise Fault("music_download_forbidden", 409)
+
+        self.api.download = denied
+        client = fixtures.SyntheticNetease()
+
+        async def search(query, cookie):
+            return [{**original, "title": original["title"] + " (Live)", "source_id": "wrong"}]
+
+        async def should_not_download(*args):
+            self.fail("Wrong recording must not be downloaded")
+
+        client.search, client.download = search, should_not_download
+        self.music.connectors["qq"] = client
+        self.library.save_account({"user_id": "456", "label": "QQ"}, {"cookie": "fixture"}, "qq")
+        self.queue()
+        job = await self.run_job()
+        self.assertEqual(job["code"], "music_download_forbidden")
+        self.assertFalse(list(self.library_root.rglob("*.flac")))
+
+    async def test_quality_upgrade_replaces_only_managed_audio_and_updates_each_playlist(self):
+        self.queue()
+        first = await self.run_job()
+        old_path = self.file(first)
+        value = self.value(["101"])
+        value["playlist"]["source_id"] = "902"
+        second_playlist = self.subscribe(value)
+        with self.repo.transaction() as db:
+            second_playlist = self.library.downloads(
+                {
+                    "playlist_id": second_playlist["playlist_id"],
+                    "expected_revision": second_playlist["revision"],
+                    "auto_download": False,
+                    "quality": {"level": "hires", "allow_fallback": False},
+                },
+                db,
+            )["playlist"]
+        self.file_bytes, self.level = self.audio["hires"], "hires"
+        self.queue(second_playlist)
+        upgraded = await self.run_job()
+        self.assertEqual(upgraded["state"], "completed", upgraded.get("code"))
+        self.assertEqual(upgraded["actual_quality"], "hires")
+        self.assertFalse(old_path.exists())
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+        for playlist in (self.playlist, second_playlist):
+            detail = self.library.detail(playlist["playlist_id"], 0)
+            self.assertEqual(
+                detail["tracks"][0]["file"],
+                self.file(upgraded).relative_to(self.library_root).as_posix(),
+            )
+            self.assertEqual(detail["tracks"][0]["audio_quality"]["level"], "hires")
+
+    async def test_corrupt_encrypted_input_fails_and_is_retained(self):
+        if not os.environ.get("TIANSHU_MUSICDECODE"):
+            self.skipTest("Real pinned decoder executable required")
+        inbox = self.library_root / ".incoming"
+        inbox.mkdir()
+        path = inbox / "corrupt.ncm"
+        original = b"CTENFDAM\x00\x00\xff\xff\xff\xff"
+        path.write_bytes(original)
+        self.music.imports.enqueue()
+        await self.run_job()
+        failed = await self.run_job()
+        self.assertEqual(failed["state"], "failed")
+        self.assertEqual(failed["code"], "music_decode_failed")
+        self.assertEqual(path.read_bytes(), original)
+        self.assertFalse(list(self.library_root.rglob("*.flac")))
+
+    async def test_higher_quality_request_during_download_is_not_lost(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.api.download
+
+        async def gated(*args):
+            entered.set()
+            await release.wait()
+            return await original(*args)
+
+        self.api.download = gated
+        self.queue()
+        task = asyncio.create_task(self.run_job())
+        await entered.wait()
+        with self.repo.transaction() as db:
+            self.library.downloads(
+                {
+                    "playlist_id": self.playlist["playlist_id"],
+                    "expected_revision": self.playlist["revision"],
+                    "auto_download": True,
+                    "quality": {"level": "hires", "allow_fallback": False},
+                },
+                db,
+            )
+        release.set()
+        first = await task
+        self.assertEqual(first["state"], "queued")
+        self.api.download = original
+        self.file_bytes, self.level = self.audio["hires"], "hires"
+        second = await self.run_job()
+        self.assertEqual(second["state"], "completed", second.get("code"))
+        self.assertEqual(second["actual_quality"], "hires")
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+
+    async def test_deployed_legacy_artifact_is_adopted_without_rewriting_or_downloading(self):
+        self.queue()
+        first = await self.run_job()
+        original = self.file(first).read_bytes()
+        # Explicit isolated pre-catalog fixture; never run this against production.
+        with self.repo.transaction() as db:
+            db.execute(
+                "DELETE FROM documents WHERE kind IN ('music_catalog','music_recording','music_source','music_match_index','music_source_index','music_library_file','music_content_index','music_import_scan','music_file_observation')"
+            )
+            artifact = {
+                k: v
+                for k, v in first["audio_receipt"].items()
+                if k
+                not in {
+                    "content_id",
+                    "recording_id",
+                    "download_provider",
+                    "download_source_id",
+                    "requested_quality",
+                }
+            }
+            self.repo.update_job(
+                first["job_id"], {"recording_id": None, "audio_receipt": artifact}, db=db
+            )
+        self.library.catalog.bootstrap()
+        adopted = self.repo.job(first["job_id"])
+        self.assertTrue(adopted["recording_id"])
+        self.queue()
+        reused = await self.run_job()
+        self.assertEqual(reused["state"], "completed", reused.get("code"))
+        self.assertTrue(reused["audio_reused"])
+        self.assertEqual(self.api.download_calls, 1)
+        self.assertEqual(self.file(reused).read_bytes(), original)
+        self.assertTrue(self.library.catalog.file(reused["recording_id"])["content_id"])
+
+    async def test_failed_strict_upgrade_keeps_other_playlist_archived(self):
+        self.queue()
+        first = await self.run_job()
+        value = self.value(["101"])
+        value["playlist"]["source_id"] = "902"
+        playlist = self.subscribe(value)
+        with self.repo.transaction() as db:
+            self.library.downloads(
+                {
+                    "playlist_id": playlist["playlist_id"],
+                    "expected_revision": playlist["revision"],
+                    "auto_download": True,
+                    "quality": {"level": "hires", "allow_fallback": False},
+                },
+                db,
+            )
+        failed = await self.run_job()
+        self.assertEqual(failed["state"], "failed")
+        low = self.library.detail(self.playlist["playlist_id"], 0)["tracks"][0]
+        high = self.library.detail(playlist["playlist_id"], 0)["tracks"][0]
+        self.assertEqual(low["audio_state"], "completed")
+        self.assertEqual(high["audio_state"], "failed")
+        self.assertEqual(low["file"], high["file"])
+        self.assertTrue(self.file(first).is_file())

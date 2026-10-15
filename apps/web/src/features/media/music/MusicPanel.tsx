@@ -12,6 +12,8 @@ import type {
   SourcePlaylist,
 } from "./types";
 import "./music.css";
+import { providerNames } from "./types";
+import { MusicLibrary } from "./MusicLibrary";
 
 export function MusicPanel({ media }: { media: MediaController }) {
   const [view, setView] = useState<MusicView | null>(null);
@@ -60,6 +62,8 @@ export function MusicPanel({ media }: { media: MediaController }) {
         "music-detail",
         "music-scan",
         "music-export",
+        "music-library",
+        "music-library-scan",
         "command",
       ])
         current.current.cancel(slot);
@@ -127,7 +131,8 @@ export function MusicPanel({ media }: { media: MediaController }) {
         </button>
       </div>
       <p className="music-scope">
-        网易云扫码登录后，订阅歌单并下载到音乐库，自动写入歌曲标签、封面和歌词。歌单保存在天枢，也可导出为
+        网易云、QQ
+        音乐、酷狗歌单统一保存在天枢。优先复用本地歌曲；缺失时自动搜索同一版本，使用有完整下载权限的账号获取，整理标签、封面和歌词。一首歌曲共用一个文件，各歌单保留自己的顺序，并导出
         M3U8 和 JSON。
       </p>
       <div className="music-settings-grid">
@@ -135,6 +140,7 @@ export function MusicPanel({ media }: { media: MediaController }) {
           media={media}
           accounts={view.accounts}
           refresh={refresh}
+          providers={view.providers}
         />
         <MusicStorage
           media={media}
@@ -142,7 +148,8 @@ export function MusicPanel({ media }: { media: MediaController }) {
           refresh={refresh}
         />
       </div>
-      <section className="media-card media-stack" aria-label="选择网易云歌单">
+      <MusicLibrary media={media} status={view.imports} refresh={refresh} />
+      <section className="media-card media-stack" aria-label="选择音乐歌单">
         <div>
           <h3>选择歌单</h3>
           <p className="muted">
@@ -151,7 +158,7 @@ export function MusicPanel({ media }: { media: MediaController }) {
         </div>
         <div className="music-select-row">
           <label>
-            网易云账号
+            音乐账号
             <select
               value={accountId}
               disabled={!!reading || !!media.busy}
@@ -165,7 +172,7 @@ export function MusicPanel({ media }: { media: MediaController }) {
                 .filter((account) => account.state === "ready")
                 .map((account) => (
                   <option key={account.account_id} value={account.account_id}>
-                    {account.label}
+                    {providerNames[account.provider]} · {account.label}
                   </option>
                 ))}
             </select>
@@ -378,6 +385,11 @@ export function MusicPanel({ media }: { media: MediaController }) {
                         </p>
                       )}
                       {track.file && <p className="music-file">{track.file}</p>}
+                      {track.download_provider && (
+                        <p className="muted">
+                          文件来源：{providerNames[track.download_provider]}
+                        </p>
+                      )}
                       {track.audio_code &&
                         !["queued", "music_archived"].includes(
                           track.audio_code,

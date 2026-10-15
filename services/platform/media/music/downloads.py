@@ -8,7 +8,8 @@ from ...contracts import Fault, require
 from ..destination import safe_path
 from ..video_storage import sync_file
 from .audio import cover, probe, record, write_tags
-from .quality import requested_levels, verify_quality
+from .quality import verify_quality, satisfies
+from .resolver import Resolver
 from .storage import AudioStorage
 from .transfer import Transfer
 
@@ -38,27 +39,37 @@ class Downloads:
     def __init__(self, music):
         self.music, self.media = music, music.media
         self.storage, self.transfer = AudioStorage(music), Transfer()
+        self.resolver = Resolver(music)
 
-    async def package(self, job, cookie, update):
-        connector, local = self.music.connector, self.media.local
+    async def package(self, job, update):
+        failure = None
+        for candidate in await self.resolver.offers(job):
+            try:
+                account = candidate["account"]
+                await update(
+                    acquisition_account_id=account["account_id"],
+                    acquisition_account_revision=account["revision"],
+                )
+                return await self.acquire(job, candidate, update)
+            except Fault as error:
+                if error.code in {"job_cancelled", "lease_conflict", "scope_changed"}:
+                    raise
+                failure = error
+        raise failure or Fault("music_download_forbidden", 409)
+
+    async def acquire(self, job, candidate, update):
+        provider, cookie = candidate["provider"], candidate["cookie"]
+        connector, local = self.music.client(provider), self.media.local
         track = {
             k: v
-            for k, v in job["track"].items()
+            for k, v in candidate["track"].items()
             if k not in {"revision", "audio_state", "availability"}
         }
-        levels = requested_levels(job["quality"])
-        for index, level in enumerate(levels):
-            try:
-                offered = await connector.download(track["source_id"], level, cookie)
-                break
-            except Fault as error:
-                if (
-                    error.code not in {"music_download_forbidden", "music_preview_rejected"}
-                    or index == len(levels) - 1
-                ):
-                    raise
+        offered = candidate["offered"]
         maximum = min(self.media.config["engine"]["max_bytes"], 1024**3)
-        require(offered["size"] <= maximum, "music_file_too_large", 409)
+        require(
+            offered.get("size") is None or offered["size"] <= maximum, "music_file_too_large", 409
+        )
         raw = await local(self.storage.stage, job, "source.part")
         raw.unlink(
             missing_ok=True
@@ -67,31 +78,52 @@ class Downloads:
             offered["url"],
             raw,
             maximum=maximum,
-            expected_size=offered["size"],
-            expected_md5=offered["md5"],
+            expected_size=offered.get("size"),
+            expected_md5=offered.get("md5"),
             progress=lambda value: update(progress=value),
+            provider=provider,
         )
         await update(state="validating", stage="validating", code="validating")
         observed = await probe(raw, track, self.media.config["engine"])
         quality = verify_quality(job["quality"], offered["level"], observed)
         warnings, artwork, lyrics = [], None, {}
-        if track.get("album_id"):
+        if track.get("album_id") and hasattr(connector, "album"):
             try:
                 track.update(await connector.album(track["album_id"], cookie))
             except Fault:
                 warnings.append("music_album_unavailable")
         try:
-            lyrics = await connector.lyrics(track["source_id"], cookie)
+            lyrics = (
+                await connector.lyrics_track(track, cookie)
+                if hasattr(connector, "lyrics_track")
+                else await connector.lyrics(track["source_id"], cookie)
+            )
         except Fault:
             warnings.append("music_lyrics_unavailable")
         if track.get("cover_url"):
             picture = await local(self.storage.stage, job, "cover.input")
             try:
                 picture.unlink(missing_ok=True)
-                await self.transfer.fetch(track["cover_url"], picture, maximum=16 * 1024**2)
+                await self.transfer.fetch(
+                    track["cover_url"],
+                    picture,
+                    maximum=16 * 1024**2,
+                    provider=provider,
+                    artwork=True,
+                )
                 artwork = await local(lambda: cover(picture.read_bytes()))
             except Fault:
                 warnings.append("music_cover_unavailable")
+        return await self.prepare_package(
+            job, track, raw, observed, quality, artwork, lyrics, warnings
+        )
+
+    async def prepare_package(
+        self, job, track, raw, observed, quality, artwork=None, lyrics=None, warnings=None
+    ):
+        local = self.media.local
+        provider = track.get("provider", "local")
+        lyrics, warnings = lyrics or {}, warnings or []
         audio = await local(self.storage.stage, job, "audio." + quality["extension"])
         raw.replace(audio)
         await settled(local, write_tags, audio, track, artwork, lyrics.get("original", ""))
@@ -100,7 +132,7 @@ class Downloads:
         require(
             all(
                 tagged[k] == observed[k]
-                for k in ("codec", "sample_rate", "channels", "bits_per_sample")
+                for k in ("codec", "sample_rate", "channels", "bits_per_sample", "content_id")
             ),
             "music_tag_failed",
             409,
@@ -118,8 +150,10 @@ class Downloads:
             extras[".jpg"] = artwork
         extras[".source.json"] = json.dumps(
             {
-                "provider": "netease",
+                "provider": provider,
                 "source_id": track["source_id"],
+                "recording_id": job["recording_id"],
+                "requested_from": {"provider": job["provider"], "source_id": job["source_id"]},
                 "metadata": track,
                 "quality": quality,
                 "warnings": warnings,
@@ -144,6 +178,10 @@ class Downloads:
             )
         return {
             "track": track,
+            "download_provider": provider,
+            "download_source_id": track["source_id"],
+            "content_id": observed["content_id"],
+            "requested_quality": job["quality"],
             "quality": quality,
             "warnings": warnings,
             "files": [
@@ -170,6 +208,8 @@ class Downloads:
             return False
 
     async def run(self, job, owner):
+        if job.get("audio_operation") in {"scan", "import"}:
+            return await self.music.imports.run(job, owner)
         repo, local = self.media.repo, self.media.local
         identity, generation = job["job_id"], job["generation"]
         running = asyncio.current_task()
@@ -192,8 +232,15 @@ class Downloads:
 
         heartbeat = asyncio.create_task(pulse())
         try:
-            account, cookie = await local(self.music.library.account, job["account_id"])
-            await update(account_revision=account["revision"])
+            quality, request_version = await local(self.resolver.requests, job)
+            await update(
+                quality=quality,
+                processing_request_version=request_version,
+                acquisition_account_id=None,
+                acquisition_account_revision=None,
+            )
+            await self.music.imports.ensure_indexed(job, update)
+            await self.storage.refresh_file(job)
             reused = await settled(local, self.storage.reuse, job, owner)
             if reused:
                 job = reused
@@ -202,20 +249,25 @@ class Downloads:
                 if (
                     intent
                     and intent["state"] != "retired"
+                    and satisfies(job["quality"], intent)
                     and await local(self.storage.matches, intent)
                 ):
                     job = await settled(local, self.storage.publish, job, owner)
                 else:
-                    if not await local(self.package_present, job.get("audio_package")):
+                    if not await local(
+                        self.package_present, job.get("audio_package")
+                    ) or not satisfies(job["quality"], job["audio_package"]):
                         # Keep the old intent as history and retain any surviving files.
                         # A rebuilt package gets a fresh collision-safe destination.
                         if intent:
                             await local(self.storage.retire, job)
-                        package = await self.package(job, cookie, update)
+                        package = await self.package(job, update)
                         await update(
                             audio_package=package,
                             actual_quality=package["quality"]["level"],
                             audio_quality=package["quality"],
+                            download_provider=package["download_provider"],
+                            download_source_id=package["download_source_id"],
                         )
                     await update(state="publishing", stage="publishing", code="publishing")
                     job = await settled(local, self.storage.publish, job, owner)
@@ -223,6 +275,7 @@ class Downloads:
                 await settled(local, self.storage.cleanup, job)
             except (Fault, OSError):
                 pass  # Existing retention pump retries cleanup after confirmed publication.
+            await local(self.storage.export_related, job)
         except asyncio.CancelledError:
             current = await local(repo.job, identity, include_deleted=True)
             if current and current["generation"] == generation and current["state"] != "completed":

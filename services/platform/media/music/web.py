@@ -4,7 +4,7 @@ import asyncio
 import uuid
 
 from ...contracts import Fault, require
-from .netease import source_id
+from .providers import identity as source_id, PROVIDERS
 
 
 class WebMusic:
@@ -20,7 +20,25 @@ class WebMusic:
         library, connector, local = music.library, music.connector, self.media.local
         if operation == "view":
             require(body == {}, "invalid_input", 400)
-            return await local(library.view)
+            return {
+                **await local(library.view),
+                "providers": music.capabilities(),
+                "routing": "automatic",
+                "imports": await local(music.imports.view),
+            }
+        if operation == "library/scan":
+            self.fields(body, set())
+            result = await local(music.imports.enqueue)
+            self.media.wake.set()
+            return result
+        if operation == "library/view":
+            self.fields(body, {"offset"})
+            return await local(library.catalog.view, body["offset"])
+        if operation == "library/link":
+            self.fields(body, {"source_key", "recording_id", "expected_revision", "client_id"})
+            return await self.web.receipt(
+                body, "music/" + operation, session, lambda db: library.catalog.link(body, db)
+            )
         if operation == "settings/save":
             self.fields(body, {"directory", "layout", "expected_revision", "client_id"})
             return await self.web.receipt(
@@ -30,11 +48,22 @@ class WebMusic:
             self.fields(body, {"directory"})
             return await local(library.inspect_directory, body["directory"])
         if operation == "accounts/qr/start":
-            self.fields(body, set())
+            require(set(body) <= {"provider", "login_type"}, "invalid_input", 400)
+            provider = body.get("provider", "netease")
+            require(provider in PROVIDERS, "invalid_input", 400)
+            login_type = body.get("login_type", "qq" if provider == "qq" else "qr")
+            require(
+                login_type in ({"qq", "wx"} if provider == "qq" else {"qr"}), "invalid_input", 400
+            )
+            connector = music.client(provider)
             now = self.media.repo.clock()
             music.qr = {k: v for k, v in music.qr.items() if v["expires_at"] > now}
             require(len(music.qr) < 16, "qr_capacity", 429)
-            data = await connector.qr_start()
+            data = (
+                await connector.qr_start()
+                if provider == "netease"
+                else await connector.qr_start(login_type)
+            )
             await self.web.live(session)
             identity = str(uuid.uuid4())
             music.qr[identity] = {
@@ -45,14 +74,21 @@ class WebMusic:
                 "last_poll": 0,
                 "state": "waiting",
                 "account": None,
+                "provider": provider,
             }
-            return {"qr_id": identity, "url": data["url"], "expires_at": now + 180}
+            return {
+                "qr_id": identity,
+                "url": data["url"],
+                "image": data.get("image"),
+                "expires_at": now + 180,
+            }
         if operation == "accounts/qr/poll":
             self.fields(body, {"qr_id"})
             qr = music.qr.get(body["qr_id"])
             if qr is None or qr["expires_at"] <= self.media.repo.clock():
                 return {"state": "expired", "account": None}
             require(qr["session"] is session, "forbidden", 403)
+            connector = music.client(qr["provider"])
             async with qr["lock"]:
                 if qr["state"] == "ready" or self.media.repo.clock() - qr["last_poll"] < 3:
                     return {"state": qr["state"], "account": qr["account"]}
@@ -63,7 +99,9 @@ class WebMusic:
                     profile = await connector.account(cookie)
                     await self.web.live(session)
                     require(qr["expires_at"] > self.media.repo.clock(), "qr_expired", 409)
-                    qr["account"] = await local(library.save_account, profile, cookie)
+                    qr["account"] = await local(
+                        library.save_account, profile, cookie, qr["provider"]
+                    )
                     qr["cookie"] = {}
                 qr["state"] = state
                 return {"state": state, "account": qr["account"]}
@@ -75,6 +113,7 @@ class WebMusic:
         if operation == "playlists/list":
             self.fields(body, {"account_id"})
             account, cookie = await local(library.account, body["account_id"])
+            connector = music.client(account["provider"])
             try:
                 result = await connector.playlists(account["user_id"], cookie)
             except TimeoutError:
@@ -106,6 +145,7 @@ class WebMusic:
             if replay:
                 return replay
             account, cookie = await local(library.account, body["account_id"])
+            connector = music.client(account["provider"])
             try:
                 async with asyncio.timeout(120):
                     snapshot = await connector.snapshot(

@@ -10,6 +10,7 @@ import { destinationLabel } from "./destination";
 import { qualityWord, timestamp, tone, word } from "./wording";
 import { consumeJobsFilter, initialJobsFilter } from "./jobsNavigation";
 import { audioQualityText, MusicAudioReceipt } from "./music/MusicDownloads";
+import { providerNames } from "./music/types";
 
 const serverWords: Record<string, string> = {
   verified: "已核对",
@@ -328,7 +329,7 @@ export function JobsPanel({ media }: { media: MediaController }) {
                     <h3>{job.title || job.bvid}</h3>
                     <p className="muted">
                       {job.media_kind === "audio" ? (
-                        `${job.creator || "未知艺术家"} · 网易云 ${job.source_id}`
+                        `${job.creator || "未知艺术家"} · ${providerNames[job.provider as keyof typeof providerNames] ?? "音乐"} ${job.source_id}`
                       ) : (
                         <>
                           {job.creator || "UP 主未提供"} · {job.bvid} ·{" "}
