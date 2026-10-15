@@ -40,7 +40,9 @@ class Accounts:
         key = Path(str(repository.database) + ".key")
         if not key.exists():
             require(
-                not repository.list("account") and not repository.list("media_target"),
+                not repository.list("account")
+                and not repository.list("media_target")
+                and not repository.list("music_account"),
                 "media_credentials_unavailable",
                 503,
             )
@@ -55,7 +57,7 @@ class Accounts:
         require(key.is_file() and not key.is_symlink(), "media_credentials_unavailable", 503)
         try:
             self.cipher = AESGCM(key.read_bytes())
-            for account in repository.list("account"):
+            for account in repository.list("account") + repository.list("music_account"):
                 if account.get("secret"):
                     self._decrypt(account)
         except (ValueError, OSError):

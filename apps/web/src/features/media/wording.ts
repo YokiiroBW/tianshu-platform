@@ -137,6 +137,19 @@ export const errorWords: Record<string, string> = {
   rule_invalid: "规则格式或正则表达式不合法，请检查规则。",
   too_many_requests: "尝试过于频繁，请稍后重试。",
   not_found: "找不到这条记录，请重新读取。",
+  invalid_music_id: "歌曲或歌单标识无效，请重新读取。",
+  music_auth_required: "网易云登录已失效，请重新扫码登录。",
+  music_account_unavailable: "网易云账号已断开，请重新连接。",
+  music_upstream_unavailable: "网易云暂时无法连接，请稍后重试。",
+  music_upstream_invalid: "网易云返回的数据不完整，本次未替换已保存歌单。",
+  music_upstream_rejected: "网易云未能返回所请求的内容，请检查账号状态后重试。",
+  music_scan_incomplete: "歌单未读取完整，已保留上次同步结果。",
+  music_source_changed: "读取期间歌单发生变化，请重新同步。",
+  music_snapshot_too_large: "歌单超过本次读取范围，已保留原记录。",
+  music_rate_limited: "网易云请求暂受限制，请稍后重试。",
+  music_subscription_paused: "此歌单已暂停，请先恢复同步。",
+  music_directory_absolute: "请填写音乐目录的完整路径。",
+  music_directory_unavailable: "音乐目录暂不可访问，请检查目录路径。",
 };
 export function timestamp(seconds: number | null | undefined) {
   if (seconds == null || !Number.isFinite(seconds)) return "尚无记录";

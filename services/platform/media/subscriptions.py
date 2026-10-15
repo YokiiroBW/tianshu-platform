@@ -11,6 +11,7 @@ from .metadata import normalize_bilibili
 from .destination import head_key, snapshot, subdirectory, subscription_snapshot
 from .rules import RuleValidationError, parse_policy
 from .rule_context import build_rule_context, rule_snapshot_revision, uses_advanced_fields
+from .scheduling import pump_scans
 
 
 def job_payload(
@@ -411,15 +412,4 @@ class Subscriptions:
                 await self.media.local(self.media.repo.scan_release, identity, owner, generation)
 
     async def pump(self):
-        while True:
-            subscriptions = await self.media.local(self.media.repo.list, "subscription")
-            for subscription in subscriptions:
-                if (
-                    subscription["state"] == "active"
-                    and subscription["next_scan_at"] <= self.media.repo.clock()
-                ):
-                    try:
-                        await self.scan(subscription["subscription_id"])
-                    except Fault:
-                        pass
-            await asyncio.sleep(10)
+        await pump_scans(self.media, "subscription", "subscription_id", self.scan)

@@ -12,6 +12,7 @@ import {
   Link,
   Download,
   UserRound,
+  Music2,
 } from "lucide-react";
 
 // Local navigation metadata, never a cross-product API or a connection-health registry.
@@ -53,8 +54,15 @@ export const modules = [
     label: "订阅",
     icon: Rss,
     group: "个人空间",
-    description: "关注视频来源，管理下载与媒体入库",
-    sections: ["视频订阅", "链接下载", "下载中心", "账号与媒体库", "概览"],
+    description: "关注视频与音乐，管理订阅和本地媒体",
+    sections: [
+      "视频订阅",
+      "链接下载",
+      "下载中心",
+      "账号与媒体库",
+      "概览",
+      "音乐订阅",
+    ],
   },
   {
     id: "resources",
@@ -109,6 +117,7 @@ export type ModuleId = Module["id"];
 export const subscriptionNavigation = [
   { section: 4, icon: LayoutDashboard, href: "#/subscriptions" },
   { section: 0, icon: Rss, href: "#/subscriptions/0" },
+  { section: 5, icon: Music2, href: "#/subscriptions/5" },
   { section: 1, icon: Link, href: "#/subscriptions/1" },
   { section: 2, icon: Download, href: "#/subscriptions/2" },
   { section: 3, icon: UserRound, href: "#/subscriptions/3" },

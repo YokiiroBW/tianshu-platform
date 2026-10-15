@@ -7,6 +7,7 @@ import { LinkPanel } from "./LinkPanel";
 import { OverviewPanel } from "./OverviewPanel";
 import { SubscriptionsPanel } from "./SubscriptionsPanel";
 import { useMediaController } from "./useMediaController";
+import { MusicPanel } from "./music/MusicPanel";
 import { tone, word } from "./wording";
 import "./media.css";
 
@@ -14,25 +15,27 @@ export default function MediaPage({ section = 4 }: { section?: number }) {
   const media = useMediaController();
   return (
     <div className={`media-page${section === 4 ? " media-overview-page" : ""}`}>
-      <div className="media-header">
-        {media.view && section !== 4 && (
-          <StatusRail
-            tone={tone(media.view.engine.state)}
-            label={`下载引擎 · ${word(media.view.engine.state)}`}
-          />
-        )}
-        <button
-          className="button"
-          disabled={media.loading || !!media.busy}
-          onClick={() => {
-            media.clearError();
-            void media.refresh();
-          }}
-        >
-          <RefreshCw aria-hidden="true" />
-          读取状态
-        </button>
-      </div>
+      {section !== 5 && (
+        <div className="media-header">
+          {media.view && section !== 4 && (
+            <StatusRail
+              tone={tone(media.view.engine.state)}
+              label={`下载引擎 · ${word(media.view.engine.state)}`}
+            />
+          )}
+          <button
+            className="button"
+            disabled={media.loading || !!media.busy}
+            onClick={() => {
+              media.clearError();
+              void media.refresh();
+            }}
+          >
+            <RefreshCw aria-hidden="true" />
+            读取状态
+          </button>
+        </div>
+      )}
       {media.error && (
         <div className="media-message media-warning" role="alert">
           {media.error}
@@ -60,6 +63,8 @@ export default function MediaPage({ section = 4 }: { section?: number }) {
         <StatePanel kind="unconfigured" title="视频订阅服务尚未配置">
           <p>此部署还没有登记视频账号、下载引擎和发布目标。</p>
         </StatePanel>
+      ) : section === 5 ? (
+        <MusicPanel media={media} />
       ) : section === 4 ? (
         <OverviewPanel view={media.view} />
       ) : section === 0 ? (

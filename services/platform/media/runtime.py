@@ -30,6 +30,7 @@ from .imports import Imports
 from .creator_cache import CreatorCache
 from .metadata_refresh import MetadataRefresh
 from .import_metadata import ImportMetadata
+from .music.runtime import Music
 
 JOB_FIELDS = (
     "job_id",
@@ -136,6 +137,7 @@ class Media:
         self.contract = PackageContract(self.config["package_contract_directory"])
         self.repo = Repository(settings["database_path"] + ".media.sqlite", clock=clock)
         self.accounts = Accounts(self.repo)
+        self.music = Music(self)
         self.connector = Bilibili(clock=clock)
         self.engine = Engine(self.config["engine"])
         self.targets = Targets(self)
@@ -169,6 +171,7 @@ class Media:
         await self.connector.start()
         await self.engine.check()
         self.tasks = [asyncio.create_task(self.subscriptions.pump())]
+        self.tasks.append(asyncio.create_task(self.music.pump()))
         self.tasks.append(asyncio.create_task(self.retention.pump()))
         self.tasks += [
             asyncio.create_task(self.worker.pump(index)) for index in range(self.config["workers"])
@@ -185,6 +188,7 @@ class Media:
         await self.evaluator.aclose()
         await self.connector.close()
         await self.remote.close()
+        await self.music.close()
         self.started = False
 
     async def view(self):

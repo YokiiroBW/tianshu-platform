@@ -57,7 +57,7 @@ test("subscription routes have one owner and reject malformed children", () => {
     redirectHash: "#/subscriptions/0",
   });
   for (const hash of [
-    "#/subscriptions/5",
+    "#/subscriptions/6",
     "#/subscriptions/-1",
     "#/subscriptions/1/extra",
     "#/resources/3",
@@ -94,6 +94,7 @@ test("subscription is a main navigation entry with one child navigation and lega
   await expect((await mediaNavigation(page)).getByRole("link")).toHaveText([
     "概览",
     "视频订阅",
+    "音乐订阅",
     "链接下载",
     "下载中心",
     "账号与媒体库",

@@ -410,6 +410,19 @@ class Repository:
             require(not body["cancel_requested"], "job_cancelled", 409)
             db.execute("UPDATE jobs SET lease=? WHERE id=?", (self.clock() + 30, identity))
 
+    def require_scan(self, db, identity, owner, generation):
+        row = db.execute(
+            "SELECT owner,generation,expires FROM scan_leases WHERE id=?", (identity,)
+        ).fetchone()
+        require(
+            row is not None
+            and row["owner"] == owner
+            and row["generation"] == generation
+            and row["expires"] >= self.clock(),
+            "lease_conflict",
+            409,
+        )
+
     def scan_claim(self, identity, owner):
         with self.transaction() as db:
             row = db.execute(
@@ -443,11 +456,7 @@ class Repository:
     ):
         with self.transaction() as db:
             if owner is not None:
-                lease = db.execute(
-                    "SELECT 1 FROM scan_leases WHERE id=? AND owner=? AND generation=? AND expires>=?",
-                    (subscription["subscription_id"], owner, generation, self.clock()),
-                ).fetchone()
-                require(lease is not None, "lease_conflict", 409)
+                self.require_scan(db, subscription["subscription_id"], owner, generation)
             current = self._document(db, "subscription", subscription["subscription_id"])
             require(
                 current is not None

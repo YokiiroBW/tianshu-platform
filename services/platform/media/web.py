@@ -18,6 +18,7 @@ from .destination import snapshot
 from .types import MetadataValidationError
 from .rules import RuleValidationError, parse_policy
 from .rule_context import build_rule_context, public_rule_context, rule_snapshot_revision
+from .music.web import WebMusic
 
 PREFIX = "/api/web/media/"
 JOB_STATES = frozenset(
@@ -58,6 +59,7 @@ class WebMedia:
     def __init__(self, media, console):
         self.media = media
         self.console = console
+        self.music = WebMusic(self)
 
     async def live(self, session):
         require(await self.media.local(self.console.session_valid, session), "session_expired", 401)
@@ -65,6 +67,8 @@ class WebMedia:
     async def route(self, path, body, session):
         operation = path[len(PREFIX) :]
         require(path.startswith(PREFIX) and isinstance(body, dict), "invalid_input", 400)
+        if operation.startswith("music/"):
+            return await self.music.route(operation[len("music/") :], body, session)
         if operation == "view":
             require(body == {}, "invalid_input", 400)
             return await self.media.view()
