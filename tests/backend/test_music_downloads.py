@@ -22,7 +22,7 @@ from PIL import Image
 from music_fixtures import SyntheticNetease, snapshot
 from services.platform.contracts import Fault
 from services.platform.media.accounts import Accounts
-from services.platform.media.music.audio import record
+from services.platform.media.music.audio import number, record
 from services.platform.media.music.downloads import settled
 from services.platform.media.music.runtime import Music
 from services.platform.media.music.storage import component, stem
@@ -176,8 +176,8 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         for track in value["tracks"]:
             track.update(
                 duration_ms=3000,
-                track_number=4,
-                disc="1",
+                track_number="004",
+                disc="01",
                 album_id="11",
                 cover_url=self.origin + "/cover",
             )
@@ -208,6 +208,22 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
             f["path"] for f in job["audio_receipt"]["files"] if f["kind"] == kind
         )
 
+    def test_track_and_disc_numbers_accept_zero_padding_without_inventing_values(self):
+        for value, expected in (
+            (4, "4"),
+            ("01", "1"),
+            ("004/12", "4"),
+            (" 002 ", "2"),
+            ("0", ""),
+            ("00", ""),
+            (None, ""),
+            ("CD1", ""),
+            (".1 在那寂静之地", ""),
+            ("100000", ""),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(number(value), expected)
+
     async def test_real_flac_tags_sidecars_ordered_export_and_cleanup(self):
         result = self.queue()
         self.assertEqual((result["total"], result["unavailable"]), (1, 1))
@@ -222,6 +238,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tags["title"], ["歌曲 101"])
         self.assertEqual(tags["albumartist"], ["专辑艺术家"])
         self.assertEqual(tags["tracknumber"], ["4"])
+        self.assertEqual(tags["discnumber"], ["1"])
         self.assertEqual(tags["date"], ["2026-01-02"])
         self.assertEqual(tags["lyrics"], ["[00:00.00]合成歌词"])
         self.assertEqual(len(tags.pictures), 1)
@@ -257,6 +274,12 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
                 audio = MP3(self.file(job)) if extension == "mp3" else MP4(self.file(job))
                 self.assertIn("TIT2" if extension == "mp3" else "\u00a9nam", audio)
                 self.assertIn("APIC:" if extension == "mp3" else "covr", audio)
+                if extension == "mp3":
+                    self.assertEqual(audio["TRCK"].text, ["4"])
+                    self.assertEqual(audio["TPOS"].text, ["1"])
+                else:
+                    self.assertEqual(audio["trkn"], [(4, 0)])
+                    self.assertEqual(audio["disk"], [(1, 0)])
 
     async def test_strict_quality_refuses_lossy_instead_of_transcoding(self):
         self.file_bytes, self.level = self.audio["mp3"], "exhigh"

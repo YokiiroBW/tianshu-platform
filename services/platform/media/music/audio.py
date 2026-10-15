@@ -111,8 +111,8 @@ def cover(raw):
 
 
 def number(value):
-    found = re.match(r"^[1-9][0-9]{0,4}", str(value or ""))
-    return found.group(0) if found else ""
+    found = re.match(r"^0*([1-9][0-9]{0,4})(?![0-9])", str(value or "").strip())
+    return found.group(1) if found else ""
 
 
 def write_tags(path, track, artwork, lyrics):
