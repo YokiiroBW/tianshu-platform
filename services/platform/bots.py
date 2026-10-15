@@ -9,6 +9,7 @@ import uuid
 from contextlib import closing, nullcontext
 
 from .auth import secret
+from .bot_event_recovery import public_state, retryable
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
 from .role_runtime import is_placeholder_actor
 
@@ -615,8 +616,9 @@ class Bots:
                 if any(item["state"] in {"accepted", "duplicate"} for item in result)
                 else "not_started"
             )
-        except (Fault, OSError, sqlite3.Error):
-            pass
+        except (Fault, OSError, sqlite3.Error) as error:
+            if retryable(error):
+                state = "retryable"
         await self.p.local_work.run(
             self._finish_event, connection_id, body["event_id"], body["account_id"], state, result
         )
@@ -625,7 +627,7 @@ class Bots:
         return {
             "event_id": body["event_id"],
             "message_id": message_id,
-            "state": state,
+            **public_state(state),
             "outcomes": result,
         }
 
@@ -668,19 +670,33 @@ class Bots:
             ).fetchone()
             if old:
                 require(old["semantic"] == semantic, "idempotency_conflict", 409)
-                return {
-                    "prior": {
-                        "event_id": body["event_id"],
-                        "message_id": old["message_id"],
-                        "state": old["state"],
-                        "outcomes": loads(old["result"]) if old["result"] else [],
+                if old["state"] != "retryable":
+                    return {
+                        "prior": {
+                            "event_id": body["event_id"],
+                            "message_id": old["message_id"],
+                            **public_state(old["state"]),
+                            "outcomes": loads(old["result"]) if old["result"] else [],
+                        }
                     }
-                }
-            message_id = "message:" + uuid.uuid4().hex
-            db.execute(
-                "INSERT INTO events VALUES(?,?,?,?,?,?,NULL)",
-                (row["id"], body["event_id"], body["account_id"], semantic, message_id, "unknown"),
-            )
+                message_id = old["message_id"]
+                db.execute(
+                    "UPDATE events SET state='unknown',result=NULL WHERE connection_id=? AND event_id=? AND account_id=?",
+                    (row["id"], body["event_id"], body["account_id"]),
+                )
+            else:
+                message_id = "message:" + uuid.uuid4().hex
+                db.execute(
+                    "INSERT INTO events VALUES(?,?,?,?,?,?,NULL)",
+                    (
+                        row["id"],
+                        body["event_id"],
+                        body["account_id"],
+                        semantic,
+                        message_id,
+                        "unknown",
+                    ),
+                )
             db.commit()
         return {
             "connection_id": row["id"],
@@ -718,7 +734,7 @@ class Bots:
             ).fetchone()
             return {
                 "found": row is not None,
-                "state": row["state"] if row else None,
+                **public_state(row["state"] if row else None),
                 "message_id": row["message_id"] if row else None,
                 "outcomes": loads(row["result"]) if row and row["result"] else [],
             }
