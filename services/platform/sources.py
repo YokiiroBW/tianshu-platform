@@ -5,6 +5,7 @@ The published rules add relationship checks after authentication and database lo
 """
 
 import copy
+import sqlite3
 import uuid
 
 from .auth import secret
@@ -246,7 +247,11 @@ class Sources:
                     canonical(actor_entry),
                     source["ingress"],
                     source["entry_id"],
-                    self.clock(),
+                    min(
+                        epoch(ingest["command"]["deadline_at"]),
+                        source["expires_at"],
+                        self.clock() + min(30, actor_entry["ttl_seconds"] / 2),
+                    ),
                 ),
             ).fetchone()
             if historic:
@@ -577,7 +582,15 @@ class Sources:
         """Read an actual authenticated HTTPS Core response, then atomically confirm it."""
         from .transport import core_post
 
-        ticket = await self.store.run_local(self._prepare_dispatch, header, ingest)
+        try:
+            ticket = await self.store.run_local(self._prepare_dispatch, header, ingest)
+        except (Fault, OSError, sqlite3.Error) as error:
+            # Mapping preparation has no remote dispatch, even if its local intent
+            # was durable. Report that evidence without guessing after core_post.
+            if not isinstance(error, Fault):
+                error = Fault("dependency_unavailable", 503)
+            error.source_not_started = True
+            raise error
         response = await core_post(self.core, ingest, self.contracts)
         await self.store.run_local(self._confirm_dispatch, header, ticket, response)
         return response

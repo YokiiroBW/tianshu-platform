@@ -1147,6 +1147,15 @@ class BotObservation:
             conn = reply["connection_id"]
             if not self.reply_connection_active(conn):
                 continue
+            # A reply scope can be recorded before its Core binding is enabled.
+            # Retrying that admission owns activation; an unfinished scope must not
+            # prevent already enabled conversations from draining their replies.
+            with closing(self.p.bots._db()) as queue:
+                connection = queue.execute(
+                    "SELECT enabled FROM connections WHERE id=?", (conn,)
+                ).fetchone()
+            if connection is None or not connection[0]:
+                continue
             token = self._reply_token(conn)
             claimed = await self.p.local_work.run(
                 self.p.bots.claim,
@@ -1209,6 +1218,26 @@ class BotObservation:
                     },
                 )
 
+    async def _refresh_host_status(self, row):
+        status = await self._plugin(row, "status", {"account_id": row["account_id"]})
+        account = status.get("account") or {}
+        require(
+            status.get("found") is True
+            and account.get("revision") == row["host_revision"]
+            and type(account.get("pending")) is int
+            and type(account.get("dropped")) is int,
+            "adapter_incompatible",
+            502,
+        )
+        row["host_pending"] = account["pending"]
+        row["host_dropped"] = account["dropped"]
+        row["state"] = (
+            "degraded" if account["dropped"] else "ready" if row["enabled"] else "disabled"
+        )
+        row["last_error"] = "observation_capacity_exceeded" if account["dropped"] else None
+        row["last_checked_at"] = utc(time.time())
+        self.catalog.observe(row)
+
     async def pump_once(self):
         if not self.catalog:
             return
@@ -1222,13 +1251,17 @@ class BotObservation:
             if row["pending"]:
                 continue
             try:
+                await self._refresh_host_status(row)
+                # Drain ready replies before another ingress batch. A busy room must
+                # not hold already generated replies behind twenty slow admissions.
+                await self._deliver_replies(row)
                 result = await self._plugin(
                     row, "poll", {"account_id": row["account_id"], "limit": 20}
                 )
                 events = result.get("events")
                 require(isinstance(events, list) and len(events) <= 20, "adapter_incompatible", 502)
                 acknowledged = []
-                for item in events:
+                for index, item in enumerate(events, 1):
                     current = self.get(row["id"])
                     if (
                         current is None
@@ -1256,29 +1289,15 @@ class BotObservation:
                             current, event, item.get("reply_claimed") is True
                         ):
                             acknowledged.append(item["id"])
+                    if index % 4 == 0:
+                        await self._deliver_replies(row)
                 if acknowledged:
                     ack = await self._plugin(
                         row, "ack", {"account_id": row["account_id"], "event_ids": acknowledged}
                     )
                     require(ack.get("acknowledged") == acknowledged, "adapter_incompatible", 502)
                 await self._deliver_replies(row)
-                status = await self._plugin(row, "status", {"account_id": row["account_id"]})
-                account = status.get("account") or {}
-                require(
-                    status.get("found") is True
-                    and account.get("revision") == row["host_revision"]
-                    and type(account.get("pending")) is int
-                    and type(account.get("dropped")) is int,
-                    "adapter_incompatible",
-                    502,
-                )
-                row["host_pending"] = account["pending"]
-                row["host_dropped"] = account["dropped"]
-                row["state"] = (
-                    "degraded" if account["dropped"] else "ready" if row["enabled"] else "disabled"
-                )
-                row["last_error"] = "observation_capacity_exceeded" if account["dropped"] else None
-                row["last_checked_at"] = utc(time.time())
+                await self._refresh_host_status(row)
             except (Fault, ValueError, TypeError, KeyError) as exc:
                 row["state"] = "degraded"
                 row["last_error"] = exc.code if isinstance(exc, Fault) else "adapter_incompatible"

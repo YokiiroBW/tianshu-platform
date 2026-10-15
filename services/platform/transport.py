@@ -74,7 +74,9 @@ async def management_call(settings, path, payload):
 
 
 async def core_web_call(settings, path, payload, contracts, schema):
-    require(path in {"web-snapshot", "cancel", "ingest-actors"}, "invalid_input", 400)
+    require(
+        path in {"web-snapshot", "cancel", "ingest-actors", "ingest-receipt"}, "invalid_input", 400
+    )
     _, timeout = core_settings(settings)
     token = secret(settings["token_env"])
     require(token is not None, "dependency_unavailable", 503)
@@ -110,12 +112,24 @@ async def core_web_call(settings, path, payload, contracts, schema):
                     contracts.check("common#error", result)
                     require(
                         result["request_id"]
-                        == payload.get("query", payload.get("command"))["request_id"],
+                        == payload.get("query", payload.get("command", payload))["request_id"],
                         "dependency_unavailable",
                         503,
                     )
                     raise CoreFault(result, response.status)
-                contracts.check(schema, result)
+                if path == "ingest-receipt":
+                    require(
+                        isinstance(result, dict)
+                        and set(result) == {"schema_version", "request_id", "found"}
+                        and type(result["schema_version"]) is int
+                        and result["schema_version"] == 1
+                        and result["request_id"] == payload["request_id"]
+                        and type(result["found"]) is bool,
+                        "dependency_unavailable",
+                        503,
+                    )
+                else:
+                    contracts.check(schema, result)
                 await diagnostics.outbound("succeeded", duration_ms=span.elapsed() * 1000.0)
                 return result
     except Fault as exc:

@@ -44,6 +44,21 @@ class SourceTests(unittest.TestCase):
         self.p.sources.confirm_mapping(bearer("COMPANION"), ticket, response)
         return ingest, authority, response
 
+    def test_retry_does_not_reuse_actor_lease_that_expires_during_admission(self):
+        ingest, _, first, _ = self.prepare(targets=["actor:a"])
+        old_ref = first["actor_contexts"][0]["assertion_ref"]
+        with self.p.store.connect(write=True) as db:
+            db.execute("UPDATE origins SET expires_at=? WHERE ref=?", (self.now + 1, old_ref))
+        renewed = self.p.sources.read(bearer("COMPANION"), input_request(ingest))
+        current = renewed["actor_contexts"][0]
+        self.assertNotEqual(current["assertion_ref"], old_ref)
+        self.assertEqual(
+            current["verified_account"], first["actor_contexts"][0]["verified_account"]
+        )
+        self.assertGreater(epoch(current["expires_at"]), self.now + 1)
+        repeated = self.p.sources.read(bearer("COMPANION"), input_request(ingest))
+        self.assertEqual(repeated["actor_contexts"], renewed["actor_contexts"])
+
     def test_exact_input_proof_cannot_be_actor_origin_or_payload_auth(self):
         ingest, _, authority, _ = self.prepare()
         self.reject(

@@ -210,6 +210,11 @@ class BotAdapterCatalog:
                 return False
             for field in ("state", "last_error", "last_checked_at"):
                 current[field] = item[field]
+            if current.get("kind") == "observation":
+                for field in ("host_pending", "host_dropped"):
+                    if field in item:
+                        require(type(item[field]) is int and item[field] >= 0, "invalid_input", 400)
+                        current[field] = item[field]
             db.execute(
                 "UPDATE rows SET document=? WHERE id=?",
                 (self._seal(current, "row:" + key), key),

@@ -9,7 +9,7 @@ import uuid
 from contextlib import closing, nullcontext
 
 from .auth import secret
-from .bot_event_recovery import public_state, retryable
+from .bot_event_recovery import confirmed, public_state, retryable
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
 from .role_runtime import is_placeholder_actor
 
@@ -588,6 +588,24 @@ class Bots:
                 )
             )
         result, state = [], "unknown"
+        if admission.get("recover_unknown"):
+            try:
+                found = await confirmed(
+                    self.p,
+                    data,
+                    admission["actor_ids"],
+                    "bot:" + digest([connection_id, body["event_id"], body["account_id"]]),
+                )
+            except (Fault, OSError, sqlite3.Error):
+                found = False  # A failed receipt query says nothing about original execution.
+            if not found:
+                return {
+                    "event_id": body["event_id"],
+                    "message_id": message_id,
+                    "state": "unknown",
+                    "outcomes": [],
+                }
+        dispatch_started = False
         try:
             platform_header = self._platform_header()
             origin = await self.p.local_work.run(
@@ -606,6 +624,7 @@ class Bots:
                 "input": data,
                 "target_actor_ids": admission["actor_ids"],
             }
+            dispatch_started = True
             answer = await self.p.sources.dispatch(platform_header, ingest)
             result = [
                 {"actor_id": item["actor_id"], "state": item["state"]}
@@ -617,6 +636,11 @@ class Bots:
                 else "not_started"
             )
         except (Fault, OSError, sqlite3.Error) as error:
+            if not dispatch_started:
+                # Input registration is local; Core has not received this attempt.
+                if not isinstance(error, Fault):
+                    error = Fault("dependency_unavailable", 503)
+                error.source_not_started = True
             if retryable(error):
                 state = "retryable"
         await self.p.local_work.run(
@@ -670,7 +694,7 @@ class Bots:
             ).fetchone()
             if old:
                 require(old["semantic"] == semantic, "idempotency_conflict", 409)
-                if old["state"] != "retryable":
+                if old["state"] not in {"retryable", "unknown"}:
                     return {
                         "prior": {
                             "event_id": body["event_id"],
@@ -704,6 +728,7 @@ class Bots:
             "entry_id": entry_id,
             "entry": entry,
             "actor_ids": loads(row["actor_ids"]),
+            "recover_unknown": old is not None and old["state"] == "unknown",
         }
 
     def _finish_event(self, connection_id, event_id, account_id, state, result):

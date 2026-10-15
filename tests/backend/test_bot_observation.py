@@ -341,7 +341,14 @@ class ObservationTests(unittest.TestCase):
                 acknowledged.extend(request["event_ids"])
                 return {"acknowledged": request["event_ids"]}
             if operation == "status":
-                return {"found": True, "account": {"revision": 2, "pending": 0, "dropped": 0}}
+                return {
+                    "found": True,
+                    "account": {
+                        "revision": self.manager.get(active["id"])["host_revision"],
+                        "pending": 0,
+                        "dropped": 0,
+                    },
+                }
             raise AssertionError(operation)
 
         async def companion(_payload):
@@ -362,7 +369,7 @@ class ObservationTests(unittest.TestCase):
 
         async def scenario():
             task = asyncio.create_task(self.manager.pump_once())
-            await entered.wait()
+            await asyncio.wait_for(entered.wait(), 3)
             tightened = dict(
                 active, revision=2, host_revision=2, group_policy=policy(mode="observe_only")
             )
@@ -373,3 +380,52 @@ class ObservationTests(unittest.TestCase):
         asyncio.run(scenario())
         self.assertEqual(acknowledged, ["host:1"])
         self.assertEqual(self.manager.get(active["id"])["state"], "ready")
+
+    def test_busy_ingress_publishes_backlog_and_interleaves_ready_delivery(self):
+        active = dict(
+            self.row, group_policy=policy(mode="whitelist", names=["20002"], actor="actor:a")
+        )
+        self.manager.catalog.put(active)
+        order = []
+
+        async def plugin(_row, operation, request):
+            if operation == "poll":
+                return {
+                    "events": [
+                        {"id": "host:" + str(i), "event": self.event(), "reply_claimed": True}
+                        for i in range(9)
+                    ]
+                }
+            if operation == "ack":
+                return {"acknowledged": request["event_ids"]}
+            if operation == "status":
+                return {
+                    "found": True,
+                    "account": {"revision": active["host_revision"], "pending": 9, "dropped": 0},
+                }
+            raise AssertionError(operation)
+
+        async def companion(payload):
+            self.assertEqual(self.manager.get(active["id"])["host_pending"], 9)
+            order.append("ingress")
+            return dict(
+                source_ref=payload["source_ref"], state="accepted", archive_state="pending_memory"
+            )
+
+        async def reply(*_):
+            return True
+
+        async def deliver(_row):
+            order.append("delivery")
+
+        self.manager._plugin, self.manager._companion = plugin, companion
+        self.manager._reply_event, self.manager._deliver_replies = reply, deliver
+        asyncio.run(self.manager.pump_once())
+        self.assertEqual(
+            order,
+            ["delivery"]
+            + ["ingress"] * 4
+            + ["delivery"]
+            + ["ingress"] * 4
+            + ["delivery", "ingress", "delivery"],
+        )
