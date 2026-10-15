@@ -7,6 +7,8 @@ from pathlib import Path
 from ...contracts import require
 from ..config import text
 from .netease import source_id
+from .quality import policy
+from .queue import enqueue_playlist
 
 
 def public_account(account):
@@ -189,7 +191,7 @@ class MusicLibrary:
         return {
             "configured": True,
             "provider": "netease",
-            "audio_download_available": False,
+            "audio_download_available": True,
             "accounts": [public_account(row) for row in self.repo.list("music_account")],
             "playlists": [summary(row) for row in self.repo.list("music_playlist")],
             "settings": self.settings(),
@@ -236,12 +238,15 @@ class MusicLibrary:
                 "synced_at": now,
                 "next_scan_at": now + current["interval_seconds"],
                 "code": "ready",
-                "audio_state": "not_downloaded",
                 "complete": True,
+                "auto_download": current.get("auto_download", False),
+                "quality": policy(current.get("quality")),
             },
             current["revision"],
             db=db,
         )
+        if result["auto_download"]:
+            enqueue_playlist(self, identity, db)
         return {"playlist": summary(result)}
 
     def complete_scan(self, account, subscription, snapshot, owner, generation):
@@ -274,14 +279,93 @@ class MusicLibrary:
             row = self.repo._document(db, "music_playlist", identity)
             require(row is not None, "not_found", 404)
             tracks = []
+            mapping = (self.repo._document(db, "music_playlist_jobs", identity) or {}).get(
+                "jobs", {}
+            )
             for index, source in enumerate(row["entries"][offset : offset + limit], offset):
                 track = self.repo._document(
                     db, "music_track", row["account_id"] + ":track:" + source
                 )
-                tracks.append({**track, "position": index + 1})
+                job_row = db.execute(
+                    "SELECT body FROM jobs WHERE id=?", (mapping.get(source, ""),)
+                ).fetchone()
+                job = json.loads(job_row[0]) if job_row else None
+                audio = (
+                    next(
+                        (
+                            f
+                            for f in (job.get("audio_receipt") or {}).get("files", [])
+                            if f["kind"] == "audio"
+                        ),
+                        None,
+                    )
+                    if job
+                    else None
+                )
+                tracks.append(
+                    {
+                        **track,
+                        "position": index + 1,
+                        "audio_state": job["state"] if job else "not_downloaded",
+                        "audio_code": job["code"] if job else None,
+                        "audio_quality": job.get("audio_quality") if job else None,
+                        "file": audio["path"] if audio else None,
+                        "job_id": job["job_id"] if job else None,
+                    }
+                )
             return {
                 "playlist": summary(row),
                 "tracks": tracks,
                 "offset": offset,
                 "more": offset + len(tracks) < len(row["entries"]),
             }
+
+    def downloads(self, body, db):
+        row = self.repo._document(db, "music_playlist", body["playlist_id"])
+        require(row is not None, "not_found", 404)
+        require(type(body["auto_download"]) is bool, "invalid_input", 400)
+        row = self.repo.put(
+            "music_playlist",
+            row["playlist_id"],
+            {
+                **row,
+                "auto_download": body["auto_download"],
+                "quality": policy(body["quality"]),
+            },
+            body["expected_revision"],
+            db=db,
+        )
+        result = enqueue_playlist(self, row["playlist_id"], db) if row["auto_download"] else {}
+        return {"playlist": summary(row), **result}
+
+    def download(self, body, db):
+        row = self.repo._document(db, "music_playlist", body["playlist_id"])
+        require(row and row["revision"] == body["expected_revision"], "version_conflict", 409)
+        return enqueue_playlist(self, row["playlist_id"], db, manual=True)
+
+    def export_snapshot(self, identity):
+        with self.repo.transaction() as db:
+            playlist = self.repo._document(db, "music_playlist", identity)
+            require(playlist is not None, "not_found", 404)
+            mapping = (self.repo._document(db, "music_playlist_jobs", identity) or {}).get(
+                "jobs", {}
+            )
+            tracks = []
+            for index, source in enumerate(playlist["entries"]):
+                track = self.repo._document(
+                    db, "music_track", playlist["account_id"] + ":track:" + source
+                )
+                row = db.execute(
+                    "SELECT body FROM jobs WHERE id=?", (mapping.get(source, ""),)
+                ).fetchone()
+                tracks.append(
+                    {
+                        "source_id": source,
+                        "position": index + 1,
+                        "title": track["title"],
+                        "artists": track["artists"],
+                        "album": track["album"],
+                        "job": json.loads(row[0]) if row else None,
+                    }
+                )
+            return playlist, tracks

@@ -16,6 +16,8 @@ export type SourcePlaylist = {
   kind: "created" | "collected" | "liked";
 };
 export type MusicPlaylist = SourcePlaylist & {
+  auto_download?: boolean;
+  quality?: MusicQuality;
   playlist_id: string;
   account_id: string;
   revision: number;
@@ -24,6 +26,19 @@ export type MusicPlaylist = SourcePlaylist & {
   state: "active" | "paused";
   synced_at: number;
   code: string;
+};
+export type MusicQuality = {
+  level: "best" | "hires" | "lossless" | "exhigh" | "higher" | "standard";
+  allow_fallback: boolean;
+};
+export type AudioQuality = {
+  level: string;
+  codec: string;
+  sample_rate: number;
+  channels: number;
+  bits_per_sample: number;
+  bit_rate: number;
+  fallback: boolean;
 };
 export type MusicSettings = {
   directory: string;
@@ -48,6 +63,10 @@ export type PlaylistDetail = {
     album: string;
     availability: string;
     audio_state: string;
+    audio_code?: string;
+    audio_quality?: AudioQuality | null;
+    file?: string | null;
+    job_id?: string | null;
   }[];
   offset: number;
   more: boolean;

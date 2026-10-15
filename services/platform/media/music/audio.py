@@ -1,0 +1,192 @@
+"""Probe/decode originals and write portable tags on private staging copies only."""
+
+import hashlib
+import io
+import json
+import re
+
+import mutagen
+from mutagen.flac import FLAC, Picture
+from mutagen.mp3 import MP3
+from mutagen.mp4 import MP4, MP4Cover
+from mutagen.id3 import APIC, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TXXX, USLT
+from PIL import Image, UnidentifiedImageError
+
+from ...contracts import Fault, require
+from ..engine import executable_path, run_process
+from ..video_storage import sync_file
+
+
+def record(path):
+    checksum = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024**2):
+            checksum.update(chunk)
+            size += len(chunk)
+    return {"sha256": checksum.hexdigest(), "size_bytes": size}
+
+
+async def probe(path, track, engine):
+    code, raw, _ = await run_process(
+        [
+            executable_path(engine["ffprobe"]),
+            "-v",
+            "error",
+            "-show_streams",
+            "-show_format",
+            "-of",
+            "json",
+            str(path),
+        ]
+    )
+    require(code == 0, "music_audio_invalid", 409)
+    try:
+        data = json.loads(raw)
+        streams = data["streams"]
+        audio = [s for s in streams if s["codec_type"] == "audio"]
+        require(
+            len(audio) == 1
+            and not any(
+                s["codec_type"] == "video" and not s.get("disposition", {}).get("attached_pic")
+                for s in streams
+            ),
+            "music_audio_invalid",
+            409,
+        )
+        stream = audio[0]
+        codec = stream["codec_name"]
+        extension = {"flac": "flac", "mp3": "mp3", "aac": "m4a", "alac": "m4a"}.get(codec)
+        require(extension is not None, "music_format_unsupported", 409)
+        duration = float(data["format"].get("duration", stream.get("duration", 0)))
+        expected = float(track.get("duration_ms") or 0) / 1000
+        require(duration > 0 and expected > 0, "music_duration_unknown", 409)
+        require(abs(duration - expected) <= max(2, expected * 0.02), "music_preview_rejected", 409)
+        observed = {
+            "codec": codec,
+            "extension": extension,
+            "duration_seconds": duration,
+            "sample_rate": int(stream.get("sample_rate", 0)),
+            "channels": int(stream.get("channels", 0)),
+            "bits_per_sample": int(
+                stream.get("bits_per_raw_sample") or stream.get("bits_per_sample") or 0
+            ),
+            "bit_rate": int(stream.get("bit_rate") or data["format"].get("bit_rate") or 0),
+        }
+    except (ValueError, KeyError, TypeError):
+        raise Fault("music_audio_invalid", 409) from None
+    code, _, errors = await run_process(
+        [
+            executable_path(engine["ffmpeg"]),
+            "-nostdin",
+            "-v",
+            "error",
+            "-xerror",
+            "-i",
+            str(path),
+            "-map",
+            "0:a:0",
+            "-f",
+            "null",
+            "-",
+        ],
+        timeout=600,
+    )
+    require(code == 0 and not errors.strip(), "music_audio_invalid", 409)
+    return observed
+
+
+def cover(raw):
+    try:
+        with Image.open(io.BytesIO(raw)) as source:
+            require(source.width * source.height <= 32_000_000, "cover_invalid", 409)
+            source.load()
+            image = source.convert("RGB")
+            image.thumbnail((1600, 1600))
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=90)
+            return output.getvalue()
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
+        raise Fault("cover_invalid", 409) from None
+
+
+def number(value):
+    found = re.match(r"^[1-9][0-9]{0,4}", str(value or ""))
+    return found.group(0) if found else ""
+
+
+def write_tags(path, track, artwork, lyrics):
+    artists = [a for a in track.get("artists", []) if a] or ["未知艺术家"]
+    album_artists = track.get("album_artists") or artists
+    title, album = track.get("title") or track["source_id"], track.get("album") or "未知专辑"
+    date = track.get("date", "")
+    index, disc = number(track.get("track_number")), number(track.get("disc"))
+    source = "https://music.163.com/#/song?id=" + track["source_id"]
+    try:
+        audio = mutagen.File(path)
+        require(isinstance(audio, (FLAC, MP3, MP4)), "music_format_unsupported", 409)
+        if audio.tags is None:
+            audio.add_tags()
+        if isinstance(audio, FLAC):
+            values = {
+                "title": [title],
+                "artist": artists,
+                "album": [album],
+                "albumartist": album_artists,
+                "date": [date],
+                "tracknumber": [index],
+                "discnumber": [disc],
+                "neteaseid": [track["source_id"]],
+                "website": [source],
+                "lyrics": [lyrics],
+            }
+            for key, value in values.items():
+                if any(value):
+                    audio[key] = value
+            if artwork:
+                picture = Picture()
+                picture.type, picture.mime, picture.data = 3, "image/jpeg", artwork
+                audio.clear_pictures()
+                audio.add_picture(picture)
+        elif isinstance(audio, MP3):
+            for key in ("TIT2", "TPE1", "TALB", "TPE2", "TDRC", "TRCK", "TPOS", "USLT", "APIC"):
+                audio.tags.delall(key)
+            for cls, value in (
+                (TIT2, [title]),
+                (TPE1, artists),
+                (TALB, [album]),
+                (TPE2, album_artists),
+                (TDRC, [date]),
+                (TRCK, [index]),
+                (TPOS, [disc]),
+            ):
+                if any(value):
+                    audio.tags.add(cls(encoding=3, text=value))
+            audio.tags.add(TXXX(encoding=3, desc="NETEASEID", text=[track["source_id"]]))
+            audio.tags.add(TXXX(encoding=3, desc="SOURCE", text=[source]))
+            if lyrics:
+                audio.tags.add(USLT(encoding=3, lang="und", desc="", text=lyrics))
+            if artwork:
+                audio.tags.add(APIC(encoding=3, mime="image/jpeg", type=3, data=artwork))
+        else:
+            for key, value in {
+                "\u00a9nam": [title],
+                "\u00a9ART": artists,
+                "\u00a9alb": [album],
+                "aART": album_artists,
+                "\u00a9day": [date],
+                "\u00a9lyr": [lyrics],
+            }.items():
+                if any(value):
+                    audio[key] = value
+            if index:
+                audio["trkn"] = [(int(index), 0)]
+            if disc:
+                audio["disk"] = [(int(disc), 0)]
+            audio["----:com.apple.iTunes:NETEASEID"] = [track["source_id"].encode()]
+            if artwork:
+                audio["covr"] = [MP4Cover(artwork, imageformat=MP4Cover.FORMAT_JPEG)]
+        audio.save()
+        sync_file(path)
+    except (mutagen.MutagenError, ValueError):
+        raise Fault("music_tag_failed", 409) from None

@@ -1,16 +1,19 @@
-"""Read-only NetEase account/playlist adapter. No shared browser cookie jar."""
+"""NetEase account, playlist and authorized download adapter; no browser cookie jar."""
 
 import asyncio
 import json
 import re
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlsplit
 
 import aiohttp
 
 from ...contracts import Fault, require
 from .protocol import compact, eapi, weapi
+from .quality import LEVELS
+from .transfer import cdn_url
 
 MAX_TRACKS = 20000
 COOKIE_NAMES = {"MUSIC_U", "MUSIC_A", "__csrf", "NMTID", "__remember_me", "deviceId"}
@@ -178,6 +181,75 @@ class Netease:
         return {
             "user_id": source_id(profile["userId"]),
             "label": clean_text(profile.get("nickname"), 256),
+        }
+
+    async def download(self, identity, level, cookie):
+        value, _ = await self.request(
+            "/api/song/enhance/download/url/v1",
+            {
+                "id": source_id(identity),
+                "level": "hires" if level == "best" else level,
+                "immerseType": "c51",
+            },
+            cookie,
+            mode="eapi",
+        )
+        row = value.get("data")
+        require(isinstance(row, dict), "music_upstream_invalid", 502)
+        require(str(row.get("id")) == identity, "music_upstream_invalid", 502)
+        require(not row.get("freeTrialInfo"), "music_preview_rejected", 409)
+        require(row.get("code", 200) == 200 and row.get("url"), "music_download_forbidden", 409)
+        require(
+            isinstance(row.get("level"), str) and row["level"] in LEVELS,
+            "music_quality_unknown",
+            409,
+        )
+        require(type(row.get("size")) is int and row["size"] > 0, "music_upstream_invalid", 502)
+        md5 = row.get("md5")
+        require(
+            md5 is None or isinstance(md5, str) and re.fullmatch(r"[a-fA-F0-9]{32}", md5),
+            "music_upstream_invalid",
+            502,
+        )
+        return {"url": cdn_url(row["url"]), "level": row["level"], "size": row["size"], "md5": md5}
+
+    async def lyrics(self, identity, cookie):
+        value, _ = await self.request(
+            "/api/song/lyric",
+            {"id": source_id(identity), "tv": -1, "lv": -1, "rv": -1, "kv": -1, "_nmclfl": 1},
+            cookie,
+        )
+        result = {}
+        for name, key in (
+            ("original", "lrc"),
+            ("translated", "tlyric"),
+            ("romanized", "romalrc"),
+        ):
+            row = value.get(key) or {}
+            require(isinstance(row, dict), "music_upstream_invalid", 502)
+            result[name] = clean_text(row.get("lyric"), 512 * 1024)
+        return result
+
+    async def album(self, identity, cookie):
+        value, _ = await self.request("/api/v1/album/" + source_id(identity), {}, cookie)
+        row = value.get("album")
+        require(
+            isinstance(row, dict) and str(row.get("id")) == identity, "music_upstream_invalid", 502
+        )
+        artists = row.get("artists") or [row.get("artist") or {}]
+        require(isinstance(artists, list), "music_upstream_invalid", 502)
+        date = ""
+        if type(row.get("publishTime")) is int and 0 < row["publishTime"] < 4102444800000:
+            date = (
+                datetime.fromtimestamp(row["publishTime"] / 1000, timezone(timedelta(hours=8)))
+                .date()
+                .isoformat()
+            )
+        return {
+            "album_artists": [
+                clean_text(a.get("name"), 256) for a in artists if isinstance(a, dict)
+            ],
+            "date": date,
         }
 
     async def playlists(self, uid, cookie):

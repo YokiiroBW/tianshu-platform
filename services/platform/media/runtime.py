@@ -33,6 +33,12 @@ from .import_metadata import ImportMetadata
 from .music.runtime import Music
 
 JOB_FIELDS = (
+    "media_kind",
+    "provider",
+    "source_id",
+    "audio_quality",
+    "audio_receipt",
+    "audio_reused",
     "job_id",
     "subscription_id",
     "media_key",

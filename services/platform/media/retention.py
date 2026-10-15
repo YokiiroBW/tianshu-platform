@@ -371,6 +371,9 @@ class Retention:
     def finish(self, job):
         if job.get("state") != "completed":
             return
+        if job.get("media_kind") == "audio":
+            self.media.music.downloads.storage.cleanup(job)
+            return
         prior = self.media.repo.get("media_retention", job["job_id"])
         operation_id = (job.get("asset_receipt") or {}).get("operation_id")
         if prior and prior.get("state") == "cleaned" and prior.get("operation_id") == operation_id:

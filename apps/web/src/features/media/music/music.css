@@ -92,3 +92,14 @@
     flex-wrap: wrap;
   }
 }
+.music-file {
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+.music-downloads {
+  border-bottom: 1px solid var(--color-line);
+  padding-bottom: 1rem;
+}
+.music-downloads details form {
+  padding-top: 1rem;
+}

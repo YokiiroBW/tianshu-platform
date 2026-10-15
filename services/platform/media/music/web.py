@@ -126,6 +126,20 @@ class WebMusic:
             return await self.web.receipt(
                 body, "music/" + operation, session, lambda db: library.control(body, db)
             )
+        if operation in {"playlists/download", "playlists/downloads"}:
+            fields = {"playlist_id", "expected_revision", "client_id"}
+            if operation == "playlists/downloads":
+                fields |= {"auto_download", "quality"}
+            self.fields(body, fields)
+            method = library.downloads if operation == "playlists/downloads" else library.download
+            result = await self.web.receipt(
+                body, "music/" + operation, session, lambda db: method(body, db)
+            )
+            self.media.wake.set()
+            return result
+        if operation == "playlists/export":
+            self.fields(body, {"playlist_id"})
+            return await local(music.downloads.storage.export, body["playlist_id"])
         if operation == "playlists/scan":
             self.fields(body, {"playlist_id"})
             return await music.scan(body["playlist_id"])

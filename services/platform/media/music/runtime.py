@@ -7,6 +7,7 @@ from ...contracts import Fault, require
 from ..scheduling import pump_scans, scan_due
 from .library import MusicLibrary
 from .netease import Netease
+from .downloads import Downloads
 
 
 class Music:
@@ -15,6 +16,7 @@ class Music:
         self.library = MusicLibrary(media.repo, media.accounts)
         self.connector = Netease()
         self.qr = {}
+        self.downloads = Downloads(self)
 
     async def close(self):
         self.qr.clear()

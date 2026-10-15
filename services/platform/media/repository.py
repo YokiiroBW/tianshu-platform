@@ -175,13 +175,16 @@ class Repository:
         if db is None:
             with self.transaction() as transaction:
                 return self.enqueue(payload, db=transaction)
+        if payload.get("media_kind") == "audio":
+            return self.insert_job(payload, "audio:" + payload["audio_key"], db)
         # The job is one complete selected-P package, with per-CID membership retained inside it.
         for existing in db.execute(
             "SELECT body FROM jobs WHERE " + VISIBLE + " AND state NOT IN ('cancelled','failed')"
         ):
             prior = json.loads(existing[0])
             if (
-                prior["bvid"] == payload["bvid"]
+                prior.get("media_kind") != "audio"
+                and prior["bvid"] == payload["bvid"]
                 and same_destination(prior, payload)
                 and prior["quality"] == payload["quality"]
                 and prior.get("layout") == payload.get("layout")
@@ -199,6 +202,9 @@ class Repository:
         if payload.get("destination_subdirectory"):
             dedupe_input["destination_subdirectory"] = directory_identity(payload)
         dedupe = digest(canonical(dedupe_input))
+        return self.insert_job(payload, dedupe, db)
+
+    def insert_job(self, payload, dedupe, db):
         row = db.execute("SELECT body FROM jobs WHERE dedupe=?", (dedupe,)).fetchone()
         if row:
             return json.loads(row[0])
@@ -316,8 +322,7 @@ class Repository:
                     for value in rows
                     if not any(
                         peer["job_id"] != value["id"]
-                        and peer["bvid"] == json.loads(value["body"])["bvid"]
-                        and same_destination(peer, json.loads(value["body"]))
+                        and self.jobs_overlap(peer, json.loads(value["body"]))
                         for peer in occupied
                     )
                 ),
@@ -344,6 +349,16 @@ class Repository:
                 ),
             )
             return body
+
+    @staticmethod
+    def jobs_overlap(left, right):
+        if left.get("media_kind") == "audio" or right.get("media_kind") == "audio":
+            return (
+                left.get("media_kind") == right.get("media_kind") == "audio"
+                and left["source_id"] == right["source_id"]
+                and left["destination_directory"] == right["destination_directory"]
+            )
+        return left["bvid"] == right["bvid"] and same_destination(left, right)
 
     def update_job(self, identity, changes, *, owner=None, generation=None, db=None):
         if db is None:

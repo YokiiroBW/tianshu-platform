@@ -371,6 +371,12 @@ class WebMedia:
         require(set(body) == {"job_id"}, "invalid_input", 400)
         job = await self.media.local(self.media.repo.job, body["job_id"])
         require(job is not None, "not_found", 404)
+        if job.get("media_kind") == "audio":
+            return {
+                "job": public_job(job),
+                "metadata": None,
+                "events": await self.media.local(self.media.repo.events, job["job_id"]),
+            }
         metadata = normalize_bilibili(job["snapshot"], overrides=job.get("overrides"))
         return {
             "job": public_job(job),
@@ -510,6 +516,7 @@ class WebMedia:
             require(row is not None, "not_found", 404)
             job = json.loads(row[0])
             require(job["revision"] == body["expected_revision"], "version_conflict", 409)
+            require(job.get("media_kind") != "audio", "job_action_conflict", 409)
             require(
                 job["state"] in {"waiting_metadata", "failed", "published", "completed"},
                 "job_action_conflict",

@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import AsyncMock
 
 from aiohttp import web
 from cryptography.hazmat.primitives import padding
@@ -57,6 +58,58 @@ class RecordedNetease(Netease):
 
 
 class MusicNeteaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_download_request_and_denied_preview_unknown_quality(self):
+        api = Netease()
+        row = {
+            "id": 101,
+            "url": "http://m10.music.126.net/synthetic.mp3",
+            "level": "lossless",
+            "size": 12345,
+            "md5": "0" * 32,
+            "code": 200,
+            "freeTrialPrivilege": None,
+        }
+        api.request = AsyncMock(return_value=({"data": row}, {}))
+        found = await api.download("101", "best", {"MUSIC_U": "synthetic"})
+        self.assertEqual(found["url"], "https://m10.music.126.net/synthetic.mp3")
+        args, kwargs = api.request.call_args
+        self.assertEqual(args[1]["level"], "hires")
+        self.assertEqual(kwargs["mode"], "eapi")
+        for changes, code in (
+            ({"url": None}, "music_download_forbidden"),
+            ({"freeTrialInfo": {"start": 0, "end": 30}}, "music_preview_rejected"),
+            ({"level": "unknown"}, "music_quality_unknown"),
+            ({"id": 102}, "music_upstream_invalid"),
+        ):
+            with self.subTest(code=code):
+                api.request.return_value = ({"data": {**row, **changes}}, {})
+                with self.assertRaises(Fault) as error:
+                    await api.download("101", "lossless", {})
+                self.assertEqual(error.exception.code, code)
+
+    async def test_lyrics_and_album_normalize_optional_metadata(self):
+        api = Netease()
+        api.request = AsyncMock(
+            return_value=({"lrc": {"lyric": "[00:00]正文"}, "tlyric": None}, {})
+        )
+        self.assertEqual((await api.lyrics("101", {}))["original"], "[00:00]正文")
+        api.request.return_value = ({"lrc": "malformed"}, {})
+        with self.assertRaises(Fault):
+            await api.lyrics("101", {})
+        api.request.return_value = (
+            {
+                "album": {
+                    "id": 11,
+                    "artists": [{"name": "专辑艺术家"}],
+                    "publishTime": 1767283200000,
+                }
+            },
+            {},
+        )
+        self.assertEqual(
+            await api.album("11", {}), {"album_artists": ["专辑艺术家"], "date": "2026-01-02"}
+        )
+
     async def test_full_playlist_catalog_pagination(self):
         api = RecordedNetease()
         result = await api.playlists("123", {})

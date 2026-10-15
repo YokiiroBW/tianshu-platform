@@ -73,14 +73,14 @@ const sourceWording: Record<string, string> = {
 const sourceDetail: Record<string, string> = {
   "companion.core": "对话与写作任务还没有正式的任务合同，本轮没有接入。",
   "assets.remote": "资产远端任务还没有正式的任务合同，本轮没有接入。",
-  "resources.download": "显示已记录的视频下载与发布进度。",
+  "resources.download": "显示已记录的音视频下载与归档进度。",
   "platform.dialogue":
     "网页对话只有发送回执，没有可投影的操作台账，本轮没有接入。",
 };
 const kindWording: Record<string, string> = {
   "device.control": "设备控制",
   "model.publish": "模型发布",
-  "media.download": "视频下载与入库",
+  "media.download": "媒体下载与入库",
 };
 const sourceState: Record<string, { tone: Tone; label: string; note: string }> =
   {
@@ -142,7 +142,7 @@ const cancelWording: Record<string, string> = {
     "执行方不提供取消：已经发出的设备指令无法撤回，也不会从任务中心自动重发。要改变状态请到家庭设备页重新操作。",
   recorded_fact:
     "这是已经发生并记录的发布事实，不是可以取消的操作。要改变配置请到模型与用量页发布新版本。",
-  media_job_control: "请到订阅与下载页取消视频任务；已发布的成品会保留。",
+  media_job_control: "请到订阅与下载页取消任务；已发布的成品会保留。",
   terminal_state: "任务已经结束，不再接受取消。",
 };
 const fieldWording: Record<string, string> = {
@@ -174,6 +174,10 @@ const fieldWording: Record<string, string> = {
   settled_at: "结案时间",
   job_id: "任务标识",
   bvid: "视频标识",
+  provider: "音乐平台",
+  source_id: "歌曲标识",
+  audio_archived: "音乐已归档",
+  audio_quality: "实际音质",
   cid: "分 P 标识",
   actual_quality: "实际画质",
   target_id: "目标媒体库",

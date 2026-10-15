@@ -54,7 +54,7 @@ class MusicFoundationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([t["position"] for t in detail["tracks"]], [1, 2, 3, 4])
         self.assertEqual(detail["tracks"][-1]["availability"], "unavailable")
         self.assertEqual(self.repo.jobs()[0], [])
-        self.assertFalse(self.library.view()["audio_download_available"])
+        self.assertTrue(self.library.view()["audio_download_available"])
 
     async def test_sessions_encrypted_and_separate_from_bilibili(self):
         self.assertNotIn(b"synthetic-private-session", self.repo.database.read_bytes())

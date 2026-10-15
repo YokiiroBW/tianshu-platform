@@ -51,6 +51,8 @@ class Worker:
                 self.active.pop(job["job_id"], None)
 
     async def run(self, job, owner):
+        if job.get("media_kind") == "audio":
+            return await self.media.music.downloads.run(job, owner)
         generation = job["generation"]
         repo = self.media.repo
         target = self.media.config["targets"][job["target_id"]]

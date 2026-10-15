@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { installMediaFixture } from "./media.fixtures";
+import { fixtureJob, fixtureView, installMediaFixture } from "./media.fixtures";
 import type {
   MusicView,
   MusicPlaylist,
@@ -30,7 +30,7 @@ async function musicFixture(page: Page, connected = true) {
     calls: [] as { operation: string; body: Record<string, unknown> }[],
     view: {
       configured: true,
-      audio_download_available: false,
+      audio_download_available: true,
       accounts: connected ? [account] : [],
       playlists: [],
       settings: {
@@ -94,6 +94,24 @@ async function musicFixture(page: Page, connected = true) {
       playlist.revision++;
       return reply({ playlist });
     }
+    if (operation === "playlists/downloads") {
+      const playlist = state.view.playlists[0];
+      expect(body.expected_revision).toBe(playlist.revision);
+      playlist.quality = body.quality as MusicPlaylist["quality"];
+      playlist.auto_download = Boolean(body.auto_download);
+      playlist.revision++;
+      return reply({ playlist });
+    }
+    if (operation === "playlists/download") {
+      expect(body.expected_revision).toBe(state.view.playlists[0].revision);
+      return reply({ queued: 3, unavailable: 1 });
+    }
+    if (operation === "playlists/export")
+      return reply({
+        directory: "/synthetic/music/歌单/example",
+        exported: 3,
+        total: 4,
+      });
     if (operation === "playlists/scan") {
       if (state.failScan) return reply({ code: "music_scan_incomplete" }, 502);
       return reply({ playlist: state.view.playlists[0] });
@@ -148,7 +166,7 @@ async function subscribe(page: Page) {
   ).toBeVisible();
 }
 
-test("music foundation entry distinguishes playlist synchronization from audio downloads", async ({
+test("music entry offers account login and audio archiving", async ({
   page,
 }) => {
   const state = await musicFixture(page, false);
@@ -157,13 +175,132 @@ test("music foundation entry distinguishes playlist synchronization from audio d
   await expect(
     page.getByText("尚未连接音乐账号。", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(/音频下载与标签整理尚未接通/)).toBeVisible();
+  await expect(page.getByText(/自动写入歌曲标签、封面和歌词/)).toBeVisible();
   await expect(
     page.getByRole("button", { name: "读取账号歌单", exact: true }),
   ).toBeDisabled();
   expect(
     state.calls.some((call) => call.operation.startsWith("accounts/qr")),
   ).toBe(false);
+});
+
+test("music download policy, manual queue and ordered exports", async ({
+  page,
+}, info) => {
+  const state = await musicFixture(page);
+  state.view.settings.directory = "/synthetic/music";
+  await page.goto("/#/subscriptions/5");
+  await subscribe(page);
+  await page.getByText("下载设置", { exact: true }).click();
+  await page
+    .getByRole("combobox", { name: "期望音质", exact: true })
+    .selectOption("hires");
+  await page.getByLabel("允许使用当前账号可下载的较低音质").uncheck();
+  await page.getByLabel("同步后自动下载新增歌曲", { exact: true }).check();
+  await page.getByRole("button", { name: "保存下载设置", exact: true }).click();
+  await expect(
+    page.getByText("下载设置已保存，歌单已加入队列。", { exact: true }),
+  ).toBeVisible();
+  expect(state.view.playlists[0].quality).toEqual({
+    level: "hires",
+    allow_fallback: false,
+  });
+  await page.getByRole("button", { name: "下载歌单", exact: true }).click();
+  await expect(page.getByText(/已加入下载队列 3 首/)).toBeVisible();
+  await page
+    .getByRole("button", { name: "导出 M3U8 / JSON", exact: true })
+    .click();
+  await expect(page.getByText(/已导出 3\/4 首/)).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: info.outputPath("music-download-settings.png"),
+    fullPage: true,
+  });
+});
+
+test("mixed download list renders audio evidence without video editing controls", async ({
+  page,
+}, info) => {
+  const view = fixtureView();
+  const audio = fixtureJob({
+    job_id: "audio-one",
+    media_kind: "audio",
+    provider: "netease",
+    source_id: "101",
+    title: "合成歌曲",
+    creator: "合成艺术家",
+    state: "completed",
+    stage: "completed",
+    code: "music_archived",
+    target_id: "music-library",
+    actual_quality: "lossless",
+    destination_directory: "/synthetic/music",
+    can_cancel: false,
+    can_retry: false,
+    can_delete: true,
+    audio_quality: {
+      level: "lossless",
+      codec: "flac",
+      sample_rate: 44100,
+      channels: 2,
+      bits_per_sample: 16,
+      bit_rate: 900000,
+      fallback: false,
+    },
+    audio_receipt: {
+      files: [{ path: "合成艺术家/合成专辑/合成歌曲.flac", kind: "audio" }],
+      warnings: ["music_lyrics_unavailable"],
+    },
+    audio_reused: true,
+  });
+  // Real audio API documents have no BVID or selected CIDs.
+  Object.assign(audio, { bvid: null, selected_cids: null, cid: null });
+  view.jobs.unshift(audio);
+  const state = await installMediaFixture(page, view);
+  state.detailHandler = async (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ job: audio, events: [], metadata: null }),
+    });
+  await page.goto("/#/subscriptions/2");
+  await expect(page.getByText("合成歌曲", { exact: true })).toBeVisible();
+  await expect(page.getByText("网易云 101", { exact: false })).toBeVisible();
+  await page
+    .locator('[data-job-id="audio-one"]')
+    .getByRole("button", { name: "查看任务详情", exact: true })
+    .click();
+  const detail = page.getByRole("complementary", {
+    name: "任务详情",
+    exact: true,
+  });
+  await expect(
+    detail.getByRole("heading", { name: "音乐归档", exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail.getByText("合成艺术家/合成专辑/合成歌曲.flac", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail.getByText("歌词未取得，音频已保留。", { exact: true }),
+  ).toBeVisible();
+  await expect(detail.getByText("媒体服务器核对", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(
+    detail.getByRole("button", { name: "重新解析来源", exact: true }),
+  ).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: info.outputPath("music-job.png"),
+    fullPage: true,
+  });
 });
 
 test("NetEase QR shows waiting then connected and survives reload", async ({

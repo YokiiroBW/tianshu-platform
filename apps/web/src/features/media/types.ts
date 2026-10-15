@@ -108,12 +108,21 @@ export type Subscription = {
   counts: { members: number; queued: number };
 };
 export type Job = {
+  media_kind?: "audio" | "video" | null;
+  provider?: string;
+  source_id?: string;
+  audio_quality?: import("./music/types").AudioQuality | null;
+  audio_receipt?: {
+    files: { path: string; kind: string }[];
+    warnings: string[];
+  } | null;
+  audio_reused?: boolean;
   job_id: string;
   subscription_id: string | null;
   media_key: string;
-  bvid: string;
-  cid: string;
-  selected_cids: string[];
+  bvid: string | null;
+  cid: string | null;
+  selected_cids: string[] | null;
   title: string;
   creator: string;
   state: string;
@@ -123,7 +132,7 @@ export type Job = {
   created_at: number;
   updated_at: number;
   target_id: string;
-  quality: Quality;
+  quality: Quality | import("./music/types").MusicQuality;
   destination_subdirectory?: string;
   destination_directory?: string | null;
   download_reused_cids?: string[];
@@ -237,7 +246,7 @@ export type RulePreview = { results: RuleResult[]; context?: RuleContext };
 export type JobDetail = {
   job: Job;
   events: { state: string; code: string; at: number }[];
-  metadata: {
+  metadata: null | {
     title: string;
     description: string;
     issues: string[];

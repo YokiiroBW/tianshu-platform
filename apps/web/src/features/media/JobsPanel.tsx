@@ -9,6 +9,7 @@ import { ReasonNote } from "./ReasonNote";
 import { destinationLabel } from "./destination";
 import { qualityWord, timestamp, tone, word } from "./wording";
 import { consumeJobsFilter, initialJobsFilter } from "./jobsNavigation";
+import { audioQualityText, MusicAudioReceipt } from "./music/MusicDownloads";
 
 const serverWords: Record<string, string> = {
   verified: "已核对",
@@ -60,8 +61,10 @@ function MetadataEditor({
   media: MediaController;
   updated: () => void;
 }) {
-  const [title, setTitle] = useState(detail.metadata.title);
-  const [description, setDescription] = useState(detail.metadata.description);
+  const [title, setTitle] = useState(detail.metadata?.title ?? "");
+  const [description, setDescription] = useState(
+    detail.metadata?.description ?? "",
+  );
   const [revision] = useState(detail.job.revision);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -78,6 +81,7 @@ function MetadataEditor({
       updated();
     }
   };
+  if (!detail.metadata) return null;
   return (
     <form
       className="media-metadata media-stack"
@@ -323,11 +327,24 @@ export function JobsPanel({ media }: { media: MediaController }) {
                   <div>
                     <h3>{job.title || job.bvid}</h3>
                     <p className="muted">
-                      {job.creator || "UP 主未提供"} · {job.bvid} ·{" "}
-                      {job.selected_cids.length} 个分 P
+                      {job.media_kind === "audio" ? (
+                        `${job.creator || "未知艺术家"} · 网易云 ${job.source_id}`
+                      ) : (
+                        <>
+                          {job.creator || "UP 主未提供"} · {job.bvid} ·{" "}
+                          {job.selected_cids?.length ?? 0} 个分 P
+                        </>
+                      )}
                     </p>
                   </div>
-                  <StatusRail tone={tone(job.state)} label={word(job.state)} />
+                  <StatusRail
+                    tone={tone(job.state)}
+                    label={
+                      job.media_kind === "audio" && job.state === "completed"
+                        ? "已归档"
+                        : word(job.state)
+                    }
+                  />
                 </div>
                 <dl className="media-facts">
                   <div>
@@ -335,8 +352,14 @@ export function JobsPanel({ media }: { media: MediaController }) {
                     <dd>{word(job.stage)}</dd>
                   </div>
                   <div>
-                    <dt>实际画质</dt>
-                    <dd>{qualityWord(job.actual_quality)}</dd>
+                    <dt>
+                      {job.media_kind === "audio" ? "实际音质" : "实际画质"}
+                    </dt>
+                    <dd>
+                      {job.media_kind === "audio"
+                        ? audioQualityText(job.audio_quality)
+                        : qualityWord(job.actual_quality)}
+                    </dd>
                   </div>
                   <div>
                     <dt>更新</dt>
@@ -345,9 +368,11 @@ export function JobsPanel({ media }: { media: MediaController }) {
                   <div>
                     <dt>目标库</dt>
                     <dd>
-                      {media.view?.targets.find(
-                        (target) => target.target_id === job.target_id,
-                      )?.label ?? job.target_id}
+                      {job.media_kind === "audio"
+                        ? "音乐库"
+                        : (media.view?.targets.find(
+                            (target) => target.target_id === job.target_id,
+                          )?.label ?? job.target_id)}
                     </dd>
                   </div>
                   <div>
@@ -477,7 +502,12 @@ export function JobsPanel({ media }: { media: MediaController }) {
                   <h3>{detail.job.title}</h3>
                   <StatusRail
                     tone={tone(detail.job.state)}
-                    label={word(detail.job.state)}
+                    label={
+                      detail.job.media_kind === "audio" &&
+                      detail.job.state === "completed"
+                        ? "已归档"
+                        : word(detail.job.state)
+                    }
                   />
                   {selectedSnapshot &&
                     selectedSnapshot.updated_at !== detail.job.updated_at && (
@@ -499,8 +529,16 @@ export function JobsPanel({ media }: { media: MediaController }) {
                       <dd>{detail.job.job_id}</dd>
                     </div>
                     <div>
-                      <dt>下载画质</dt>
-                      <dd>{qualityWord(detail.job.actual_quality)}</dd>
+                      <dt>
+                        {detail.job.media_kind === "audio"
+                          ? "实际音质"
+                          : "下载画质"}
+                      </dt>
+                      <dd>
+                        {detail.job.media_kind === "audio"
+                          ? audioQualityText(detail.job.audio_quality)
+                          : qualityWord(detail.job.actual_quality)}
+                      </dd>
                     </div>
                     <div>
                       <dt>当前阶段</dt>
@@ -536,69 +574,84 @@ export function JobsPanel({ media }: { media: MediaController }) {
                       </div>
                     )}
                   </dl>
-                  <section>
-                    <h4>资产发布</h4>
-                    {detail.job.asset_receipt ? (
-                      <dl className="media-facts">
-                        {Object.entries(detail.job.asset_receipt)
-                          .filter(([, value]) => typeof value !== "object")
-                          .map(([key, value]) => (
-                            <div key={key}>
-                              <dt>{receiptWords[key] ?? key}</dt>
-                              <dd>
-                                {typeof value === "boolean"
-                                  ? value
-                                    ? "是"
-                                    : "否"
-                                  : String(value ?? "—")}
-                              </dd>
+                  {detail.job.media_kind === "audio" ? (
+                    <>
+                      <MusicAudioReceipt receipt={detail.job.audio_receipt} />
+                      {detail.job.audio_reused && (
+                        <p className="muted">已校验并复用现有音频文件。</p>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <section>
+                        <h4>资产发布</h4>
+                        {detail.job.asset_receipt ? (
+                          <dl className="media-facts">
+                            {Object.entries(detail.job.asset_receipt)
+                              .filter(([, value]) => typeof value !== "object")
+                              .map(([key, value]) => (
+                                <div key={key}>
+                                  <dt>{receiptWords[key] ?? key}</dt>
+                                  <dd>
+                                    {typeof value === "boolean"
+                                      ? value
+                                        ? "是"
+                                        : "否"
+                                      : String(value ?? "—")}
+                                  </dd>
+                                </div>
+                              ))}
+                          </dl>
+                        ) : (
+                          <p className="muted">尚无已确认的资产发布回执。</p>
+                        )}
+                      </section>
+                      <section>
+                        <h4>媒体服务器核对</h4>
+                        {detail.job.library_results.length ? (
+                          detail.job.library_results.map((result) => (
+                            <div
+                              className="media-server-result"
+                              key={result.server_id}
+                            >
+                              <strong>
+                                {serverLabel(result.server_id)} · {result.kind}
+                              </strong>
+                              <StatusRail
+                                tone={
+                                  result.state === "verified"
+                                    ? "blue"
+                                    : result.state === "pending"
+                                      ? "yellow"
+                                      : "red"
+                                }
+                                label={
+                                  serverWords[result.state] ?? result.state
+                                }
+                              />
+                              <ReasonNote code={result.code} />
+                              {result.item_id && (
+                                <p className="muted">条目 {result.item_id}</p>
+                              )}
                             </div>
-                          ))}
-                      </dl>
-                    ) : (
-                      <p className="muted">尚无已确认的资产发布回执。</p>
-                    )}
-                  </section>
-                  <section>
-                    <h4>媒体服务器核对</h4>
-                    {detail.job.library_results.length ? (
-                      detail.job.library_results.map((result) => (
-                        <div
-                          className="media-server-result"
-                          key={result.server_id}
-                        >
-                          <strong>
-                            {serverLabel(result.server_id)} · {result.kind}
-                          </strong>
-                          <StatusRail
-                            tone={
-                              result.state === "verified"
-                                ? "blue"
-                                : result.state === "pending"
-                                  ? "yellow"
-                                  : "red"
-                            }
-                            label={serverWords[result.state] ?? result.state}
-                          />
-                          <ReasonNote code={result.code} />
-                          {result.item_id && (
-                            <p className="muted">条目 {result.item_id}</p>
-                          )}
-                        </div>
-                      ))
-                    ) : (
-                      <p className="muted">
-                        {media.view?.targets.find(
-                          (target) => target.target_id === detail.job.target_id,
-                        )?.servers.length
-                          ? "配置的服务器尚未返回核对证据。"
-                          : "目标库未配置媒体服务器。发布完成不代表服务器核对完成。"}
-                      </p>
-                    )}
-                  </section>
-                  {!["completed", "published", "cancelled"].includes(
-                    detail.job.state,
-                  ) &&
+                          ))
+                        ) : (
+                          <p className="muted">
+                            {media.view?.targets.find(
+                              (target) =>
+                                target.target_id === detail.job.target_id,
+                            )?.servers.length
+                              ? "配置的服务器尚未返回核对证据。"
+                              : "目标库未配置媒体服务器。发布完成不代表服务器核对完成。"}
+                          </p>
+                        )}
+                      </section>
+                    </>
+                  )}
+                  {detail.job.media_kind !== "audio" &&
+                    !["completed", "published", "cancelled"].includes(
+                      detail.job.state,
+                    ) &&
                     detail.metadata && (
                       <MetadataEditor
                         key={editorKey}
@@ -607,34 +660,35 @@ export function JobsPanel({ media }: { media: MediaController }) {
                         updated={() => void read(selected, false)}
                       />
                     )}
-                  {[
-                    "waiting_metadata",
-                    "failed",
-                    "published",
-                    "completed",
-                  ].includes(detail.job.state) && (
-                    <button
-                      className="button"
-                      disabled={!!media.busy}
-                      onClick={async () => {
-                        const result = await media.command(
-                          "jobs/refresh_metadata",
-                          {
-                            job_id: detail.job.job_id,
-                            expected_revision: detail.job.revision,
-                          },
-                        );
-                        if (result) {
-                          media.setNotice(
-                            "来源已重新解析，请查看最新元数据和封面状态。",
+                  {detail.job.media_kind !== "audio" &&
+                    [
+                      "waiting_metadata",
+                      "failed",
+                      "published",
+                      "completed",
+                    ].includes(detail.job.state) && (
+                      <button
+                        className="button"
+                        disabled={!!media.busy}
+                        onClick={async () => {
+                          const result = await media.command(
+                            "jobs/refresh_metadata",
+                            {
+                              job_id: detail.job.job_id,
+                              expected_revision: detail.job.revision,
+                            },
                           );
-                          void read(selected, false);
-                        }
-                      }}
-                    >
-                      重新解析来源
-                    </button>
-                  )}
+                          if (result) {
+                            media.setNotice(
+                              "来源已重新解析，请查看最新元数据和封面状态。",
+                            );
+                            void read(selected, false);
+                          }
+                        }}
+                      >
+                        重新解析来源
+                      </button>
+                    )}
                   <section>
                     <h4>阶段记录</h4>
                     <ol className="media-timeline">

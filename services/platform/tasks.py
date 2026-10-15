@@ -323,6 +323,18 @@ class Tasks:
                     "quality": document["quality"],
                 },
             }
+            if document.get("media_kind") == "audio":
+                built["request"] = {
+                    "job_id": document["job_id"],
+                    "provider": "netease",
+                    "source_id": document["source_id"],
+                    "quality": document["quality"],
+                }
+                built["evidence"] = {
+                    "downloaded": document.get("actual_quality") is not None,
+                    "audio_archived": document.get("audio_receipt") is not None,
+                    "audio_quality": document.get("audio_quality"),
+                }
         else:
             status, stage = MODEL_STATUS[record["state"]]
             built = self._model_task(record, document, status)

@@ -19,6 +19,7 @@ class MetadataRefresh:
             return {"replay": replay}
         previous = await self.media.local(self.media.repo.job, body["job_id"])
         require(previous is not None, "not_found", 404)
+        require(previous.get("media_kind") != "audio", "job_action_conflict", 409)
         require(previous["revision"] == body["expected_revision"], "version_conflict", 409)
         require(
             previous["state"] in {"waiting_metadata", "failed", "published", "completed"},

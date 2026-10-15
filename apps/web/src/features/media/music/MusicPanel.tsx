@@ -4,6 +4,7 @@ import type { MediaController } from "../useMediaController";
 import { timestamp, word } from "../wording";
 import { MusicAccounts } from "./MusicAccounts";
 import { MusicStorage } from "./MusicStorage";
+import { audioQualityText, MusicDownloads } from "./MusicDownloads";
 import type {
   MusicPlaylist,
   MusicView,
@@ -19,6 +20,9 @@ export function MusicPanel({ media }: { media: MediaController }) {
   const [detail, setDetail] = useState<PlaylistDetail | null>(null);
   const [interval, setInterval] = useState("3600");
   const [reading, setReading] = useState("");
+  const detailCursor = useRef<{ playlist_id: string; offset: number } | null>(
+    null,
+  );
   const current = useRef(media);
   current.current = media;
   const refresh = useCallback(async () => {
@@ -28,6 +32,15 @@ export function MusicPanel({ media }: { media: MediaController }) {
       {},
     );
     if (result?.configured) setView(result);
+    const cursor = detailCursor.current;
+    if (cursor) {
+      const tracks = await current.current.request<PlaylistDetail>(
+        "music-detail",
+        "music/playlists/detail",
+        cursor,
+      );
+      if (tracks && detailCursor.current === cursor) setDetail(tracks);
+    }
   }, []);
   useEffect(() => {
     void refresh();
@@ -46,6 +59,7 @@ export function MusicPanel({ media }: { media: MediaController }) {
         "music-catalog",
         "music-detail",
         "music-scan",
+        "music-export",
         "command",
       ])
         current.current.cancel(slot);
@@ -78,12 +92,14 @@ export function MusicPanel({ media }: { media: MediaController }) {
   }
   async function readDetail(playlist: MusicPlaylist, offset = 0) {
     setReading("detail");
+    const cursor = { playlist_id: playlist.playlist_id, offset };
+    detailCursor.current = cursor;
     const result = await media.request<PlaylistDetail>(
       "music-detail",
       "music/playlists/detail",
-      { playlist_id: playlist.playlist_id, offset },
+      cursor,
     );
-    if (result) setDetail(result);
+    if (result && detailCursor.current === cursor) setDetail(result);
     setReading("");
   }
   if (!view)
@@ -111,7 +127,8 @@ export function MusicPanel({ media }: { media: MediaController }) {
         </button>
       </div>
       <p className="music-scope">
-        当前支持网易云扫码和歌单资料同步。音频下载与标签整理尚未接通，歌曲会明确显示“未下载”。
+        网易云扫码登录后，订阅歌单并下载到音乐库，自动写入歌曲标签、封面和歌词。歌单保存在天枢，也可导出为
+        M3U8 和 JSON。
       </p>
       <div className="music-settings-grid">
         <MusicAccounts
@@ -235,63 +252,75 @@ export function MusicPanel({ media }: { media: MediaController }) {
           <p className="muted">还没有订阅歌单。连接账号后，从上方选择。</p>
         )}
         {view.playlists.map((item) => (
-          <article className="music-playlist" key={item.playlist_id}>
-            <div>
-              <strong>{item.name}</strong>
-              <p className="muted">
-                {item.member_count} 首 · {word(item.state)} ·{" "}
-                {timestamp(item.synced_at)}
-              </p>
-              {item.code !== "ready" && (
-                <p className="media-warning">
-                  {word(item.code)}，保留上次完整歌单。
+          <article className="media-stack" key={item.playlist_id}>
+            <div className="music-playlist">
+              <div>
+                <strong>{item.name}</strong>
+                <p className="muted">
+                  {item.member_count} 首 · {word(item.state)} ·{" "}
+                  {timestamp(item.synced_at)}
                 </p>
-              )}
-            </div>
-            <div className="music-actions">
-              <button
-                className="button"
-                disabled={!!reading}
-                onClick={() => void readDetail(item)}
-              >
-                查看歌曲
-              </button>
-              <button
-                className="button"
-                disabled={!!reading || !!media.busy || item.state !== "active"}
-                onClick={async () => {
-                  setReading("scan");
-                  if (
-                    await media.request("music-scan", "music/playlists/scan", {
-                      playlist_id: item.playlist_id,
-                    })
-                  ) {
-                    await refresh();
-                    if (detail?.playlist.playlist_id === item.playlist_id)
-                      await readDetail(item);
+                {item.code !== "ready" && (
+                  <p className="media-warning">
+                    {word(item.code)}，保留上次完整歌单。
+                  </p>
+                )}
+              </div>
+              <div className="music-actions">
+                <button
+                  className="button"
+                  disabled={!!reading}
+                  onClick={() => void readDetail(item)}
+                >
+                  查看歌曲
+                </button>
+                <button
+                  className="button"
+                  disabled={
+                    !!reading || !!media.busy || item.state !== "active"
                   }
-                  setReading("");
-                }}
-              >
-                立即同步
-              </button>
-              <button
-                className="button"
-                disabled={!!media.busy || !!reading}
-                onClick={async () => {
-                  if (
-                    await media.command("music/playlists/control", {
-                      playlist_id: item.playlist_id,
-                      expected_revision: item.revision,
-                      action: item.state === "active" ? "pause" : "resume",
-                    })
-                  )
-                    await refresh();
-                }}
-              >
-                {item.state === "active" ? "暂停同步" : "恢复同步"}
-              </button>
+                  onClick={async () => {
+                    setReading("scan");
+                    if (
+                      await media.request(
+                        "music-scan",
+                        "music/playlists/scan",
+                        {
+                          playlist_id: item.playlist_id,
+                        },
+                      )
+                    ) {
+                      await refresh();
+                    }
+                    setReading("");
+                  }}
+                >
+                  立即同步
+                </button>
+                <button
+                  className="button"
+                  disabled={!!media.busy || !!reading}
+                  onClick={async () => {
+                    if (
+                      await media.command("music/playlists/control", {
+                        playlist_id: item.playlist_id,
+                        expected_revision: item.revision,
+                        action: item.state === "active" ? "pause" : "resume",
+                      })
+                    )
+                      await refresh();
+                  }}
+                >
+                  {item.state === "active" ? "暂停同步" : "恢复同步"}
+                </button>
+              </div>
             </div>
+            <MusicDownloads
+              media={media}
+              playlist={item}
+              configured={!!view.settings.directory}
+              refresh={refresh}
+            />
           </article>
         ))}
       </section>
@@ -304,7 +333,14 @@ export function MusicPanel({ media }: { media: MediaController }) {
                 按远端歌单顺序显示，共 {detail.playlist.member_count} 首。
               </p>
             </div>
-            <button className="button" onClick={() => setDetail(null)}>
+            <button
+              className="button"
+              onClick={() => {
+                detailCursor.current = null;
+                media.cancel("music-detail");
+                setDetail(null);
+              }}
+            >
               收起歌曲
             </button>
           </div>
@@ -328,7 +364,25 @@ export function MusicPanel({ media }: { media: MediaController }) {
                     </td>
                     <td>{track.artists.join("、") || "未知"}</td>
                     <td>{track.album || "未知"}</td>
-                    <td>未下载</td>
+                    <td>
+                      <span>
+                        {track.audio_state === "not_downloaded"
+                          ? "未下载"
+                          : track.audio_state === "completed"
+                            ? "已归档"
+                            : word(track.audio_state)}
+                      </span>
+                      {track.audio_quality && (
+                        <p className="muted">
+                          {audioQualityText(track.audio_quality)}
+                        </p>
+                      )}
+                      {track.file && <p className="music-file">{track.file}</p>}
+                      {track.audio_code &&
+                        !["queued", "music_archived"].includes(
+                          track.audio_code,
+                        ) && <p className="muted">{word(track.audio_code)}</p>}
+                    </td>
                   </tr>
                 ))}
               </tbody>

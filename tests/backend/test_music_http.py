@@ -1,6 +1,9 @@
 import json
 import unittest
 import uuid
+from pathlib import Path
+
+from services.platform.contracts import Fault
 
 import test_media_runtime as existing
 from music_fixtures import SyntheticNetease
@@ -17,6 +20,120 @@ class MusicHttpTests(unittest.IsolatedAsyncioTestCase):
         self.media.music.connector.state = "ready"
         result = await self.post("music/accounts/qr/poll", {"qr_id": qr["qr_id"]})
         return result["account"]
+
+    async def test_audio_queue_replay_controls_task_projection_and_export(self):
+        account = await self.login_music()
+        directory = Path(self.temp.name) / "music"
+        directory.mkdir()
+        await self.post(
+            "music/settings/save",
+            {
+                "directory": str(directory),
+                "layout": "artist_album",
+                "expected_revision": 0,
+                "client_id": str(uuid.uuid4()),
+            },
+        )
+        playlist = (
+            await self.post(
+                "music/playlists/subscribe",
+                {
+                    "account_id": account["account_id"],
+                    "source_id": "900",
+                    "interval_seconds": 3600,
+                    "expected_revision": 0,
+                    "client_id": str(uuid.uuid4()),
+                },
+            )
+        )["playlist"]
+        command = {
+            "playlist_id": playlist["playlist_id"],
+            "quality": {"level": "lossless", "allow_fallback": False},
+            "auto_download": True,
+            "expected_revision": playlist["revision"],
+            "client_id": str(uuid.uuid4()),
+        }
+        configured = await self.post("music/playlists/downloads", command)
+        self.assertEqual(configured["queued"], 2)
+        self.assertTrue((await self.post("music/playlists/downloads", command))["replayed"])
+        self.assertEqual(self.media.repo.job_count(), 2)
+        jobs = await self.post("jobs/list", {"states": None, "cursor": None, "page_size": 10})
+        job = jobs["jobs"][0]
+        self.assertEqual(job["media_kind"], "audio")
+        self.assertIsNone(job["bvid"])
+        detail = await self.post("jobs/detail", {"job_id": job["job_id"]})
+        self.assertIsNone(detail["metadata"])
+        await self.post(
+            "jobs/refresh_metadata",
+            {
+                "job_id": job["job_id"],
+                "expected_revision": job["revision"],
+                "client_id": str(uuid.uuid4()),
+            },
+            409,
+        )
+        await self.post(
+            "jobs/control",
+            {"job_id": job["job_id"], "action": "cancel", "client_id": str(uuid.uuid4())},
+        )
+        self.assertEqual(self.media.repo.job(job["job_id"])["state"], "cancelled")
+        await self.post(
+            "jobs/control",
+            {"job_id": job["job_id"], "action": "retry", "client_id": str(uuid.uuid4())},
+        )
+
+        async def forbidden(*args):
+            raise Fault("music_download_forbidden", 409)
+
+        self.media.music.connector.download = forbidden
+        for _ in range(2):
+            claimed = self.media.repo.claim("http-fixture")
+            await self.media.worker.run(claimed, "http-fixture")
+        detail = await self.post("jobs/detail", {"job_id": job["job_id"]})
+        self.assertEqual(detail["job"]["code"], "music_download_forbidden")
+        async with self.client.post(
+            self.url + "/api/web/tasks/detail",
+            json={"task_id": "media:" + job["job_id"]},
+            headers={"Origin": self.url, "X-CSRF-Token": self.csrf},
+        ) as response:
+            self.assertEqual(response.status, 200)
+            body = await response.json()
+            self.assertIn("audio_archived", json.dumps(body))
+            self.assertNotIn('"bvid"', json.dumps(body))
+        exported = await self.post(
+            "music/playlists/export", {"playlist_id": playlist["playlist_id"]}
+        )
+        self.assertEqual((exported["exported"], exported["total"]), (0, 4))
+        self.assertTrue((Path(exported["directory"]) / "playlist.json").is_file())
+
+    async def test_auto_download_without_directory_rolls_back_setting(self):
+        account = await self.login_music()
+        playlist = (
+            await self.post(
+                "music/playlists/subscribe",
+                {
+                    "account_id": account["account_id"],
+                    "source_id": "900",
+                    "interval_seconds": 3600,
+                    "expected_revision": 0,
+                    "client_id": str(uuid.uuid4()),
+                },
+            )
+        )["playlist"]
+        await self.post(
+            "music/playlists/downloads",
+            {
+                "playlist_id": playlist["playlist_id"],
+                "quality": {"level": "lossless", "allow_fallback": False},
+                "auto_download": True,
+                "expected_revision": 1,
+                "client_id": str(uuid.uuid4()),
+            },
+            409,
+        )
+        saved = self.media.repo.get("music_playlist", playlist["playlist_id"])
+        self.assertFalse(saved["auto_download"])
+        self.assertEqual(saved["revision"], 1)
 
     async def test_qr_login_catalog_subscribe_and_persisted_detail(self):
         account = await self.login_music()
