@@ -38,6 +38,8 @@ class Upstream:
         self.fail_page = False
         self.favorite_pages = None
         self.favorite_requests = []
+        self.favorited_at = None
+        self.is_collaboration = False
         self.cookie_seen = []
         self.qr_state = "waiting"
         self.cover_enabled = False
@@ -55,6 +57,8 @@ class Upstream:
             self.qr_state = body.get("qr_state", self.qr_state)
             self.description = body.get("description", self.description)
             self.cover_enabled = body.get("cover_enabled", self.cover_enabled)
+            self.favorited_at = body.get("favorited_at", self.favorited_at)
+            self.is_collaboration = body.get("is_collaboration", self.is_collaboration)
             return web.json_response(
                 {"fixture": True, "members": self.members, "qr_state": self.qr_state}
             )
@@ -94,6 +98,8 @@ class Upstream:
                     for index, cid in enumerate(self.parts[bvid])
                 ],
             }
+            if self.is_collaboration:
+                data["staff"] = [{"mid": 946975, "name": "合成合作UP", "title": "联合创作"}]
         elif path == "/x/tag/archive/tags":
             data = [{"tag_name": "合成测试"}]
         elif path == "/x/player/wbi/playurl":
@@ -111,6 +117,9 @@ class Upstream:
                 return web.json_response({"code": -503, "data": {}})
             if self.favorite_pages is None:
                 data = favorite_page(len(self.members), self.members)
+                if self.favorited_at is not None:
+                    for member in data["medias"]:
+                        member["fav_time"] = self.favorited_at
             else:
                 if page > len(self.favorite_pages):
                     return web.json_response({"code": -503, "data": {}})
@@ -160,10 +169,23 @@ class Upstream:
 class SyntheticEngine(Engine):
     """Produces genuine FFmpeg media; deliberately not evidence of a real upstream download."""
 
-    def __init__(self, config):
+    def __init__(self, config, *, stream_policy=False):
         super().__init__(config)
         self.calls = []
         self.fail_cid = None
+        self.stream_policy = stream_policy
+
+    @staticmethod
+    def policy_formats():
+        # QNs are explicitly synthetic labels; ffprobe still observes genuine encoded streams.
+        return [
+            {"format_id": f"{qn}-{codec}", "quality": qn, "vcodec": codec, "acodec": "none"}
+            for qn in (64, 80)
+            for codec in ("avc1", "hev1")
+        ] + [
+            {"format_id": "30280", "vcodec": "none", "acodec": "mp4a.40.2"},
+            {"format_id": "30251", "vcodec": "none", "acodec": "flac"},
+        ]
 
     async def check(self):
         self.status = {
@@ -173,7 +195,17 @@ class SyntheticEngine(Engine):
         }
         return self.status
 
-    async def formats(self, bvid, part, cookie, directory):
+    async def formats(self, bvid, part, cookie, directory, requested=None):
+        if self.stream_policy:
+            from services.platform.media.stream_policy import eligible_pairs
+
+            pairs = eligible_pairs(self.policy_formats(), requested or QUALITY)
+            return [
+                {"quality_id": qn, "label": "合成画质 " + qn}
+                for qn in sorted(
+                    {pair[2]["video_quality"] for pair in pairs}, key=int, reverse=True
+                )
+            ]
         return [
             {"quality_id": "80", "label": "合成1080P"},
             {"quality_id": "64", "label": "合成720P"},
@@ -187,7 +219,20 @@ class SyntheticEngine(Engine):
             raise Fault("download_failed", 503)
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
-        output = directory / "download.mp4"
+        video_codec, audio_codec, extension, actual_quality = "mpeg4", "aac", "mp4", "80"
+        selected = []
+        if self.stream_policy:
+            from services.platform.media.stream_policy import select_formats
+
+            selector, evidence = select_formats(self.policy_formats(), job["quality"])
+            selected = [
+                item for item in self.policy_formats() if item["format_id"] in selector.split("+")
+            ]
+            video_codec = "libx265" if evidence["video_codec"] == "hevc" else "libx264"
+            audio_codec = "flac" if evidence["hires"] else "aac"
+            extension = "mkv" if evidence["hires"] else "mp4"
+            actual_quality = evidence["video_quality"]
+        output = directory / ("download." + extension)
         code, _, _ = await run_process(
             [
                 self.config["ffmpeg"],
@@ -202,17 +247,25 @@ class SyntheticEngine(Engine):
                 "-i",
                 "sine=frequency=440:duration=2",
                 "-c:v",
-                "mpeg4",
+                video_codec,
                 "-c:a",
-                "aac",
+                audio_codec,
                 "-shortest",
                 "-y",
                 str(output),
             ]
         )
         require(code == 0, "fixture_video_failed", 503)
-        await self.verify(output, 2)
-        return {"file": str(output), "actual_quality": "80", "extension": "mp4"}
+        observed = await self.verify(output, 2)
+        result = {"file": str(output), "actual_quality": actual_quality, "extension": extension}
+        if self.stream_policy:
+            from services.platform.media.probe_details import media_details
+            from services.platform.media.stream_policy import output_evidence, validate_policy
+
+            result["media"] = media_details(observed)
+            result["stream_evidence"] = output_evidence(selected, result["media"], strict=True)
+            validate_policy(result, job["quality"])
+        return result
 
 
 class PublicationFixture:

@@ -70,7 +70,9 @@ async def serve(arguments):
             ]
         platform = Platform(configuration)
         platform.media.connector = Bilibili(api=upstream.url, passport=upstream.url)
-        platform.media.engine = SyntheticEngine(platform.media.config["engine"])
+        platform.media.engine = SyntheticEngine(
+            platform.media.config["engine"], stream_policy=arguments.stream_policy
+        )
         if arguments.local_server:
             platform.media.servers.verify = AsyncMock(
                 return_value=[
@@ -122,6 +124,11 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=18898)
     parser.add_argument("--ffmpeg", required=True)
     parser.add_argument("--ffprobe", required=True)
+    parser.add_argument(
+        "--stream-policy",
+        action="store_true",
+        help="Apply actual selection and FFmpeg encoding to explicitly synthetic AVC/HEVC/AAC/FLAC formats",
+    )
     parser.add_argument(
         "--local-server",
         action="store_true",
