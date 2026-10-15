@@ -9,7 +9,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from ..contracts import Fault, require
+from ..contracts import Fault, digest, require
 from .engine import file_record, validate_image
 from .destination import head_key, snapshot
 from .metadata import normalize_bilibili
@@ -21,6 +21,7 @@ from .bilibili import cover_url
 from .image_fetch import fetch_image
 from .nfo_details import enrich_sidecars
 from .probe_details import media_details
+from .stream_policy import validate_policy
 
 
 class Worker:
@@ -358,6 +359,7 @@ class Worker:
                 downloaded["media"] = media_details(
                     await self.media.engine.verify(downloaded["file"], part.get("duration_seconds"))
                 )
+            validate_policy(downloaded, job["quality"])
             if was_reused:
                 reused.append(cid)
             if base and cid in base["selected_cids"]:
@@ -375,6 +377,40 @@ class Worker:
                 actual_quality=downloaded["actual_quality"],
                 progress=len(downloads) / len(job["selected_cids"]),
             )
+        if len({value["extension"] for value in downloads.values()}) > 1:
+            # Sidecar contracts use one extension per package. Remux only this
+            # job's private input; existing library and cache inodes stay intact.
+            for cid, downloaded in list(downloads.items()):
+                if downloaded["extension"] == "mkv":
+                    continue
+                path = Path(downloaded["file"]).with_suffix(".mkv")
+                input_id = digest({"job": job["job_id"], "file": str(path)})
+                ownership = {
+                    **downloaded,
+                    "job_id": job["job_id"],
+                    "generation": job["generation"],
+                    "cid": cid,
+                    "file": str(path),
+                    "extension": "mkv",
+                }
+                await self.media.local(
+                    self.media.repo.put, "media_input", input_id, {**ownership, "state": "prepared"}
+                )
+                part = next(p for p in job["snapshot"]["parts"] if p["cid"] == cid)
+                converted = await self.media.engine.remux(
+                    downloaded, path, part.get("duration_seconds")
+                )
+                validate_policy(converted, job["quality"])
+                await self.media.local(
+                    self.media.repo.put,
+                    "media_input",
+                    input_id,
+                    {**ownership, **converted, "state": "ready"},
+                )
+                downloads[cid] = converted
+                if base and cid in base["selected_cids"]:
+                    replace.add(cid)
+            await update(downloads=downloads, replace_video_cids=sorted(replace))
 
     async def base(self, job):
         if job.get("base_edition"):

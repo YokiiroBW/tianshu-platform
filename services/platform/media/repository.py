@@ -555,10 +555,35 @@ class Repository:
                 (bvid,),
             ).fetchall()
         return [
-            body["downloads"][cid]
-            for row in rows
-            if cid in (body := json.loads(row[0])).get("downloads", {})
+            *self.download_variants(bvid, cid),
+            *[
+                body["downloads"][cid]
+                for row in rows
+                if cid in (body := json.loads(row[0])).get("downloads", {})
+            ],
         ]
+
+    def remember_download(self, bvid, cid, quality, download):
+        self.put(
+            "download_variant",
+            digest({"bvid": bvid, "cid": cid, "quality": quality, "sha256": download["sha256"]}),
+            {"bvid": bvid, "cid": cid, "actual_quality": quality, "download": download},
+        )
+
+    def download_variants(self, bvid, cid):
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT body FROM documents WHERE kind='download_variant' AND json_extract(body,'$.bvid')=? AND json_extract(body,'$.cid')=? ORDER BY rowid DESC",
+                (bvid, cid),
+            ).fetchall()
+        return [json.loads(row[0])["download"] for row in rows]
+
+    def forget_download(self, bvid, cid, quality, sha256):
+        with self.transaction() as db:
+            db.execute(
+                "DELETE FROM documents WHERE kind='download_variant' AND id=?",
+                (digest({"bvid": bvid, "cid": cid, "quality": quality, "sha256": sha256}),),
+            )
 
     def refresh_metadata(self, identity, revision, resolved, *, db):
         row = db.execute("SELECT body FROM jobs WHERE id=? AND " + VISIBLE, (identity,)).fetchone()

@@ -6,9 +6,10 @@ from pathlib import Path
 from ..contracts import Fault, digest, require
 from .engine import file_record
 from .organizer import library_lock
+from .stream_policy import constrained, validate_policy
 
 
-def validate_download(download, cid, quality):
+def validate_download(download, cid, quality, requested=None):
     require(download.get("actual_quality") == quality, "quality_mismatch", 503)
     path = Path(download["file"])
     require(
@@ -25,7 +26,7 @@ def validate_download(download, cid, quality):
         "download_cache_changed",
         409,
     )
-    return dict(download)
+    return dict(validate_policy(download, requested)) if requested else dict(download)
 
 
 class DownloadCache:
@@ -45,11 +46,15 @@ class DownloadCache:
             / ".probes"
             / digest({"job": job["job_id"], "cid": part["cid"], "generation": job["generation"]})
         )
-        formats = await self.media.engine.formats(job["bvid"], part, cookie, directory)
+        kwargs = {"requested": requested} if constrained(requested) else {}
+        formats = await self.media.engine.formats(job["bvid"], part, cookie, directory, **kwargs)
         available = {item["quality_id"] for item in formats}
         require(available, "quality_unavailable", 503)
         if requested["mode"] == "exact" and requested["quality_id"] in available:
             return requested["quality_id"]
+        require(
+            requested["mode"] != "exact" or requested["allow_fallback"], "quality_unavailable", 503
+        )
         return max(available, key=int)
 
     async def obtain(self, job, part, cookie, owner, quality):
@@ -123,6 +128,13 @@ class DownloadCache:
                         download = await locked_file_work(
                             validate_download, claim["download"], cid, quality
                         )
+                        # Keep incompatible valid bytes as another source under the
+                        # same QN lock; replacing the current pointer never rewrites them.
+                        try:
+                            validate_policy(download, job["quality"])
+                        except Fault:
+                            await media.local(repo.remember_download, *key, download)
+                            raise
                         return await locked_file_work(media.retention.pin, job, cid, download), True
                     except (Fault, OSError, KeyError, ValueError):
                         await media.local(repo.download_invalidate, *key, generation)
@@ -154,7 +166,9 @@ class DownloadCache:
                             "download_cache_changed",
                             409,
                         )
-                        download = await locked_file_work(validate_download, previous, cid, quality)
+                        download = await locked_file_work(
+                            validate_download, previous, cid, quality, job["quality"]
+                        )
                     except (Fault, OSError, KeyError, ValueError):
                         continue
                     await media.local(repo.download_finish, *key, owner, generation, download)
@@ -167,7 +181,12 @@ class DownloadCache:
                 require(cid in mapping, "source_cid_removed", 409)
                 exact_job = {
                     **job,
-                    "quality": {"mode": "exact", "quality_id": quality, "allow_fallback": False},
+                    "quality": {
+                        **job["quality"],
+                        "mode": "exact",
+                        "quality_id": quality,
+                        "allow_fallback": False,
+                    },
                 }
                 download = await media.engine.download(
                     exact_job, mapping[cid], cookie, directory / str(generation)
@@ -189,7 +208,9 @@ class DownloadCache:
                     source_index=mapping[cid]["index"],
                     source_captured_at=before["snapshot"]["captured_at"],
                 )
-                download = await locked_file_work(validate_download, download, cid, quality)
+                download = await locked_file_work(
+                    validate_download, download, cid, quality, job["quality"]
+                )
                 await media.local(repo.heartbeat, job["job_id"], owner, job["generation"])
                 await media.local(repo.download_finish, *key, owner, generation, download)
                 finished = True

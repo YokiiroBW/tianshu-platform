@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 from yt_dlp import YoutubeDL, parse_options
 from yt_dlp.postprocessor.ffmpeg import FFmpegMergerPP, FFmpegPostProcessor
+from yt_dlp.utils import get_compatible_ext
 
 from services.platform.contracts import Fault
 from services.platform.media.config import ENGINE_VERSION
@@ -202,6 +203,57 @@ class MediaEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(self.directory / "download.mkv"), result["file"])
         self.assertTrue((self.directory / "download.f30112.mp4").exists())
 
+    async def test_constrained_selection_and_actual_output_share_one_policy(self):
+        self.job["quality"]["stream_options"] = {
+            "codecs": ["avc"],
+            "audio_max_quality": "30280",
+            "allow_hdr": False,
+        }
+        self.probe["streams"] = [
+            {"codec_type": "video", "codec_name": "h264", "color_transfer": "bt709"},
+            {"codec_type": "audio", "codec_name": "aac"},
+        ]
+        formats = copy.deepcopy(self.info["requested_formats"])
+        with patch.object(self.engine, "format_info", AsyncMock(return_value=formats)):
+            result = await self._download()
+        command = self.commands[0]
+        self.assertEqual(command[command.index("--format") + 1], "30080+30280")
+        self.assertEqual(result["stream_evidence"]["audio_quality"], "30280")
+        self.probe["streams"][0]["codec_name"] = "hevc"
+        with (
+            patch.object(self.engine, "format_info", AsyncMock(return_value=formats)),
+            self.assertRaises(Fault) as raised,
+        ):
+            await self._download()
+        self.assertEqual(raised.exception.code, "quality_mismatch")
+
+    async def test_probe_filters_the_same_allowed_pairs_as_download_selection(self):
+        formats = copy.deepcopy(self.info["requested_formats"])
+        formats.append(
+            {**formats[0], "quality": 125, "format_id": "30125", "dynamic_range": "HDR10"}
+        )
+        with patch.object(self.engine, "format_info", AsyncMock(return_value=formats)):
+            projected = await self.engine.formats(
+                self.job["bvid"],
+                self.part,
+                "",
+                self.directory / "probe",
+                requested={**self.job["quality"], "stream_options": {"allow_hdr": False}},
+            )
+            self.assertEqual([value["quality_id"] for value in projected], ["80"])
+            with self.assertRaises(Fault) as raised:
+                await self.engine.formats(
+                    self.job["bvid"],
+                    self.part,
+                    "",
+                    self.directory / "probe",
+                    requested={
+                        **self.job["quality"],
+                        "stream_options": {"audio_min_quality": "30251"},
+                    },
+                )
+            self.assertEqual(raised.exception.code, "quality_unavailable")
+
 
 class MediaEngineToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -303,6 +355,95 @@ class MediaEngineToolIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(self.directory / "download.mp4"), result["file"])
         self.assertTrue(video.exists())
         self.assertTrue(audio.exists())
+
+    async def test_real_flac_uses_matroska_and_preserves_audio_without_transcoding(self):
+        video = self.directory / "video.mp4"
+        audio = self.directory / "audio.flac"
+        for args in (
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=160x90:d=1",
+                "-an",
+                "-c:v",
+                "libx264",
+                str(video),
+            ],
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-vn",
+                "-c:a",
+                "flac",
+                str(audio),
+            ],
+        ):
+            subprocess.run(
+                [self.ffmpeg, "-v", "error", *args], check=True, capture_output=True, timeout=30
+            )
+        info = copy.deepcopy(MERGED_INFO)
+        info["requested_formats"][1].update(format_id="30251", acodec="flac", ext="flac")
+        info["acodec"] = "flac"
+        for value in info["requested_formats"]:
+            value["protocol"] = "https"
+        engine = Engine(
+            {
+                "python": sys.executable,
+                "ffmpeg": self.ffmpeg,
+                "ffprobe": self.ffprobe,
+                "max_bytes": 1024**2,
+                "timeout_seconds": 30,
+            }
+        )
+
+        async def merge(command, **kwargs):
+            if command[1:3] != ["-m", "yt_dlp"]:
+                return await run_process(command, **kwargs)
+            cli = parse_options(command[3:]).ydl_opts
+            extension = get_compatible_ext(
+                vcodecs=["avc1.640032"],
+                acodecs=["flac"],
+                vexts=["mp4"],
+                aexts=["flac"],
+                preferences=cli["merge_output_format"].split("/"),
+            )
+            self.assertEqual(extension, "mkv")
+            with YoutubeDL({**cli, "quiet": True}) as downloader:
+                downloader._write_info_json(
+                    "video", copy.deepcopy(info), str(self.directory / "download.info.json")
+                )
+                FFmpegMergerPP(downloader).run(
+                    {
+                        **info,
+                        "filepath": str(self.directory / "download.mkv"),
+                        "__files_to_merge": [str(video), str(audio)],
+                    }
+                )
+            return 0, b"", b""
+
+        request = {
+            "bvid": "BV1ibdVBKEMe",
+            "quality": {
+                "mode": "exact",
+                "quality_id": "80",
+                "allow_fallback": False,
+                "stream_options": {"audio_min_quality": "30251"},
+            },
+        }
+        with (
+            patch.object(engine, "format_info", AsyncMock(return_value=info["requested_formats"])),
+            patch("services.platform.media.engine.run_process", merge),
+        ):
+            result = await engine.download(
+                request, {"index": 1, "duration_seconds": 1}, "", self.directory
+            )
+        self.assertEqual(result["extension"], "mkv")
+        self.assertEqual(result["media"]["audio_tracks"][0]["codec_name"], "flac")
+        self.assertEqual(result["stream_evidence"]["audio_quality"], "30251")
+        self.assertEqual(result["media"]["video_streams"][0]["codec_name"], "h264")
 
 
 if __name__ == "__main__":

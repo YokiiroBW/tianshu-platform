@@ -15,6 +15,13 @@ from pathlib import Path
 from ..contracts import Fault, require
 from .config import ENGINE_VERSION
 from .probe_details import media_details
+from .stream_policy import (
+    constrained,
+    eligible_pairs,
+    output_evidence,
+    select_formats,
+    validate_policy,
+)
 
 
 def private_environment():
@@ -126,7 +133,7 @@ class Engine:
             }
         return dict(self.status)
 
-    async def formats(self, bvid, part, cookie, directory):
+    async def format_info(self, bvid, part, cookie, directory):
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=False)
         cookie_file = directory / ".session.txt"
@@ -163,7 +170,24 @@ class Engine:
                 "source_identity_changed",
                 409,
             )
-            formats = info.get("formats", [])
+            require(isinstance(info.get("formats"), list), "quality_probe_unavailable", 503)
+            return info["formats"]
+        except (ValueError, TypeError, OSError, TimeoutError):
+            raise Fault("quality_probe_unavailable", 503) from None
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    async def formats(self, bvid, part, cookie, directory, requested=None):
+        formats = await self.format_info(bvid, part, cookie, directory)
+        if requested and constrained(requested):
+            pairs = eligible_pairs(formats, requested)
+            available = {
+                pair[2]["video_quality"]: pair[0].get("format_note")
+                or pair[0].get("format")
+                or pair[2]["video_quality"]
+                for pair in pairs
+            }
+        else:
             has_audio = any(value.get("acodec") not in {None, "none"} for value in formats)
             available = {
                 str(value["quality"]): value.get("format_note", str(value["quality"]))
@@ -173,15 +197,11 @@ class Engine:
                 and type(value.get("quality")) in (int, float)
                 and float(value["quality"]).is_integer()
             }
-            require(available, "quality_unavailable", 503)
-            return [
-                {"quality_id": number, "label": str(available[number])}
-                for number in sorted(available, key=int, reverse=True)
-            ]
-        except (ValueError, TypeError, OSError, TimeoutError):
-            raise Fault("quality_probe_unavailable", 503) from None
-        finally:
-            shutil.rmtree(directory, ignore_errors=True)
+        require(available, "quality_unavailable", 503)
+        return [
+            {"quality_id": number, "label": str(available[number])}
+            for number in sorted(available, key=int, reverse=True)
+        ]
 
     async def download(self, job, part, cookie, directory):
         directory = Path(directory)
@@ -189,8 +209,6 @@ class Engine:
         require(not directory.is_symlink(), "unsafe_staging", 503)
         ffmpeg = executable_path(self.config["ffmpeg"])
         cookie_file = directory / ".session.txt"
-        if cookie:
-            write_cookie(cookie_file, cookie)
         requested = job["quality"]
         selector = "bestvideo+bestaudio/best"
         if requested["mode"] == "exact":
@@ -198,6 +216,11 @@ class Engine:
             selector = f"bestvideo[quality={number}]+bestaudio/best[quality={number}]"
             if requested["allow_fallback"]:
                 selector += "/bestvideo+bestaudio/best"
+        if constrained(requested):
+            formats = await self.format_info(job["bvid"], part, cookie, directory / ".selection")
+            selector, _ = select_formats(formats, requested)
+        if cookie:
+            write_cookie(cookie_file, cookie)
         command = [
             self.config["python"],
             "-m",
@@ -221,7 +244,9 @@ class Engine:
             # yt-dlp's default cleaning removes the selected requested_formats.
             "--no-clean-info-json",
             "--merge-output-format",
-            "mp4",
+            # MP4 muxing rejects FLAC in the pinned toolchain. yt-dlp chooses
+            # MP4 where compatible, otherwise Matroska, with stream copy only.
+            "mp4/mkv",
             "--ffmpeg-location",
             ffmpeg,
             "--format",
@@ -295,12 +320,19 @@ class Engine:
                 503,
             )
             observed = await self.verify(files[0], part.get("duration_seconds"))
-            return {
-                "file": str(files[0]),
-                "actual_quality": actual,
-                "extension": files[0].suffix[1:],
-                "media": media_details(observed),
-            }
+            details = media_details(observed)
+            return validate_policy(
+                {
+                    "file": str(files[0]),
+                    "actual_quality": actual,
+                    "extension": files[0].suffix[1:],
+                    "media": details,
+                    "stream_evidence": output_evidence(
+                        formats, details, strict=constrained(requested)
+                    ),
+                },
+                requested,
+            )
         except TimeoutError:
             raise Fault("download_timeout", 503) from None
         except (OSError, ValueError):
@@ -339,6 +371,76 @@ class Engine:
             return info
         except (ValueError, TypeError):
             raise Fault("media_invalid", 503) from None
+
+    async def remux(self, download, destination, expected_duration=None):
+        """Unify a mixed multipart package without rewriting the source inode."""
+        destination = Path(destination)
+        require(
+            destination.suffix == ".mkv" and destination != Path(download["file"]),
+            "unsafe_staging",
+            503,
+        )
+        # The caller has durably reserved this exact private input path. Even
+        # after a process crash its partial bytes are therefore reclaimable.
+        destination.unlink(missing_ok=True)
+        complete = False
+        try:
+            code, _, _ = await run_process(
+                [
+                    executable_path(self.config["ffmpeg"]),
+                    "-v",
+                    "error",
+                    "-nostdin",
+                    "-n",
+                    "-i",
+                    download["file"],
+                    "-map",
+                    "0",
+                    "-c",
+                    "copy",
+                    str(destination),
+                ],
+                timeout=self.config["timeout_seconds"],
+            )
+            require(
+                code == 0 and destination.stat().st_size <= self.config["max_bytes"],
+                "download_invalid_output",
+                503,
+            )
+            details = media_details(await self.verify(destination, expected_duration))
+            fields = (
+                "codec_type",
+                "codec_name",
+                "profile",
+                "width",
+                "height",
+                "color_transfer",
+                "sample_rate",
+                "channels",
+                "bits_per_raw_sample",
+            )
+
+            def signatures(media):
+                return [
+                    tuple(stream.get(field) for field in fields)
+                    for stream in media.get("rawffprobe_streams", [])
+                    if stream.get("codec_type") in {"video", "audio"}
+                ]
+
+            require(signatures(download["media"]) == signatures(details), "quality_mismatch", 503)
+            record = await asyncio.to_thread(file_record, destination, "cache", "video", None)
+            complete = True
+            return {
+                **download,
+                "file": str(destination),
+                "extension": "mkv",
+                "media": details,
+                "sha256": record["sha256"],
+                "size_bytes": record["size_bytes"],
+            }
+        finally:
+            if not complete:
+                destination.unlink(missing_ok=True)
 
     async def verify(self, path, expected_duration=None):
         return self.validate_probe(await self.probe(path), expected_duration)

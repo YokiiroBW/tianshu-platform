@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from ..contracts import require
+from .stream_policy import DEFAULT_OPTIONS, normalize_options
 
 ENGINE_VERSION = "2026.08.19"
 SOURCE_KINDS = ("favorite", "collection", "series", "uploader", "watch_later")
@@ -21,7 +22,13 @@ def text(value, maximum=256):
 
 def quality(value):
     require(isinstance(value, dict), "invalid_input", 400)
-    require(set(value) == {"mode", "quality_id", "allow_fallback"}, "invalid_input", 400)
+    require(
+        {"mode", "quality_id", "allow_fallback"}
+        <= set(value)
+        <= {"mode", "quality_id", "allow_fallback", "stream_options"},
+        "invalid_input",
+        400,
+    )
     require(value["mode"] in {"best", "exact"}, "invalid_input", 400)
     require(type(value["allow_fallback"]) is bool, "invalid_input", 400)
     if value["mode"] == "best":
@@ -33,7 +40,12 @@ def quality(value):
             "invalid_input",
             400,
         )
-    return dict(value)
+    result = {key: value[key] for key in ("mode", "quality_id", "allow_fallback")}
+    if "stream_options" in value:
+        policy = normalize_options(value["stream_options"])
+        if policy != DEFAULT_OPTIONS:
+            result["stream_options"] = policy
+    return result
 
 
 def source(value):

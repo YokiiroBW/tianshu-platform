@@ -8,6 +8,7 @@ from .destination import safe_path
 from .engine import file_record
 from .organizer import library_lock
 from .video_storage import copy_file, sync_directory, try_link, verify_video
+from .stream_policy import validate_policy
 
 
 def source_directory(staging, bvid, cid, quality):
@@ -61,7 +62,18 @@ class Retention:
         for candidate in self.media.repo.media_sources(bvid, cid, quality):
             if candidate.get("kind") == "import":
                 try:
-                    return self.media.imports.source(candidate, job)
+                    download = self.media.imports.source(candidate, None)
+                    record = self.media.repo.get("media_import", candidate["import_record_id"])
+                    require(
+                        record
+                        and record["revision"] == candidate["import_record_revision"]
+                        and record["sha256"] == download["sha256"],
+                        "import_source_changed",
+                        409,
+                    )
+                    download["media"] = record.get("media")
+                    validate_policy(download, job["quality"] if job else {})
+                    return self.pin(job, cid, download) if job else download
                 except (Fault, OSError, KeyError, ValueError):
                     continue
             target = self.media.config.get("targets", {}).get(candidate["target_id"])
@@ -101,6 +113,8 @@ class Retention:
                         "extension": path.suffix[1:],
                         "sha256": entry["sha256"],
                         "size_bytes": entry["size_bytes"],
+                        "media": candidate.get("media"),
+                        "stream_evidence": candidate.get("stream_evidence"),
                         "source": {
                             "kind": "library",
                             "target_id": target["target_id"],
@@ -111,6 +125,7 @@ class Retention:
                             "size_bytes": entry["size_bytes"],
                         },
                     }
+                    validate_policy(download, job["quality"] if job else {})
                     return self.pin(job, cid, download) if job else download
             except Fault as error:
                 if error.code == "busy":
@@ -175,6 +190,8 @@ class Retention:
                         "library_id": target["library_id"],
                         "operation_id": current["operation_id"],
                         "entry": entry,
+                        "media": download.get("media"),
+                        "stream_evidence": download.get("stream_evidence"),
                     }
                 )
             # These transactions commit before any cache file is removed.
@@ -260,12 +277,26 @@ class Retention:
                 # Recheck durable bytes immediately before reclaiming their source cache.
                 require(self.source(job["bvid"], cid, quality) is not None, "source_missing", 409)
                 cache = self.media.repo.download_source(job["bvid"], cid, quality)
-                if cache:
+                if cache and cache["download"].get("sha256") == download["sha256"]:
                     removed = self.remove_download(cache["download"], job, cid, quality)
                     complete = complete and removed
                     if removed and not Path(cache["download"]["file"]).exists():
                         self.media.repo.download_invalidate(
                             job["bvid"], cid, quality, cache["generation"]
+                        )
+                # Reclaim archived variants only when this exact content has a
+                # verified publication. Other policies' bytes remain available.
+                for variant in self.media.repo.download_variants(job["bvid"], cid):
+                    if (
+                        variant.get("sha256") != download["sha256"]
+                        or variant.get("actual_quality") != quality
+                    ):
+                        continue
+                    removed = self.remove_download(variant, job, cid, quality)
+                    complete = complete and removed
+                    if removed:
+                        self.media.repo.forget_download(
+                            job["bvid"], cid, quality, variant["sha256"]
                         )
                 for record in [download, *(i for i in inputs if i["cid"] == cid)]:
                     if record["actual_quality"] != quality:

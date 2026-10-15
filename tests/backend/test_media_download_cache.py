@@ -1,6 +1,7 @@
 """Actual download counts over real SQLite/files, including separate worker processes."""
 
 import asyncio
+import hashlib
 import multiprocessing
 import tempfile
 import threading
@@ -313,6 +314,72 @@ class GlobalDownloadTests(unittest.IsolatedAsyncioTestCase):
         with library_lock(directory):
             self.assertTrue(self.media.repo.job_inputs(job["job_id"]))
 
+    async def test_advanced_policy_variants_are_serialized_and_old_matching_bytes_are_reusable(
+        self,
+    ):
+        from services.platform.media.config import quality as normalize_quality
+
+        original = self.media.engine.download
+
+        async def selected(job, part, cookie, directory):
+            result = await original(job, part, cookie, directory)
+            codec = job["quality"].get("stream_options", {}).get("codecs", ["avc"])[0]
+            Path(result["file"]).write_bytes(("actual-media-" + codec).encode())
+            result["stream_evidence"] = {
+                "video_codec": codec,
+                "audio_quality": "30280",
+                "hdr": False,
+                "dolby_vision": False,
+                "dolby_audio": False,
+                "hires": False,
+            }
+            return result
+
+        self.media.engine.download = selected
+        self.media.engine.delay = 0.1
+        avc = normalize_quality({**EXACT, "stream_options": {"codecs": ["avc"]}})
+        hevc = normalize_quality({**EXACT, "stream_options": {"codecs": ["hevc"]}})
+        a = self.claimed("avc-one", "a", avc)
+        b = self.claimed("avc-two", "b", avc)
+        results = await asyncio.gather(self.get(a, "a"), self.get(b, "b"))
+        self.assertEqual(sorted(reused for _, reused in results), [False, True])
+        first = Path(results[0][0]["file"])
+        first_bytes = first.read_bytes()
+        c = self.claimed("hevc", "c", hevc)
+        result, reused = await self.get(c, "c")
+        self.assertFalse(reused)
+        self.assertNotEqual(result["sha256"], results[0][0]["sha256"])
+        self.assertEqual(first.read_bytes(), first_bytes)
+        # The active QN pointer is HEVC, while the archived AVC remains valid.
+        d = self.claimed("avc-again", "d", avc)
+        result, reused = await self.get(d, "d")
+        self.assertTrue(reused)
+        self.assertTrue(Path(result["file"]).samefile(first))
+        # Ordering is a preference for new downloads, never forced transcoding.
+        e = self.claimed(
+            "compatible",
+            "e",
+            normalize_quality({**EXACT, "stream_options": {"codecs": ["hevc", "avc"]}}),
+        )
+        result, reused = await self.get(e, "e")
+        self.assertTrue(reused)
+        self.assertEqual(self.media.engine.calls, ["80", "80"])
+        with self.media.repo.transaction() as db:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+
+    async def test_missing_policy_evidence_does_not_hit_but_video_only_range_can_reuse(self):
+        first = self.claimed("old", "first")
+        old, _ = await self.get(first, "first")
+        ranged = {**EXACT, "stream_options": {"video_min_quality": "64", "video_max_quality": "80"}}
+        job = self.claimed("range", "range", ranged)
+        _, reused = await self.get(job, "range")
+        self.assertTrue(reused)
+        job = self.claimed("codec", "codec", {**EXACT, "stream_options": {"codecs": ["hevc"]}})
+        with self.assertRaises(Fault):
+            await self.get(job, "codec")
+        self.assertEqual(self.media.engine.calls, ["80", "80"])
+        self.assertTrue(Path(old["file"]).exists())
+
 
 class DestinationTests(unittest.TestCase):
     def test_chinese_normalization_and_rejections(self):
@@ -353,3 +420,176 @@ class DestinationTests(unittest.TestCase):
                 snapshot(target, "linked/nested")
             self.assertEqual(error.exception.code, "unsafe_library_path")
             self.assertFalse((root / "outside" / "nested").exists())
+
+
+class PolicyPublicationTests(unittest.IsolatedAsyncioTestCase):
+    """Use the existing real HTTP/FFmpeg publication fixture without duplicating its suite."""
+
+    async def asyncSetUp(self):
+        from test_media_standalone import StandaloneMediaTests
+
+        for name in ("post", "run_job", "enqueue", "verify_output"):
+            setattr(self, name, getattr(StandaloneMediaTests, name).__get__(self))
+        await StandaloneMediaTests.asyncSetUp(self)
+        self.mixed = False
+
+        async def synthetic_formats(*args, **kwargs):
+            return [{"quality_id": "80", "label": "Synthetic 1080P"}]
+
+        self.media.engine.formats = synthetic_formats
+
+        async def actual_download(job, part, cookie, directory):
+            from services.platform.media.engine import run_process
+            from services.platform.media.probe_details import media_details
+            from services.platform.media.stream_policy import output_evidence
+
+            self.media.engine.calls.append(part["cid"])
+            directory = Path(directory)
+            directory.mkdir(parents=True, exist_ok=True)
+            hires = self.mixed and part["cid"] == self.upstream.parts[job["bvid"]][-1]
+            extension, audio_codec = ("mkv", "flac") if hires else ("mp4", "aac")
+            path = directory / ("download." + extension)
+            code, _, _ = await run_process(
+                [
+                    self.media.engine.config["ffmpeg"],
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=blue:s=160x90:d=2",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=2",
+                    "-c:v",
+                    "libx264",
+                    "-c:a",
+                    audio_codec,
+                    "-shortest",
+                    "-y",
+                    str(path),
+                ]
+            )
+            self.assertEqual(code, 0)
+            media = media_details(await self.media.engine.verify(path, 2))
+            formats = [
+                {"quality": 80, "vcodec": "avc1.640032", "acodec": "none"},
+                {
+                    "format_id": "30251" if hires else "30280",
+                    "vcodec": "none",
+                    "acodec": "flac" if hires else "mp4a.40.2",
+                },
+            ]
+            return {
+                "file": str(path),
+                "actual_quality": "80",
+                "extension": extension,
+                "media": media,
+                "stream_evidence": output_evidence(formats, media, strict=True),
+            }
+
+        self.media.engine.download = actual_download
+
+    async def payload(self, folder, *, options=None):
+        from media_runtime_fixtures import BV, QUALITY
+        from services.platform.media.subscriptions import job_payload
+
+        resolved = await self.media.connector.resolve(BV, with_formats=False)
+        quality = {**QUALITY, "stream_options": options or {"video_min_quality": "64"}}
+        return job_payload(
+            resolved,
+            self.upstream.parts[BV],
+            None,
+            "test-server",
+            quality,
+            **snapshot(self.media.config["targets"]["test-server"], folder),
+        )
+
+    async def test_receipted_sources_keep_actual_policy_evidence_after_cache_cleanup(self):
+        from media_runtime_fixtures import BV
+        from services.platform.media.retention import Retention
+
+        self.upstream.parts[BV] = ["111111111"]
+        options = {
+            "codecs": ["avc"],
+            "audio_max_quality": "30280",
+            "allow_hdr": False,
+            "allow_dolby_vision": False,
+        }
+        first = await self.run_job(
+            self.media.repo.enqueue(await self.payload("one", options=options))["job_id"]
+        )
+        original = self.verify_output(first) / "video.mp4"
+        original_hash = hashlib.sha256(original.read_bytes()).hexdigest()
+        self.assertFalse(Path(first["downloads"]["111111111"]["file"]).exists())
+        self.media.repo = Repository(self.media.repo.database)
+        self.media.publisher.organizer.repo = self.media.repo
+        self.media.retention = Retention(self.media)
+        incompatible = {"quality": {"stream_options": {"codecs": ["hevc"]}}}
+        self.assertIsNone(self.media.retention.source(BV, "111111111", "80", incompatible))
+        second = await self.run_job(
+            self.media.repo.enqueue(await self.payload("two", options=options))["job_id"]
+        )
+        destination = self.verify_output(second) / "video.mp4"
+        self.assertEqual(self.media.engine.calls, ["111111111"])
+        self.assertTrue(original.samefile(destination))
+        self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(), original_hash)
+        self.assertEqual(second["downloads"]["111111111"]["source"]["kind"], "library")
+
+    async def test_multipart_mixed_containers_only_remux_private_inputs_and_retain_real_result(
+        self,
+    ):
+        from media_runtime_fixtures import BV
+        from services.platform.media.engine import file_record
+
+        self.upstream.parts[BV] = ["111111111", "222222222"]
+        self.mixed = True
+        sources = {}
+        remux = self.media.engine.remux
+
+        async def observe_remux(download, destination, expected_duration=None):
+            source = Path(download["file"])
+            before = source.read_bytes()
+            sources["original"] = (source, before, source.stat().st_ino)
+            converted = await remux(download, destination, expected_duration)
+            self.assertEqual(source.read_bytes(), before)
+            self.assertEqual(source.stat().st_ino, sources["original"][2])
+            self.assertNotEqual(converted["sha256"], download["sha256"])
+            self.assertEqual(
+                file_record(Path(converted["file"]), "cache", "video", "111111111")["sha256"],
+                converted["sha256"],
+            )
+            return converted
+
+        self.media.engine.remux = observe_remux
+        first = await self.run_job(self.media.repo.enqueue(await self.payload("mixed"))["job_id"])
+        root = self.verify_output(first)
+        manifest = self.media.publisher.organizer.operation(
+            self.media.config["targets"]["test-server"], first["asset_receipt"]["operation_id"]
+        )["manifest"]
+        self.assertEqual(manifest["media_extension"], "mkv")
+        self.assertEqual({d["extension"] for d in first["downloads"].values()}, {"mkv"})
+        for cid, expected_codec in (("111111111", "aac"), ("222222222", "flac")):
+            entry = next(e for e in manifest["files"] if e["kind"] == "video" and e["cid"] == cid)
+            self.assertEqual(
+                hashlib.sha256((root / entry["path"]).read_bytes()).hexdigest(), entry["sha256"]
+            )
+            self.assertEqual(
+                first["downloads"][cid]["media"]["audio_tracks"][0]["codec_name"], expected_codec
+            )
+            self.assertTrue(
+                all(
+                    not Path(record["file"]).exists()
+                    for record in self.media.repo.job_inputs(first["job_id"])
+                )
+            )
+        self.assertEqual(
+            self.media.repo.get("media_retention", first["job_id"])["state"], "cleaned"
+        )
+        second = await self.run_job(
+            self.media.repo.enqueue(await self.payload("reuse-mixed"))["job_id"]
+        )
+        self.verify_output(second)
+        self.assertEqual(self.media.engine.calls, ["111111111", "222222222"])
+        self.assertEqual({d["extension"] for d in second["downloads"].values()}, {"mkv"})
