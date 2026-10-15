@@ -39,6 +39,7 @@ MODULE_NAMES = (
     "types.py",
     "policy.py",
     "matching.py",
+    "comparisons.py",
     "evaluator.py",
     "regex_process.py",
     "regex_worker.py",
@@ -269,9 +270,36 @@ class ErrorVocabularyTest(unittest.TestCase):
         self.assertEqual(rules.RESULTS, ("matched", "not_matched", "not_evaluated", "error"))
         self.assertEqual(rules.DECISIONS, ("download", "skip", "rule_error"))
         self.assertEqual(
-            rules.FIELDS, ("title", "description", "uploader_id", "uploader_name", "tags")
+            rules.FIELDS,
+            (
+                "title",
+                "description",
+                "uploader_id",
+                "uploader_name",
+                "tags",
+                "published_at",
+                "favorited_at",
+                "part_count",
+                "duration_seconds",
+                "is_collaboration",
+            ),
         )
-        self.assertEqual(rules.OPS, ("equals", "contains", "prefix", "suffix", "regex"))
+        self.assertEqual(
+            rules.OPS,
+            (
+                "equals",
+                "contains",
+                "prefix",
+                "suffix",
+                "regex",
+                "not_equals",
+                "gt",
+                "gte",
+                "lt",
+                "lte",
+                "between",
+            ),
+        )
         self.assertIn("invalid_regex", rules.POLICY_ERROR_CODES)
         self.assertIn("evaluation_timeout", rules.EVALUATION_ERROR_CODES)
         self.assertNotIn("invalid_regex", rules.FAILURE_REASONS)

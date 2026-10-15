@@ -373,7 +373,7 @@ class PolicyRefusalTest(unittest.TestCase):
             ),
             (
                 "rule has an unknown key",
-                document(whitelist=[group("wl", {**rule("r1"), "negate": True})]),
+                document(whitelist=[group("wl", {**rule("r1"), "unknown": True})]),
                 ERROR_UNKNOWN_FIELD,
                 "whitelist[0].rules[0]",
             ),

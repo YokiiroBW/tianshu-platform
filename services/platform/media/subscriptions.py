@@ -5,11 +5,12 @@ import uuid
 import time
 from dataclasses import asdict
 
-from ..contracts import Fault, canonical, digest, require
+from ..contracts import Fault, require
 from .config import quality, source, text
 from .metadata import normalize_bilibili
 from .destination import head_key, snapshot, subdirectory, subscription_snapshot
 from .rules import RuleValidationError, parse_policy
+from .rule_context import build_rule_context, rule_snapshot_revision, uses_advanced_fields
 
 
 def job_payload(
@@ -261,7 +262,7 @@ class Subscriptions:
                     if subscription["account_id"]
                     else None
                 )
-                members = await asyncio.wait_for(
+                source_members = await asyncio.wait_for(
                     self.media.connector.scan(
                         subscription["source"],
                         cookie,
@@ -270,6 +271,8 @@ class Subscriptions:
                     ),
                     self.media.config["scan_timeout_seconds"],
                 )
+                members = set(source_members)
+                policy = parse_policy(subscription["rules"])
                 old = await self.media.local(self.media.repo.members, identity)
                 unseen = (
                     members
@@ -324,16 +327,25 @@ class Subscriptions:
                     if not selected:
                         continue
                     metadata = normalize_bilibili(resolved["snapshot"])
+                    context = build_rule_context(
+                        metadata, resolved, subscription["source"], source_members[bvid]
+                    )
                     decision = await self.media.evaluator.evaluate(
                         metadata,
                         subscription["rules"],
                         accessible=True,
                         quality_satisfied=False,
-                        snapshot_revision=digest(canonical(resolved["snapshot"])),
+                        snapshot_revision=rule_snapshot_revision(
+                            resolved["snapshot"], context, policy
+                        ),
+                        context=context,
                     )
                     if decision.requires_rule_attention:
                         raise Fault("rule_evaluation_failed", 409)
                     if decision.automatic_enqueue_allowed:
+                        evidence = asdict(decision)
+                        if uses_advanced_fields(policy):
+                            evidence["context"] = asdict(context)
                         jobs.append(
                             job_payload(
                                 resolved,
@@ -342,7 +354,7 @@ class Subscriptions:
                                 subscription["target_id"],
                                 subscription["quality"],
                                 identity,
-                                asdict(decision),
+                                evidence,
                                 **destination,
                             )
                         )

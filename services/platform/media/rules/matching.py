@@ -31,13 +31,14 @@ from .types import (
     FIELDS,
     OP_CONTAINS,
     OP_EQUALS,
+    OP_NOT_EQUALS,
     OP_PREFIX,
     OP_SUFFIX,
 )
 
 FIELD_PROJECTION_MAX_BYTES = 64 * 1024
 
-PLAIN_OPS: tuple[str, ...] = (OP_EQUALS, OP_CONTAINS, OP_PREFIX, OP_SUFFIX)
+PLAIN_OPS: tuple[str, ...] = (OP_EQUALS, OP_CONTAINS, OP_PREFIX, OP_SUFFIX, OP_NOT_EQUALS)
 
 
 def field_values(metadata: MediaMetadata, field: str) -> tuple[str, ...]:
@@ -97,6 +98,8 @@ def compare(value_text: str, rule_value: str, op: str, *, case_sensitive: bool) 
         wanted = rule_value
     if op == OP_EQUALS:
         return text == wanted
+    if op == OP_NOT_EQUALS:
+        return text != wanted
     if op == OP_CONTAINS:
         return wanted in text
     if op == OP_PREFIX:
@@ -116,6 +119,10 @@ def any_value_matches(
     that need a joined condition express it as one rule on a single field.
     """
 
+    if op == OP_NOT_EQUALS:
+        return bool(values) and not any(
+            compare(value, rule_value, OP_EQUALS, case_sensitive=case_sensitive) for value in values
+        )
     return any(compare(value, rule_value, op, case_sensitive=case_sensitive) for value in values)
 
 

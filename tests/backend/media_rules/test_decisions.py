@@ -331,7 +331,7 @@ class DecisionTest(unittest.IsolatedAsyncioTestCase):
         decision = await self.decide(policy, record=metadata(title="   "))
         self.assertEqual((decision.decision, decision.reason), (DECISION_DOWNLOAD, REASON_ELIGIBLE))
         rows = trace_rows(decision)
-        self.assertEqual(rows[1][:4], ("wl", "whitelist", RESULT_NOT_MATCHED, RESULT_NOT_MATCHED))
+        self.assertEqual(rows[1][:4], ("wl", "whitelist", RESULT_NOT_MATCHED, "field_missing"))
 
     async def test_an_empty_whitelist_means_no_threshold(self):
         policy = document(

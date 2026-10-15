@@ -16,6 +16,7 @@ from ..contracts import Fault, require
 from .config import source
 from .identity import require_bvid
 from .metadata import normalize_bilibili
+from .rule_context import RuleSourceContext
 from .types import MetadataValidationError
 
 ALLOWED_LINK_HOSTS = frozenset({"www.bilibili.com", "bilibili.com", "m.bilibili.com", "b23.tv"})
@@ -90,7 +91,10 @@ MIXIN_ORDER = (
 def timestamp(value):
     if type(value) not in (int, float) or value <= 0:
         return None
-    return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def cover_url(value):
@@ -294,6 +298,12 @@ class Bilibili:
         require_bvid(bvid)
         pages = data.get("pages")
         require(isinstance(pages, list) and 0 < len(pages) <= 1000, "source_invalid_response", 503)
+        staff = data.get("staff", [])
+        require(
+            isinstance(staff, list) and all(isinstance(creator, dict) for creator in staff),
+            "source_invalid_response",
+            503,
+        )
         creators = [
             {
                 "mid": str(data.get("owner", {}).get("mid", "")),
@@ -301,7 +311,7 @@ class Bilibili:
                 "role": "uploader",
             }
         ]
-        for creator in data.get("staff", []):
+        for creator in staff:
             if isinstance(creator, dict) and str(creator.get("mid")) != creators[0]["mid"]:
                 creators.append(
                     {
@@ -348,6 +358,7 @@ class Bilibili:
             )
         return {
             "snapshot": snapshot,
+            "rule_context": {"is_collaboration": bool(staff)},
             "creator_images": [
                 {"mid": creators[0]["mid"], "url": cover_url(data.get("owner", {}).get("face"))}
             ],
@@ -361,12 +372,15 @@ class Bilibili:
             },
         }
 
-    async def scan(self, source_value, cookie, *, page_limit=200, item_limit=5000):
+    async def scan(
+        self, source_value, cookie, *, page_limit=200, item_limit=5000
+    ) -> dict[str, RuleSourceContext]:
+        """Return complete visible membership with facts bound to the exact selected source."""
         source_value = source(source_value)
         kind, identity = source_value["kind"], source_value["id"]
         if kind == "watch_later":
             return await self.scan_watch_later(cookie, item_limit=item_limit)
-        seen, expected = set(), None
+        seen, expected = {}, None
         for page in range(1, page_limit + 1):
             if kind == "favorite":
                 data = await self.request(
@@ -434,7 +448,12 @@ class Bilibili:
                 require_bvid(bvid)
                 if kind == "favorite":
                     require(bvid not in seen, "source_scan_incomplete", 503)
-                seen.add(bvid)
+                seen[bvid] = RuleSourceContext(
+                    bvid=bvid,
+                    source_kind=kind,
+                    source_id=identity,
+                    favorited_at=timestamp(item.get("fav_time")) if kind == "favorite" else None,
+                )
                 require(len(seen) <= item_limit, "source_budget_exceeded", 503)
             if kind == "favorite":
                 require(len(seen) <= expected, "source_scan_incomplete", 503)
@@ -447,7 +466,7 @@ class Bilibili:
             require(items, "source_scan_incomplete", 503)
         raise Fault("source_budget_exceeded", 503)
 
-    async def scan_watch_later(self, cookie, *, item_limit):
+    async def scan_watch_later(self, cookie, *, item_limit) -> dict[str, RuleSourceContext]:
         """toview returns the entire authenticated list; count must confirm its completeness."""
         require(bool(cookie), "auth_required", 503)
         data = await self.request("/x/v2/history/toview", cookie=cookie)
@@ -464,7 +483,7 @@ class Bilibili:
         require(isinstance(items, list), "source_invalid_response", 503)
         require(total <= item_limit, "source_budget_exceeded", 503)
         require(len(items) == total, "source_scan_incomplete", 503)
-        seen = set()
+        seen = {}
         for item in items:
             require(isinstance(item, dict), "source_invalid_response", 503)
             bvid = item.get("bvid")
@@ -474,7 +493,7 @@ class Bilibili:
             except MetadataValidationError:
                 raise Fault("source_member_unavailable", 503) from None
             require(bvid not in seen, "source_scan_incomplete", 503)
-            seen.add(bvid)
+            seen[bvid] = RuleSourceContext(bvid, "watch_later", "self")
         return seen
 
     async def qr_start(self):

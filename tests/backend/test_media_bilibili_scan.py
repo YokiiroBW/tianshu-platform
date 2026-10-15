@@ -27,7 +27,7 @@ class BilibiliScanTests(unittest.IsolatedAsyncioTestCase):
             favorite_page(24, members[:19], True),
             favorite_page(24, members[19:]),
         ]
-        self.assertEqual(await self.favorite(), set(members))
+        self.assertEqual(set(await self.favorite()), set(members))
         self.assertEqual(self.upstream.favorite_requests, [1, 2])
         self.assertTrue(
             all(
@@ -40,7 +40,31 @@ class BilibiliScanTests(unittest.IsolatedAsyncioTestCase):
         for members in ([], None):
             with self.subTest(members=members):
                 self.upstream.favorite_pages = [favorite_page(4, members)]
-                self.assertEqual(await self.favorite(), set())
+                self.assertEqual(await self.favorite(), {})
+
+    async def test_favorite_member_context_uses_only_actual_folder_entry_time(self):
+        for value, expected in (
+            (1700000000, "2023-11-14T22:13:20Z"),
+            (None, None),
+            (0, None),
+            (True, None),
+            ("1700000000", None),
+            (float("nan"), None),
+            (float("inf"), None),
+            (10**100, None),
+        ):
+            with self.subTest(value=value):
+                self.upstream.favorite_pages = [
+                    {
+                        **favorite_page(1, []),
+                        "medias": [{"bvid": BV, "fav_time": value, "pubtime": 1800000000}],
+                    }
+                ]
+                member = (await self.favorite())[BV]
+                self.assertEqual(
+                    (member.bvid, member.source_kind, member.source_id), (BV, "favorite", "123")
+                )
+                self.assertEqual(member.favorited_at, expected)
 
     async def test_favorite_requires_boolean_pagination_and_valid_page_shape(self):
         invalid = []
@@ -142,7 +166,8 @@ class BilibiliScanTests(unittest.IsolatedAsyncioTestCase):
                 "list": [{"bvid": bvid} for bvid in members] if members is not None else None,
             }
             self.assertEqual(
-                await connector.scan(value, "SESSDATA=synthetic-watch-later"), set(members or [])
+                set(await connector.scan(value, "SESSDATA=synthetic-watch-later")),
+                set(members or []),
             )
         self.assertTrue(
             all(path == "/x/v2/history/toview" and not query for path, query, _ in recorded)

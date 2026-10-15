@@ -40,25 +40,44 @@ FIELD_DESCRIPTION = "description"
 FIELD_UPLOADER_ID = "uploader_id"
 FIELD_UPLOADER_NAME = "uploader_name"
 FIELD_TAGS = "tags"
-FIELDS: tuple[str, ...] = (
+TEXT_FIELDS: tuple[str, ...] = (
     FIELD_TITLE,
     FIELD_DESCRIPTION,
     FIELD_UPLOADER_ID,
     FIELD_UPLOADER_NAME,
     FIELD_TAGS,
 )
+FIELD_PUBLISHED_AT = "published_at"
+FIELD_FAVORITED_AT = "favorited_at"
+FIELD_PART_COUNT = "part_count"
+FIELD_DURATION_SECONDS = "duration_seconds"
+FIELD_IS_COLLABORATION = "is_collaboration"
+TIME_FIELDS = (FIELD_PUBLISHED_AT, FIELD_FAVORITED_AT)
+NUMBER_FIELDS = (FIELD_PART_COUNT, FIELD_DURATION_SECONDS)
+BOOLEAN_FIELDS = (FIELD_IS_COLLABORATION,)
+FIELDS = TEXT_FIELDS + TIME_FIELDS + NUMBER_FIELDS + BOOLEAN_FIELDS
 
 OP_EQUALS = "equals"
 OP_CONTAINS = "contains"
 OP_PREFIX = "prefix"
 OP_SUFFIX = "suffix"
 OP_REGEX = "regex"
-OPS: tuple[str, ...] = (OP_EQUALS, OP_CONTAINS, OP_PREFIX, OP_SUFFIX, OP_REGEX)
+OP_NOT_EQUALS = "not_equals"
+OP_GT = "gt"
+OP_GTE = "gte"
+OP_LT = "lt"
+OP_LTE = "lte"
+OP_BETWEEN = "between"
+TEXT_OPS = (OP_EQUALS, OP_CONTAINS, OP_PREFIX, OP_SUFFIX, OP_REGEX, OP_NOT_EQUALS)
+ORDERED_OPS = (OP_EQUALS, OP_NOT_EQUALS, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_BETWEEN)
+BOOLEAN_OPS = (OP_EQUALS, OP_NOT_EQUALS)
+OPS = TEXT_OPS + (OP_GT, OP_GTE, OP_LT, OP_LTE, OP_BETWEEN)
 REGEX_OPS: tuple[str, ...] = (OP_REGEX,)
 
 DOCUMENT_FIELDS: tuple[str, ...] = ("schema_version", "revision", "whitelist", "blacklist")
 GROUP_FIELDS: tuple[str, ...] = ("id", "rules")
 RULE_FIELDS: tuple[str, ...] = ("id", "field", "op", "value", "case_sensitive")
+OPTIONAL_RULE_FIELDS = ("negate",)
 
 LIST_BLACKLIST = "blacklist"
 LIST_WHITELIST = "whitelist"
@@ -111,6 +130,7 @@ TRACE_PRIORITY_SHORT_CIRCUIT = "priority_short_circuit"
 TRACE_BLACKLIST_MATCHED = "blacklist_matched"
 TRACE_WHITELIST_MATCHED = "whitelist_matched"
 TRACE_ERROR_SHORT_CIRCUIT = "error_short_circuit"
+TRACE_FIELD_MISSING = "field_missing"
 TRACE_REASONS: tuple[str, ...] = (
     RESULT_MATCHED,
     RESULT_NOT_MATCHED,
@@ -119,6 +139,7 @@ TRACE_REASONS: tuple[str, ...] = (
     TRACE_BLACKLIST_MATCHED,
     TRACE_WHITELIST_MATCHED,
     TRACE_ERROR_SHORT_CIRCUIT,
+    TRACE_FIELD_MISSING,
 ) + FAILURE_REASONS
 
 ERROR_INVALID_DOCUMENT = "invalid_document"
@@ -142,6 +163,7 @@ ERROR_INVALID_OP = "invalid_op"
 ERROR_INVALID_VALUE = "invalid_value"
 ERROR_VALUE_TOO_LONG = "value_too_long"
 ERROR_INVALID_CASE_SENSITIVE = "invalid_case_sensitive"
+ERROR_INVALID_NEGATE = "invalid_negate"
 ERROR_INVALID_REGEX = "invalid_regex"
 ERROR_INVALID_METADATA = "invalid_metadata"
 ERROR_INVALID_ACCESSIBLE = "invalid_accessible"
@@ -172,6 +194,7 @@ POLICY_ERROR_CODES: tuple[str, ...] = (
     ERROR_INVALID_VALUE,
     ERROR_VALUE_TOO_LONG,
     ERROR_INVALID_CASE_SENSITIVE,
+    ERROR_INVALID_NEGATE,
     ERROR_INVALID_REGEX,
     ERROR_INVALID_METADATA,
     ERROR_INVALID_ACCESSIBLE,
@@ -228,13 +251,14 @@ class _Frozen:
 
 @dataclass(frozen=True)
 class Rule(_Frozen):
-    """One frozen rule. ``value`` is matched verbatim: no strip, no template interpolation."""
+    """One typed rule. Text is verbatim; range values are immutable two-element tuples."""
 
     id: str
     field: str
     op: str
-    value: str
+    value: str | int | float | bool | tuple[str | int | float, str | int | float]
     case_sensitive: bool
+    negate: bool = False
 
 
 @dataclass(frozen=True)
@@ -278,6 +302,7 @@ class RuleTrace(_Frozen):
     op: str
     result: str
     reason: str
+    negate: bool = False
 
 
 @dataclass(frozen=True)
@@ -329,6 +354,27 @@ class RuleDecision(_Frozen):
 
 
 __all__ = [
+    "BOOLEAN_FIELDS",
+    "BOOLEAN_OPS",
+    "ERROR_INVALID_NEGATE",
+    "FIELD_PUBLISHED_AT",
+    "FIELD_FAVORITED_AT",
+    "FIELD_PART_COUNT",
+    "FIELD_DURATION_SECONDS",
+    "FIELD_IS_COLLABORATION",
+    "NUMBER_FIELDS",
+    "OP_NOT_EQUALS",
+    "OP_GT",
+    "OP_GTE",
+    "OP_LT",
+    "OP_LTE",
+    "OP_BETWEEN",
+    "OPTIONAL_RULE_FIELDS",
+    "ORDERED_OPS",
+    "TEXT_FIELDS",
+    "TEXT_OPS",
+    "TIME_FIELDS",
+    "TRACE_FIELD_MISSING",
     "DECISIONS",
     "DECISION_DOWNLOAD",
     "DECISION_RULE_ERROR",

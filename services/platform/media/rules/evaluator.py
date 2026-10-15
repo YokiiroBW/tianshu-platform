@@ -38,7 +38,9 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from ..types import MediaMetadata
+from ..rule_context import RuleContext, advanced_field_value
 from . import regex_process as process_layer
+from .comparisons import typed_compare
 from .matching import any_value_matches, field_values, projection_within_budget
 from .policy import parse_policy, regex_rules
 from .regex_process import (
@@ -85,6 +87,9 @@ from .types import (
     TRACE_PRIORITY_SHORT_CIRCUIT,
     TRACE_RULE_SHORT_CIRCUIT,
     TRACE_WHITELIST_MATCHED,
+    TRACE_FIELD_MISSING,
+    TEXT_FIELDS,
+    TIME_FIELDS,
     Group,
     GroupTrace,
 )
@@ -123,6 +128,7 @@ class _GroupRecord:
         self.rule_ids = tuple(rule.id for rule in group.rules)
         self.fields = tuple(rule.field for rule in group.rules)
         self.ops = tuple(rule.op for rule in group.rules)
+        self.negates = tuple(rule.negate for rule in group.rules)
         self.results: list[str] = [RESULT_NOT_EVALUATED] * len(group.rules)
         self.reasons: list[str] = [TRACE_ERROR_SHORT_CIRCUIT] * len(group.rules)
         self.entered = False
@@ -167,6 +173,7 @@ class _GroupRecord:
                     op=self.ops[position],
                     result=self.results[position],
                     reason=self.reasons[position],
+                    negate=self.negates[position],
                 )
                 for position in range(len(self.rule_ids))
             ),
@@ -578,6 +585,7 @@ class RuleEvaluator:
         accessible: bool,
         quality_satisfied: bool,
         snapshot_revision: str,
+        context: RuleContext | None = None,
     ) -> RuleDecision:
         """Judge one normalized item against one policy and explain the outcome.
 
@@ -631,6 +639,7 @@ class RuleEvaluator:
                         quality_satisfied,
                         snapshot_revision,
                         deadline,
+                        context,
                     )
         except _EvaluationFailed as failed:
             if failed.failure.code in _FATAL_CODES:
@@ -668,6 +677,7 @@ class RuleEvaluator:
         quality_satisfied: bool,
         snapshot_revision: str,
         deadline: float,
+        context: RuleContext | None,
     ) -> RuleDecision:
         if not accessible:
             builder.close(TRACE_PRIORITY_SHORT_CIRCUIT)
@@ -685,7 +695,9 @@ class RuleEvaluator:
                 builder,
             )
 
-        if await self._run_groups(metadata, policy.blacklist, 0, builder, handles, deadline):
+        if await self._run_groups(
+            metadata, policy.blacklist, 0, builder, handles, deadline, context
+        ):
             builder.close(TRACE_BLACKLIST_MATCHED)
             return _render(
                 metadata,
@@ -701,7 +713,7 @@ class RuleEvaluator:
                 metadata, snapshot_revision, policy, DECISION_DOWNLOAD, REASON_ELIGIBLE, builder
             )
         if await self._run_groups(
-            metadata, policy.whitelist, len(policy.blacklist), builder, handles, deadline
+            metadata, policy.whitelist, len(policy.blacklist), builder, handles, deadline, context
         ):
             builder.close(TRACE_WHITELIST_MATCHED)
             return _render(
@@ -720,6 +732,7 @@ class RuleEvaluator:
         builder: _TraceBuilder,
         handles: _Handles,
         deadline: float,
+        context: RuleContext | None,
     ) -> bool:
         """Evaluate OR-ed groups. A group matches only when every rule of it matched.
 
@@ -734,14 +747,19 @@ class RuleEvaluator:
             for index, rule in enumerate(group.rules):
                 try:
                     outcome = await self._match(
-                        metadata, rule, (position, index), handles, deadline
+                        metadata, rule, (position, index), handles, deadline, context
                     )
                 except RuleEvaluationError as error:
                     raise _EvaluationFailed(_Failure(error.code, position, index)) from None
                 if outcome:
                     builder.record(position, index, RESULT_MATCHED, RESULT_MATCHED)
                     continue
-                builder.record(position, index, RESULT_NOT_MATCHED, RESULT_NOT_MATCHED)
+                builder.record(
+                    position,
+                    index,
+                    RESULT_NOT_MATCHED,
+                    TRACE_FIELD_MISSING if outcome is None else RESULT_NOT_MATCHED,
+                )
                 builder.short_circuit(position, TRACE_RULE_SHORT_CIRCUIT)
                 matched = False
                 break
@@ -756,12 +774,26 @@ class RuleEvaluator:
         position: tuple[int, int],
         handles: _Handles,
         deadline: float,
-    ) -> bool:
+        context: RuleContext | None,
+    ) -> bool | None:
+        if rule.field not in TEXT_FIELDS:
+            actual = advanced_field_value(metadata, rule.field, context)
+            if actual is None:
+                return None
+            matched = typed_compare(
+                actual, rule.value, rule.op, timestamp=rule.field in TIME_FIELDS
+            )
+        else:
+            matched = await self._match_text(metadata, rule, position, handles, deadline)
+        # Unknown is never turned into a match by NOT, including text fields and regular expressions.
+        return None if matched is None else not matched if rule.negate else matched
+
+    async def _match_text(self, metadata, rule, position, handles, deadline) -> bool | None:
         values = field_values(metadata, rule.field)
         if not values:
             # A field with no value matches nothing at all: absence is not an empty string, and
             # ``regex=.*`` must not quietly turn a missing title into a match.
-            return False
+            return None
         if not projection_within_budget(values):
             raise RuleEvaluationError(REASON_INPUT_TOO_LARGE, f"field:{rule.field}")
         if rule.op != OP_REGEX:

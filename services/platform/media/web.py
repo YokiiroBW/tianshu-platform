@@ -7,16 +7,17 @@ import json
 import uuid
 from dataclasses import asdict
 
-from ..contracts import Fault, canonical, digest, require
+from ..contracts import Fault, require
 from .accounts import normalize_cookie, public_account
-from .config import quality, text
+from .config import quality, source, text
 from .metadata import normalize_bilibili
 from .runtime import public_job
 from .repository import VISIBLE
 from .subscriptions import job_payload
 from .destination import snapshot
 from .types import MetadataValidationError
-from .rules import RuleValidationError
+from .rules import RuleValidationError, parse_policy
+from .rule_context import build_rule_context, public_rule_context, rule_snapshot_revision
 
 PREFIX = "/api/web/media/"
 JOB_STATES = frozenset(
@@ -248,17 +249,55 @@ class WebMedia:
         return result
 
     async def rules_preview(self, body, session):
-        require(set(body) == {"preview_id", "rules"}, "invalid_input", 400)
+        require(
+            set(body) - {"source", "subscription_id"} == {"preview_id", "rules"}
+            and not ("source" in body and "subscription_id" in body),
+            "invalid_input",
+            400,
+        )
+        policy = parse_policy(body["rules"])
         preview = self.preview(body["preview_id"])
+        source_value = source(body["source"]) if "source" in body else None
+        if "subscription_id" in body:
+            identity = body["subscription_id"]
+            require(isinstance(identity, str) and 0 < len(identity) <= 64, "invalid_input", 400)
+            subscription = await self.media.local(self.media.repo.get, "subscription", identity)
+            require(subscription is not None, "not_found", 404)
+            require(
+                subscription["account_id"] == preview["account_id"], "preview_account_conflict", 409
+            )
+            source_value = subscription["source"]
+        await self._rule_preview_account(preview)
+        member = None
+        if source_value:
+            cookie = await self.media.local(self.media.accounts.cookie, preview["account_id"])
+            try:
+                members = await asyncio.wait_for(
+                    self.media.connector.scan(
+                        source_value,
+                        cookie,
+                        page_limit=self.media.config["scan_page_limit"],
+                        item_limit=self.media.config["scan_item_limit"],
+                    ),
+                    self.media.config["scan_timeout_seconds"],
+                )
+            except TimeoutError:
+                raise Fault("source_budget_exceeded", 503) from None
+            member = members.get(preview["snapshot"]["bvid"])
         metadata = normalize_bilibili(preview["snapshot"])
+        context = build_rule_context(metadata, preview, source_value, member)
         decision = await self.media.evaluator.evaluate(
             metadata,
             body["rules"],
             accessible=True,
             quality_satisfied=False,
-            snapshot_revision=digest(canonical(preview["snapshot"])),
+            snapshot_revision=rule_snapshot_revision(preview["snapshot"], context, policy),
+            context=context,
         )
+        await self._rule_preview_account(preview)
+        await self.live(session)
         return {
+            "context": public_rule_context(metadata, context),
             "results": [
                 {
                     "cid": part["cid"],
@@ -269,8 +308,19 @@ class WebMedia:
                     "trace": asdict(decision),
                 }
                 for part in preview["snapshot"]["parts"]
-            ]
+            ],
         }
+
+    async def _rule_preview_account(self, preview):
+        if preview["account_id"]:
+            current = await self.media.local(self.media.repo.get, "account", preview["account_id"])
+            require(
+                current
+                and current["state"] == "ready"
+                and current["revision"] == preview["account_revision"],
+                "account_changed",
+                409,
+            )
 
     async def subscription_save(self, body, session):
         result = await self.receipt(

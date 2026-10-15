@@ -116,7 +116,7 @@ class MediaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         for kind, (url, identity) in links.items():
             value = source({"kind": kind, "id": url})
             self.assertEqual(value, {"kind": kind, "id": identity})
-            self.assertEqual(await self.media.connector.scan(value, None), {BV})
+            self.assertEqual(set(await self.media.connector.scan(value, None)), {BV})
         with self.assertRaises(Fault):
             source({"kind": "collection", "id": links["series"][0]})
         self.assertEqual(

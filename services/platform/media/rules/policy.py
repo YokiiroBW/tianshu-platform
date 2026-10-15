@@ -7,9 +7,10 @@ shape the whole module:
 * the document is validated **whole**, including rules that a current evaluation would never reach.
   A regex with a syntax error may not hide behind an earlier rule, because "not evaluated yet" must
   never become "silently broken";
-* the digest is taken over the *original* document exactly as accepted — arrays in input order,
-  objects key-sorted, ``ensure_ascii=False``, compact separators and no trailing newline. It is an
-  internal rule identity, not a cross-language publication contract.
+* the digest keeps legacy documents byte-for-byte compatible — arrays in input order, objects
+  key-sorted, ``ensure_ascii=False``, compact separators and no trailing newline. The new optional
+  ``negate=false`` is omitted canonically, so the default and an explicit false have one identity.
+  It is an internal rule identity, not a cross-language publication contract.
 
 Every refusal is a :class:`RuleValidationError` carrying a fixed code and the input path, and no
 message ever repeats the value, the expression or the surrounding document.
@@ -22,12 +23,15 @@ import json
 import re
 from typing import Mapping
 
+from .comparisons import validate_typed_value
+
 from .types import (
     DOCUMENT_FIELDS,
     ERROR_DUPLICATE_GROUP_ID,
     ERROR_DUPLICATE_RULE_ID,
     ERROR_EMPTY_RULES,
     ERROR_INVALID_CASE_SENSITIVE,
+    ERROR_INVALID_NEGATE,
     ERROR_INVALID_DOCUMENT,
     ERROR_INVALID_FIELD_NAME,
     ERROR_INVALID_GROUP,
@@ -55,6 +59,8 @@ from .types import (
     REVISION_MAX,
     REVISION_MIN,
     RULE_FIELDS,
+    OPTIONAL_RULE_FIELDS,
+    TEXT_FIELDS,
     RULES_PER_GROUP_MAX,
     Group,
     Rule,
@@ -117,8 +123,12 @@ def _validate_rule(record: object, field: str) -> Rule:
         keys = set(record)
     except TypeError as error:  # a mapping whose keys cannot be hashed
         raise _refuse(ERROR_INVALID_RULE, field) from error
-    if keys != set(RULE_FIELDS):
-        code = ERROR_UNKNOWN_FIELD if keys - set(RULE_FIELDS) else ERROR_INVALID_RULE
+    if keys - set(OPTIONAL_RULE_FIELDS) != set(RULE_FIELDS):
+        code = (
+            ERROR_UNKNOWN_FIELD
+            if keys - set(RULE_FIELDS + OPTIONAL_RULE_FIELDS)
+            else ERROR_INVALID_RULE
+        )
         raise _refuse(code, field)
     rule_id = _validate_id(record["id"], field=f"{field}.id", code=ERROR_INVALID_RULE_ID)
     name = record["field"]
@@ -130,8 +140,15 @@ def _validate_rule(record: object, field: str) -> Rule:
     case_sensitive = record["case_sensitive"]
     if type(case_sensitive) is not bool:
         raise _refuse(ERROR_INVALID_CASE_SENSITIVE, f"{field}.case_sensitive")
-    value = _validate_value(record["value"], field=f"{field}.value", op=op)
-    return Rule(id=rule_id, field=name, op=op, value=value, case_sensitive=case_sensitive)
+    negate = record.get("negate", False)
+    if type(negate) is not bool:
+        raise _refuse(ERROR_INVALID_NEGATE, f"{field}.negate")
+    value = validate_typed_value(record["value"], name, op, f"{field}.value")
+    if name in TEXT_FIELDS:
+        value = _validate_value(value, field=f"{field}.value", op=op)
+    return Rule(
+        id=rule_id, field=name, op=op, value=value, case_sensitive=case_sensitive, negate=negate
+    )
 
 
 def _validate_group(record: object, field: str) -> Group:
@@ -228,6 +245,7 @@ def _canonical_document(
             "op": rule.op,
             "value": rule.value,
             "case_sensitive": rule.case_sensitive,
+            **({"negate": True} if rule.negate else {}),
         }
 
     def group_document(group: Group) -> dict[str, object]:
