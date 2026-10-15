@@ -50,3 +50,21 @@ func TestAccountSubjectCookies(t *testing.T) {
 		}
 	}
 }
+
+func TestQQSearchRetainsPaidMetadataWithoutRequiringMembership(t *testing.T) {
+	previous := http.DefaultClient
+	defer func() { http.DefaultClient = previous }()
+	count := 0
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		count++
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":0,"data":{"song":{"list":[{"songid":101,"songmid":"paid101","songname":"Fixture","albumname":"Album","interval":180,"singer":[{"name":"Artist"}],"pay":{"payplay":1,"paydownload":1}}]}}}`))}, nil
+	})}
+	value, err := searchQQ(request{Provider: "qq", Query: "Fixture Artist"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	songs := value.([]model.Song)
+	if count != 1 || len(songs) != 1 || songs[0].ID != "paid101" || songs[0].Album != "Album" {
+		t.Fatal("paid metadata was hidden")
+	}
+}

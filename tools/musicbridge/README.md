@@ -12,7 +12,9 @@ The independent decoder has its own license. Third-party licenses remain attache
 to their respective components.
 
 Build with Go 1.27.2: `go build -trimpath -mod=readonly -o tianshu-musicbridge .`.
-Run `go test ./...` for the QQ VKey filename/quality and account-subject contracts.
+Run `go test ./...` for QQ VKey filename/quality, unfiltered paid-song metadata
+and account-subject contracts. Paid songs remain searchable; only the subsequent
+VKey/full-audio acquisition decides entitlement.
 `{"operation":"version"}` reports the pinned adapter revision without credentials.
 
 The image contains binaries in `/usr/local/bin/` and the helper source, vendored

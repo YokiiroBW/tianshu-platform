@@ -257,6 +257,9 @@ func execute(r request) (any, error) {
 	case "playlist":
 		return playlist(c, r.ID)
 	case "search":
+		if r.Provider == "qq" {
+			return searchQQ(r)
+		}
 		return c.Search(r.Query)
 	case "track":
 		return c.Parse(r.ID)
