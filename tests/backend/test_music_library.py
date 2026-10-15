@@ -345,3 +345,42 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         await self.run_job()
         self.assertEqual(self.music.imports.view()["failed"], 0)
         self.assertEqual(self.music.imports.view()["indexed"], 1)
+
+    async def test_parallel_songs_share_publication_without_busy_failures(self):
+        value = self.value([str(200 + i) for i in range(8)])
+        value["playlist"]["source_id"] = "parallel"
+        playlist = self.subscribe(value)
+        self.queue(playlist)
+        jobs = [self.repo.claim("parallel-" + str(i)) for i in range(8)]
+        await asyncio.gather(
+            *(self.media.worker.run(job, "parallel-" + str(i)) for i, job in enumerate(jobs))
+        )
+        self.assertTrue(all(self.repo.job(job["job_id"])["state"] == "completed" for job in jobs))
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+
+    async def test_external_library_busy_is_waiting_not_a_permanent_download_failure(self):
+        self.queue()
+        job = self.repo.claim("fixture")
+        job = self.repo.update_job(
+            job["job_id"], {"attempts": 4}, owner="fixture", generation=job["generation"]
+        )
+
+        def busy(*args):
+            raise Fault("busy", 409)
+
+        with patch.object(self.music.downloads.storage, "reuse", busy):
+            await self.media.worker.run(job, "fixture")
+        result = self.repo.job(job["job_id"])
+        self.assertEqual(result["state"], "retry_wait")
+        self.assertEqual(result["code"], "busy")
+        self.assertEqual(result["attempts"], 4)
+
+    async def test_completed_generation_cleanup_preserves_new_worker_staging(self):
+        self.queue()
+        finished = await self.run_job()
+        next_job = {**finished, "generation": finished["generation"] + 1}
+        staging = self.music.downloads.storage.stage(next_job, "source.part")
+        staging.write_bytes(b"next-generation-owned-transfer")
+        self.music.downloads.storage.cleanup(finished)
+        self.assertEqual(staging.read_bytes(), b"next-generation-owned-transfer")
+        self.assertEqual(self.repo.get("music_stage", finished["job_id"])["state"], "retained")

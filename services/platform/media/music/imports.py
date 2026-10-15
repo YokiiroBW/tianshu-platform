@@ -211,7 +211,7 @@ class Imports:
                     )
                     return result["recording_id"]
 
-        return await local(save)
+        return await self.music.downloads.exclusive(save)
 
     async def scan(self, job, update, *, finish=True):
         local = self.media.local
@@ -266,7 +266,7 @@ class Imports:
             },
         )
         await local(self.mark_missing, root, {item["path"] for item in items})
-        await local(self.music.downloads.storage.export_related, job)
+        await self.music.downloads.exclusive(self.music.downloads.storage.export_related, job)
         if finish:
             await update(state="completed", stage="completed", code="music_indexed", progress=1)
 
@@ -358,7 +358,7 @@ class Imports:
 
         binding = await local(bind)
         job = await update(recording_id=binding["recording_id"], track=track)
-        reused = await settled(local, storage.reuse, job, owner)
+        reused = await downloads.exclusive(storage.reuse, job, owner)
         if not reused:
             artwork = await local(lambda: cover(picture.read_bytes())) if picture.exists() else None
             quality = verify_quality(job["quality"], "observed", observed)
@@ -366,11 +366,11 @@ class Imports:
             job = await update(
                 audio_package=package, state="publishing", stage="publishing", code="publishing"
             )
-            job = await settled(local, storage.publish, job, owner)
+            job = await downloads.exclusive(storage.publish, job, owner)
         else:
             job = reused
-        await settled(local, storage.cleanup, job)
-        await local(storage.export_related, job)
+        await downloads.exclusive(storage.cleanup, job)
+        await downloads.exclusive(storage.export_related, job)
         return job
 
     async def run(self, job, owner):
@@ -391,6 +391,13 @@ class Imports:
                 try:
                     await local(storage.guard, job, owner)
                 except Fault:
+                    current = await local(repo.job, job["job_id"], include_deleted=True)
+                    if (
+                        current
+                        and current["generation"] == job["generation"]
+                        and current["state"] in {"completed", "queued"}
+                    ):
+                        return
                     running.cancel()
                     return
 
@@ -418,7 +425,12 @@ class Imports:
             raise
         except (Fault, OSError, mutagen.MutagenError) as error:
             code = error.code if isinstance(error, Fault) else "media_io_failure"
-            await update(state="failed", stage="failed", code=code)
+            await update(
+                state="retry_wait" if code == "busy" else "failed",
+                stage="failed",
+                code=code,
+                retry_delay=5,
+            )
             if job["audio_operation"] == "scan":
                 await local(
                     repo.put,

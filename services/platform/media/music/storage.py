@@ -166,7 +166,7 @@ class AudioStorage:
             ):
                 self.repo.put(
                     "music_retired_file",
-                    digest({"recording": job["recording_id"], "files": old["files"]}),
+                    digest({"recording": old["recording_id"], "files": old["files"]}),
                     {
                         **old,
                         "replacement_recording_id": artifact["recording_id"],
@@ -346,13 +346,27 @@ class AudioStorage:
         root = Path(self.media.config["staging_directory"])
         for relative in stage["files"]:
             require(relative.startswith(f".music/{job['job_id']}/"), "unsafe_library_path", 409)
+            if int(relative.split("/")[2]) > job["generation"]:
+                continue
             path = safe_path(root, relative)
             path.unlink(missing_ok=True)
             try:
                 path.parent.rmdir()
             except OSError:
                 pass
-        self.repo.put("music_stage", job["job_id"], {**stage, "state": "cleaned"})
+        with self.repo.transaction() as db:
+            latest = self.repo._document(db, "music_stage", job["job_id"])
+            pending = [
+                relative
+                for relative in latest["files"]
+                if int(relative.split("/")[2]) > job["generation"]
+            ]
+            self.repo.put(
+                "music_stage",
+                job["job_id"],
+                {**latest, "state": "retained" if pending else "cleaned"},
+                db=db,
+            )
 
     def cleanup_retired(self):
         for retired in self.repo.list("music_retired_file"):

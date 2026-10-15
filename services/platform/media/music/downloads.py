@@ -40,6 +40,12 @@ class Downloads:
         self.music, self.media = music, music.media
         self.storage, self.transfer = AudioStorage(music), Transfer()
         self.resolver = Resolver(music)
+        self.publication_lock = asyncio.Lock()
+
+    async def exclusive(self, operation, *args):
+        # Cooperate within this worker pool; the filesystem lock still coordinates processes.
+        async with self.publication_lock:
+            return await settled(self.media.local, operation, *args)
 
     async def package(self, job, update):
         failure = None
@@ -227,6 +233,14 @@ class Downloads:
                 try:
                     await local(self.storage.guard, job, owner)
                 except Fault:
+                    current = await local(repo.job, identity, include_deleted=True)
+                    if (
+                        job["state"] in {"completed", "queued"}
+                        or current
+                        and current["generation"] == generation
+                        and current["state"] in {"completed", "queued"}
+                    ):
+                        return
                     running.cancel()
                     return
 
@@ -241,7 +255,7 @@ class Downloads:
             )
             await self.music.imports.ensure_indexed(job, update)
             await self.storage.refresh_file(job)
-            reused = await settled(local, self.storage.reuse, job, owner)
+            reused = await self.exclusive(self.storage.reuse, job, owner)
             if reused:
                 job = reused
             else:
@@ -252,7 +266,7 @@ class Downloads:
                     and satisfies(job["quality"], intent)
                     and await local(self.storage.matches, intent)
                 ):
-                    job = await settled(local, self.storage.publish, job, owner)
+                    job = await self.exclusive(self.storage.publish, job, owner)
                 else:
                     if not await local(
                         self.package_present, job.get("audio_package")
@@ -270,12 +284,12 @@ class Downloads:
                             download_source_id=package["download_source_id"],
                         )
                     await update(state="publishing", stage="publishing", code="publishing")
-                    job = await settled(local, self.storage.publish, job, owner)
+                    job = await self.exclusive(self.storage.publish, job, owner)
             try:
-                await settled(local, self.storage.cleanup, job)
+                await self.exclusive(self.storage.cleanup, job)
             except (Fault, OSError):
                 pass  # Existing retention pump retries cleanup after confirmed publication.
-            await local(self.storage.export_related, job)
+            await self.exclusive(self.storage.export_related, job)
         except asyncio.CancelledError:
             current = await local(repo.job, identity, include_deleted=True)
             if current and current["generation"] == generation and current["state"] != "completed":
@@ -294,7 +308,7 @@ class Downloads:
             raise
         except (Fault, OSError, TimeoutError) as error:
             code = error.code if isinstance(error, Fault) else "media_io_failure"
-            attempts = job.get("attempts", 0) + 1
+            attempts = job.get("attempts", 0) + (0 if code == "busy" else 1)
             transient = code in {
                 "music_download_unavailable",
                 "music_upstream_unavailable",
@@ -307,7 +321,7 @@ class Downloads:
                 else "auth_required"
                 if code in {"music_auth_required", "music_account_unavailable", "account_changed"}
                 else "retry_wait"
-                if transient and attempts < 4
+                if code == "busy" or transient and attempts < 4
                 else "failed"
             )
             try:
@@ -315,7 +329,7 @@ class Downloads:
                     state=state,
                     code=code,
                     attempts=attempts,
-                    retry_delay=min(300, 15 * 2**attempts),
+                    retry_delay=5 if code == "busy" else min(300, 15 * 2**attempts),
                 )
             except Fault:
                 pass  # Lost lease/cancel is settled by its owner; never overwrite a newer worker.

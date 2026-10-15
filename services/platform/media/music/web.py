@@ -179,7 +179,9 @@ class WebMusic:
             return result
         if operation == "playlists/export":
             self.fields(body, {"playlist_id"})
-            return await local(music.downloads.storage.export, body["playlist_id"])
+            return await music.downloads.exclusive(
+                music.downloads.storage.export, body["playlist_id"]
+            )
         if operation == "playlists/scan":
             self.fields(body, {"playlist_id"})
             return await music.scan(body["playlist_id"])
