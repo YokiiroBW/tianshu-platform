@@ -7,7 +7,7 @@ from pathlib import Path
 from ...contracts import Fault, require
 from ..destination import safe_path
 from ..video_storage import sync_file
-from .audio import cover, probe, record, write_tags
+from .audio import cover, lossless_flac, probe, record, write_tags
 from .decoding import Decoder
 from .quality import verify_quality, satisfies
 from .resolver import Resolver
@@ -140,6 +140,18 @@ class Downloads:
         local = self.media.local
         provider = track.get("provider", "local")
         lyrics, warnings = lyrics or {}, warnings or []
+        if observed["codec"] == "ape":
+            converted_path = await local(self.storage.stage, job, "normalized.flac")
+            converted = await lossless_flac(
+                raw, converted_path, observed, self.media.config["engine"]
+            )
+            quality = {
+                **quality,
+                **converted,
+                "source_codec": "ape",
+                "lossless_conversion": True,
+            }
+            raw, observed = converted_path, converted
         audio = await local(self.storage.stage, job, "audio." + quality["extension"])
         raw.replace(audio)
         await settled(local, write_tags, audio, track, artwork, lyrics.get("original", ""))

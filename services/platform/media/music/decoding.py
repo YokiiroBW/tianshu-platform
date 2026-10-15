@@ -40,7 +40,7 @@ def encrypted_format(path, hints=(), provider=None):
         tail = stream.read(8)
     # Actual plaintext takes precedence over a stale CDN filename or extension.
     if (
-        head.startswith((b"fLaC", b"ID3", b"OggS"))
+        head.startswith((b"fLaC", b"ID3", b"OggS", b"MAC "))
         or head[4:8] == b"ftyp"
         or len(head) >= 2
         and head[0] == 0xFF

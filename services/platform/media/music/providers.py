@@ -2,7 +2,7 @@
 
 import re
 
-from ...contracts import require
+from ...contracts import digest, require
 from . import tools
 from .transfer import media_url
 
@@ -105,6 +105,21 @@ def bridge_song(value, provider):
     }
 
 
+def playlist_track(row, provider, source):
+    require(isinstance(row, dict), "music_upstream_invalid", 502)
+    if row.get("id") not in (None, ""):
+        return track(row, provider)
+    # Deleted/private uploads can retain a title and position without a usable ID.
+    # Keep them in this playlist, without registering or downloading a guessed song.
+    unavailable_id = "unavailable:" + digest(
+        {"playlist": source, **{k: row.get(k) for k in ("name", "artist", "album", "duration")}}
+    )
+    return {
+        **track({**row, "id": unavailable_id}, provider),
+        "availability": "unavailable",
+    }
+
+
 class Bridge:
     def __init__(self, provider):
         self.provider = provider
@@ -171,6 +186,17 @@ class Bridge:
         source = identity(source)
         catalog = await self.playlists(uid, cookie)
         info = next((p for p in catalog if p["source_id"] == source), None)
+        if (
+            self.provider == "qq"
+            and source in {"profile:dir:205", "profile:dir:206"}
+            and info
+            and info["track_count"] == 0
+        ):
+            current = next(
+                (p for p in await self.playlists(uid, cookie) if p["source_id"] == source), None
+            )
+            require(current and current["track_count"] == 0, "music_source_changed", 409)
+            return {"playlist": current, "entries": [], "tracks": []}
         if info:
             rows = await self.call("playlist_songs", cookie, id=source)
         else:
@@ -182,10 +208,15 @@ class Bridge:
             "music_scan_incomplete",
             502,
         )
-        tracks = [track(row, self.provider) for row in rows]
+        tracks = [playlist_track(row, self.provider, source) for row in rows]
         current = await self.call("playlist_songs", cookie, id=source)
         entries = [row["source_id"] for row in tracks]
-        require([str(r["id"]) for r in (current or [])] == entries, "music_source_changed", 409)
+        require(
+            [playlist_track(r, self.provider, source)["source_id"] for r in (current or [])]
+            == entries,
+            "music_source_changed",
+            409,
+        )
         return {
             "playlist": info,
             "entries": entries,

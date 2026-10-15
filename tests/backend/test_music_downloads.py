@@ -22,7 +22,9 @@ from PIL import Image
 from music_fixtures import SyntheticNetease, snapshot
 from services.platform.contracts import Fault
 from services.platform.media.accounts import Accounts
-from services.platform.media.music.audio import number, record
+from services.platform.media.music.audio import lossless_flac, number, probe, record
+from services.platform.media.music.decoding import encrypted_format
+from services.platform.media.music.quality import quality_rank, verify_quality
 from services.platform.media.music.downloads import settled
 from services.platform.media.music.runtime import Music
 from services.platform.media.music.storage import component, stem
@@ -226,6 +228,26 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(value=value):
                 self.assertEqual(number(value), expected)
+
+    async def test_lossless_conversion_preserves_pcm_resolution_and_original(self):
+        source = self.root / "source.flac"
+        source.write_bytes(self.audio["hires"])
+        original = record(source)
+        observed = await probe(source, None, self.media.config["engine"])
+        result = await lossless_flac(
+            source, self.root / "converted.flac", observed, self.media.config["engine"]
+        )
+        self.assertEqual(result["codec"], "flac")
+        self.assertEqual(result["content_id"], observed["content_id"])
+        self.assertEqual(record(source), original)
+        # APE is a lossless candidate and a plaintext container, including on QQ.
+        ape = verify_quality(
+            {"level": "best", "allow_fallback": True}, "lossless", {**observed, "codec": "ape"}
+        )
+        self.assertEqual(quality_rank(ape), quality_rank({**ape, "codec": "flac"}))
+        marker = self.root / "ape-header.part"
+        marker.write_bytes(b"MAC " + bytes(64))
+        self.assertIsNone(encrypted_format(marker, provider="qq"))
 
     async def test_qq_playlist_uses_netease_permission_and_all_playlists_share_one_file(self):
         from services.platform.media.music.catalog import same_recording

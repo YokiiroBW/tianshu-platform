@@ -4,6 +4,7 @@ from ...contracts import require
 
 LEVELS = {"standard": 0, "higher": 1, "exhigh": 2, "lossless": 3, "hires": 4}
 DEFAULT = {"level": "best", "allow_fallback": True}
+LOSSLESS_CODECS = frozenset({"flac", "alac", "ape"})
 
 
 def requested_levels(requested):
@@ -28,7 +29,7 @@ def minimum_level(requested):
 
 
 def observed_level(observed):
-    if observed["codec"] in {"flac", "alac"}:
+    if observed["codec"] in LOSSLESS_CODECS:
         return (
             "hires"
             if observed["bits_per_sample"] > 16 or observed["sample_rate"] > 48000
@@ -51,13 +52,13 @@ def normalized_quality(quality):
     return {
         **quality,
         "level": observed_level(quality),
-        "lossless": quality["codec"] in {"flac", "alac"},
+        "lossless": quality["codec"] in LOSSLESS_CODECS,
     }
 
 
 def quality_rank(quality):
     quality = normalized_quality(quality)
-    lossless = quality.get("codec") in {"flac", "alac"}
+    lossless = quality.get("codec") in LOSSLESS_CODECS
     return (
         LEVELS[quality["level"]],
         quality.get("bits_per_sample", 0) if lossless else 0,
@@ -95,7 +96,7 @@ def policy(value=None):
 
 
 def verify_quality(requested, offered, observed):
-    lossless = observed["codec"] in {"flac", "alac"}
+    lossless = observed["codec"] in LOSSLESS_CODECS
     actual = observed_level(observed)
     require(offered == "observed" or offered in LEVELS, "music_quality_unknown", 409)
     require(offered == "observed" or LEVELS[offered] < 3 or lossless, "music_quality_mismatch", 409)

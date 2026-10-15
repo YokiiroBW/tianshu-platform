@@ -66,6 +66,7 @@ async def inspect_audio(path, engine):
             "alac": "m4a",
             "vorbis": "ogg",
             "opus": "opus",
+            "ape": "ape",
         }.get(codec)
         require(extension is not None, "music_format_unsupported", 409)
         duration = float(data["format"].get("duration", stream.get("duration", 0)))
@@ -83,6 +84,48 @@ async def inspect_audio(path, engine):
     except (ValueError, KeyError, TypeError):
         raise Fault("music_audio_invalid", 409) from None
     return observed
+
+
+async def lossless_flac(source, destination, observed, engine):
+    """Convert a private lossless source while proving sample-for-sample identity."""
+    destination.unlink(missing_ok=True)
+    code, _, errors = await run_process(
+        [
+            executable_path(engine["ffmpeg"]),
+            "-nostdin",
+            "-v",
+            "error",
+            "-xerror",
+            "-i",
+            str(source),
+            "-map",
+            "0:a:0",
+            "-map_metadata",
+            "-1",
+            "-c:a",
+            "flac",
+            "-f",
+            "flac",
+            str(destination),
+        ],
+        timeout=600,
+    )
+    require(code == 0 and not errors.strip(), "music_audio_invalid", 409)
+    require(
+        0 < destination.stat().st_size <= min(engine["max_bytes"], 1024**3),
+        "music_file_too_large",
+        409,
+    )
+    converted = await probe(destination, None, engine)
+    require(
+        all(
+            converted[k] == observed[k]
+            for k in ("content_id", "sample_rate", "channels", "bits_per_sample")
+        ),
+        "music_audio_invalid",
+        409,
+    )
+    return converted
 
 
 async def probe(path, track, engine):

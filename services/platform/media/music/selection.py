@@ -5,7 +5,7 @@ from math import inf
 from ...contracts import Fault
 from .audio import inspect_audio
 from .decoding import encrypted_format
-from .quality import LEVELS, minimum_level, quality_rank, verify_quality
+from .quality import LEVELS, LOSSLESS_CODECS, minimum_level, quality_rank, verify_quality
 
 
 class Selection:
@@ -67,7 +67,7 @@ class Selection:
                     evidence["probe"] = "encrypted"
                 else:
                     described = await inspect_audio(path, self.media.config["engine"])
-                    if described["codec"] in {"flac", "alac"} or described["bit_rate"] > 0:
+                    if described["codec"] in LOSSLESS_CODECS or described["bit_rate"] > 0:
                         observed = verify_quality(
                             {"level": "best", "allow_fallback": True}, "observed", described
                         )
