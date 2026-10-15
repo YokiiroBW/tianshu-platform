@@ -1,7 +1,7 @@
 """Automatic, per-song entitlement routing across connected music accounts."""
 
 from ...contracts import Fault, require
-from .catalog import same_recording
+from .catalog import same_recording, search_title
 from .quality import LEVELS, aggregate, requested_levels
 
 
@@ -54,7 +54,7 @@ class Resolver:
                 else:
                     candidates = await local(library.catalog.sources, job["recording_id"], provider)
                     if not candidates:
-                        query = original["title"] + " " + " ".join(original.get("artists", []))
+                        query = search_title(original) + " " + " ".join(original.get("artists", []))
                         found = await client.search(query, cookie)
                         candidates = list(
                             {

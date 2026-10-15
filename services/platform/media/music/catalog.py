@@ -18,8 +18,17 @@ def artists(track):
     return sorted({normalized(a) for a in track.get("artists", []) if normalized(a)})
 
 
+def search_title(track):
+    return re.sub(
+        r"\.(?:mp3|flac|m4a|ogg|opus|ape|wav)$",
+        "",
+        str(track.get("title") or "").strip(),
+        flags=re.I,
+    )
+
+
 def lookup_key(track):
-    title, names = normalized(track.get("title")), artists(track)
+    title, names = normalized(search_title(track)), artists(track)
     return digest({"title": title, "artists": names}) if title and names else None
 
 
@@ -84,13 +93,13 @@ class Catalog:
         self.root_id(db)
         key = source_key(provider, track["source_id"], private_scope)
         existing = self.repo._document(db, "music_source", key)
+        match = lookup_key(track)
+        indexed = self.repo._document(db, "music_match_index", match) if match else None
         candidates, method = [], "source"
         if existing:
             identity = self.resolve(existing["recording_id"], db)
             method = existing.get("match_method", "source")
         else:
-            match = lookup_key(track)
-            indexed = self.repo._document(db, "music_match_index", match) if match else None
             candidates = sorted(
                 {self.resolve(i, db) for i in (indexed or {}).get("recordings", [])}
             )
@@ -109,13 +118,15 @@ class Catalog:
                     {"recording_id": identity, "metadata": track, "created_at": self.repo.clock()},
                     db=db,
                 )
-                if match:
-                    self.repo.put(
-                        "music_match_index",
-                        match,
-                        {"recordings": sorted({*(indexed or {}).get("recordings", []), identity})},
-                        db=db,
-                    )
+        # Re-registering an existing source also adds its current normalized lookup key.
+        # Old filename-shaped metadata keeps the same recording and explicit bindings.
+        if match and identity not in (indexed or {}).get("recordings", []):
+            self.repo.put(
+                "music_match_index",
+                match,
+                {"recordings": sorted({*(indexed or {}).get("recordings", []), identity})},
+                db=db,
+            )
         self.repo.put(
             "music_source",
             key,

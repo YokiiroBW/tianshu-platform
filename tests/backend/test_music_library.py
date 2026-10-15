@@ -12,7 +12,7 @@ from mutagen.flac import FLAC
 
 import test_music_downloads as fixtures
 from services.platform.contracts import Fault
-from services.platform.media.music.catalog import same_recording
+from services.platform.media.music.catalog import lookup_key, same_recording, search_title
 from services.platform.media.music.quality import aggregate, requested_levels
 from services.platform.media.music.imports import metadata
 from unittest.mock import patch
@@ -89,6 +89,25 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         self.assertEqual(requested_levels(combined), ["hires", "lossless"])
+
+    def test_filename_title_reindexes_existing_source_without_merging_other_versions(self):
+        original = {**self.api.value["tracks"][0], "title": "A recording.mp3"}
+        candidate = {**original, "source_id": "qq-matching", "title": "A recording"}
+        with self.repo.transaction() as db:
+            binding = self.library.catalog.register("kugou", original, db)
+            # Simulate the old lookup index while preserving the existing recording.
+            db.execute(
+                "DELETE FROM documents WHERE kind='music_match_index' AND id=?",
+                (lookup_key(original),),
+            )
+            again = self.library.catalog.register("kugou", original, db)
+            matched = self.library.catalog.register("qq", candidate, db)
+        self.assertEqual(binding["recording_id"], again["recording_id"])
+        self.assertEqual(binding["recording_id"], matched["recording_id"])
+        self.assertEqual(search_title(original), "A recording")
+        self.assertTrue(same_recording(original, candidate))
+        self.assertFalse(same_recording(original, {**candidate, "title": "A recording (Live)"}))
+        self.assertFalse(same_recording(original, {**candidate, "album": "Different edition"}))
 
     async def test_existing_tagged_file_is_indexed_and_reused_without_modification(self):
         path = self.library_root / "Music Tag Web 原件.flac"
