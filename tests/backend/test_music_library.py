@@ -109,6 +109,25 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(same_recording(original, {**candidate, "title": "A recording (Live)"}))
         self.assertFalse(same_recording(original, {**candidate, "album": "Different edition"}))
 
+    async def test_archive_refreshes_shared_exports_without_rewriting_unrelated_playlists(self):
+        shared = self.value(["101"])
+        shared["playlist"]["source_id"] = "901"
+        shared = self.subscribe(shared)
+        unrelated = self.value(["201"])
+        unrelated["playlist"]["source_id"] = "902"
+        unrelated = self.subscribe(unrelated)
+        storage = self.music.downloads.storage
+        for playlist in (self.playlist, shared, unrelated):
+            storage.export(playlist["playlist_id"])
+        self.queue()
+        with patch.object(storage, "export", wraps=storage.export) as exported:
+            result = await self.run_job()
+        self.assertEqual(result["state"], "completed", result.get("code"))
+        self.assertEqual(
+            {call.args[0] for call in exported.call_args_list},
+            {self.playlist["playlist_id"], shared["playlist_id"]},
+        )
+
     async def test_existing_tagged_file_is_indexed_and_reused_without_modification(self):
         path = self.library_root / "Music Tag Web 原件.flac"
         path.write_bytes(self.audio["flac"])

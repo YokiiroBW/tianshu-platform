@@ -108,7 +108,7 @@ class Navidrome:
         await guard()
         if not catalog.get("exports_prepared"):
             try:
-                await local(prepare_exports, self.repo, connection)
+                await self.music.downloads.exclusive(prepare_exports, self.repo, connection)
             except OSError:
                 raise Fault("navidrome_export_unavailable", 409) from None
             catalog["exports_prepared"] = True

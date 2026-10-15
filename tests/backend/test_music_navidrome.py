@@ -2,6 +2,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import threading
 import unittest
 import uuid
 from unittest.mock import patch
@@ -13,6 +14,7 @@ import test_music_foundation as foundation
 from services.platform.contracts import Fault
 from services.platform.media.music.navidrome.matching import mapped_members
 from services.platform.media.music.navidrome.state import LINK, mark_dirty
+from services.platform.media.organizer import library_lock
 
 
 class SyntheticNavidrome:
@@ -205,6 +207,29 @@ class NavidromeTests(unittest.IsolatedAsyncioTestCase):
                 {"link_id": self.link_id, "action": action, "expected_revision": row["revision"]},
                 db,
             )
+
+    async def test_sync_waits_for_in_process_archive_instead_of_failing_busy(self):
+        self.music.downloads.storage.export(self.playlist["playlist_id"])
+        self.media.local = asyncio.to_thread
+        self.link()
+        entered, released = threading.Event(), threading.Event()
+
+        def publishing():
+            with library_lock(self.directory):
+                entered.set()
+                released.wait(3)
+
+        writer = asyncio.create_task(self.music.downloads.exclusive(publishing))
+        sync = None
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+            sync = asyncio.create_task(self.nav.tick())
+            await asyncio.sleep(0.15)
+            self.assertFalse(sync.done(), "Sync must wait for the active archive owner")
+        finally:
+            released.set()
+            await asyncio.gather(writer, *([sync] if sync else []))
+        self.assertEqual(self.repo.get(LINK, self.link_id)["status"], "partial")
 
     async def test_order_duplicates_updates_and_no_audio_copies(self):
         self.link()
