@@ -6,6 +6,7 @@ import unicodedata
 import uuid
 
 from ...contracts import digest, require
+from .quality import normalized_quality
 
 
 def normalized(value):
@@ -154,7 +155,10 @@ class Catalog:
         if db is None:
             with self.repo.transaction() as transaction:
                 return self.file(identity, db=transaction)
-        return self.repo._document(db, "music_library_file", self.resolve(identity, db))
+        artifact = self.repo._document(db, "music_library_file", self.resolve(identity, db))
+        return (
+            {**artifact, "quality": normalized_quality(artifact["quality"])} if artifact else None
+        )
 
     def content_file(self, content_id, directory):
         with self.repo.transaction() as db:
@@ -172,7 +176,14 @@ class Catalog:
     def store_file(self, identity, artifact, db):
         identity = self.resolve(identity, db)
         result = self.repo.put(
-            "music_library_file", identity, {**artifact, "recording_id": identity}, db=db
+            "music_library_file",
+            identity,
+            {
+                **artifact,
+                "recording_id": identity,
+                "quality": normalized_quality(artifact["quality"]),
+            },
+            db=db,
         )
         if artifact.get("content_id"):
             self.repo.put(

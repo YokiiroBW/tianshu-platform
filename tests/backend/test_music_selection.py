@@ -154,6 +154,32 @@ class MusicSelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transfers, [])
         self.assertEqual((path.stat().st_mtime_ns, path.read_bytes()), before)
 
+    async def test_legacy_lossless_label_reuses_actual_hires_without_full_download(self):
+        self.file_bytes, self.level = self.audio["hires"], "hires"
+        self.queue()
+        first = await self.run_job()
+        self.assertEqual(first["state"], "completed")
+        path = self.file(first)
+        before = (path.stat().st_mtime_ns, path.read_bytes())
+        # Older archives recorded the provider's lossless tier even for 24-bit audio.
+        artifact = first["audio_receipt"]
+        self.repo.put(
+            "music_library_file",
+            artifact["recording_id"],
+            {**artifact, "quality": {**artifact["quality"], "level": "lossless"}},
+        )
+        queried, transfers = self.channels({"netease": (self.audio["hires"], "lossless")})
+        self.queue()
+        result = await self.run_job()
+        self.assertEqual(result["state"], "completed", result.get("code"))
+        self.assertTrue(queried)
+        self.assertEqual(transfers, [], "A stale tier must not cause an equal audio download")
+        self.assertTrue(result["audio_reused"])
+        self.assertEqual(result["actual_quality"], "hires")
+        self.assertEqual(self.file(result), path)
+        self.assertEqual((path.stat().st_mtime_ns, path.read_bytes()), before)
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+
     async def test_quality_probe_is_bounded_when_server_ignores_range(self):
         self.file_bytes = b"x" * (2 * 1024**2)
         path = self.root / "probe.part"

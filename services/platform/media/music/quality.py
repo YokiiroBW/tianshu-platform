@@ -27,7 +27,36 @@ def minimum_level(requested):
     return minimum
 
 
+def observed_level(observed):
+    if observed["codec"] in {"flac", "alac"}:
+        return (
+            "hires"
+            if observed["bits_per_sample"] > 16 or observed["sample_rate"] > 48000
+            else "lossless"
+        )
+    return (
+        "exhigh"
+        if observed["bit_rate"] >= 280000
+        else "higher"
+        if observed["bit_rate"] >= 160000
+        else "standard"
+    )
+
+
+def normalized_quality(quality):
+    # Early archives kept the provider tier beside the actual probe facts.
+    # Reclassify only when those facts exist; do not infer quality from a label.
+    if not {"codec", "bits_per_sample", "sample_rate", "bit_rate"} <= quality.keys():
+        return dict(quality)
+    return {
+        **quality,
+        "level": observed_level(quality),
+        "lossless": quality["codec"] in {"flac", "alac"},
+    }
+
+
 def quality_rank(quality):
+    quality = normalized_quality(quality)
     lossless = quality.get("codec") in {"flac", "alac"}
     return (
         LEVELS[quality["level"]],
@@ -38,7 +67,7 @@ def quality_rank(quality):
 
 
 def satisfies(requested, artifact):
-    actual = LEVELS[artifact["quality"]["level"]]
+    actual = LEVELS[normalized_quality(artifact["quality"])["level"]]
     minimum = minimum_level(requested)
     if actual < minimum:
         return False
@@ -67,21 +96,7 @@ def policy(value=None):
 
 def verify_quality(requested, offered, observed):
     lossless = observed["codec"] in {"flac", "alac"}
-    actual = (
-        (
-            "hires"
-            if observed["bits_per_sample"] > 16 or observed["sample_rate"] > 48000
-            else "lossless"
-        )
-        if lossless
-        else (
-            "exhigh"
-            if observed["bit_rate"] >= 280000
-            else "higher"
-            if observed["bit_rate"] >= 160000
-            else "standard"
-        )
-    )
+    actual = observed_level(observed)
     require(offered == "observed" or offered in LEVELS, "music_quality_unknown", 409)
     require(offered == "observed" or LEVELS[offered] < 3 or lossless, "music_quality_mismatch", 409)
     if offered == "hires":

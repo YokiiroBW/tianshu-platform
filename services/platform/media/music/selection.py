@@ -19,14 +19,14 @@ class Selection:
         failure, attempts = None, []
         best = (
             existing
-            if existing and LEVELS[existing["quality"]["level"]] >= minimum_level(job["quality"])
+            if existing and quality_rank(existing["quality"])[0] >= minimum_level(job["quality"])
             else None
         )
         package = None
         selected_account = None
         if (
             prepared
-            and LEVELS[prepared["quality"]["level"]] >= minimum_level(job["quality"])
+            and quality_rank(prepared["quality"])[0] >= minimum_level(job["quality"])
             and (best is None or quality_rank(prepared["quality"]) > quality_rank(best["quality"]))
         ):
             best, package = prepared, prepared
