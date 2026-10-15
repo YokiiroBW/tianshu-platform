@@ -172,9 +172,7 @@ test("media subscriptions keep independent subdirectories under one target", asy
       `整理路径预览：/media/Bilibili/${entry.directory}`,
     );
     await expect(
-      page.getByText(
-        "相同视频、分 P 和画质会复用已有的有效下载，各目录分别整理。",
-      ),
+      page.getByText(/已有下载满足视频、分\s*P、画质和高级策略时会优先复用/),
     ).toBeVisible();
     if (entry.kind === "favorite")
       await page.screenshot({

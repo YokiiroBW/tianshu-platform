@@ -11,6 +11,8 @@ export default defineConfig({
   testIgnore: [],
   testMatch: [
     "media.spec.ts",
+    "media-policy.spec.ts",
+    "subscriptions-destination.spec.ts",
     "subscriptions-navigation.spec.ts",
     "subscriptions-dashboard.spec.ts",
   ],

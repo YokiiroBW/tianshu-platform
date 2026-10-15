@@ -216,6 +216,7 @@ export async function installMediaFixture(page: Page, initial = fixtureView()) {
     authenticated: true,
     unavailable: false,
     ruleError: false,
+    rulePreviewHandler: null as ((route: Route) => Promise<void>) | null,
     calls: [] as { operation: string; body: Record<string, unknown> }[],
     resolveHandler: null as ((route: Route) => Promise<void>) | null,
     detailHandler: null as ((route: Route) => Promise<void>) | null,
@@ -308,18 +309,20 @@ export async function installMediaFixture(page: Page, initial = fixtureView()) {
       return reply({ jobs: [job], replayed: false });
     }
     if (operation === "rules/preview")
-      return reply({
-        results: [
-          {
-            cid: "100",
-            decision: state.ruleError ? "rule_error" : "download",
-            reason: state.ruleError ? "regex_timeout" : "eligible",
-            automatic_enqueue_allowed: !state.ruleError,
-            requires_rule_attention: state.ruleError,
-            trace: { item_key: "bilibili:video:BV1xx411c7mD", trace: [] },
-          },
-        ],
-      });
+      return state.rulePreviewHandler
+        ? state.rulePreviewHandler(route)
+        : reply({
+            results: [
+              {
+                cid: "100",
+                decision: state.ruleError ? "rule_error" : "download",
+                reason: state.ruleError ? "regex_timeout" : "eligible",
+                automatic_enqueue_allowed: !state.ruleError,
+                requires_rule_attention: state.ruleError,
+                trace: { item_key: "bilibili:video:BV1xx411c7mD", trace: [] },
+              },
+            ],
+          });
     if (operation === "subscriptions/destination-preview")
       return state.destinationHandler
         ? state.destinationHandler(route)

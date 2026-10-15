@@ -11,6 +11,7 @@ import type {
   DestinationPreview,
   MediaView,
   Subscription,
+  RulePreview,
 } from "../src/features/media/types";
 
 const BV = "BV1xx411c7mD";
@@ -72,6 +73,8 @@ test.beforeEach(async ({ request }) => {
     description: "完整合成简介",
     cover_enabled: true,
     qr_state: "waiting",
+    favorited_at: null,
+    is_collaboration: false,
   });
 });
 
@@ -651,6 +654,150 @@ test("actual media HTTP deletes a waiting record with revision checks counters a
   ).toBe(false);
   await page.screenshot({
     path: info.outputPath(`records-http-deleted-${info.project.name}.png`),
+    fullPage: true,
+  });
+});
+
+test("actual policy HTTP previews source facts and preserves advanced rules and stream settings", async ({
+  page,
+  request,
+}, info) => {
+  const savedAt = Date.parse("2026-10-15T00:00:00Z") / 1000;
+  await control(request, { favorited_at: savedAt, is_collaboration: false });
+  await login(page);
+  await selectMediaSection(page, "视频订阅");
+  const label =
+    "HTTP 高级策略 " + info.project.name + " " + randomUUID().slice(0, 6);
+  await page.getByRole("button", { name: "新建订阅", exact: true }).click();
+  await page.getByLabel("订阅名称").fill(label);
+  await page.getByLabel("来源链接或 ID", { exact: true }).fill("123");
+  await page.getByRole("button", { name: "下一步", exact: true }).click();
+  await page.getByRole("button", { name: "添加白名单组", exact: true }).click();
+  const rows = page.locator(".media-rule-row");
+  await rows
+    .first()
+    .getByRole("combobox", { name: "字段", exact: true })
+    .selectOption("favorited_at");
+  await rows
+    .first()
+    .getByRole("combobox", { name: "条件", exact: true })
+    .selectOption("gte");
+  await rows
+    .first()
+    .getByLabel("匹配值", { exact: true })
+    .fill("2026-10-01T00:00");
+  await page.getByRole("button", { name: "添加 AND 条件" }).click();
+  await rows
+    .nth(1)
+    .getByRole("combobox", { name: "字段", exact: true })
+    .selectOption("is_collaboration");
+  await page
+    .getByLabel("试算视频链接")
+    .fill("https://www.bilibili.com/video/" + BV);
+  const tested = page.waitForResponse((response) =>
+    response.url().endsWith("/api/web/media/rules/preview"),
+  );
+  await page.getByRole("button", { name: "试算规则", exact: true }).click();
+  const preview: RulePreview = await (await tested).json();
+  expect(preview.context?.member).toBe(true);
+  expect(Date.parse(String(preview.context?.fields.favorited_at?.value))).toBe(
+    savedAt * 1000,
+  );
+  expect(preview.context?.fields.is_collaboration).toEqual({
+    available: true,
+    value: false,
+  });
+  expect(preview.results.every((item) => item.decision === "download")).toBe(
+    true,
+  );
+  await expect(page.locator(".media-rule-context")).toContainText(
+    "已核实属于该来源",
+  );
+  await page.locator(".media-stream-options > summary").click();
+  await page.getByLabel("最高视频质量").selectOption("80");
+  await page.getByLabel("最低音频质量").selectOption("30251");
+  await page
+    .getByRole("button", { name: "添加 AVC / H.264", exact: true })
+    .click();
+  await page.getByRole("button", { name: "下一步", exact: true }).click();
+  await page.getByLabel("目标媒体库").selectOption("synthetic-network-video");
+  await page
+    .getByRole("combobox", { name: "整理方式", exact: true })
+    .selectOption("custom");
+  await page
+    .getByLabel("整理子目录（可选）")
+    .fill("policy/" + info.project.name + "/" + randomUUID().slice(0, 6));
+  const saved = page.waitForResponse((response) =>
+    response.url().endsWith("/api/web/media/subscriptions/save"),
+  );
+  await page.getByRole("button", { name: "保存订阅", exact: true }).click();
+  const subscription: Subscription = (await (await saved).json()).subscription;
+  expect(subscription.quality.stream_options?.audio_min_quality).toBe("30251");
+  expect(subscription.quality.stream_options?.codecs).toEqual(["avc"]);
+  expect(subscription.rules.whitelist[0].rules[1].value).toBe(false);
+  await page.getByLabel("查找订阅").fill(label);
+  const card = page
+    .locator("article.media-card")
+    .filter({ has: page.getByRole("heading", { name: label, exact: true }) });
+  await card.getByRole("button", { name: "暂停订阅", exact: true }).click();
+  await expect(card.getByRole("button", { name: "恢复订阅" })).toBeVisible();
+  await card.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByRole("button", { name: "下一步", exact: true }).click();
+  await expect(rows.nth(1).getByLabel("是否联合投稿")).toHaveValue("false");
+  await page.locator(".media-stream-options > summary").click();
+  await expect(page.getByLabel("最低音频质量")).toHaveValue("30251");
+  await expect(page.locator(".media-codec-list")).toContainText("AVC / H.264");
+  await page.screenshot({
+    path: info.outputPath("media-policy-http-" + info.project.name + ".png"),
+    fullPage: true,
+  });
+});
+
+test("actual policy HTTP downloads permitted AVC and Hi-Res streams through the shared link controls", async ({
+  page,
+  request,
+}, info) => {
+  // The fixture marks its 160x90 FFmpeg streams with synthetic QNs; this does not test real Bilibili resolution.
+  const bvid = "BV1" + randomUUID().replaceAll("-", "").slice(0, 9);
+  const cid = String(800000000 + Math.floor(Math.random() * 10000000));
+  await control(request, { members: [bvid], parts: { [bvid]: [cid] } });
+  await login(page);
+  await parse(page, bvid);
+  await page.locator(".media-stream-options > summary").click();
+  await page.getByLabel("最高视频质量").selectOption("80");
+  await page.getByLabel("最低音频质量").selectOption("30251");
+  await page
+    .getByRole("button", { name: "添加 AVC / H.264", exact: true })
+    .click();
+  const enqueued = page.waitForResponse((response) =>
+    response.url().endsWith("/api/web/media/enqueue"),
+  );
+  await page
+    .getByRole("button", { name: "创建下载任务（1 个分 P）", exact: true })
+    .click();
+  const response = await enqueued;
+  expect(response.ok()).toBe(true);
+  const job = (await response.json()).jobs[0];
+  expect(job.quality.stream_options.audio_min_quality).toBe("30251");
+  expect(job.quality.stream_options.codecs).toEqual(["avc"]);
+  await waitForState(page, finishedLabel, job.job_id);
+  const inspected = page.waitForResponse((response) =>
+    response.url().endsWith("/api/web/media/jobs/detail"),
+  );
+  await page
+    .locator('article.media-job[data-job-id="' + job.job_id + '"]')
+    .getByRole("button", { name: "查看任务详情", exact: true })
+    .click();
+  const detail = await (await inspected).json();
+  expect(detail.job.actual_quality).toBe("80");
+  expect(detail.job.quality.stream_options.codecs).toEqual(["avc"]);
+  await expect(
+    page.getByRole("complementary", { name: "任务详情" }),
+  ).toContainText(finishedLabel);
+  await page.screenshot({
+    path: info.outputPath(
+      "media-policy-download-http-" + info.project.name + ".png",
+    ),
     fullPage: true,
   });
 });

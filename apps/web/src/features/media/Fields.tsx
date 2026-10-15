@@ -1,5 +1,7 @@
 import type { Account, Format, Quality, Target } from "./types";
 import { word } from "./wording";
+import { StreamOptionsField } from "./StreamOptionsField";
+import { videoQualities } from "./streamPolicy";
 
 export function AccountField({
   accounts,
@@ -84,7 +86,7 @@ export function QualityField({
 }) {
   return (
     <fieldset className="media-quality" disabled={disabled}>
-      <legend>下载画质</legend>
+      <legend>下载策略</legend>
       <label>
         质量策略
         <select
@@ -99,18 +101,7 @@ export function QualityField({
           }
         >
           <option value="best">当前账号实际可用的最高画质</option>
-          {(
-            formats ?? [
-              { quality_id: "127", label: "8K" },
-              { quality_id: "120", label: "4K" },
-              { quality_id: "116", label: "1080P 60帧" },
-              { quality_id: "112", label: "1080P 高码率" },
-              { quality_id: "80", label: "1080P" },
-              { quality_id: "64", label: "720P" },
-              { quality_id: "32", label: "480P" },
-              { quality_id: "16", label: "360P" },
-            ]
-          ).map((format) => (
+          {(formats ?? [...videoQualities].reverse()).map((format) => (
             <option key={format.quality_id} value={format.quality_id}>
               {format.label}
             </option>
@@ -133,6 +124,7 @@ export function QualityField({
           : "订阅会在扫描时核对每条视频的实际可用画质。"}
         指定画质默认不降级。
       </p>
+      <StreamOptionsField value={value} onChange={onChange} />
     </fieldset>
   );
 }

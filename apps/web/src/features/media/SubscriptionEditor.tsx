@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { AccountField, QualityField, TargetField } from "./Fields";
 import { RuleEditor } from "./RuleEditor";
 import { RuleResults } from "./RuleResults";
+import { hasInvalidRules } from "./ruleFields";
+import { streamPolicyError, streamPolicySummary } from "./streamPolicy";
 import {
   destinationLabel,
   normalizeSubdirectory,
@@ -12,7 +14,7 @@ import {
   emptyRules,
   type DestinationMode,
   type Preview,
-  type RuleResult,
+  type RulePreview,
   type Rules,
   type Source,
   type Subscription,
@@ -88,7 +90,7 @@ export function SubscriptionEditor({
   const [step, setStep] = useState(0);
   const [sample, setSample] = useState("");
   const [testing, setTesting] = useState(false);
-  const [results, setResults] = useState<RuleResult[] | null>(null);
+  const [results, setResults] = useState<RulePreview | null>(null);
   const version = useRef(0);
   const heading = useRef<HTMLHeadingElement>(null);
   const controller = useRef(media);
@@ -120,33 +122,37 @@ export function SubscriptionEditor({
     });
     if (mine !== version.current) return;
     if (preview) {
-      const response = await media.request<{ results: RuleResult[] }>(
+      const response = await media.request<RulePreview>(
         "rule-preview",
         "rules/preview",
-        { preview_id: preview.preview_id, rules: value.rules },
+        {
+          preview_id: preview.preview_id,
+          rules: value.rules,
+          source: value.source,
+        },
       );
       if (mine !== version.current) return;
-      if (response) setResults(response.results);
+      if (response) setResults(response);
     }
     setTesting(false);
   };
   const ruleError =
-    results?.some((result) => result.requires_rule_attention) ?? false;
-  const emptyRule = [...value.rules.blacklist, ...value.rules.whitelist].some(
-    (group) =>
-      group.rules.some(
-        (rule) =>
-          !rule.value ||
-          Array.from(rule.value).length > (rule.op === "regex" ? 512 : 4096),
-      ),
-  );
+    results?.results.some((result) => result.requires_rule_attention) ?? false;
+  const emptyRule = hasInvalidRules(value.rules);
+  const qualityError = streamPolicyError(value.quality);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (step < 2) {
       setStep(step + 1);
       return;
     }
-    if (directoryError || pathPreview.status !== "ready" || accountMissing)
+    if (
+      directoryError ||
+      pathPreview.status !== "ready" ||
+      accountMissing ||
+      emptyRule ||
+      qualityError
+    )
       return;
     const result = await media.command<{ subscription: Subscription }>(
       "subscriptions/save",
@@ -242,12 +248,14 @@ export function SubscriptionEditor({
         </button>
       </div>
       <ol className="media-steps" aria-label="订阅创建步骤">
-        {["账号与来源", "规则与画质", "媒体库与预览"].map((title, index) => (
-          <li key={title} aria-current={step === index ? "step" : undefined}>
-            <span>{index + 1}</span>
-            {title}
-          </li>
-        ))}
+        {["账号与来源", "筛选与下载策略", "媒体库与目录"].map(
+          (title, index) => (
+            <li key={title} aria-current={step === index ? "step" : undefined}>
+              <span>{index + 1}</span>
+              {title}
+            </li>
+          ),
+        )}
       </ol>
       <form onSubmit={(event) => void submit(event)} className="media-stack">
         {step === 0 && (
@@ -372,10 +380,6 @@ export function SubscriptionEditor({
         )}
         {step === 1 && (
           <>
-            <QualityField
-              value={value.quality}
-              onChange={(quality) => patch({ quality })}
-            />
             <RuleEditor
               value={value.rules}
               onChange={(rules) => patch({ rules })}
@@ -409,13 +413,22 @@ export function SubscriptionEditor({
               </button>
             </div>
             {results && (
-              <RuleResults results={results} revision={value.rules.revision} />
+              <RuleResults
+                results={results.results}
+                context={results.context}
+                revision={value.rules.revision}
+              />
             )}
             {ruleError && (
               <p role="alert" className="media-warning">
                 规则存在执行错误。请修正后重新试算，不能以未命中继续自动下载。
               </p>
             )}
+            <QualityField
+              value={value.quality}
+              onChange={(quality) => patch({ quality })}
+              disabled={!!media.busy}
+            />
           </>
         )}
         {step === 2 && (
@@ -496,7 +509,8 @@ export function SubscriptionEditor({
               </p>
             )}
             <p className="muted">
-              相同视频、分 P 和画质会复用已有的有效下载，各目录分别整理。
+              已有下载满足视频、分
+              P、画质和高级策略时会优先复用，各目录分别整理；仅调整编码顺序不会重新编码。
             </p>
             <div className="media-summary">
               <h4>保存前预览</h4>
@@ -527,6 +541,9 @@ export function SubscriptionEditor({
                       ? "实际可用最高画质"
                       : `指定 ${qualityWord(value.quality.quality_id)}`}{" "}
                     · {value.quality.allow_fallback ? "允许降级" : "不降级"}
+                    <p className="muted">
+                      {streamPolicySummary(value.quality)}
+                    </p>
                   </dd>
                 </div>
                 <div>
@@ -579,6 +596,7 @@ export function SubscriptionEditor({
               ruleError ||
               accountMissing ||
               (step === 1 && emptyRule) ||
+              (step === 1 && !!qualityError) ||
               (step === 2 &&
                 (!!directoryError || pathPreview.status !== "ready"))
             }

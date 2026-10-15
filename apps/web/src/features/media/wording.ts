@@ -1,3 +1,5 @@
+import { videoQualities } from "./streamPolicy";
+
 export const storageReasonWords: Record<string, string> = {
   storage_scanning: "正在后台统计分类占用。",
   storage_subscription_unavailable: "订阅媒体目录暂无法完整统计。",
@@ -64,6 +66,7 @@ export const reasonWords: Record<string, string> = {
   input_too_large: "来源字段超出试算预算",
   matched: "命中",
   not_matched: "未命中",
+  field_missing: "字段值未知，取反也不会视为命中",
   not_evaluated: "未执行",
   error: "出错",
   missing_title: "需要补全视频标题",
@@ -111,6 +114,12 @@ export const errorWords: Record<string, string> = {
   preview_expired: "解析预览已过期，请重新解析链接。",
   preview_not_found: "解析预览已失效，请重新解析链接。",
   quality_unavailable: "所选画质目前不可取得，请调整画质或重新登录。",
+  quality_unverified:
+    "暂时无法核实成品是否满足音视频策略，请读取任务状态后重试。",
+  quality_mismatch: "实际音视频流不符合所选策略，请检查任务详情并调整策略。",
+  preview_account_conflict:
+    "试算账号与订阅登记账号不同，请使用相同的 B 站账号重新解析。",
+  source_budget_exceeded: "来源成员扫描超时或超出范围，请稍后重新试算。",
   target_unavailable: "目标媒体库暂不可用，请检查账号与媒体库。",
   revision_conflict: "记录已被其他操作更新，请重新读取后修改。",
   job_not_deletable:
@@ -161,17 +170,7 @@ export function word(state: string) {
 export function qualityWord(value: string | null) {
   if (!value) return "待下载确认";
   return (
-    (
-      {
-        "127": "8K",
-        "120": "4K",
-        "116": "1080P 60帧",
-        "112": "1080P 高码率",
-        "80": "1080P",
-        "64": "720P",
-        "32": "480P",
-        "16": "360P",
-      } as Record<string, string>
-    )[value] ?? value
+    videoQualities.find((quality) => quality.quality_id === value)?.label ??
+    value
   );
 }

@@ -2,13 +2,47 @@ export type Quality = {
   mode: "best" | "exact";
   quality_id: string | null;
   allow_fallback: boolean;
+  stream_options?: StreamOptions;
+};
+export type StreamOptions = {
+  video_min_quality: string | null;
+  video_max_quality: string | null;
+  audio_min_quality: string | null;
+  audio_max_quality: string | null;
+  codecs: ("av1" | "hevc" | "avc")[];
+  allow_hdr: boolean;
+  allow_dolby_vision: boolean;
+  allow_dolby_audio: boolean;
+  allow_hires: boolean;
 };
 export type Rule = {
   id: string;
-  field: "title" | "description" | "uploader_id" | "uploader_name" | "tags";
-  op: "equals" | "contains" | "prefix" | "suffix" | "regex";
-  value: string;
+  field:
+    | "title"
+    | "description"
+    | "uploader_id"
+    | "uploader_name"
+    | "tags"
+    | "published_at"
+    | "favorited_at"
+    | "part_count"
+    | "duration_seconds"
+    | "is_collaboration";
+  op:
+    | "equals"
+    | "not_equals"
+    | "contains"
+    | "prefix"
+    | "suffix"
+    | "regex"
+    | "gt"
+    | "gte"
+    | "lt"
+    | "lte"
+    | "between";
+  value: string | number | boolean | [string | number, string | number];
   case_sensitive: boolean;
+  negate?: boolean;
 };
 export type Group = { id: string; rules: Rule[] };
 export type Rules = {
@@ -189,6 +223,17 @@ export type RuleResult = {
   requires_rule_attention: boolean;
   trace: unknown;
 };
+export type RuleContext = {
+  source: Source | null;
+  member: boolean | null;
+  fields: Partial<
+    Record<
+      Rule["field"],
+      { available: boolean; value: string | number | boolean | null }
+    >
+  >;
+};
+export type RulePreview = { results: RuleResult[]; context?: RuleContext };
 export type JobDetail = {
   job: Job;
   events: { state: string; code: string; at: number }[];

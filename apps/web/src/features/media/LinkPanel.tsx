@@ -5,6 +5,7 @@ import { AccountField, QualityField, TargetField } from "./Fields";
 import { bestQuality, type Job, type Preview } from "./types";
 import type { MediaController } from "./useMediaController";
 import { timestamp } from "./wording";
+import { streamPolicyError } from "./streamPolicy";
 
 export function LinkPanel({
   media,
@@ -96,7 +97,14 @@ export function LinkPanel({
       )
     : [];
   const enqueue = async () => {
-    if (!preview || !target || !selected.length || expired) return;
+    if (
+      !preview ||
+      !target ||
+      !selected.length ||
+      expired ||
+      streamPolicyError(quality)
+    )
+      return;
     const result = await media.command<{ jobs: Job[] }>("enqueue", {
       preview_id: preview.preview_id,
       part_cids: selected,
@@ -215,7 +223,7 @@ export function LinkPanel({
                       ? preview.video.parts.map((part) => part.cid)
                       : [],
                   );
-                  setQuality(bestQuality());
+                  setQuality((current) => ({ ...current, ...bestQuality() }));
                 }}
               />
               全选分 P
@@ -231,7 +239,7 @@ export function LinkPanel({
                         ? [...current, part.cid]
                         : current.filter((id) => id !== part.cid),
                     );
-                    setQuality(bestQuality());
+                    setQuality((current) => ({ ...current, ...bestQuality() }));
                   }}
                 />
                 <span>
@@ -269,6 +277,7 @@ export function LinkPanel({
                 !target ||
                 !selected.length ||
                 expired ||
+                !!streamPolicyError(quality) ||
                 parts.some((part) => !part.formats.length)
               }
               onClick={() => void enqueue()}
