@@ -31,6 +31,7 @@ from .creator_cache import CreatorCache
 from .metadata_refresh import MetadataRefresh
 from .import_metadata import ImportMetadata
 from .music.runtime import Music
+from .overview import RuntimeSample
 
 JOB_FIELDS = (
     "media_kind",
@@ -174,6 +175,7 @@ class Media:
             self, Path(settings["database_path"]).with_suffix(".media-import-metadata")
         )
         self.storage_breakdown = StorageBreakdown(self, clock=clock)
+        self.runtime_sample = RuntimeSample(clock=clock)
 
     async def start(self):
         if self.config is None or self.started:
@@ -233,7 +235,22 @@ class Media:
             "storage": self.storage_breakdown.view(
                 await self.local(media_storage, dict(self.config["targets"]))
             ),
+            **await self.local(self.repo.dashboard_details),
+            "runtime": await self.local(self.runtime_sample.view),
         }
+        music_settings = await self.local(self.repo.get, "music_settings", "library")
+        overview["music_storage"] = await self.local(
+            media_storage,
+            {
+                "music": {
+                    "kind": "media_server",
+                    "label": "音乐存档",
+                    "directory": music_settings["directory"],
+                }
+            }
+            if music_settings and music_settings.get("directory")
+            else {},
+        )
         return {
             "configured": True,
             "capabilities": {

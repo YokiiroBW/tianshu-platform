@@ -13,7 +13,7 @@ test("storage ready breakdown displays conserved capacities and four proportiona
   page,
 }, info) => {
   await installMediaFixture(page);
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/7");
   const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(disk.locator(".overview-storage-capacity strong")).toHaveText(
     "1 TiB",
@@ -68,7 +68,7 @@ test("storage tiny positive allocation is a marked thin line and zeros draw no s
     other_bytes: 1024 ** 3 * 640 - 1,
   });
   await installMediaFixture(page, view);
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/7");
   const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   const tiny = disk.locator(
     '.overview-storage-segment[data-category="subscription"]',
@@ -102,7 +102,7 @@ test("storage scanning displays neutral used space and unknown categories", asyn
     refreshing: true,
   });
   await installMediaFixture(page, view);
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/7");
   const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(disk.getByLabel("四类容量").locator("dd")).toHaveText([
     "—",
@@ -140,7 +140,7 @@ test("storage partial mapping preserves known values without drawing false categ
     code: "storage_path_unmapped",
   });
   const state = await installMediaFixture(page, view);
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/7");
   const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(disk.getByLabel("四类容量").locator("dd")).toHaveText([
     "128 GiB",
@@ -173,7 +173,7 @@ test("storage retains dated ready snapshot during background refresh and labels 
     refreshing: true,
   });
   await installMediaFixture(page, view);
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/7");
   const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(legend(disk, "subscription")).toHaveText("128 GiB");
   await expect(disk.locator(".overview-storage-segment")).toHaveCount(4);
@@ -204,7 +204,7 @@ test("storage unavailable readings remain unknown in all four legends", async ({
     }),
   });
   await installMediaFixture(page, view);
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/7");
   const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(disk.getByLabel("四类容量").locator("dd")).toHaveText([
     "—",
@@ -225,7 +225,7 @@ test("storage inconsistent ready numbers stay visible without claiming exact pro
     other_bytes: 1024 ** 4,
   });
   await installMediaFixture(page, view);
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/7");
   const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(legend(disk, "other")).toHaveText("1 TiB");
   await expect(
@@ -253,7 +253,7 @@ test("storage zero capacity keeps four real zeros and draws no segments", async 
     }),
   });
   await installMediaFixture(page, view);
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/7");
   const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(disk.getByLabel("四类容量").locator("dd")).toHaveText([
     "0 B",
@@ -274,7 +274,7 @@ test("storage breakdown stays accessible in shared light and dark themes", async
   await installMediaFixture(page);
   for (const theme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
-    await page.goto("/#/subscriptions");
+    await page.goto("/#/subscriptions/7");
     const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
     await expect(disk.getByLabel("四类容量")).toBeVisible();
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);

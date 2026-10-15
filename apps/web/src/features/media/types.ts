@@ -183,6 +183,18 @@ export type MediaStorage = {
   state: "available" | "unavailable" | "not_configured";
   volumes: StorageVolume[];
 };
+export type RuntimeSample = {
+  sampled_at: number;
+  uptime_seconds: number;
+  cpu_percent: number | null;
+  memory_bytes: number | null;
+  receive_bytes_per_second: number | null;
+  send_bytes_per_second: number | null;
+};
+export type RecentJob = Pick<
+  Job,
+  "job_id" | "title" | "creator" | "state" | "updated_at" | "media_kind"
+>;
 export type MediaView = {
   configured: boolean;
   capabilities: {
@@ -197,6 +209,25 @@ export type MediaView = {
   jobs: Job[];
   // Older servers omit overview. Its absence is unknown, never a count from the recent list.
   overview?: {
+    runtime?: RuntimeSample;
+    database?: {
+      state: string;
+      engine: string;
+      schema_version: number;
+      query_ms: number;
+      size_bytes: number | null;
+    };
+    music?: {
+      total: number;
+      active: number;
+      paused: number;
+      attention: number;
+      auto_download: number;
+      members: number;
+      files: number;
+    };
+    recent?: { video: RecentJob[]; audio: RecentJob[] };
+    music_storage?: MediaStorage;
     jobs: {
       total: number;
       published: number;

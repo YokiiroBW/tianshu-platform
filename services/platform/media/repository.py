@@ -293,6 +293,66 @@ class Repository:
             },
         }
 
+    def dashboard_details(self):
+        """Bounded recent lists per medium and aggregate playlist facts, never credentials."""
+        started = time.monotonic()
+        with self.transaction() as db:
+            music = dict(
+                db.execute("""
+                SELECT count(*) AS total,
+                  coalesce(sum(json_extract(body,'$.state')='active'),0) AS active,
+                  coalesce(sum(json_extract(body,'$.state')='paused'),0) AS paused,
+                  coalesce(sum(coalesce(json_extract(body,'$.code'),'ready') NOT IN ('','ready')),0) AS attention,
+                  coalesce(sum(json_extract(body,'$.auto_download')=1),0) AS auto_download,
+                  coalesce(sum(json_extract(body,'$.member_count')),0) AS members
+                FROM documents WHERE kind='music_playlist'
+            """).fetchone()
+            )
+            music["files"] = db.execute("""
+                SELECT count(*) FROM documents f JOIN documents r ON r.id=f.id
+                AND r.kind='music_recording' WHERE f.kind='music_library_file'
+                AND json_extract(r.body,'$.merged_into') IS NULL
+                AND coalesce(json_extract(f.body,'$.missing'),0)=0
+            """).fetchone()[0]
+            recent = {}
+            for kind in ("video", "audio"):
+                rows = db.execute(
+                    "SELECT body FROM jobs WHERE " + VISIBLE + " AND "
+                    "coalesce(json_extract(body,'$.media_kind'),'video')=? "
+                    "ORDER BY updated DESC,id DESC LIMIT 5",
+                    (kind,),
+                ).fetchall()
+                recent[kind] = [
+                    {
+                        key: row.get(key)
+                        for key in (
+                            "job_id",
+                            "title",
+                            "creator",
+                            "state",
+                            "updated_at",
+                            "media_kind",
+                        )
+                    }
+                    for row in (json.loads(value[0]) for value in rows)
+                ]
+            schema = db.execute("PRAGMA user_version").fetchone()[0]
+        try:
+            size = self.database.stat().st_size
+        except OSError:
+            size = None
+        return {
+            "music": music,
+            "recent": recent,
+            "database": {
+                "state": "ready",
+                "engine": "SQLite",
+                "schema_version": schema,
+                "query_ms": round((time.monotonic() - started) * 1000, 1),
+                "size_bytes": size,
+            },
+        }
+
     def events(self, identity):
         with self.transaction() as db:
             return [

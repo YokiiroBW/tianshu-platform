@@ -57,7 +57,7 @@ test("subscription routes have one owner and reject malformed children", () => {
     redirectHash: "#/subscriptions/0",
   });
   for (const hash of [
-    "#/subscriptions/6",
+    "#/subscriptions/8",
     "#/subscriptions/-1",
     "#/subscriptions/1/extra",
     "#/resources/3",
@@ -98,6 +98,8 @@ test("subscription is a main navigation entry with one child navigation and lega
     "链接下载",
     "下载中心",
     "账号与媒体库",
+    "运行状态",
+    "存储空间",
   ]);
   const workspace = page
     .getByRole("navigation", { name: "工作区导航" })

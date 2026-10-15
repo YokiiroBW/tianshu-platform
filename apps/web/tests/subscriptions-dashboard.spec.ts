@@ -92,14 +92,11 @@ test("overview uses full counters independently of its hundred recent jobs", asy
   );
   await expect(page.locator(".overview-recent-row")).toHaveCount(5);
   await expect(
-    page.getByText("本次快照中的最近 5 项", { exact: true }),
-  ).toBeVisible();
-  await expect(
     page.getByRole("img", {
-      name: "订阅状态：运行中 1 个，已暂停 1 个，需要处理 2 个",
+      name: "视频订阅状态：运行中 1 个，已暂停 1 个，需要处理 2 个",
     }),
   ).toBeVisible();
-  await expect(page.locator(".overview-subscription-card")).toHaveCount(3);
+  await expect(page.locator(".overview-subscription-card")).toHaveCount(0);
   for (const link of await kpis(page).getByRole("link").all()) {
     if ((await link.getAttribute("href"))?.includes("media-filter")) continue;
     await expect(link).toHaveAttribute("href", "#/subscriptions/2");
@@ -119,6 +116,15 @@ test("overview preserves real zeros and concise empty sections", async ({
   view.subscriptions = [];
   view.accounts = [];
   view.targets = [];
+  view.overview!.music = {
+    total: 0,
+    active: 0,
+    paused: 0,
+    attention: 0,
+    auto_download: 0,
+    members: 0,
+    files: 0,
+  };
   view.overview!.jobs = {
     total: 0,
     published: 0,
@@ -136,23 +142,16 @@ test("overview preserves real zeros and concise empty sections", async ({
     "0",
   ]);
   await expect(page.getByText("还没有视频订阅", { exact: true })).toBeVisible();
+  await expect(page.getByText("还没有音乐订阅", { exact: true })).toBeVisible();
   await expect(
-    page.getByText("近期列表暂无任务", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("尚未登录 B 站，公开视频可直接解析。", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("尚未登记发布目标", { exact: true }),
+    page.getByText("近期暂无视频任务", { exact: true }),
   ).toBeVisible();
   await expect(page.locator(".overview-ring-segment")).toHaveCount(0);
-  await expect(page.locator(".overview-ring-center strong")).toHaveText("0");
-  await expect(
-    page.getByRole("link", { name: "添加视频订阅", exact: true }),
-  ).toHaveAttribute("href", "#/subscriptions/0");
-  await expect(
-    page.getByRole("link", { name: "解析视频链接", exact: true }),
-  ).toHaveAttribute("href", "#/subscriptions/1");
+  await expect(page.locator(".overview-ring-center strong")).toHaveText([
+    "0",
+    "0",
+  ]);
+  await expect(page.getByText("隔离 B 站账号", { exact: true })).toHaveCount(0);
 });
 
 test("older servers without overview never turn a recent snapshot into totals", async ({
@@ -197,7 +196,7 @@ test("media storage shows distinct disks and unknown readings without fabricated
     volumes: [],
   };
   const state = await installMediaFixture(page, view);
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/7");
   const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(
     disk.getByText("暂未取得磁盘容量", { exact: true }),
@@ -288,7 +287,7 @@ test("media storage distinguishes no target directory from actual zero free spac
   const view = fixtureView();
   view.overview!.storage = { state: "not_configured", volumes: [] };
   const state = await installMediaFixture(page, view);
-  await page.goto("/#/subscriptions");
+  await page.goto("/#/subscriptions/7");
   const disk = page.getByRole("region", { name: "存储磁盘", exact: true });
   await expect(disk).toContainText("尚未配置媒体存储目录");
   await expect(disk.getByRole("progressbar")).toHaveCount(0);
@@ -345,8 +344,9 @@ test("overview read failures show an error then retain an explicitly stale snaps
       exact: true,
     }),
   ).toHaveCount(0);
+  await page.goto("/#/subscriptions/6");
   await expect(
-    page.getByRole("region", { name: "引擎、账号与发布目标" }),
+    page.getByRole("region", { name: "下载引擎详情" }),
   ).toContainText("下载引擎暂不可用。");
 });
 
@@ -361,9 +361,10 @@ test("overview quick links reuse the existing media panels", async ({
     ["账号与媒体库", 3, "扫码登录"],
   ] as const) {
     await page.goto("/#/subscriptions");
-    await page
-      .getByRole("region", { name: "订阅快捷入口" })
-      .getByRole("link", { name: new RegExp(`^${name}`) })
+    await (
+      await mediaNavigation(page)
+    )
+      .getByRole("link", { name, exact: true })
       .click();
     await expect(page).toHaveURL(new RegExp(`#/subscriptions/${index}$`));
     await expect(
@@ -426,8 +427,8 @@ test("overview matches the shared light and dark design without a duplicate page
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     ).toBe(true);
-    const ring = await page.locator(".overview-ring svg").boundingBox();
-    expect(ring!.height).toBeGreaterThan(150);
+    const ring = await page.locator(".overview-ring svg").first().boundingBox();
+    expect(ring!.height).toBeGreaterThan(100);
     expect(Math.abs(ring!.width - ring!.height)).toBeLessThan(1);
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     await page.screenshot({
@@ -441,4 +442,78 @@ test("overview matches the shared light and dark design without a duplicate page
       path: info.outputPath("overview-mobile-navigation.png"),
       fullPage: true,
     });
+});
+
+test("three columns keep details on child pages and separate recent media across large queues", async ({
+  page,
+}, info) => {
+  const view = dashboard();
+  view.jobs = Array.from({ length: 100 }, (_, i) =>
+    fixtureJob({
+      job_id: `audio-${i}`,
+      media_kind: "audio",
+      title: `歌曲 ${i}`,
+    }),
+  );
+  view.overview!.recent = {
+    video: [fixtureJob({ title: "最新视频" })],
+    audio: [fixtureJob({ title: "最新音乐", media_kind: "audio" })],
+  };
+  view.overview!.music_storage = structuredClone(view.overview!.storage);
+  view.overview!.music_storage.volumes[0].directories = ["/media/Music"];
+  const state = await installMediaFixture(page, view);
+  await page.goto("/#/subscriptions");
+  await expect(
+    page
+      .getByRole("region", { name: "音乐订阅状态" })
+      .locator(".overview-ring-center strong"),
+  ).toHaveText("43");
+  await expect(page.locator(".overview-capacity-volume")).toHaveCount(1);
+  await expect(page.locator(".overview-storage-directories")).toHaveCount(0);
+  await expect(page.getByText("隔离 B 站账号", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".overview-subscription-card")).toHaveCount(0);
+  const recent = page.getByRole("region", { name: "最近下载", exact: true });
+  await expect(recent).toContainText("最新视频");
+  await recent.getByRole("button", { name: "音乐", exact: true }).click();
+  await expect(recent).toContainText("最新音乐");
+  await expect(recent).not.toContainText("最新视频");
+  await page.getByRole("button", { name: "读取状态", exact: true }).click();
+  await expect(
+    recent.getByRole("button", { name: "音乐", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  if (info.project.name === "desktop") {
+    const left = await page.locator(".overview-system-column").boundingBox();
+    const center = await page.locator(".overview-main").boundingBox();
+    const right = await page.locator(".overview-side").boundingBox();
+    expect(left!.x + left!.width).toBeLessThan(center!.x);
+    expect(center!.x + center!.width).toBeLessThan(right!.x);
+  }
+  for (const [url, label] of [
+    ["6", "运行状态详情"],
+    ["7", "存储空间详情"],
+  ]) {
+    await page.goto(`/#/subscriptions/${url}`);
+    await page.reload();
+    await expect(
+      page.getByRole("region", { name: label, exact: true }),
+    ).toBeVisible();
+    await page.getByRole("link", { name: "返回概览", exact: true }).click();
+    await expect(page).toHaveURL(/#\/subscriptions$/);
+    await page.goBack();
+    await expect(
+      page.getByRole("region", { name: label, exact: true }),
+    ).toBeVisible();
+  }
+  await expect(page.getByLabel("媒体目录")).toContainText(
+    ["/media/Bilibili", "/media/Music"].join(""),
+  );
+  await page.goto("/#/subscriptions");
+  await expect(
+    page.getByRole("region", { name: "网络连接延迟" }),
+  ).toBeVisible();
+  state.unavailable = true;
+  await page.getByRole("button", { name: "读取状态", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "网络连接延迟" }),
+  ).toContainText("连接中断");
 });

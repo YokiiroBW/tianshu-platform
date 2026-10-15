@@ -165,6 +165,30 @@ export const fixtureView = (): MediaView => ({
   subscriptions: [],
   jobs: [fixtureJob()],
   overview: {
+    music: {
+      total: 43,
+      active: 40,
+      paused: 3,
+      attention: 1,
+      auto_download: 40,
+      members: 2091,
+      files: 97,
+    },
+    runtime: {
+      sampled_at: 1792079887,
+      uptime_seconds: 7300,
+      cpu_percent: 2.3,
+      memory_bytes: 175 * 1024 ** 2,
+      receive_bytes_per_second: 4.2 * 1024 ** 2,
+      send_bytes_per_second: 8 * 1024,
+    },
+    database: {
+      state: "ready",
+      engine: "SQLite",
+      schema_version: 2,
+      query_ms: 1.2,
+      size_bytes: 12 * 1024 ** 2,
+    },
     jobs: {
       total: 1,
       published: 0,

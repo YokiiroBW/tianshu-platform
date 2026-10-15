@@ -13,6 +13,7 @@ export function useMediaController() {
   const [view, setView] = useState<MediaView | null>(null);
   const [loading, setLoading] = useState(true);
   const [stale, setStale] = useState(false);
+  const [responseMs, setResponseMs] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
@@ -96,6 +97,7 @@ export function useMediaController() {
   );
 
   const refresh = useCallback(async () => {
+    const startedAt = performance.now();
     const result = await request<MediaView>("view", "view", {});
     if (result) {
       if (
@@ -111,6 +113,7 @@ export function useMediaController() {
         return false;
       }
       setView(result);
+      setResponseMs(Math.round(performance.now() - startedAt));
       setStale(false);
       if (errorSlot.current === "view") {
         setError("");
@@ -191,6 +194,7 @@ export function useMediaController() {
     view,
     loading,
     stale,
+    responseMs,
     error,
     notice,
     busy,

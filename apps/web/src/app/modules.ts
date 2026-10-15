@@ -13,6 +13,8 @@ import {
   Download,
   UserRound,
   Music2,
+  Activity,
+  HardDrive,
 } from "lucide-react";
 
 // Local navigation metadata, never a cross-product API or a connection-health registry.
@@ -62,6 +64,8 @@ export const modules = [
       "账号与媒体库",
       "概览",
       "音乐订阅",
+      "运行状态",
+      "存储空间",
     ],
   },
   {
@@ -121,6 +125,8 @@ export const subscriptionNavigation = [
   { section: 1, icon: Link, href: "#/subscriptions/1" },
   { section: 2, icon: Download, href: "#/subscriptions/2" },
   { section: 3, icon: UserRound, href: "#/subscriptions/3" },
+  { section: 6, icon: Activity, href: "#/subscriptions/6" },
+  { section: 7, icon: HardDrive, href: "#/subscriptions/7" },
 ] as const;
 
 // Room remains a separate chunk. Future modules register one lazy page here.

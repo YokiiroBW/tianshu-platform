@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from services.platform.media.repository import Repository
 from services.platform.media.runtime import Media
+from services.platform.media.overview import RuntimeSample, read_counters
 from services.platform.media.storage import media_storage
 from services.platform.media.storage_breakdown import StorageBreakdown
 
@@ -186,6 +187,7 @@ class MediaOverviewViewTests(unittest.IsolatedAsyncioTestCase):
             "staging_directory": str(Path(self.directory.name) / "future-staging"),
         }
         self.media.repo = Repository(Path(self.directory.name) / "media.sqlite")
+        self.media.runtime_sample = RuntimeSample()
         self.media.engine = SimpleNamespace(
             status={"state": "ready", "version": "2026.08.19", "code": "ready"}
         )
@@ -216,6 +218,17 @@ class MediaOverviewViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view["accounts"], [])
         self.assertEqual(view["subscriptions"], [])
         self.assertFalse(Path(self.media.config["staging_directory"]).exists())
+
+    async def test_music_capacity_is_read_without_reclassifying_video_storage(self):
+        self.media.repo.put("music_settings", "library", {"directory": self.directory.name})
+        view = await self.media.view()
+        self.assertEqual(view["overview"]["music"]["total"], 0)
+        self.assertEqual(view["overview"]["database"]["state"], "ready")
+        self.assertIsNone(view["overview"]["runtime"]["receive_bytes_per_second"])
+        self.assertEqual(
+            view["overview"]["music_storage"]["volumes"][0]["storage_id"],
+            view["overview"]["storage"]["volumes"][0]["storage_id"],
+        )
 
     async def test_storage_failure_keeps_ledger_and_configured_view_available(self):
         with patch(
@@ -258,3 +271,107 @@ class MediaOverviewViewTests(unittest.IsolatedAsyncioTestCase):
             )
             release.set()
             await self.media.storage_breakdown.task
+
+
+class DashboardDetailsTests(unittest.TestCase):
+    def test_per_medium_recent_order_hidden_jobs_and_private_fields(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repo = Repository(Path(folder) / "media.sqlite")
+            with repo.transaction() as db:
+                for i in range(130):
+                    row = {
+                        "job_id": str(i),
+                        "media_kind": "video" if i < 7 else "audio",
+                        "state": "completed",
+                        "title": str(i),
+                        "updated_at": i,
+                        "secret": "never project this",
+                    }
+                    db.execute(
+                        "INSERT INTO jobs(id,dedupe,state,created,updated,body) VALUES(?,?,?,?,?,?)",
+                        (str(i), str(i), "completed", 130 - i, i, json.dumps(row)),
+                    )
+            repo.put("deleted_job", "129", {})
+            repo.put(
+                "music_playlist",
+                "one",
+                {
+                    "state": "active",
+                    "code": "ready",
+                    "auto_download": True,
+                    "member_count": 200,
+                    "entries": ["private"],
+                },
+            )
+            repo.put(
+                "music_playlist",
+                "two",
+                {"state": "paused", "code": "music_auth_required", "member_count": 4},
+            )
+            for identity, extra in (("ok", {}), ("merged", {"merged_into": "ok"}), ("missing", {})):
+                repo.put("music_recording", identity, extra)
+                repo.put("music_library_file", identity, {"missing": identity == "missing"})
+            result = repo.dashboard_details()
+            self.assertEqual(
+                [r["job_id"] for r in result["recent"]["video"]], ["6", "5", "4", "3", "2"]
+            )
+            self.assertEqual(
+                [r["job_id"] for r in result["recent"]["audio"]],
+                ["128", "127", "126", "125", "124"],
+            )
+            self.assertEqual(
+                result["music"],
+                {
+                    "total": 2,
+                    "active": 1,
+                    "paused": 1,
+                    "attention": 1,
+                    "auto_download": 1,
+                    "members": 204,
+                    "files": 1,
+                },
+            )
+            self.assertNotIn("private", json.dumps(result))
+            self.assertNotIn("secret", json.dumps(result))
+            self.assertEqual(repo.job_count(), 129)
+            self.assertEqual(result["database"]["schema_version"], 2)
+
+
+class RuntimeSampleTests(unittest.TestCase):
+    def test_unknown_first_sample_cached_rates_reset_and_missing_readings(self):
+        now = [10.0]
+        cpu = [1.0]
+        values = [(100, 1000, 2000)]
+        sample = RuntimeSample(
+            monotonic=lambda: now[0],
+            process_time=lambda: cpu[0],
+            counters=lambda: values[0],
+            clock=lambda: 1000,
+        )
+        first = sample.view()
+        self.assertIsNone(first["cpu_percent"])
+        self.assertIsNone(first["receive_bytes_per_second"])
+        now[0] = 10.5
+        self.assertEqual(first, sample.view())
+        now[0], cpu[0], values[0] = 12, 1.5, (120, 1200, 2400)
+        measured = sample.view()
+        self.assertEqual(measured["cpu_percent"], 25)
+        self.assertEqual(measured["receive_bytes_per_second"], 100)
+        self.assertEqual(measured["send_bytes_per_second"], 200)
+        now[0], values[0] = 14, (None, 1, 2)
+        self.assertIsNone(sample.view()["receive_bytes_per_second"])
+        now[0], values[0] = 16, (None, None, None)
+        self.assertIsNone(sample.view()["memory_bytes"])
+        self.assertIsNone(sample.view()["send_bytes_per_second"])
+
+    def test_linux_counters_exclude_loopback_and_unsupported_is_unknown(self):
+        with tempfile.TemporaryDirectory() as folder:
+            proc = Path(folder)
+            self.assertEqual(read_counters(proc), (None, None, None))
+            (proc / "self").mkdir()
+            (proc / "net").mkdir()
+            (proc / "self/status").write_text("VmRSS: 12 kB\n")
+            (proc / "net/dev").write_text(
+                "header\nlo: 10000 0 0 0 0 0 0 0 20000\neth0: 100 0 0 0 0 0 0 0 200\neth1: 20 0 0 0 0 0 0 0 30\n"
+            )
+            self.assertEqual(read_counters(proc), (12288, 120, 230))

@@ -5,6 +5,8 @@ import { AccountsPanel } from "./AccountsPanel";
 import { JobsPanel } from "./JobsPanel";
 import { LinkPanel } from "./LinkPanel";
 import { OverviewPanel } from "./OverviewPanel";
+import { RuntimePanel } from "./RuntimePanel";
+import { StorageDetails } from "./OverviewStorage";
 import { SubscriptionsPanel } from "./SubscriptionsPanel";
 import { useMediaController } from "./useMediaController";
 import { MusicPanel } from "./music/MusicPanel";
@@ -66,7 +68,19 @@ export default function MediaPage({ section = 4 }: { section?: number }) {
       ) : section === 5 ? (
         <MusicPanel media={media} />
       ) : section === 4 ? (
-        <OverviewPanel view={media.view} />
+        <OverviewPanel
+          view={media.view}
+          responseMs={media.responseMs}
+          stale={media.stale}
+        />
+      ) : section === 6 ? (
+        <RuntimePanel
+          view={media.view}
+          responseMs={media.responseMs}
+          stale={media.stale}
+        />
+      ) : section === 7 ? (
+        <StorageDetails view={media.view} />
       ) : section === 0 ? (
         <SubscriptionsPanel media={media} />
       ) : section === 1 ? (

@@ -1,6 +1,7 @@
 import { HardDrive } from "lucide-react";
 import type { MediaStorage, StorageBreakdown, StorageVolume } from "./types";
 import { storageReasonWords, timestamp } from "./wording";
+import { bytes } from "./overviewPresentation";
 
 const categories = [
   { key: "subscription_bytes", category: "subscription", label: "订阅占用" },
@@ -13,21 +14,6 @@ function amount(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? value
     : null;
-}
-
-function bytes(value: number) {
-  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-  const index =
-    value > 0
-      ? Math.max(
-          0,
-          Math.min(
-            Math.floor(Math.log(value) / Math.log(1024)),
-            units.length - 1,
-          ),
-        )
-      : 0;
-  return `${(value / 1024 ** index).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${units[index]}`;
 }
 
 function classificationNote(
