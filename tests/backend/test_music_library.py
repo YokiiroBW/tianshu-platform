@@ -14,6 +14,8 @@ import test_music_downloads as fixtures
 from services.platform.contracts import Fault
 from services.platform.media.music.catalog import same_recording
 from services.platform.media.music.quality import aggregate, requested_levels
+from services.platform.media.music.imports import metadata
+from unittest.mock import patch
 
 
 def encrypted_ncm(audio, title, artists, album, image):
@@ -304,3 +306,42 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(high["audio_state"], "failed")
         self.assertEqual(low["file"], high["file"])
         self.assertTrue(self.file(first).is_file())
+
+    async def test_unchanged_file_is_retried_after_access_failure(self):
+        path = self.library_root / "original.flac"
+        path.write_bytes(self.audio["flac"])
+        self.music.imports.enqueue()
+
+        async def unavailable(*args):
+            raise Fault("music_file_unreadable", 409)
+
+        with patch.object(self.music.imports, "index", unavailable):
+            await self.run_job()
+        self.assertEqual(self.music.imports.view()["failed"], 1)
+        self.music.imports.enqueue()
+        await self.run_job()
+        self.assertEqual(self.music.imports.view()["failed"], 0)
+        self.assertEqual(self.music.imports.view()["indexed"], 1)
+
+    def test_untagged_decoded_audio_uses_original_filename(self):
+        path = self.root / "decoded.part"
+        path.write_bytes(self.audio["flac"])
+        self.assertEqual(metadata(path, "fixture", "原始歌名")["title"], "原始歌名")
+
+    @unittest.skipIf(os.name == "nt", "POSIX read-permission recovery runs in Linux candidate")
+    async def test_real_file_permission_failure_is_retryable_without_audio_change(self):
+        path = self.library_root / "permission.flac"
+        path.write_bytes(self.audio["flac"])
+        before = path.stat().st_mtime_ns
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o600)
+        self.music.imports.enqueue()
+        await self.run_job()
+        observation = self.repo.list("music_file_observation")[0]
+        self.assertEqual(observation["code"], "music_file_unreadable")
+        path.chmod(0o600)
+        self.assertEqual(path.stat().st_mtime_ns, before)
+        self.music.imports.enqueue()
+        await self.run_job()
+        self.assertEqual(self.music.imports.view()["failed"], 0)
+        self.assertEqual(self.music.imports.view()["indexed"], 1)

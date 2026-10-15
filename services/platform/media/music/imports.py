@@ -46,7 +46,7 @@ def discover(directory):
         directories[:] = [
             name
             for name in directories
-            if name != "歌单"
+            if name not in {"歌单", "@eaDir", "#recycle", "attachments"}
             and (not name.startswith(".") or name == ".incoming")
             and not (Path(folder) / name).is_symlink()
             and not (Path(folder) / name).is_junction()
@@ -66,7 +66,7 @@ def discover(directory):
     return items
 
 
-def metadata(path, content_id):
+def metadata(path, content_id, fallback_title=None):
     audio = mutagen.File(path, easy=True)
     tags = audio.tags if audio is not None and audio.tags else {}
 
@@ -79,7 +79,7 @@ def metadata(path, content_id):
     return {
         "provider": "local",
         "source_id": content_id,
-        "title": next(iter(values("title")), path.stem),
+        "title": next(iter(values("title")), fallback_title or path.stem),
         "artists": values("artist"),
         "album": next(iter(values("album")), ""),
         "album_artists": values("albumartist"),
@@ -160,6 +160,11 @@ class Imports:
     async def index(self, root, item):
         local, storage = self.media.local, self.music.downloads.storage
         path = safe_path(root, item["path"])
+        try:
+            with path.open("rb") as stream:
+                stream.read(1)
+        except PermissionError:
+            raise Fault("music_file_unreadable", 409) from None
         before = await local(stamp, path)
         observed = await probe(path, None, self.media.config["engine"])
         track = await local(metadata, path, observed["content_id"])
@@ -218,7 +223,7 @@ class Imports:
             prior = await local(self.repo.get, "music_file_observation", key)
             if (
                 prior
-                and prior.get("state") != "missing"
+                and prior.get("state") not in {"missing", "failed"}
                 and all(prior.get(k) == item[k] for k in ("size", "mtime_ns"))
             ):
                 counts["unchanged"] += 1
@@ -334,7 +339,7 @@ class Imports:
             timeout=600,
         )
         observed = await probe(raw, None, self.media.config["engine"])
-        track = await local(metadata, raw, observed["content_id"])
+        track = await local(metadata, raw, observed["content_id"], source.stem)
         meta = data.get("metadata") or {}
         raw_artists = meta.get("artist") or []
         names = data.get("artists") or [

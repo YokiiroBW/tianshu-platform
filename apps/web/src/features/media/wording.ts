@@ -56,6 +56,8 @@ export const destinationModeWords = {
 export const reasonWords: Record<string, string> = {
   music_archived: "音乐及元数据已归档",
   music_indexed: "本地曲库已登记",
+  music_file_unreadable:
+    "天枢没有读取此文件的权限，原文件已保留；修复目录权限后重新扫描。",
   music_match_unavailable: "其他已连接平台尚未找到可确认的同版本歌曲。",
   music_match_ambiguous: "找到多个版本，暂未自动替换；可检查歌名、专辑和时长。",
   music_decode_failed:
