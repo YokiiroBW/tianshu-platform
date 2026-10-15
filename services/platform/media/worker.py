@@ -392,6 +392,12 @@ class Worker:
                     "cid": cid,
                     "file": str(path),
                     "extension": "mkv",
+                    "remux_source": {
+                        "kind": "ffmpeg_av_stream_copy",
+                        "sha256": downloaded["sha256"],
+                        "size_bytes": downloaded["size_bytes"],
+                        "extension": downloaded["extension"],
+                    },
                 }
                 await self.media.local(
                     self.media.repo.put, "media_input", input_id, {**ownership, "state": "prepared"}

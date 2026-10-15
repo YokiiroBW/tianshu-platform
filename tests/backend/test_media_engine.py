@@ -17,7 +17,7 @@ from yt_dlp.utils import get_compatible_ext
 
 from services.platform.contracts import Fault
 from services.platform.media.config import ENGINE_VERSION
-from services.platform.media.engine import Engine, executable_path, run_process
+from services.platform.media.engine import Engine, executable_path, file_record, run_process
 
 
 # Safe selected-format fields from the actual 2026.08.19 BV/P extraction.
@@ -253,6 +253,63 @@ class MediaEngineTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
             self.assertEqual(raised.exception.code, "quality_unavailable")
+
+    async def test_remux_targets_only_mov_text_subtitle_index_and_keeps_compatible_tracks(self):
+        source = self.directory / "source.mp4"
+        source.write_bytes(b"synthetic verified source")
+        record = file_record(source, "cache", "video", "123")
+        before = {
+            "streams": [
+                {"codec_type": "video", "codec_name": "h264"},
+                {"codec_type": "audio", "codec_name": "aac"},
+                *(
+                    {"codec_type": "subtitle", "codec_name": codec}
+                    for codec in ("subrip", "mov_text", "ass")
+                ),
+            ],
+            "format": {"duration": "2"},
+        }
+        after = copy.deepcopy(before)
+        after["streams"][3]["codec_name"] = "ass"
+        commands = []
+
+        async def process(command, **kwargs):
+            commands.append(command)
+            Path(command[-1]).write_bytes(b"synthetic remux result")
+            return 0, b"", b""
+
+        download = {
+            "file": str(source),
+            "actual_quality": "80",
+            "extension": "mp4",
+            "sha256": record["sha256"],
+            "size_bytes": record["size_bytes"],
+        }
+        output = self.directory / "private.mkv"
+        with (
+            patch.object(self.engine, "verify", AsyncMock(side_effect=[before, after])),
+            patch("services.platform.media.engine.run_process", process),
+        ):
+            result = await self.engine.remux(download, output, 2)
+        command = commands[0]
+        self.assertEqual(command[command.index("-c") + 1], "copy")
+        self.assertEqual(command[command.index("-c:s:1") + 1], "ass")
+        self.assertNotIn("-c:s:0", command)
+        self.assertNotIn("-c:s:2", command)
+        self.assertEqual(
+            result["remux_source"]["subtitle_conversions"],
+            [{"stream": 1, "from": "mov_text", "to": "ass"}],
+        )
+        after["streams"].pop()
+        with (
+            patch.object(self.engine, "verify", AsyncMock(side_effect=[before, after])),
+            patch("services.platform.media.engine.run_process", process),
+            self.assertRaises(Fault) as raised,
+        ):
+            await self.engine.remux(download, output, 2)
+        self.assertEqual(raised.exception.code, "quality_mismatch")
+        self.assertFalse(output.exists())
+        self.assertEqual(source.read_bytes(), b"synthetic verified source")
 
 
 class MediaEngineToolIntegrationTests(unittest.IsolatedAsyncioTestCase):

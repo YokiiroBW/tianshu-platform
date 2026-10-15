@@ -2,15 +2,18 @@
 
 import asyncio
 import hashlib
+import json
 import multiprocessing
+import re
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from services.platform.contracts import Fault
+from services.platform.contracts import Fault, digest
 from services.platform.media.destination import (
     head_key,
     snapshot,
@@ -432,6 +435,7 @@ class PolicyPublicationTests(unittest.IsolatedAsyncioTestCase):
             setattr(self, name, getattr(StandaloneMediaTests, name).__get__(self))
         await StandaloneMediaTests.asyncSetUp(self)
         self.mixed = False
+        self.mov_text = False
 
         async def synthetic_formats(*args, **kwargs):
             return [{"quality_id": "80", "label": "Synthetic 1080P"}]
@@ -449,28 +453,47 @@ class PolicyPublicationTests(unittest.IsolatedAsyncioTestCase):
             hires = self.mixed and part["cid"] == self.upstream.parts[job["bvid"]][-1]
             extension, audio_codec = ("mkv", "flac") if hires else ("mp4", "aac")
             path = directory / ("download." + extension)
-            code, _, _ = await run_process(
-                [
-                    self.media.engine.config["ffmpeg"],
-                    "-v",
-                    "error",
-                    "-f",
-                    "lavfi",
+            command = [
+                self.media.engine.config["ffmpeg"],
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=160x90:d=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+            ]
+            if self.mov_text and not hires:
+                subtitle = directory / "subtitle.srt"
+                subtitle.write_text(
+                    "1\n00:00:00,200 --> 00:00:00,800\n第一条字幕\n\n2\n00:00:01,100 --> 00:00:01,700\nSecond subtitle\n",
+                    encoding="utf-8",
+                )
+                command += [
                     "-i",
-                    "color=c=blue:s=160x90:d=2",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "sine=frequency=440:duration=2",
-                    "-c:v",
-                    "libx264",
-                    "-c:a",
-                    audio_codec,
-                    "-shortest",
-                    "-y",
-                    str(path),
+                    str(subtitle),
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
+                    "-map",
+                    "2:s:0",
+                    "-c:s",
+                    "mov_text",
                 ]
-            )
+            command += [
+                "-c:v",
+                "libx264",
+                "-c:a",
+                audio_codec,
+                "-shortest",
+                "-y",
+                str(path),
+            ]
+            code, _, _ = await run_process(command)
             self.assertEqual(code, 0)
             media = media_details(await self.media.engine.verify(path, 2))
             formats = [
@@ -542,20 +565,101 @@ class PolicyPublicationTests(unittest.IsolatedAsyncioTestCase):
     ):
         from media_runtime_fixtures import BV
         from services.platform.media.engine import file_record
+        from services.platform.media.engine import run_process
 
         self.upstream.parts[BV] = ["111111111", "222222222"]
         self.mixed = True
+        self.mov_text = True
         sources = {}
         remux = self.media.engine.remux
+
+        async def packets(path, stream):
+            code, raw, _ = await run_process(
+                [
+                    self.media.engine.config["ffprobe"],
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    stream,
+                    "-show_packets",
+                    "-show_data_hash",
+                    "sha256",
+                    "-show_entries",
+                    "packet=pts_time,data_hash",
+                    "-of",
+                    "json",
+                    str(path),
+                ]
+            )
+            self.assertEqual(code, 0)
+            values = json.loads(raw)["packets"]
+            return [value["data_hash"] for value in values], float(values[0]["pts_time"])
+
+        async def subtitles(path, video_start):
+            code, raw, _ = await run_process(
+                [
+                    self.media.engine.config["ffmpeg"],
+                    "-v",
+                    "error",
+                    "-i",
+                    str(path),
+                    "-map",
+                    "0:s:0",
+                    "-f",
+                    "srt",
+                    "-",
+                ]
+            )
+            self.assertEqual(code, 0)
+            text = raw.decode("utf-8").replace("\r\n", "\n")
+
+            def seconds(value):
+                hours, minutes, tail = value.split(":")
+                return (
+                    int(hours) * 3600
+                    + int(minutes) * 60
+                    + float(tail.replace(",", "."))
+                    - video_start
+                )
+
+            return [
+                (seconds(start), seconds(end), re.sub(r"<[^>]+>", "", content).strip())
+                for start, end, content in re.findall(
+                    r"(\d\d:\d\d:\d\d,\d\d\d) --> (\d\d:\d\d:\d\d,\d\d\d)\n(.*?)(?:\n\n|$)",
+                    text,
+                    re.S,
+                )
+            ]
 
         async def observe_remux(download, destination, expected_duration=None):
             source = Path(download["file"])
             before = source.read_bytes()
             sources["original"] = (source, before, source.stat().st_ino)
+            sources["cache"] = self.media.repo.download_source(BV, "111111111", "80")
+            video_before, video_start = await packets(source, "v:0")
+            audio_before, _ = await packets(source, "a:0")
+            text_before = await subtitles(source, video_start)
             converted = await remux(download, destination, expected_duration)
             self.assertEqual(source.read_bytes(), before)
             self.assertEqual(source.stat().st_ino, sources["original"][2])
             self.assertNotEqual(converted["sha256"], download["sha256"])
+            video_after, video_start = await packets(converted["file"], "v:0")
+            audio_after, _ = await packets(converted["file"], "a:0")
+            self.assertEqual(video_before, video_after)
+            self.assertEqual(audio_before, audio_after)
+            text_after = await subtitles(converted["file"], video_start)
+            self.assertEqual([value[2] for value in text_before], ["第一条字幕", "Second subtitle"])
+            self.assertEqual(
+                [value[2] for value in text_before], [value[2] for value in text_after]
+            )
+            for old, new in zip(text_before, text_after, strict=True):
+                self.assertAlmostEqual(old[0], new[0], delta=0.011)
+                self.assertAlmostEqual(old[1], new[1], delta=0.011)
+            self.assertEqual(converted["media"]["subtitle_tracks"][0]["codec_name"], "ass")
+            self.assertEqual(
+                converted["remux_source"]["subtitle_conversions"],
+                [{"stream": 0, "from": "mov_text", "to": "ass"}],
+            )
             self.assertEqual(
                 file_record(Path(converted["file"]), "cache", "video", "111111111")["sha256"],
                 converted["sha256"],
@@ -563,8 +667,55 @@ class PolicyPublicationTests(unittest.IsolatedAsyncioTestCase):
             return converted
 
         self.media.engine.remux = observe_remux
-        first = await self.run_job(self.media.repo.enqueue(await self.payload("mixed"))["job_id"])
+        with patch.object(
+            self.media.retention, "cleanup", side_effect=PermissionError("defer cleanup")
+        ):
+            first = await self.run_job(
+                self.media.repo.enqueue(await self.payload("mixed"))["job_id"]
+            )
         root = self.verify_output(first)
+        cache = sources["cache"]["download"]
+        cache_path = Path(cache["file"])
+        self.assertTrue(cache_path.exists())
+        converted = first["downloads"]["111111111"]
+        self.assertEqual(converted["remux_source"]["sha256"], cache["sha256"])
+        self.assertNotEqual(converted["sha256"], cache["sha256"])
+        ready = next(
+            record
+            for record in self.media.repo.job_inputs(first["job_id"])
+            if record["file"] == converted["file"]
+        )
+        self.assertEqual(ready["state"], "ready")
+        self.assertEqual(ready["remux_source"], converted["remux_source"])
+        # A recorded conversion never authorizes deleting changed current bytes.
+        cache_path.write_bytes(b"x" * cache["size_bytes"])
+        self.media.retention.finish(first)
+        self.assertEqual(
+            self.media.repo.get("media_retention", first["job_id"])["code"],
+            "download_cache_changed",
+        )
+        self.assertTrue(cache_path.exists())
+        cache_path.write_bytes(sources["original"][1])
+        # A prepared/incomplete conversion cannot stand in for a ready result.
+        identity = digest({"job": first["job_id"], "file": converted["file"]})
+        self.media.repo.put("media_input", identity, {**ready, "state": "prepared"})
+        self.media.retention.finish(first)
+        self.assertEqual(
+            self.media.repo.get("media_retention", first["job_id"])["code"], "source_changed"
+        )
+        self.assertTrue(cache_path.exists())
+        self.media.repo.put("media_input", identity, ready)
+        self.media.retention.finish(
+            {**first, "asset_receipt": {**first["asset_receipt"], "files": []}}
+        )
+        self.assertEqual(
+            self.media.repo.get("media_retention", first["job_id"])["code"],
+            "publication_unverified",
+        )
+        self.assertTrue(cache_path.exists())
+        self.media.retention.finish(first)
+        self.assertFalse(cache_path.exists())
+        self.assertIsNone(self.media.repo.download_source(BV, "111111111", "80"))
         manifest = self.media.publisher.organizer.operation(
             self.media.config["targets"]["test-server"], first["asset_receipt"]["operation_id"]
         )["manifest"]
@@ -593,3 +744,4 @@ class PolicyPublicationTests(unittest.IsolatedAsyncioTestCase):
         self.verify_output(second)
         self.assertEqual(self.media.engine.calls, ["111111111", "222222222"])
         self.assertEqual({d["extension"] for d in second["downloads"].values()}, {"mkv"})
+        self.assertTrue(all(d["source"]["kind"] == "library" for d in second["downloads"].values()))

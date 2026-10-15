@@ -261,6 +261,33 @@ class Retention:
                 parent = parent.parent
         return True
 
+    @staticmethod
+    def retained_content(job, cid, download, inputs):
+        """Receipt-verified output plus a durably recorded stream-copy parent."""
+        content = {(download["sha256"], download["size_bytes"])}
+        source = download.get("remux_source")
+        if source:
+            require(
+                source.get("kind") == "ffmpeg_av_stream_copy"
+                and source.get("extension") == "mp4"
+                and download["extension"] == "mkv"
+                and any(
+                    record.get("state") == "ready"
+                    and record.get("generation") == job["generation"]
+                    and record.get("cid") == cid
+                    and record.get("remux_source") == source
+                    and all(
+                        record.get(key) == download.get(key)
+                        for key in ("file", "sha256", "size_bytes", "actual_quality", "extension")
+                    )
+                    for record in inputs
+                ),
+                "source_changed",
+                409,
+            )
+            content.add((source["sha256"], source["size_bytes"]))
+        return content
+
     def cleanup(self, job):
         manifest = self.register(job)
         complete = True
@@ -276,21 +303,26 @@ class Retention:
             ):
                 # Recheck durable bytes immediately before reclaiming their source cache.
                 require(self.source(job["bvid"], cid, quality) is not None, "source_missing", 409)
+                content = self.retained_content(job, cid, download, inputs)
                 cache = self.media.repo.download_source(job["bvid"], cid, quality)
-                if cache and cache["download"].get("sha256") == download["sha256"]:
+                if (
+                    cache
+                    and (cache["download"].get("sha256"), cache["download"].get("size_bytes"))
+                    in content
+                ):
                     removed = self.remove_download(cache["download"], job, cid, quality)
                     complete = complete and removed
                     if removed and not Path(cache["download"]["file"]).exists():
                         self.media.repo.download_invalidate(
                             job["bvid"], cid, quality, cache["generation"]
                         )
-                # Reclaim archived variants only when this exact content has a
-                # verified publication. Other policies' bytes remain available.
+                # Only the exact receipted output or its proven stream-copy
+                # parent is reclaimed. Unrelated policy variants stay intact.
                 for variant in self.media.repo.download_variants(job["bvid"], cid):
                     if (
-                        variant.get("sha256") != download["sha256"]
-                        or variant.get("actual_quality") != quality
-                    ):
+                        variant.get("sha256"),
+                        variant.get("size_bytes"),
+                    ) not in content or variant.get("actual_quality") != quality:
                         continue
                     removed = self.remove_download(variant, job, cid, quality)
                     complete = complete and removed

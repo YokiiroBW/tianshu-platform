@@ -382,6 +382,23 @@ class Engine:
         )
         # The caller has durably reserved this exact private input path. Even
         # after a process crash its partial bytes are therefore reclaimable.
+        source = await asyncio.to_thread(file_record, download["file"], "cache", "video", None)
+        require(
+            (source["sha256"], source["size_bytes"])
+            == (download["sha256"], download["size_bytes"]),
+            "download_cache_changed",
+            409,
+        )
+        source_media = media_details(await self.verify(download["file"], expected_duration))
+        subtitles = source_media["subtitle_tracks"]
+        conversions = [
+            {"stream": index, "from": "mov_text", "to": "ass"}
+            for index, stream in enumerate(subtitles)
+            if stream.get("codec_name") == "mov_text"
+        ]
+        subtitle_options = [
+            argument for change in conversions for argument in (f"-c:s:{change['stream']}", "ass")
+        ]
         destination.unlink(missing_ok=True)
         complete = False
         try:
@@ -398,6 +415,7 @@ class Engine:
                     "0",
                     "-c",
                     "copy",
+                    *subtitle_options,
                     str(destination),
                 ],
                 timeout=self.config["timeout_seconds"],
@@ -427,7 +445,23 @@ class Engine:
                     if stream.get("codec_type") in {"video", "audio"}
                 ]
 
-            require(signatures(download["media"]) == signatures(details), "quality_mismatch", 503)
+            require(signatures(source_media) == signatures(details), "quality_mismatch", 503)
+            expected_subtitles = [
+                "ass" if stream.get("codec_name") == "mov_text" else stream.get("codec_name")
+                for stream in subtitles
+            ]
+            require(
+                [stream.get("codec_name") for stream in details["subtitle_tracks"]]
+                == expected_subtitles,
+                "quality_mismatch",
+                503,
+            )
+            require(
+                await asyncio.to_thread(file_record, download["file"], "cache", "video", None)
+                == source,
+                "download_cache_changed",
+                409,
+            )
             record = await asyncio.to_thread(file_record, destination, "cache", "video", None)
             complete = True
             return {
@@ -437,6 +471,13 @@ class Engine:
                 "media": details,
                 "sha256": record["sha256"],
                 "size_bytes": record["size_bytes"],
+                "remux_source": {
+                    "kind": "ffmpeg_av_stream_copy",
+                    "sha256": source["sha256"],
+                    "size_bytes": source["size_bytes"],
+                    "extension": download["extension"],
+                    "subtitle_conversions": conversions,
+                },
             }
         finally:
             if not complete:
