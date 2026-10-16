@@ -7,6 +7,7 @@ import uuid
 
 from ...contracts import digest, require
 from .quality import normalized_quality
+from .lyrics_storage import schedule as schedule_lyrics
 
 ENRICHED_FIELDS = (
     "title",
@@ -277,6 +278,7 @@ class Catalog:
             self.repo.put(
                 "music_content_index", artifact["content_id"], {"recording_id": identity}, db=db
             )
+        schedule_lyrics(self.repo, identity, artifact, db)
         if (
             old
             and old.get("managed")

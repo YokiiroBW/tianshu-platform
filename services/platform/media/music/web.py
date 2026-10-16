@@ -30,6 +30,7 @@ class WebMusic:
                 "imports": await local(music.imports.view),
                 "navidrome": await local(music.navidrome.state.view),
                 "maintenance": await local(music.maintenance.view),
+                "lyrics": await local(music.lyrics.view),
             }
         if operation == "maintenance/save":
             self.fields(

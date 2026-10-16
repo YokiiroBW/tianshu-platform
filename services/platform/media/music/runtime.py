@@ -14,6 +14,7 @@ from .navidrome import Navidrome
 from . import tools
 from .request_control import RequestControl, Deferred
 from .maintenance import Maintenance
+from .lyrics import Lyrics
 
 
 class Music:
@@ -29,6 +30,7 @@ class Music:
         self.imports = Imports(self)
         self.navidrome = Navidrome(self)
         self.maintenance = Maintenance(self)
+        self.lyrics = Lyrics(self)
 
     def client(self, provider):
         require(provider in PROVIDERS, "invalid_input", 400)
@@ -120,3 +122,4 @@ class Music:
         background.start("music_imports", self.imports.pump)
         background.start("music_navidrome", self.navidrome.pump)
         background.start("music_maintenance", self.maintenance.pump)
+        background.start("music_lyrics", self.lyrics.pump)

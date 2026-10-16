@@ -96,7 +96,7 @@ class AudioStorage:
         if (
             not artifact
             or artifact["directory"] != job["destination_directory"]
-            or await local(self.matches, artifact)
+            or await local(self.matches, artifact, include_lyrics=False)
         ):
             return
         if not artifact.get("content_id"):
@@ -123,7 +123,7 @@ class AudioStorage:
         except (Fault, OSError, StopIteration):
             return
 
-    def matches(self, artifact, allow_missing=False):
+    def matches(self, artifact, allow_missing=False, *, include_lyrics=True):
         root = Path(artifact["directory"])
         try:
             return bool(artifact["files"]) and all(
@@ -131,6 +131,7 @@ class AudioStorage:
                 or record(safe_path(root, item["path"]))
                 == {k: item[k] for k in ("sha256", "size_bytes")}
                 for item in artifact["files"]
+                if include_lyrics or item["kind"] != "lyrics"
             )
         except (OSError, Fault):
             return False
@@ -143,7 +144,7 @@ class AudioStorage:
         if (
             artifact
             and artifact["directory"] == job["destination_directory"]
-            and self.matches(artifact)
+            and self.matches(artifact, include_lyrics=False)
         ):
             return artifact
         return None

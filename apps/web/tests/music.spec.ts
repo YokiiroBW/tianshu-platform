@@ -5,6 +5,29 @@ import type {
   MusicPlaylist,
 } from "../src/features/media/music/types";
 
+test("music lyrics progress distinguishes synchronized translations and deferred retries", async ({
+  page,
+}) => {
+  const state = await musicFixture(page);
+  state.view.lyrics = {
+    tracked: 12,
+    synced: 8,
+    translated: 3,
+    counts: { queued: 2, retry_wait: 2 },
+  };
+  await page.goto("/#/subscriptions/5");
+  const panel = page.getByRole("region", { name: "歌词自动补齐" });
+  await expect(panel).toContainText("8 首滚动歌词");
+  await expect(panel).toContainText("3 首同步翻译");
+  await expect(panel).toContainText("2 首等待重试");
+  await expect(panel).toContainText("不重新下载音频");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+});
+
 async function musicFixture(page: Page, connected = true) {
   await installMediaFixture(page);
   const account = {
