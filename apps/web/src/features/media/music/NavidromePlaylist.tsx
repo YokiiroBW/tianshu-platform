@@ -13,6 +13,7 @@ const states: Record<string, string> = {
   deleting: "正在删除",
 };
 const missing: Record<string, string> = {
+  verification_pending: "暂时无法复核，保留上次确认的歌曲",
   not_downloaded: "尚未下载",
   local_file_missing: "本地文件缺失或已改变",
   waiting_index: "等待 Navidrome 入库",

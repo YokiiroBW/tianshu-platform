@@ -80,7 +80,44 @@ class MusicLibrary:
                 self.repo.put(
                     "music_request_control", account_id, {**control, "auth_required": False}, db=db
                 )
+            self.resume_account_jobs(account, db)
             return public_account(account)
+
+    def resume_account_jobs(self, account, db):
+        """Fresh credentials wake only jobs blocked on this account's login."""
+        requests = {
+            raw[0]
+            for raw in db.execute(
+                "SELECT id FROM documents WHERE kind='music_request' AND json_extract(body,'$.account_id')=?",
+                (account["account_id"],),
+            )
+        }
+        for raw in db.execute(
+            "SELECT body FROM jobs WHERE state IN ('auth_required','failed') AND json_extract(body,'$.media_kind')='audio'"
+        ).fetchall():
+            job = json.loads(raw[0])
+            if job.get("code") not in {
+                "music_auth_required",
+                "music_account_unavailable",
+                "account_changed",
+            }:
+                continue
+            if account["account_id"] not in {
+                job.get("account_id"),
+                job.get("acquisition_account_id"),
+            } and not requests.intersection(job.get("request_ids", [])):
+                continue
+            self.repo.update_job(
+                job["job_id"],
+                {
+                    "state": "queued",
+                    "stage": "queued",
+                    "code": "music_account_restored",
+                    "attempts": 0,
+                    "cancel_requested": False,
+                },
+                db=db,
+            )
 
     def account_state(self, account, state):
         current = self.repo.get("music_account", account["account_id"])

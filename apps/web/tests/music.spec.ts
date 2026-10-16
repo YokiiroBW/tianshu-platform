@@ -356,6 +356,9 @@ test("Navidrome connection creates and controls one shared-file playlist", async
   await expect(playlist).toContainText("3/4 首");
   await playlist.getByText("查看待补齐歌曲（1 首）", { exact: true }).click();
   await expect(playlist).toContainText("等待 Navidrome 入库");
+  state.view.navidrome!.playlists[0].problems[0].code = "verification_pending";
+  await page.getByRole("button", { name: "刷新音乐状态", exact: true }).click();
+  await expect(playlist).toContainText("暂时无法复核，保留上次确认的歌曲");
   expect(state.view.navidrome!.playlists[0].public).toBe(false);
   await playlist
     .getByRole("button", { name: "暂停 Navidrome 自动同步", exact: true })
@@ -408,6 +411,24 @@ test("music entry offers account login and audio archiving", async ({
   expect(
     state.calls.some((call) => call.operation.startsWith("accounts/qr")),
   ).toBe(false);
+});
+
+test("runtime details expose recovering download workers", async ({ page }) => {
+  const view = fixtureView();
+  view.background = [
+    { name: "worker_0", state: "running", restarts: 0, code: null },
+    {
+      name: "worker_1",
+      state: "recovering",
+      restarts: 1,
+      code: "media_background_restarting",
+    },
+  ];
+  await installMediaFixture(page, view);
+  await page.goto("/#/subscriptions/6");
+  const panel = page.getByRole("region", { name: "下载引擎详情" });
+  await expect(panel).toContainText("后台执行：1/2 项运行");
+  await expect(panel).toContainText("部分后台任务正在恢复");
 });
 
 test("music unified providers and library use automatic routing without priority settings", async ({

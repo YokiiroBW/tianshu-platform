@@ -19,7 +19,11 @@ def public_connection(value):
 
 def public_link(value):
     result = {k: v for k, v in value.items() if k not in {"members", "create_sent", "marker"}}
-    problems = [m for m in value.get("members", []) if not m.get("song_id")]
+    problems = [
+        m
+        for m in value.get("members", [])
+        if not m.get("song_id") or m["code"] == "verification_pending"
+    ]
     return {**result, "problems": problems[:20], "problem_count": len(problems)}
 
 

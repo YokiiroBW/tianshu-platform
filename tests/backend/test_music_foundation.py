@@ -12,6 +12,7 @@ from services.platform.media.accounts import Accounts
 from services.platform.media.music.runtime import Music
 from services.platform.media.repository import Repository
 from services.platform.media.scheduling import pump_scans
+from services.platform.media.background import Background
 
 
 class MusicFoundationTests(unittest.IsolatedAsyncioTestCase):
@@ -133,7 +134,8 @@ class MusicFoundationTests(unittest.IsolatedAsyncioTestCase):
             asyncio.Event(),
             asyncio.Event(),
         )
-        music_task = asyncio.create_task(self.music.pump())
+        background = Background()
+        self.music.start_background(background)
         await self.music.connector.waiting.wait()
         observed = asyncio.Event()
 
@@ -146,11 +148,11 @@ class MusicFoundationTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             await asyncio.wait_for(observed.wait(), 1)
-            self.assertFalse(music_task.done())
+            self.assertFalse(background.tasks["music_playlists"].done())
         finally:
-            music_task.cancel()
+            await background.close()
             video_task.cancel()
-            await asyncio.gather(music_task, video_task, return_exceptions=True)
+            await asyncio.gather(video_task, return_exceptions=True)
 
     async def test_pause_fences_scan_that_is_already_in_flight(self):
         playlist = self.subscribe()

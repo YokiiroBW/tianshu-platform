@@ -6,7 +6,7 @@ import uuid
 
 from ....contracts import Fault, digest, require
 from .client import Client, object_field
-from .matching import mapped_members
+from .matching import mapped_members, retain_verified
 from .exports import prepare_exports
 from .state import CONNECTION, LINK, State
 
@@ -172,8 +172,10 @@ class Navidrome:
             if member["code"] in {"ambiguous", "waiting_index"}
             for identity in member.get("candidate_ids", [])
         }
+        pending_paths = set()
         if unresolved:
-            paths = await self.client.paths.resolve(connection, unresolved)
+            resolved = await self.client.paths.resolve(connection, unresolved)
+            paths, pending_paths = resolved["paths"], resolved["pending"]
             songs = [
                 {**song, "real_path": paths[song["id"]]["path"]}
                 if song["id"] in paths and paths[song["id"]]["size"] == song.get("size")
@@ -181,6 +183,7 @@ class Navidrome:
                 for song in catalog["songs"]
             ]
             members = await local(mapped_members, tracks, songs, connection)
+        members = retain_verified(members, link.get("members", []), target, pending_paths)
         for member in members:
             member.pop("candidate_ids", None)
         wanted = [m["song_id"] for m in members if m.get("song_id")]
@@ -244,7 +247,7 @@ class Navidrome:
             }
         )
         changed = latest_digest != source_digest
-        missing = len(members) - len(wanted)
+        missing = sum(not m.get("song_id") or m["code"] == "verification_pending" for m in members)
         status = "queued" if changed else "partial" if missing else "synced"
         await patch(
             status=status,

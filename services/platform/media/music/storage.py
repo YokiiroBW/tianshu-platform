@@ -165,24 +165,7 @@ class AudioStorage:
             )
             self.repo.put("music_artifact", job["audio_key"], artifact, db=db)
             catalog = self.music.library.catalog
-            old = catalog.file(job["recording_id"], db=db)
             artifact = catalog.store_file(job["recording_id"], artifact, db)
-            if (
-                old
-                and old.get("managed")
-                and old["directory"] == artifact["directory"]
-                and old["files"] != artifact["files"]
-            ):
-                self.repo.put(
-                    "music_retired_file",
-                    digest({"recording": old["recording_id"], "files": old["files"]}),
-                    {
-                        **old,
-                        "replacement_recording_id": artifact["recording_id"],
-                        "state": "pending",
-                    },
-                    db=db,
-                )
             pending = json.loads(row["body"]).get("request_version", 0) != job.get(
                 "processing_request_version", 0
             )
@@ -485,9 +468,19 @@ class AudioStorage:
                 )
                 key = artifact.get("recording_id") if artifact else None
                 if key and key not in verified:
-                    verified[key] = (
-                        artifact and artifact["directory"] == str(root) and self.matches(artifact)
-                    )
+                    # Export references an already verified archive. It does not
+                    # publish/copy audio and must not rehash an entire playlist.
+                    # Content checks remain in import, acquisition and reuse.
+                    try:
+                        path = safe_path(root, audio["path"]) if audio else None
+                        verified[key] = bool(
+                            artifact["directory"] == str(root)
+                            and path
+                            and path.is_file()
+                            and path.stat().st_size == audio["size_bytes"]
+                        )
+                    except OSError:
+                        verified[key] = False
                 valid = verified.get(key)
                 relative = "../../" + audio["path"] if valid and audio else None
                 exported.append({**track, "file": relative})
@@ -519,10 +512,13 @@ class AudioStorage:
             if navidrome and navidrome["enabled"]:
                 ignore_export(directory)
             for name, content in payloads.items():
+                target = safe_path(directory, name)
+                if target.is_file() and target.read_bytes() == content.encode("utf-8"):
+                    continue
                 temporary = safe_path(control, "music-export-" + digest(identity)[:20] + ".tmp")
                 temporary.write_text(content, encoding="utf-8", newline="\n")
                 sync_file(temporary)
-                temporary.replace(safe_path(directory, name))
+                temporary.replace(target)
             sync_directory(directory)
             return {
                 "directory": str(directory),

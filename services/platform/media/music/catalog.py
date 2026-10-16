@@ -262,6 +262,7 @@ class Catalog:
 
     def store_file(self, identity, artifact, db):
         identity = self.resolve(identity, db)
+        old = self.file(identity, db=db)
         result = self.repo.put(
             "music_library_file",
             identity,
@@ -275,6 +276,18 @@ class Catalog:
         if artifact.get("content_id"):
             self.repo.put(
                 "music_content_index", artifact["content_id"], {"recording_id": identity}, db=db
+            )
+        if (
+            old
+            and old.get("managed")
+            and old["directory"] == artifact["directory"]
+            and old["files"] != artifact["files"]
+        ):
+            self.repo.put(
+                "music_retired_file",
+                digest({"recording": old["recording_id"], "files": old["files"]}),
+                {**old, "replacement_recording_id": identity, "state": "pending"},
+                db=db,
             )
         return result
 
@@ -291,6 +304,15 @@ class Catalog:
             )
             row = self.repo._document(db, "music_recording", source)
             self.repo.put("music_recording", source, {**row, "merged_into": target}, db=db)
+            # Queue ownership must use the same canonical identity as files.
+            # Preserve leases/generations, so an in-flight owner can still settle
+            # its original job while another worker sees the merged identity.
+            db.execute(
+                "UPDATE jobs SET body=json_set(body,'$.recording_id',?) "
+                "WHERE json_extract(body,'$.media_kind')='audio' "
+                "AND json_extract(body,'$.recording_id')=?",
+                (target, source),
+            )
         return target
 
     def source(self, key, *, db=None):
@@ -354,9 +376,23 @@ class Catalog:
     def bootstrap(self):
         """Register old source/artifact documents without rewriting old songs or jobs."""
         with self.repo.transaction() as db:
-            if (self.repo._document(db, "music_catalog", "legacy_registered") or {}).get(
+            version = (self.repo._document(db, "music_catalog", "legacy_registered") or {}).get(
                 "version", 0
-            ) >= 2:
+            )
+            if version >= 3:
+                return
+            if version == 2:
+                for raw in db.execute(
+                    "SELECT id,body FROM jobs WHERE json_extract(body,'$.media_kind')='audio' AND json_extract(body,'$.recording_id') IS NOT NULL"
+                ).fetchall():
+                    job = json.loads(raw["body"])
+                    resolved = self.resolve(job["recording_id"], db)
+                    if resolved != job["recording_id"]:
+                        db.execute(
+                            "UPDATE jobs SET body=json_set(body,'$.recording_id',?) WHERE id=?",
+                            (resolved, raw["id"]),
+                        )
+                self.repo.put("music_catalog", "legacy_registered", {"version": 3}, db=db)
                 return
             rows = db.execute("SELECT id,body FROM documents WHERE kind='music_track'").fetchall()
             for row in rows:
@@ -397,3 +433,4 @@ class Catalog:
                             db,
                         )
             self.repo.put("music_catalog", "legacy_registered", {"version": 2}, db=db)
+        self.bootstrap()

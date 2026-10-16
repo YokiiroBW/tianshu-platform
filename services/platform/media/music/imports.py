@@ -13,7 +13,7 @@ from ..video_storage import copy_file
 from .audio import probe, record
 from .decoding import ENCRYPTED, PLAIN, encrypted_format
 from .downloads import settled
-from .quality import verify_quality
+from .quality import verify_quality, quality_rank
 
 
 def stamp(path):
@@ -167,8 +167,15 @@ class Imports:
                         return duplicate["recording_id"]
                     previous = self.catalog.file(binding["recording_id"], db=db)
                 # Leave existing originals intact; a valid canonical file already serves all playlists.
-                if previous and storage.matches(previous):
-                    if not previous.get("content_id"):
+                if (
+                    previous
+                    and storage.matches(previous)
+                    and quality_rank(previous["quality"]) >= quality_rank(quality)
+                ):
+                    if not previous.get("content_id") and any(
+                        f["kind"] == "audio" and f["path"] == item["path"]
+                        for f in previous["files"]
+                    ):
                         with self.repo.transaction() as db:
                             self.catalog.store_file(
                                 previous["recording_id"],

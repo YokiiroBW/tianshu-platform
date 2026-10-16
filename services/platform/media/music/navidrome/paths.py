@@ -20,6 +20,7 @@ class NativePaths:
         self.token_until = 0
         self.retry_at = 0
         self.cache = {}
+        self.cursor = ""
 
     async def close(self):
         if self.session is not None:
@@ -64,17 +65,23 @@ class NativePaths:
         if scope != self.scope:
             self.scope, self.token, self.retry_at = scope, None, 0
             self.cache.clear()
+            self.cursor = ""
         now = time.monotonic()
         self.cache = {key: value for key, value in self.cache.items() if value[0] > now}
-        result = {}
-        for identity in sorted(set(identities))[:100]:
-            if identity in self.cache:
-                value = self.cache[identity][1]
-                if value:
-                    result[identity] = value
-                continue
+        identities = sorted(set(identities))
+        result = {
+            identity: self.cache[identity][1]
+            for identity in identities
+            if identity in self.cache and self.cache[identity][1]
+        }
+        missing = [identity for identity in identities if identity not in self.cache]
+        # Cached results cost no requests. Rotate remaining work as well, so a
+        # playlist larger than the cache cannot starve its later candidates.
+        missing = [i for i in missing if i > self.cursor] + [i for i in missing if i <= self.cursor]
+        for identity in missing[:100]:
             if now < self.retry_at:
-                continue
+                break
+            self.cursor = identity
             try:
                 if not self.token or now >= self.token_until:
                     login = await self.request(
@@ -109,7 +116,7 @@ class NativePaths:
                 break
         if len(self.cache) > 1000:
             self.cache = dict(list(self.cache.items())[-1000:])
-        return result
+        return {"paths": result, "pending": set(identities) - self.cache.keys() - result.keys()}
 
 
 def native_path(song, identity, folder):

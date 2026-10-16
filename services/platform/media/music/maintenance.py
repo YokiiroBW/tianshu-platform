@@ -104,16 +104,20 @@ class Maintenance:
             return job
         now = self.repo.clock()
         deferred = job["audio_routing"].get("deferred", [])
-        incomplete = bool(deferred) or any(
-            code
-            in {
-                "music_upstream_unavailable",
-                "music_download_unavailable",
-                "music_upstream_rejected",
-                "music_rate_limited",
-            }
-            for provider in job["audio_routing"].get("providers", [])
-            for code in provider.get("failures", [])
+        incomplete = (
+            bool(deferred)
+            or job["audio_routing"].get("complete") is False
+            or any(
+                code
+                in {
+                    "music_upstream_unavailable",
+                    "music_download_unavailable",
+                    "music_upstream_rejected",
+                    "music_rate_limited",
+                }
+                for provider in job["audio_routing"].get("providers", [])
+                for code in provider.get("failures", [])
+            )
         )
         current = db.execute(
             "SELECT state,generation FROM jobs WHERE id=?", (job["job_id"],)

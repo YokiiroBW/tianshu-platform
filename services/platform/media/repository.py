@@ -68,6 +68,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,dedupe TEXT UNIQUE NOT NULL,state TEXT NOT NULL,created REAL NOT NULL,updated REAL NOT NULL,generation INTEGER NOT NULL DEFAULT 0,owner TEXT,lease REAL NOT NULL DEFAULT 0,body TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(state,lease,created);
                 CREATE INDEX IF NOT EXISTS jobs_order ON jobs(CAST(created AS INTEGER) DESC,id DESC);
+                CREATE INDEX IF NOT EXISTS jobs_audio_recording ON jobs(json_extract(body,'$.recording_id'),json_extract(body,'$.destination_directory'),created,id) WHERE json_extract(body,'$.media_kind')='audio';
                 CREATE TABLE IF NOT EXISTS events(job_id TEXT NOT NULL,state TEXT NOT NULL,code TEXT NOT NULL,at REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS episodes(bvid TEXT NOT NULL,cid TEXT NOT NULL,number INTEGER NOT NULL,PRIMARY KEY(bvid,cid),UNIQUE(bvid,number));
@@ -367,8 +368,8 @@ class Repository:
         now = self.clock()
         with self.transaction() as db:
             rows = db.execute(
-                "SELECT id,state,generation,body FROM jobs WHERE (state='queued' OR (state='retry_wait' AND lease<?) OR (owner IS NOT NULL AND lease<?)) AND state NOT IN ('completed','published','cancelled','failed','unknown','auth_required','waiting_metadata') ORDER BY CASE WHEN json_extract(body,'$.quality_review')=1 AND coalesce(json_extract(body,'$.quality_catchup'),0)=0 THEN 1 ELSE 0 END,created LIMIT 500",
-                (now, now),
+                "SELECT id,state,generation,body FROM jobs WHERE (state='queued' OR (state='retry_wait' AND lease<?) OR (owner IS NOT NULL AND lease<?)) AND state NOT IN ('completed','published','cancelled','failed','unknown','auth_required','waiting_metadata') ORDER BY (owner IS NOT NULL AND lease<?) DESC, CASE WHEN json_extract(body,'$.quality_review')=1 AND coalesce(json_extract(body,'$.quality_catchup'),0)=0 THEN 1 ELSE 0 END,created LIMIT 500",
+                (now, now, now),
             ).fetchall()
             occupied = [
                 json.loads(value[0])

@@ -1,8 +1,28 @@
 """Playlist requests share one recording job per library root, across accounts and policies."""
 
+import json
+
 from ...contracts import digest, require
-from .quality import policy
-from .catalog import Catalog
+from ..repository import VISIBLE
+from .quality import policy, minimum_level, quality_rank
+from .catalog import Catalog, lookup_key, album_identity
+
+
+def acquisition_request(request):
+    """Only identity/quality changes require another all-channel comparison."""
+    track = request["track"]
+    return {
+        "provider": request["provider"],
+        "source_id": request["source_id"],
+        "quality": request["quality"],
+        "identity": lookup_key(track),
+        "album": album_identity(track),
+        "duration_ms": track.get("duration_ms"),
+        "isrc": track.get("isrc"),
+        "disc": track.get("disc"),
+        "track_number": track.get("track_number"),
+        "provider_data": track.get("provider_data"),
+    }
 
 
 def enqueue_playlist(library, identity, db, *, manual=False):
@@ -48,37 +68,59 @@ def enqueue_playlist(library, identity, db, *, manual=False):
         )
         if changed:
             repo.put("music_request", request_id, request, db=db)
-        job = repo.enqueue(
-            {
-                "media_kind": "audio",
-                "provider": account["provider"],
-                "recording_id": recording_id,
-                "source_key": binding["source_key"],
-                "request_ids": [request_id],
-                "source_id": source,
-                "audio_key": key,
-                "title": track["title"],
-                "creator": ", ".join(track["artists"]),
-                "account_id": account["account_id"],
-                "account_revision": account["revision"],
-                "subscription_id": identity,
-                "track": track,
-                "quality": quality,
-                "target_id": "music-library",
-                "destination_directory": settings["directory"],
-                "audio_layout": settings["layout"],
-            },
-            db=db,
+        needs_check = previous_request is None or acquisition_request(
+            previous_request
+        ) != acquisition_request(request)
+        existing = db.execute(
+            "SELECT body FROM jobs WHERE "
+            + VISIBLE
+            + " AND json_extract(body,'$.media_kind')='audio' "
+            "AND json_extract(body,'$.recording_id')=? "
+            "AND json_extract(body,'$.destination_directory')=? ORDER BY created,id LIMIT 1",
+            (recording_id, settings["directory"]),
+        ).fetchone()
+        job = (
+            json.loads(existing[0])
+            if existing
+            else repo.enqueue(
+                {
+                    "media_kind": "audio",
+                    "provider": account["provider"],
+                    "recording_id": recording_id,
+                    "source_key": binding["source_key"],
+                    "request_ids": [request_id],
+                    "source_id": source,
+                    "audio_key": key,
+                    "title": track["title"],
+                    "creator": ", ".join(track["artists"]),
+                    "account_id": account["account_id"],
+                    "account_revision": account["revision"],
+                    "subscription_id": identity,
+                    "track": track,
+                    "quality": quality,
+                    "target_id": "music-library",
+                    "destination_directory": settings["directory"],
+                    "audio_layout": settings["layout"],
+                },
+                db=db,
+            )
         )
+        if previous_request is None and existing and job["state"] == "completed":
+            artifact = catalog.file(recording_id, db=db)
+            if artifact and quality_rank(artifact["quality"])[0] >= minimum_level(quality):
+                needs_check = False
         request_ids = list(dict.fromkeys([*job.get("request_ids", []), request_id]))
         updates = {}
-        if request_ids != job.get("request_ids") or changed:
-            updates = {
-                "request_ids": request_ids,
-                "request_version": job.get("request_version", 0) + 1,
-                "quality_review": False,
-            }
-        if (manual or changed) and job["state"] in {
+        if request_ids != job.get("request_ids"):
+            updates["request_ids"] = request_ids
+        if needs_check:
+            updates.update(
+                {
+                    "request_version": job.get("request_version", 0) + 1,
+                    "quality_review": False,
+                }
+            )
+        if (manual or needs_check) and job["state"] in {
             "failed",
             "auth_required",
             "cancelled",
@@ -97,6 +139,7 @@ def enqueue_playlist(library, identity, db, *, manual=False):
                     "account_revision": account["revision"],
                     "provider": account["provider"],
                     "source_id": source,
+                    "source_key": binding["source_key"],
                     "track": track,
                     "audio_layout": settings["layout"],
                     "title": track["title"],

@@ -19,6 +19,7 @@ class Selection:
         downloads, local = self.downloads, self.media.local
         report = {"policy": "highest_available", "providers": [], "candidates": []}
         failure, attempts = None, []
+        failed_channels = []
         best = (
             existing
             if existing and quality_rank(existing["quality"])[0] >= minimum_level(job["quality"])
@@ -155,10 +156,31 @@ class Selection:
                     }
                 )
                 evidence.update(decision="failed", code=error.code)
+                report["complete"] = False
+                failed_channels.append((candidate["account"], error.code))
                 await update(audio_attempts=attempts)
         if best is None:
             await update(audio_routing=report)
             raise deferred_error(report) or failure or Fault("music_download_forbidden", 409)
+        # A lower successful source is useful now, but a failed better candidate
+        # still needs follow-up. With no usable archive, retain the worker's
+        # ordinary bounded failure retries instead of making them endless waits.
+        for account, code in failed_channels:
+            delay = (
+                300
+                if code
+                in {
+                    "music_download_unavailable",
+                    "music_download_incomplete",
+                    "music_upstream_unavailable",
+                    "music_upstream_rejected",
+                    "music_rate_limited",
+                }
+                else 86400
+            )
+            defer_channel(
+                report, account, Deferred(self.media.repo.clock() + delay, code), "download"
+            )
         report["selected"] = {
             "provider": best.get("download_provider", "local"),
             "source_id": best.get("download_source_id"),

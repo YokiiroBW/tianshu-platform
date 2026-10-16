@@ -14,6 +14,30 @@ from services.platform.media.worker import Worker
 
 
 class MediaBackgroundTests(unittest.IsolatedAsyncioTestCase):
+    def test_lost_lease_recovers_before_an_older_unstarted_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Repository(Path(directory) / "ledger.sqlite")
+            jobs = [
+                repo.enqueue(
+                    {
+                        "media_kind": "audio",
+                        "audio_key": key,
+                        "provider": "local",
+                        "source_id": key,
+                        "destination_directory": directory,
+                    }
+                )
+                for key in ("older", "interrupted")
+            ]
+            with repo.transaction() as db:
+                db.execute(
+                    "UPDATE jobs SET owner='lost-worker',lease=0,state='publishing' WHERE id=?",
+                    (jobs[1]["job_id"],),
+                )
+            claimed = repo.claim("recovered-worker")
+            self.assertEqual(claimed["job_id"], jobs[1]["job_id"])
+            self.assertEqual(repo.job(jobs[0]["job_id"])["state"], "queued")
+
     def test_music_ellipsis_is_valid_but_parent_segments_remain_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             track = {
