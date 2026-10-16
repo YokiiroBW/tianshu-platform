@@ -8,8 +8,14 @@ import { SkillsPanel } from "./skills/SkillsPanel";
 import { WeatherPanel } from "./WeatherPanel";
 import "./settings.css";
 import { RetrievalSettings } from "../memory/RetrievalSettings";
+import { NodeConnections } from "../infrastructure/NodeConnections";
 
 const setupLinks = [
+  {
+    href: "#/settings/11",
+    title: "节点连接",
+    detail: "从已登记目录选择 NAS、Linux 与 OpenWrt 节点，查看后台采集状态。",
+  },
   {
     href: "#/settings/10",
     title: "记忆检索",
@@ -84,6 +90,7 @@ function ConnectionsOverview() {
 }
 
 export default function SettingsPage({ section }: { section: number }) {
+  if (section === 11) return <NodeConnections />;
   if (section === 10) return <RetrievalSettings />;
   if (section === 0) return <TasksPanel />;
   if (section === 1) return <ConnectionsOverview />;

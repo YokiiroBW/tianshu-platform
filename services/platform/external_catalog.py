@@ -9,6 +9,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import sqlite3
 import uuid
 from contextlib import closing, contextmanager
@@ -30,7 +31,8 @@ def supported_kind(kind):
     } or (
         isinstance(kind, str)
         and (
-            (kind.startswith("images:") and 1 <= len(kind[7:]) <= 128)
+            bool(re.fullmatch(r"infrastructure:[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}", kind))
+            or (kind.startswith("images:") and 1 <= len(kind[7:]) <= 128)
             or (kind.startswith("skills:") and 1 <= len(kind[7:]) <= 128)
         )
     )

@@ -4,6 +4,17 @@ import { modules, resolveRoute } from "../src/app/modules";
 
 // The static shell suite explicitly supplies a synthetic session; no production preview bypass.
 test.beforeEach(async ({ page }) => {
+  await page.route("**/api/web/infrastructure/view", (route) =>
+    route.fulfill({
+      json: {
+        configured: false,
+        revision: 0,
+        catalog: null,
+        nodes: [],
+        max_nodes: 64,
+      },
+    }),
+  );
   await page.route("**/api/web/session", (route) =>
     route.fulfill({
       json: {
@@ -119,7 +130,7 @@ test("connection summary distinguishes configured, failed and absent capabilitie
   await expect(page.locator(".connection-list")).toContainText("未配置");
   await page.goto("/#/home/1");
   await expect(
-    page.getByText("容器清单与实时健康观测的浏览器接口尚未提供。", {
+    page.getByText("节点观测尚未配置", {
       exact: false,
     }),
   ).toBeVisible();

@@ -20,6 +20,8 @@ from .auth import secret
 from .contracts import Fault, digest, loads, require
 from .diagnostics import AUTH_SUCCEEDED
 from .home import Home
+from .infrastructure.web import HTTP_PREFIX as INFRASTRUCTURE_PREFIX
+from .infrastructure.web import WebInfrastructure
 from .provider_management import ProviderManagement
 from .role_runtime import is_placeholder_actor
 from .tasks import Tasks
@@ -213,6 +215,7 @@ class WebConsole:
         from .media.web import WebMedia
 
         self.media = WebMedia(platform.media, self)
+        self.infrastructure = WebInfrastructure(platform.infrastructure, self)
         if self.role_runtime.config is not None:
             self.role_runtime.console = self
 
@@ -693,6 +696,14 @@ class WebConsole:
             return web.json_response(result)
         if request.path.startswith(MEDIA_PREFIX):
             result = await self.media.route(request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
+        if request.path.startswith(INFRASTRUCTURE_PREFIX):
+            result = await self.infrastructure.route(request.path, body, session)
             require(
                 await self.platform.local_work.run(self.session_valid, session),
                 "session_expired",

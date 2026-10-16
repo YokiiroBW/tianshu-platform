@@ -10,6 +10,8 @@ from .bot_adapter_catalog import validate_configuration as validate_bot_adapter_
 from .bots import Bots, validate_bot_settings
 from .contracts import Contracts, Fault, require
 from .external_catalog import validate_configuration as validate_external_configuration
+from .infrastructure import Infrastructure
+from .infrastructure import configuration as infrastructure_configuration
 from .model_origin_renewal import enabled as model_origin_renewal_enabled
 from .models import Models, validate_max_lifetime
 from .origins import Origins
@@ -132,6 +134,7 @@ SETTINGS_KEYS = frozenset(
         "bot_adapter_self_service",
         "role_runtime",
         "media",
+        "infrastructure",
     }
 )
 
@@ -153,6 +156,7 @@ def validate_settings(settings):
     from .media.runtime import validate_media
 
     validate_media(settings)
+    infrastructure_configuration(settings)
     from .qq_admin import validate_profiles_configuration
 
     validate_profiles_configuration(
@@ -383,6 +387,7 @@ class Platform:
         from .media.runtime import Media
 
         self.media = Media(settings, clock=clock, local=self.local_work.run)
+        self.infrastructure = Infrastructure(settings, clock=clock, local=self.local_work.run)
 
     def close(self):
         """Mark this runtime as no longer serving, so readiness stops presenting it as current."""

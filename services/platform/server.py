@@ -602,6 +602,17 @@ def create_app(platform, probe=None, *, console=None, public=False):
 
     app = web.Application(middlewares=[boundary], client_max_size=45 * 1024 * 1024)
     app[PLATFORM] = platform
+    infrastructure = platform.infrastructure
+    if not public and infrastructure.config is not None:
+
+        async def infrastructure_context(app):
+            await infrastructure.start()
+            try:
+                yield
+            finally:
+                await infrastructure.close()
+
+        app.cleanup_ctx.append(infrastructure_context)
     if not public and platform.media.config is not None:
 
         async def media_context(app):

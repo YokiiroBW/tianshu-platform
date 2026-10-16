@@ -256,6 +256,8 @@ function AppShell() {
   else if (current.id === "companion" && section === 3) page = <pages.roles />;
   else if (current.id === "companion" && section === 1) page = <pages.life />;
   else if (current.id === "home" && section === 0) page = <pages.home />;
+  else if (current.id === "home" && (section === 1 || section === 2))
+    page = <pages.infrastructure section={section} />;
   else if (current.id === "memory" && section !== 2)
     page = <pages.memory section={section} />;
   else if (current.id === "resources" && section === 0)

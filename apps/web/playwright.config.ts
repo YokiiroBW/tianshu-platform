@@ -11,6 +11,7 @@ export default defineConfig({
     "provider-real.spec.ts",
     "life-joint.spec.ts",
     "runtime-joint.spec.ts",
+    "infrastructure.spec.ts",
   ],
   outputDir: "./test-results",
   fullyParallel: true,

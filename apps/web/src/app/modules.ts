@@ -110,6 +110,7 @@ export const modules = [
       "角色技能",
       "位置与天气",
       "记忆检索",
+      "节点连接",
     ],
   },
 ] as const;
@@ -138,6 +139,9 @@ export const pages = {
   room: lazy(() => import("../features/room/RoomPage")),
   settings: lazy(() => import("../features/settings/SettingsPage")),
   home: lazy(() => import("../features/home/HomePage")),
+  infrastructure: lazy(
+    () => import("../features/infrastructure/InfrastructurePage"),
+  ),
   resources: lazy(() => import("../features/resources/ResourcesPage")),
   media: lazy(() => import("../features/media/MediaPage")),
   knowledge: lazy(() => import("../features/knowledge/KnowledgePage")),
