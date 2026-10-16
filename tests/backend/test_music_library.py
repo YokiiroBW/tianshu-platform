@@ -286,6 +286,11 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.audio_transfers, before)
         self.assertEqual(self.file(first), self.file(recovered))
         self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+        detail = self.library.detail(playlist["playlist_id"], 0)["tracks"][0]
+        exported = self.library.export_snapshot(playlist["playlist_id"])[1][0]
+        self.assertEqual(detail["artists"], original["artists"])
+        self.assertEqual(exported["artists"], original["artists"])
+        self.assertEqual(exported["recording_id"], first["audio_receipt"]["recording_id"])
 
     async def test_real_decoder_ncm_import_reuses_recording_and_retains_original(self):
         if not os.environ.get("TIANSHU_MUSICDECODE"):

@@ -314,6 +314,33 @@ class MusicLibrary:
         )
         return {"playlist": summary(row)}
 
+    def source_track(self, playlist, source, db):
+        track = self.repo._document(db, "music_track", playlist["account_id"] + ":track:" + source)
+        binding = self.catalog.source(source_key(playlist["provider"], source), db=db)
+        if binding:
+            track = {**track, "recording_id": binding["recording_id"]}
+            metadata = binding["metadata"]
+            if metadata.get("metadata_enriched"):
+                # Keep the remote snapshot and its member IDs intact. Display and
+                # export the same hash-confirmed metadata used to tag the archive.
+                track.update(
+                    {
+                        k: metadata[k]
+                        for k in (
+                            "title",
+                            "artists",
+                            "album",
+                            "album_id",
+                            "cover_url",
+                            "duration_ms",
+                            "disc",
+                            "track_number",
+                        )
+                        if metadata.get(k)
+                    }
+                )
+        return track
+
     def detail(self, identity, offset, limit=100):
         require(type(offset) is int and offset >= 0, "invalid_input", 400)
         with self.repo.transaction() as db:
@@ -324,9 +351,7 @@ class MusicLibrary:
                 "jobs", {}
             )
             for index, source in enumerate(row["entries"][offset : offset + limit], offset):
-                track = self.repo._document(
-                    db, "music_track", row["account_id"] + ":track:" + source
-                )
+                track = self.source_track(row, source, db)
                 job_row = db.execute(
                     "SELECT body FROM jobs WHERE id=?", (mapping.get(source, ""),)
                 ).fetchone()
@@ -417,9 +442,7 @@ class MusicLibrary:
             )
             tracks = []
             for index, source in enumerate(playlist["entries"]):
-                track = self.repo._document(
-                    db, "music_track", playlist["account_id"] + ":track:" + source
-                )
+                track = self.source_track(playlist, source, db)
                 row = db.execute(
                     "SELECT body FROM jobs WHERE id=?", (mapping.get(source, ""),)
                 ).fetchone()
