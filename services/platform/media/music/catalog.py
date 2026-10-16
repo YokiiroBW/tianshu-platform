@@ -8,6 +8,17 @@ import uuid
 from ...contracts import digest, require
 from .quality import normalized_quality
 
+ENRICHED_FIELDS = (
+    "title",
+    "artists",
+    "album",
+    "album_id",
+    "cover_url",
+    "duration_ms",
+    "disc",
+    "track_number",
+)
+
 
 def normalized(value):
     value = unicodedata.normalize("NFKC", str(value or "")).casefold()
@@ -122,6 +133,19 @@ class Catalog:
         self.root_id(db)
         key = source_key(provider, track["source_id"], private_scope)
         existing = self.repo._document(db, "music_source", key)
+        previous = (existing or {}).get("metadata", {})
+        if previous.get("metadata_enriched") and not track.get("metadata_enriched"):
+            # Cloud playlists keep returning their original sparse filenames.
+            # A later snapshot must not erase metadata confirmed for this same hash.
+            track = {
+                **track,
+                **{k: previous[k] for k in ENRICHED_FIELDS if previous.get(k)},
+                "provider_data": {
+                    **previous.get("provider_data", {}),
+                    **track.get("provider_data", {}),
+                },
+                "metadata_enriched": True,
+            }
         match = lookup_key(track)
         indexed = self.repo._document(db, "music_match_index", match) if match else None
         candidates, method = [], "source"

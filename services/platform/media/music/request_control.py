@@ -50,9 +50,18 @@ def bucket(row, now):
 
 
 class RequestControl:
-    def __init__(self, media, *, interval=MIN_INTERVAL, hourly=HOURLY_LIMIT, daily=DAILY_LIMIT):
+    def __init__(
+        self,
+        media,
+        *,
+        interval=MIN_INTERVAL,
+        hourly=HOURLY_LIMIT,
+        daily=DAILY_LIMIT,
+        contention_timeout=30,
+    ):
         self.repo, self.local = media.repo, media.local
         self.interval, self.hourly, self.daily = interval, hourly, daily
+        self.contention_timeout = contention_timeout
 
     def reserve(self, provider, account_id, maximum, owner, account_revision=None):
         now = self.repo.clock()
@@ -176,18 +185,21 @@ class RequestControl:
     @asynccontextmanager
     async def access(self, provider, account_id=None, maximum=1, account_revision=None):
         owner = uuid.uuid4().hex
-        for _ in range(4):
+        deadline = asyncio.get_running_loop().time() + self.contention_timeout
+        while True:
             result = await self.local(
                 self.reserve, provider, account_id, maximum, owner, account_revision
             )
             if "wait" not in result:
                 break
             wait = result["wait"] - self.repo.clock()
-            if wait > self.interval + 0.5 or result["reason"] != "music_request_deferred":
+            remaining = deadline - asyncio.get_running_loop().time()
+            if result["reason"] != "music_request_deferred" or remaining <= 0:
                 raise Deferred(result["wait"], result["reason"])
-            await asyncio.sleep(max(0.05, wait))
-        else:
-            raise Deferred(self.repo.clock() + 15)
+            # Brief peer contention should not discard an in-flight all-channel
+            # comparison and repeat its completed entitlement requests. Poll only
+            # the local lease; budgets and upstream cooldown still defer at once.
+            await asyncio.sleep(min(max(0.05, wait), remaining, 1))
         ticket = {**result, "owner": owner, "maximum": maximum}
         caller = asyncio.current_task()
 

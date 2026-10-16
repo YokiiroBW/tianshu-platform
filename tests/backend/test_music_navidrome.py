@@ -312,6 +312,39 @@ class NavidromeTests(unittest.IsolatedAsyncioTestCase):
         songs = [{**self.server.songs[0], "size": 2}]
         self.assertEqual(mapped_members(tracks, songs, connection)[0]["code"], "waiting_index")
 
+    async def test_managed_archive_unknown_tags_match_exact_size_duration_and_unique_recording(
+        self,
+    ):
+        _, tracks = self.library.export_snapshot(self.playlist["playlist_id"])
+        track = {
+            **tracks[0],
+            "artists": [],
+            "album": "",
+            "artifact": {**tracks[0]["artifact"], "managed": True},
+        }
+        song = {
+            **self.server.songs[0],
+            "path": "未知艺术家/未知专辑/song.flac",
+            "artist": "未知艺术家",
+            "album": "未知专辑",
+        }
+        connection = self.nav.state.connection()
+        self.assertEqual(mapped_members([track], [song], connection)[0]["code"], "matched")
+        self.assertEqual(
+            mapped_members([track], [song, {**song, "id": "duplicate"}], connection)[0]["code"],
+            "ambiguous",
+        )
+        self.assertEqual(
+            mapped_members([track], [{**song, "artist": "Different Artist"}], connection)[0][
+                "code"
+            ],
+            "waiting_index",
+        )
+        unmanaged = {**track, "artifact": {**track["artifact"], "managed": False}}
+        self.assertEqual(
+            mapped_members([unmanaged], [song], connection)[0]["code"], "waiting_index"
+        )
+
     async def test_later_index_and_archive_notification_complete_members(self):
         saved = self.server.songs.pop()
         self.link()

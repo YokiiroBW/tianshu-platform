@@ -4,6 +4,7 @@ from pathlib import Path, PurePosixPath
 
 from ...destination import safe_path
 from ..catalog import normalized, same_recording
+from ..audio import tag_identity
 
 
 def mapped_members(tracks, songs, connection):
@@ -48,6 +49,7 @@ def match_file(track, artifact, audio, by_path, by_size, connection):
     # corroborated metadata AND the exact archived byte size/format in that mode.
     metadata = {
         **track,
+        **(tag_identity(track) if artifact.get("managed") else {}),
         "duration_ms": artifact.get("quality", {}).get("duration_seconds", 0) * 1000,
     }
     candidates = []
@@ -76,7 +78,7 @@ def match_file(track, artifact, audio, by_path, by_size, connection):
         # Integer Subsonic duration truncates the measured duration by < 1 second.
         if abs(metadata["duration_ms"] - other["duration_ms"]) < 1000:
             other["duration_ms"] = metadata["duration_ms"]
-        if same_recording(metadata, other) and normalized(track.get("album")):
+        if same_recording(metadata, other) and normalized(metadata.get("album")):
             candidates.append(song)
     if len(candidates) == 1:
         return {"song_id": candidates[0]["id"], "code": "matched", "method": "metadata_size"}

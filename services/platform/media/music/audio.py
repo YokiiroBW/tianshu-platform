@@ -187,10 +187,19 @@ def number(value):
     return found.group(1) if found else ""
 
 
+def tag_identity(track):
+    return {
+        "title": track.get("title") or track["source_id"],
+        "artists": [a for a in track.get("artists", []) if a] or ["未知艺术家"],
+        "album": track.get("album") or "未知专辑",
+    }
+
+
 def write_tags(path, track, artwork, lyrics):
-    artists = [a for a in track.get("artists", []) if a] or ["未知艺术家"]
+    identity = tag_identity(track)
+    artists = identity["artists"]
     album_artists = track.get("album_artists") or artists
-    title, album = track.get("title") or track["source_id"], track.get("album") or "未知专辑"
+    title, album = identity["title"], identity["album"]
     date = track.get("date", "")
     index, disc = number(track.get("track_number")), number(track.get("disc"))
     provider = track.get("provider", "netease")

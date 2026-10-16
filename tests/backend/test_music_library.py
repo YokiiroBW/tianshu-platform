@@ -291,6 +291,14 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["artists"], original["artists"])
         self.assertEqual(exported["artists"], original["artists"])
         self.assertEqual(exported["recording_id"], first["audio_receipt"]["recording_id"])
+        # The next automatic cloud snapshot still contains the sparse original.
+        # It must not make an archived song disappear from the Navidrome export.
+        with self.repo.transaction() as db:
+            self.library.catalog.register("kugou", value["tracks"][0], db)
+        again = self.library.export_snapshot(playlist["playlist_id"])[1][0]
+        self.assertEqual(again["artists"], original["artists"])
+        self.assertEqual(again["album"], original["album"])
+        self.assertEqual(again["recording_id"], exported["recording_id"])
 
     async def test_real_decoder_ncm_import_reuses_recording_and_retains_original(self):
         if not os.environ.get("TIANSHU_MUSICDECODE"):

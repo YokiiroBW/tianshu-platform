@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ...contracts import require
 from ..config import text
-from .catalog import Catalog, source_key
+from .catalog import Catalog, ENRICHED_FIELDS, source_key
 from .providers import PROVIDERS, identity
 from .quality import policy, satisfies
 from .queue import enqueue_playlist
@@ -323,22 +323,7 @@ class MusicLibrary:
             if metadata.get("metadata_enriched"):
                 # Keep the remote snapshot and its member IDs intact. Display and
                 # export the same hash-confirmed metadata used to tag the archive.
-                track.update(
-                    {
-                        k: metadata[k]
-                        for k in (
-                            "title",
-                            "artists",
-                            "album",
-                            "album_id",
-                            "cover_url",
-                            "duration_ms",
-                            "disc",
-                            "track_number",
-                        )
-                        if metadata.get(k)
-                    }
-                )
+                track.update({k: metadata[k] for k in ENRICHED_FIELDS if metadata.get(k)})
         return track
 
     def detail(self, identity, offset, limit=100):

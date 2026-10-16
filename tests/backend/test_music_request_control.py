@@ -24,12 +24,14 @@ class MusicRequestControlTests(unittest.IsolatedAsyncioTestCase):
         self.now = 10000
         self.repo = Repository(Path(self.temp.name) / "media.sqlite", clock=lambda: self.now)
         self.media = SimpleNamespace(repo=self.repo, local=asyncio.to_thread)
-        self.control = RequestControl(self.media, interval=0, hourly=4, daily=6)
+        self.control = RequestControl(
+            self.media, interval=0, hourly=4, daily=6, contention_timeout=0
+        )
 
     async def test_reservation_metering_shared_provider_budget_and_restart(self):
         async with self.control.access("qq", "qq:1", 4) as ticket:
             ticket["used"] = 2
-            other = RequestControl(self.media, interval=0, hourly=4, daily=6)
+            other = RequestControl(self.media, interval=0, hourly=4, daily=6, contention_timeout=0)
             with self.assertRaises(Deferred):
                 async with other.access("qq", "qq:2"):
                     self.fail(
@@ -77,6 +79,29 @@ class MusicRequestControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.repo.get("music_request_control", "netease:all")["cooldown_until"], self.now + 7200
         )
+
+    async def test_short_peer_contention_waits_without_restarting_the_call_or_spending_budget(self):
+        control = RequestControl(self.media, interval=0, hourly=2, daily=2, contention_timeout=0.1)
+        entered = []
+
+        async def peer():
+            async with control.access("qq", "qq:2"):
+                entered.append(True)
+
+        async with control.access("qq", "qq:1"):
+            pending = asyncio.create_task(peer())
+            await asyncio.sleep(0.02)
+            self.assertFalse(entered)
+            self.assertEqual(self.repo.get("music_request_control", "qq:all")["hour_used"], 1)
+        await asyncio.wait_for(pending, 1)
+        self.assertEqual(entered, [True])
+        self.assertEqual(self.repo.get("music_request_control", "qq:all")["hour_used"], 2)
+        # This is a budget stop, not a short lease conflict: it must return immediately.
+        with self.assertRaises(Deferred) as caught:
+            async with asyncio.timeout(0.2):
+                async with control.access("qq", "qq:1"):
+                    self.fail("Budget cannot be bypassed by waiting locally")
+        self.assertEqual(caught.exception.code, "music_request_budget")
 
     async def test_login_failure_is_shared_but_never_treats_vip_denial_as_expired_login(self):
         self.repo.put(
