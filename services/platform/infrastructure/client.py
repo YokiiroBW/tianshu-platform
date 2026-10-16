@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import os
 import subprocess
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -91,9 +92,21 @@ class Executor:
             in {"PATH", "SYSTEMROOT", "WINDIR", "PROGRAMDATA", "TEMP", "TMP", "LANG", "LC_ALL"}
         }
         process = tree = None
+        command = self.command
+        if sys.platform == "linux":
+            command = [
+                sys.executable,
+                "-I",
+                "-B",
+                str(Path(__file__).with_name("supervisor.py")),
+                "--parent-pid",
+                str(os.getpid()),
+                "--",
+                *command,
+            ]
         try:
             process = await asyncio.create_subprocess_exec(
-                *self.command,
+                *command,
                 cwd=self.directory,
                 env=environment,
                 stdin=asyncio.subprocess.PIPE,

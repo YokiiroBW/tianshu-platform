@@ -9,6 +9,7 @@ import ctypes
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
 CREATE_SUSPENDED = 0x00000004
@@ -172,6 +173,18 @@ async def stop_process(process, tree=None):
             except TimeoutError:
                 killer.kill()
                 await killer.wait()
+    elif sys.platform == "linux":
+        # The per-invocation subreaper must stay alive long enough to adopt and reap
+        # setsid descendants, including when the real executor has already exited.
+        if process.returncode is None:
+            try:
+                process.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        # Killing the owner before ECHILD would orphan the separate process groups
+        # again. The supervisor itself SIGKILLs and reaps its children before exiting.
+        await process.wait()
+        return
     else:
         try:
             os.killpg(process.pid, signal.SIGKILL)
