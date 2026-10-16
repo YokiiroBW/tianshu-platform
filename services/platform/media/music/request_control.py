@@ -92,6 +92,7 @@ class RequestControl:
                     {
                         **row,
                         "provider": provider,
+                        "scope": "provider" if key == keys[0] else "account",
                         "account_id": account_id if key != keys[0] else None,
                         "owner": owner,
                         "lease_until": now + 60,
@@ -224,7 +225,11 @@ class RequestControl:
 
     def view(self):
         now = self.repo.clock()
-        rows = [bucket(row, now) for row in self.repo.list(KIND)]
+        rows = [
+            bucket(row, now)
+            for row in self.repo.list(KIND)
+            if row.get("scope") == "provider" or row.get("account_id")
+        ]
         return {
             "interval_seconds": self.interval,
             "hourly_limit": self.hourly,
