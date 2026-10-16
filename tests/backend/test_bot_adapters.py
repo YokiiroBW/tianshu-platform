@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 from aiohttp import web
 
-from fixtures import ENV, bearer, start_http
+from fixtures import CONTRACT, ENV, bearer, start_http
 from services.platform.contracts import Fault, canonical, digest, utc
 from services.platform.server import create_app
 from services.platform.service import Platform
@@ -927,7 +927,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         config = {
-            "contracts_path": "C:/YOKI/Codex/tianshu-peiban-bot/contracts/text-dialogue/v1",
+            "contracts_path": str(CONTRACT),
             "database_path": str(Path(self.temp.name) / "core.sqlite"),
             "roles": {"actor:a": {}},
             "bot_binding_management_enabled": True,
@@ -940,6 +940,10 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             },
             "services": {
                 "platform_sender": {
+                    "url": "https://platform.synthetic.invalid",
+                    "token_env": "TS_ADAPTER_CORE_TOKEN",
+                },
+                "qq_admin": {
                     "url": "https://platform.synthetic.invalid",
                     "token_env": "TS_ADAPTER_CORE_TOKEN",
                 }
