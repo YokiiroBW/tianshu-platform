@@ -53,6 +53,25 @@ class State:
     def saved(self):
         return self.repo.get(CONNECTION, "server")
 
+    def recording_changed(self, identity, db):
+        """Rescan tag changes through existing links without creating any playlist."""
+        connection = self.repo._document(db, CONNECTION, "server")
+        if not connection or not connection.get("enabled"):
+            return
+        for raw in db.execute("SELECT body FROM documents WHERE kind=?", (LINK,)).fetchall():
+            row = json.loads(raw[0])
+            if (
+                row["connection_id"] == connection["connection_id"]
+                and row["auto_sync"]
+                and row["status"] not in {"deleting", "deleted"}
+                and any(m.get("recording_id") == identity for m in row.get("members", []))
+            ):
+                row.update(next_sync_at=0, scan_requested_digest=None)
+                db.execute(
+                    "UPDATE documents SET body=? WHERE kind=? AND id=?",
+                    (json.dumps(row, ensure_ascii=False), LINK, row["link_id"]),
+                )
+
     def connection(self, body=None):
         saved = self.saved()
         if body is None:

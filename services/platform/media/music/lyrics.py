@@ -6,7 +6,7 @@ import uuid
 from collections import Counter
 
 from ...contracts import Fault
-from .lyrics_storage import KIND, WEEK, LyricStorage, archive_key, read_local, schedule
+from .lyrics_storage import KIND, VERSION, WEEK, LyricStorage, archive_key, read_local, schedule
 from .lyrics_text import coverage, normalize, score
 from .maintenance import phase
 from .request_control import Deferred
@@ -29,7 +29,10 @@ class Lyrics:
             for row in rows:
                 artifact = json.loads(row["artifact"])
                 state = json.loads(row["checked"]) if row["checked"] else {}
-                if state.get("archive_key") != archive_key(artifact):
+                if (
+                    state.get("archive_key") != archive_key(artifact)
+                    or state.get("version") != VERSION
+                ):
                     schedule(self.repo, artifact["recording_id"], artifact, db)
                     state = {}
                 if state.get("next_check_at", 0) <= now:
@@ -66,6 +69,8 @@ class Lyrics:
             "source_id": artifact.get("download_source_id"),
         }
         checked = []
+        if prior.get("network_after", 0) > self.repo.clock():
+            return best, source, prior.get("providers", [])
         # A complete local timeline needs no network recheck. Missing files are
         # discovered by the weekly local pass, without hashing/decoding audio.
         if coverage(best)["translation_synced"]:
@@ -152,13 +157,22 @@ class Lyrics:
                 value, source, checked = await self.collect(artifact, prior)
             present = coverage(value)
             failures = [row for row in checked if row.get("failed")]
-            attempts = prior.get("attempts", 0) + 1 if failures else 0
+            local_only = prior.get("network_after", 0) > self.repo.clock()
+            attempts = (
+                prior.get("attempts", 0)
+                if local_only
+                else prior.get("attempts", 0) + 1
+                if failures
+                else 0
+            )
             wait = min(WEEK, 21600 * 2 ** min(attempts - 1, 5)) if failures else WEEK
             now = self.repo.clock()
             next_at = max(
                 now + wait + phase(identity, 1800),
                 min((r.get("retry_at", 0) for r in failures), default=0),
             )
+            if local_only:
+                next_at = prior["network_after"]
             result = {
                 "state": "retry_wait"
                 if failures
@@ -170,7 +184,7 @@ class Lyrics:
                 "coverage": present,
                 "source": source if present["original"] else None,
                 "providers": checked,
-                "checked_at": now,
+                "checked_at": prior.get("checked_at", now) if local_only else now,
                 "next_check_at": next_at,
                 "attempts": attempts,
             }

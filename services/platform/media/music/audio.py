@@ -195,6 +195,24 @@ def tag_identity(track):
     }
 
 
+def embedded_lyrics(audio):
+    if isinstance(audio, MP3):
+        values = audio.tags.getall("USLT") if audio.tags else []
+        return values[0].text if values else ""
+    values = audio.get("\u00a9lyr" if isinstance(audio, MP4) else "lyrics", [])
+    return values[0] if values else ""
+
+
+def set_lyrics(audio, lyrics):
+    if audio.tags is None:
+        audio.add_tags()
+    if isinstance(audio, MP3):
+        audio.tags.delall("USLT")
+        audio.tags.add(USLT(encoding=3, lang="und", desc="", text=lyrics))
+    else:
+        audio["\u00a9lyr" if isinstance(audio, MP4) else "lyrics"] = [lyrics]
+
+
 def write_tags(path, track, artwork, lyrics):
     identity = tag_identity(track)
     artists = identity["artists"]
@@ -229,7 +247,6 @@ def write_tags(path, track, artwork, lyrics):
                 "discnumber": [disc],
                 id_tag: [track["source_id"]],
                 "website": [source],
-                "lyrics": [lyrics],
             }
             for key, value in values.items():
                 if any(value):
@@ -260,8 +277,6 @@ def write_tags(path, track, artwork, lyrics):
                     audio.tags.add(cls(encoding=3, text=value))
             audio.tags.add(TXXX(encoding=3, desc=id_tag, text=[track["source_id"]]))
             audio.tags.add(TXXX(encoding=3, desc="SOURCE", text=[source]))
-            if lyrics:
-                audio.tags.add(USLT(encoding=3, lang="und", desc="", text=lyrics))
             if artwork:
                 audio.tags.add(APIC(encoding=3, mime="image/jpeg", type=3, data=artwork))
         else:
@@ -271,7 +286,6 @@ def write_tags(path, track, artwork, lyrics):
                 "\u00a9alb": [album],
                 "aART": album_artists,
                 "\u00a9day": [date],
-                "\u00a9lyr": [lyrics],
             }.items():
                 if any(value):
                     audio[key] = value
@@ -282,6 +296,8 @@ def write_tags(path, track, artwork, lyrics):
             audio["----:com.apple.iTunes:" + id_tag] = [track["source_id"].encode()]
             if artwork:
                 audio["covr"] = [MP4Cover(artwork, imageformat=MP4Cover.FORMAT_JPEG)]
+        if lyrics:
+            set_lyrics(audio, lyrics)
         audio.save()
         sync_file(path)
     except (mutagen.MutagenError, ValueError):
