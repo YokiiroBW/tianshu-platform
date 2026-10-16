@@ -1,4 +1,5 @@
 import json
+import time
 import unittest
 from unittest.mock import AsyncMock
 
@@ -63,7 +64,12 @@ class MusicNeteaseTests(unittest.IsolatedAsyncioTestCase):
     ):
         api = RecordedNetease()
         first = await api.snapshot("900", "123", {})
-        previous = {**first["playlist"], "entries": first["entries"], "complete": True}
+        previous = {
+            **first["playlist"],
+            "entries": first["entries"],
+            "complete": True,
+            "metadata_synced_at": time.time(),
+        }
         api.requests.clear()
         unchanged = await api.snapshot_since("900", "123", {}, previous)
         self.assertTrue(unchanged["unchanged"])
@@ -71,6 +77,11 @@ class MusicNeteaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tracks", unchanged)
         api.requests.clear()
         await api.snapshot_since("900", "123", {}, {**previous, "source_updated_at": None})
+        self.assertTrue(any(path == "/api/v3/song/detail" for path, _ in api.requests))
+        api.requests.clear()
+        await api.snapshot_since(
+            "900", "123", {}, {**previous, "metadata_synced_at": time.time() - 8 * 86400}
+        )
         self.assertTrue(any(path == "/api/v3/song/detail" for path, _ in api.requests))
 
     async def test_download_request_and_denied_preview_unknown_quality(self):

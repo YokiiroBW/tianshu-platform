@@ -83,6 +83,9 @@ class MusicLibrary:
             return public_account(account)
 
     def account_state(self, account, state):
+        current = self.repo.get("music_account", account["account_id"])
+        if current and current["revision"] != account["revision"] and current["state"] == state:
+            return current
         return self.repo.put(
             "music_account",
             account["account_id"],
@@ -256,6 +259,7 @@ class MusicLibrary:
                 "state": current["state"],
                 "interval_seconds": current["interval_seconds"],
                 "synced_at": now,
+                "metadata_synced_at": now,
                 "next_scan_at": now + current["interval_seconds"],
                 "code": "ready",
                 "complete": True,

@@ -41,6 +41,17 @@ class MusicFoundationTests(unittest.IsolatedAsyncioTestCase):
                 "playlist"
             ]
 
+    async def test_shared_auth_pause_is_idempotent_and_cannot_pause_a_new_login(self):
+        paused = self.library.account_state(self.account, "auth_required")
+        again = self.library.account_state(self.account, "auth_required")
+        self.assertEqual(paused["revision"], again["revision"])
+        fresh = self.library.save_account(
+            {"user_id": "123", "label": "合成账号"}, {"MUSIC_U": "new-synthetic"}
+        )
+        with self.assertRaises(Fault):
+            self.library.account_state(self.account, "auth_required")
+        self.assertEqual(self.repo.get("music_account", fresh["account_id"])["state"], "ready")
+
     async def test_database_owns_order_and_missing_tracks_across_restart(self):
         playlist = self.subscribe()
         reloaded = Music(

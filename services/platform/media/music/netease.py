@@ -349,6 +349,10 @@ class Netease:
         if (
             previous
             and previous.get("complete")
+            and previous.get("metadata_synced_at") is not None
+            and (self.control.repo.clock() if self.control else time.time())
+            - previous["metadata_synced_at"]
+            < 7 * 86400
             and isinstance(info["source_updated_at"], int)
             and info["source_updated_at"] == previous.get("source_updated_at")
             and ids == previous.get("entries")
