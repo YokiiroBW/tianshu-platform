@@ -25,7 +25,7 @@ from services.platform.web_console import WebConsole
 
 @unittest.skipUnless(
     os.environ.get("TS177_NODE_EXECUTOR_ROOT"),
-    "Set TS177_NODE_EXECUTOR_ROOT to the fixed 12ccb1d export",
+    "Set TS177_NODE_EXECUTOR_ROOT to the fixed 172d20d export",
 )
 class InfrastructureJointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

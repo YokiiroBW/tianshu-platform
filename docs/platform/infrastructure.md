@@ -35,7 +35,7 @@
 
 管理员进入节点设置后，从执行器返回的目录选择节点。下拉显示名称、类型与能力，不要求手填 `node_id`。网页只保存节点引用、显示名称和是否采集。目录读取失败时保留上次目录并标出最近失败；执行器缺失时显示安装／部署原因。已登记但后来从目录移除的节点仍可停用。
 
-本批合同固定于协调仓库 `18e4fe0476ce9cc0900de8d8e0731b4c1baa2d81`；运行及合成 SSH 夹具固定于 `12ccb1d894c15813ebe649e327071836ed5ea815`，两者 schema 相同。平台按 LF 规范化后的固定摘要核验 request/response schema，不自动接受可变工作目录中的协议。候选合同的生产发布仍由协调者安排。
+本批合同固定于协调仓库 `18e4fe0476ce9cc0900de8d8e0731b4c1baa2d81`；运行及合成 SSH 夹具最终固定于 `172d20d37b12f88a15ec214bd6ee2ba8ea880339`，schema 相同。平台按 LF 规范化后的固定摘要核验 request/response schema，不自动接受可变工作目录中的协议。候选合同的生产发布仍由协调者安排。
 
 执行器环境仅保留 PATH、SYSTEMROOT、WINDIR、PROGRAMDATA、TEMP、TMP、LANG、LC_ALL。Windows OpenSSH 需要 PROGRAMDATA；实际合成 SSH 联验已确认。服务凭据、PYTHONPATH 和用户 SSH 环境不传给执行器。执行器必须自行使用配置中的显式 key／known_hosts 并禁用隐式 SSH 配置和 agent。
 
@@ -81,7 +81,7 @@ Windows 进程先以 [CREATE_SUSPENDED](https://learn.microsoft.com/en-us/window
 - `TS012_CONTRACT_DIR`：平台已冻结发布的 text-dialogue/v1 目录；不能用摘要不符的历史副本。
 - `TS100_DIAGNOSTICS_CONTRACT_DIR`：原始字节 manifest 为 `5d89f7a…` 的 diagnostics/v1 发布目录，不规范化行尾。
 - `TS177_NODE_CONTRACT_DIR`：固定节点合同目录。
-- `TS177_NODE_EXECUTOR_ROOT`：从固定 `12ccb1d…` Git 归档的执行器根目录，包含共享 `tests/infrastructure/{helpers.py,synthetic_ssh.py}`；联合夹具额外依赖 `paramiko==4.0.0`。
+- `TS177_NODE_EXECUTOR_ROOT`：从固定 `172d20d…` Git 归档的执行器根目录，包含共享 `tests/infrastructure/{helpers.py,synthetic_ssh.py}`；联合夹具额外依赖 `paramiko==4.0.0`。
 
 联合夹具仅监听 127.0.0.1，临时生成测试 key／known_hosts，以真实 OpenSSH 访问合成的 150 容器 NAS 和 OpenWrt。它验证 Platform HTTP → 实际进程执行器 → OpenSSH → 合成设备，不能代表真实 NAS／路由器。
 
