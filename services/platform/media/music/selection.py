@@ -37,6 +37,15 @@ class Selection:
             if isinstance(error, Deferred):
                 raise
             offers, failure = [], error
+        # Source enrichment may have just linked this request to an existing file.
+        # Refresh after matching, before any full transfer, so it joins the comparison.
+        current = existing or await local(downloads.storage.available, job)
+        if (
+            current
+            and quality_rank(current["quality"])[0] >= minimum_level(job["quality"])
+            and (best is None or quality_rank(current["quality"]) >= quality_rank(best["quality"]))
+        ):
+            best, package = current, None
         # No full audio transfer begins until every account's search/entitlement check finishes.
         await update(
             state="validating",

@@ -225,6 +225,40 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         detail = self.library.detail(self.playlist["playlist_id"], 0)
         self.assertEqual(detail["tracks"][0]["file"], "改名原件.flac")
 
+    async def test_enrichment_link_reuses_existing_audio_before_full_transfer(self):
+        self.queue()
+        first = await self.run_job()
+        before = self.audio_transfers
+        original = copy.deepcopy(self.api.value["tracks"][0])
+        client = fixtures.SyntheticNetease()
+
+        async def enrich(value, cookie):
+            return {
+                **original,
+                "source_id": value["source_id"],
+                "provider": "kugou",
+                "metadata_enriched": True,
+            }
+
+        client.enrich, client.download, client.lyrics = enrich, self.api.download, self.api.lyrics
+        self.music.connectors["kugou"] = client
+        public = self.library.save_account(
+            {"user_id": "456", "label": "Kugou"}, {"cookie": "fixture"}, "kugou"
+        )
+        account = self.repo.get("music_account", public["account_id"])
+        value = self.value(["101"])
+        value["tracks"][0].update(source_id="kugou101", artists=[], album="", duration_ms=None)
+        value["entries"] = ["kugou101"]
+        with self.repo.transaction() as db:
+            playlist = self.library.subscribe(account, value, 3600, 0, db)["playlist"]
+        self.queue(playlist)
+        recovered = await self.run_job()
+        self.assertEqual(recovered["state"], "completed", recovered.get("code"))
+        self.assertTrue(recovered["audio_reused"])
+        self.assertEqual(self.audio_transfers, before)
+        self.assertEqual(self.file(first), self.file(recovered))
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+
     async def test_real_decoder_ncm_import_reuses_recording_and_retains_original(self):
         if not os.environ.get("TIANSHU_MUSICDECODE"):
             self.skipTest("Real pinned decoder executable required")
