@@ -6,27 +6,26 @@
 
 节点执行器由部署方安装，平台只启动部署配置中的固定 argv 和 cwd。网页不能传地址、私钥、known_hosts、命令、执行目录、配置文件或状态目录。现有平台 Dockerfile **没有 SSH 客户端和节点执行器包**，仅增加下面的设置不能连接节点；联合部署须采用 TS-178 的执行器打包产物及其安装说明。
 
-以下为路径示例，不是已安装环境。Python 环境须包含平台依赖及执行器的 `PyYAML==6.0.3`，cwd 中须有固定 `ops.infrastructure` 包。`executor-config.json` 按节点合同的 `config.schema.json` 登记节点、显式身份／known_hosts、stacks 目录及固定 `state_dir`，这些内容不进入网页。
+以下为 TS-180 联合部署路径约定，不表示该路径已经上线。平台 wheel 使用既有 `/opt/tianshu-venv`；执行器另用 `/opt/tianshu-infrastructure-venv` 和 `PyYAML==6.0.3`，镜像须另装 OpenSSH。执行器启动器把固定包加入自身导入路径，平台不修改 PATH 或注入 PYTHONPATH。`executor.json` 按节点合同的 `config.schema.json` 登记节点、显式身份／known_hosts、stacks 目录及固定 `state_dir`，这些内容不进入网页。
 
 ```json
 {
   "infrastructure": {
     "directory": "/var/lib/tianshu/external",
-    "contract_directory": "/opt/tianshu-node/contracts/infrastructure-node/candidate-v1",
+    "contract_directory": "/opt/tianshu-infrastructure-node/contracts/infrastructure-node/candidate-v1",
     "executor": {
       "command": [
-        "/opt/tianshu/venv/bin/python",
-        "-B",
-        "-m",
-        "ops.infrastructure",
+        "/opt/tianshu-infrastructure-venv/bin/python",
+        "-I",
+        "/opt/tianshu-infrastructure-node/run_node.py",
         "--config",
-        "/run/tianshu-node/executor-config.json"
+        "/etc/tianshu/infrastructure/executor.json"
       ],
-      "directory": "/opt/tianshu-node"
+      "directory": "/opt/tianshu-infrastructure-node"
     },
     "poll_interval_seconds": 30,
     "stale_after_seconds": 120,
-    "timeout_ms": 10000
+    "timeout_ms": 30000
   }
 }
 ```
@@ -37,9 +36,13 @@
 
 本批合同固定于协调仓库 `18e4fe0476ce9cc0900de8d8e0731b4c1baa2d81`；运行及合成 SSH 夹具最终固定于 `172d20d37b12f88a15ec214bd6ee2ba8ea880339`，schema 相同。平台按 LF 规范化后的固定摘要核验 request/response schema，不自动接受可变工作目录中的协议。候选合同的生产发布仍由协调者安排。
 
+TS-182 部署候选执行器更新为 `47564d07257a43ad99dde63d6ea96cf8c169be5a`，包 SHA256 `9aac3dc090a0317804b5787dd5136b4916ee686b718a11b18b74e976806cebf5`，沿用上述 schema。它修正真实 DSM/Docker 的可选 Health、dial-stdio 输入 EOF 和 stats 流水采样；每批最多 8 个 SSH 流水组，仅对实际运行对象获取 stats。平台继续每批最多 200 个 ID 顺序调用，单请求部署为 30 秒，整轮仍为 90 秒。
+
 执行器环境仅保留 PATH、SYSTEMROOT、WINDIR、PROGRAMDATA、TEMP、TMP、LANG、LC_ALL。Windows OpenSSH 需要 PROGRAMDATA；实际合成 SSH 联验已确认。服务凭据、PYTHONPATH 和用户 SSH 环境不传给执行器。执行器必须自行使用配置中的显式 key／known_hosts 并禁用隐式 SSH 配置和 agent。
 
-Windows 进程先以 [CREATE_SUSPENDED](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags) 启动，加入 kill-on-close Job 后才恢复主线程。这样 venv 启动器及后续 Python／SSH 后代都继承同一 Job，父进程先退出仍能回收；保护或恢复失败会结束挂起根，不能继续运行无保护执行器。POSIX 使用独立进程会话并回收整个进程组。
+Windows 进程先以 [CREATE_SUSPENDED](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags) 启动，加入 kill-on-close Job 后才恢复主线程。这样 venv 启动器及后续 Python／SSH 后代都继承同一 Job，父进程先退出仍能回收；保护或恢复失败会结束挂起根，不能继续运行无保护执行器。
+
+Linux 每次调用先启动独立的短生命周期 supervisor，在创建执行器前设置 [child subreaper](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html) 和 [PDEATHSIG](https://man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html)，前后核对平台父 PID。真实执行器的 stdout/stderr 和正常退出码直接透传。取消、执行器先退出或平台父突然退出时，supervisor 持续终止已收养的孩子并 wait 至 ECHILD 后退出；即使 SSH 创建独立 session，也会被收养并回收。平台不提前杀死该收养者，不把整个平台设置成 subreaper，不影响音乐进程的所有权。其他 POSIX 保留原有进程组回收。
 
 ## 采集、缓存与数据含义
 
@@ -88,3 +91,37 @@ Windows 进程先以 [CREATE_SUSPENDED](https://learn.microsoft.com/en-us/window
 前端沿用类型检查和 Vite build；`node node_modules/@playwright/test/cli.js test --config apps/web/playwright.infrastructure.config.ts` 使用本检出的 `.runtime/venv/Scripts/python.exe` 启动隔离的真实 Platform HTTP，执行器使用固定合同响应夹具。浏览器覆盖桌面／手机、明暗主题、Axe、130 容器、迟到响应与并发 CAS；这组页面测试不是实际 SSH 联验。结果分别写入忽略目录 `.runtime/infrastructure-browser-results` 和 `.runtime/infrastructure-browser-report`，不清理通用壳测试的产物。
 
 本批实际结果、已核实的旧壳断言失败与截图位置见 [TS-177 交接](../handoffs/TS-177.md)。
+
+## TS-182 生产连接与验收
+
+生产 `service_https` 的内部 TLS listener 与 `web_access` 公共 listener 共用同一个控制台和基础设施实例；采集生命周期只挂内部应用。配置了 `web_access` 后，内部端口不提供网页/API，公共端口不提供 `/health/*` 或内部 RPC。驱动必须传保存的公共 origin，不能把内部 HTTPS 端口当网页端口。当前已读回部署映射为 `http://192.168.31.210:18446` → 容器 `8080`；这个地址是显式环境输入，不是驱动默认值。使用 HTTPS 时仍校验 CA 和主机名，不关闭 TLS 验证。
+
+上线必须复用 `/var/lib/tianshu/external` 中原有 `external.key` 与数据库，以及原 `web_account` 账号文件/封印和 principals 权限；不执行 init、claim 或权限补写。节点执行器目录只登记 `nas-main / 主 NAS / synology`。用户登录后在 `#/settings/11` 从目录选择并保存/启用，再到 `#/home/1` 和 `#/home/2` 查看真实读数。OpenWrt 本轮不登记或重试。执行器 key、known_hosts 分别只读挂载到 `/run/tianshu-infrastructure/identity`、`/run/tianshu-infrastructure/known_hosts`，采样状态固定 `/var/lib/tianshu/infrastructure-sampling` 的 128 MiB、UID/GID 10001 本地 tmpfs，配置仍在 `/etc/tianshu/infrastructure/executor.json`。不挂 Docker socket 或整套用户 SSH 目录。
+
+`tests/backend/verify_infrastructure_deployment.py --input <私有JSON> --output <私有回执JSON>` 使用公共 origin、真实 Cookie/Origin/CSRF，检查全量网页分页、所有 ID 的指标行和尾部指标、连续主机差值、Compose 及显式目标的限定日志。输入示例：
+
+```json
+{
+  "origin": "https://console.example.invalid",
+  "node_id": "nas-main",
+  "username_env": "TIANSHU_VERIFY_USERNAME",
+  "password_file": "/private/authorized-password",
+  "phase": "initial",
+  "register_if_missing": false,
+  "timeout_seconds": 180
+}
+```
+
+也可提供 `username_file`、显式用户名或 `password_env`，密码禁止直接放入 JSON。私有 CA 可通过绝对 `ca_file` 指定。仅明确设置 `register_if_missing:true` 时允许保存缺失节点，默认不写连接。已有停用节点不会被驱动启用。可选 `log_container_id` 必须为已批准的完整 64 位 ID；本次实机仅允许最终 platform 容器。回执不含账号、地址、完整容器 ID、日志正文或秘密，日志仅记录字节数/截断/摘要。`phase:after_restart` 不保存、不刷新、不取日志，等待两次完整后台采集时间推进，验证无需页面触发也持续工作。
+
+`node apps/web/tests/infrastructure-deployment.mjs --input <私有JSON> --output <私有目录>` 用同样的显式 origin/账号引用登录，检查桌面浅色和手机深色的 Docker/节点页面，生成截图和脱敏计数；没有路由替身或 Cookie 导入。Chromium 使用正常信任库，不采用 Python 的 `ca_file`，私有 CA 须由运行环境原本信任。脚本也导出 `inspectAuthenticated(page,input,output,suffix)`，供已有明确授权的登录页面调用，不导出会话。截图只保存在私有目录。本轮用户将亲自登录生产页面，协调者用该既有页面验收；不会为运行驱动获取密码、导出 Cookie 或创建测试账号。
+
+候选 Linux 镜像中的最窄后端检查使用 `tests/backend/test_infrastructure_deployment.py`。把固定测试目录及完整发布合同只读挂载至 `/validation`，不挂生产设置/数据库；设置 `TS012_CONTRACT_DIR=/validation/contracts/text-dialogue/v1`、`TS100_DIAGNOSTICS_CONTRACT_DIR=/validation/contracts/diagnostics/v1`、`TS177_NODE_CONTRACT_DIR=/validation/node-contract`、`TS182_REQUIRE_INSTALLED=1`。节点测试合同须包含固定响应 examples；TS-180 运行包刻意不带测试响应，可单独从固定节点提交归档，不扩运行包。诊断合同保留原字节 manifest `5d89f7a2…`。入口为：
+
+```sh
+/opt/tianshu-venv/bin/python -I -B -c 'import sys,unittest;sys.path.insert(0,"/validation/tests/backend");suite=unittest.defaultTestLoader.discover("/validation/tests/backend",pattern="test_infrastructure_deployment.py");result=unittest.TextTestRunner(verbosity=2).run(suite);sys.exit(not result.wasSuccessful())'
+```
+
+这两项检查使用安装后的 wheel，验证 supervisor 随 wheel 存在，以及实际内部 TLS/公共 HTTP、真实会话、201 容器分页/尾部指标、原合成账号/外部连接保留和重启后两次后台采集；执行器仍是明确合同响应夹具，不称实机。依赖只有候选镜像既有平台 Python 依赖；无需 pip、Paramiko、节点 PyYAML、Docker socket 或外网。容器用 `--network none --read-only --tmpfs /tmp:rw,size=32m,mode=1777 --memory 256m --user 10001:10001` 即可；DSM 的 `--cpus`/`--pids-limit` 不受支持，不作为此次命令前提。
+
+Linux 进程定点用例 `test_infrastructure_posix_lifecycle.py` 另需固定节点 transport 的根目录 `TS182_NODE_TRANSPORT_ROOT`，只调用其 `run_bounded` 启动合成 sleep，不用真实 SSH。协调者的 stdin 归档入口把固定平台/节点源码和测试展开到临时目录，五项分别覆盖取消、执行器先退出、平台父先退出、协议/退出码透传及父 PID 启动窗口。最终实际结果与归档摘要见 [TS-182 交接](../handoffs/TS-182.md)。
