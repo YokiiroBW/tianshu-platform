@@ -3,6 +3,8 @@ import unittest
 from unittest.mock import patch
 
 import test_music_downloads as fixtures
+from services.platform.media.music.audio import probe, embedded_lyrics
+import mutagen
 from services.platform.contracts import Fault
 from services.platform.media.music.lyrics_storage import KIND, archive_key
 from services.platform.media.music.lyrics_text import aligned, coverage, lines, normalize, render
@@ -45,6 +47,7 @@ class MusicLyricsTests(unittest.IsolatedAsyncioTestCase):
         job = await self.archive()
         audio = self.file(job)
         before = (audio.read_bytes(), audio.stat().st_mtime_ns)
+        pcm = job["audio_receipt"]["content_id"]
 
         async def search(query, cookie):
             return [{**job["track"], "source_id": "qq-test", "provider": "qq"}]
@@ -56,7 +59,9 @@ class MusicLyricsTests(unittest.IsolatedAsyncioTestCase):
         result = await self.music.lyrics.tick(job["recording_id"])
         self.assertTrue(result["coverage"]["synced"])
         self.assertEqual(result["source"]["provider"], "qq")
-        self.assertEqual((audio.read_bytes(), audio.stat().st_mtime_ns), before)
+        self.assertNotEqual((audio.read_bytes(), audio.stat().st_mtime_ns), before)
+        self.assertEqual((await probe(audio, None, self.media.config["engine"]))["content_id"], pcm)
+        self.assertTrue(result["audio_tags_updated"])
 
     async def test_empty_results_wait_a_week_and_audio_upgrade_invalidates_lyric_check(self):
         async def empty(*args):
@@ -72,6 +77,39 @@ class MusicLyricsTests(unittest.IsolatedAsyncioTestCase):
         with self.repo.transaction() as db:
             self.library.catalog.store_file(job["recording_id"], artifact, db)
         self.assertEqual(self.music.lyrics.plan()["recording_id"], job["recording_id"])
+
+    async def test_native_tag_backfill_preserves_existing_cloud_retry_deadline(self):
+        async def plain(*args):
+            return {"original": "hello"}
+
+        self.api.lyrics = plain
+        job = await self.archive()
+        deadline = self.repo.clock() + 23000
+        prior = self.repo.get(KIND, job["recording_id"])
+        self.repo.put(
+            KIND,
+            job["recording_id"],
+            {
+                **prior,
+                "version": 1,
+                "state": "retry_wait",
+                "next_check_at": deadline,
+                "attempts": 2,
+                "providers": [
+                    {"provider": "netease", "failed": True, "code": "music_request_budget"}
+                ],
+            },
+        )
+
+        async def forbidden(*args):
+            self.fail("tag backfill must preserve cloud retry deadline")
+
+        self.api.lyrics = forbidden
+        await self.music.lyrics.tick()
+        checked = self.repo.get(KIND, job["recording_id"])
+        self.assertEqual(checked["version"], 2)
+        self.assertEqual(checked["attempts"], 2)
+        self.assertEqual(checked["next_check_at"], deadline)
 
     async def archive(self, missing=False):
         if missing:
@@ -136,14 +174,72 @@ class MusicLyricsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["source"]["provider"], "qq")
         self.assertEqual(calls, ["search", "lyrics"])
         self.assertTrue(result["coverage"]["translation_synced"])
+        self.assertEqual(self.audio_transfers, before[2])
+        self.assertNotEqual(audio.read_bytes(), before[0])
         self.assertEqual(
-            (audio.read_bytes(), audio.stat().st_mtime_ns, self.audio_transfers), before
+            (await probe(audio, None, self.media.config["engine"]))["content_id"],
+            job["audio_receipt"]["content_id"],
         )
+        self.assertIn("hello ／ 你好", embedded_lyrics(mutagen.File(audio)))
         self.assertEqual(self.repo.job_count(), 1)
         self.assertTrue(
             self.music.downloads.storage.matches(self.library.catalog.file(job["recording_id"]))
         )
         self.assertIsNotNone(self.music.downloads.storage.available(job))
+
+    async def test_tag_replacement_recovers_after_exchange_and_notifies_existing_nav_links(self):
+        job = await self.archive(missing=True)
+
+        async def lyrics(*args):
+            return {"original": "[00:01.00]hello", "translated": "[00:01.00]你好"}
+
+        self.api.lyrics = lyrics
+        with self.repo.transaction() as db:
+            self.repo.put(
+                "music_navidrome", "server", {"enabled": True, "connection_id": "nav"}, db=db
+            )
+            self.repo.put(
+                "music_navidrome_playlist",
+                "link",
+                {
+                    "link_id": "link",
+                    "playlist_id": self.playlist["playlist_id"],
+                    "connection_id": "nav",
+                    "auto_sync": True,
+                    "status": "synced",
+                    "remote_id": "keep-me",
+                    "members": [{"recording_id": job["recording_id"], "song_id": "song"}],
+                    "next_sync_at": 9999999999,
+                    "scan_requested_digest": "old",
+                },
+                db=db,
+            )
+        with patch(
+            "services.platform.media.music.lyrics_storage.sync_directory",
+            side_effect=OSError("synthetic interruption"),
+        ):
+            self.assertIsNone(await self.music.lyrics.tick(job["recording_id"]))
+        pending = self.repo.get(KIND, job["recording_id"])["pending"]
+        self.assertTrue(pending["audio"])
+        result = await self.music.lyrics.tick(job["recording_id"])
+        self.assertTrue(result["audio_tags_updated"])
+        self.assertEqual(
+            (await probe(self.file(job), None, self.media.config["engine"]))["content_id"],
+            job["audio_receipt"]["content_id"],
+        )
+        link = self.repo.get("music_navidrome_playlist", "link")
+        self.assertEqual(link["remote_id"], "keep-me")
+        self.assertEqual(link["next_sync_at"], 0)
+        self.assertIsNone(link["scan_requested_digest"])
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+        # Replaying an audio job still reuses the retagged archive and keeps the
+        # highest-quality comparison; no second full audio transfer occurs.
+        self.repo.update_job(
+            job["job_id"], {"state": "queued", "stage": "queued", "code": "queued"}
+        )
+        repeated = await self.run_job()
+        self.assertTrue(repeated["audio_reused"])
+        self.assertEqual(self.audio_transfers, 1)
 
     async def test_failure_is_durable_low_frequency_and_other_provider_continues(self):
         job = await self.archive(missing=True)
