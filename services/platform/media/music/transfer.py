@@ -35,7 +35,11 @@ def media_url(value, provider, *, artwork=False):
     except (ValueError, TypeError):
         valid = False
     require(valid, "music_download_url_invalid", 502)
-    return url._replace(scheme="https", netloc=host, fragment="").geturl()
+    # Kugou still issues signed HTTP links on CDN hosts without a valid TLS
+    # certificate. Preserve that explicit transport; never disable TLS checks
+    # or downgrade a URL that the provider issued as HTTPS. No cookies travel here.
+    scheme = url.scheme if provider == "kugou" and not artwork else "https"
+    return url._replace(scheme=scheme, netloc=host, fragment="").geturl()
 
 
 def cdn_url(value):

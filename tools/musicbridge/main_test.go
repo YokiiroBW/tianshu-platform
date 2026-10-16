@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -9,6 +10,18 @@ import (
 
 	"github.com/guohuiyuan/music-lib/model"
 )
+
+func TestKugouQualityFailureDoesNotHideRateLimit(t *testing.T) {
+	for _, sample := range []struct{ message, code string }{
+		{"kugou song info unavailable, errcode=0", "music_quality_unavailable"},
+		{"kugou song info unavailable, errcode=1002", "music_rate_limited"},
+		{"kugou song info unavailable, errcode=2004", "music_upstream_unavailable"},
+	} {
+		if got := errorCode(errors.New(sample.message)); got != sample.code {
+			t.Fatalf("got %s, want %s", got, sample.code)
+		}
+	}
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

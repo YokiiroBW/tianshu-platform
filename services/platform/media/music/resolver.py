@@ -1,7 +1,9 @@
 """Automatic, per-song entitlement routing across connected music accounts."""
 
 from ...contracts import Fault, require
-from .catalog import same_recording, search_title
+from collections import Counter
+
+from .catalog import recording_mismatch, search_title
 from .quality import LEVELS, aggregate, requested_levels
 from .request_control import Deferred
 
@@ -43,6 +45,25 @@ class Resolver:
         require(accounts, "music_auth_required", 409)
         offers, failures = [], []
         original = {**job["track"], "provider": job.get("provider", "netease")}
+        stored = await local(library.catalog.source, job["source_key"])
+        if stored and stored["metadata"].get("metadata_enriched"):
+            original = {**stored["metadata"], "provider": original["provider"]}
+        for account in accounts:
+            if account["provider"] != original["provider"]:
+                continue
+            client = self.music.client(account["provider"])
+            if hasattr(client, "enrich"):
+                try:
+                    _, cookie = await local(library.account, account["account_id"])
+                    original = await client.enrich(original, cookie)
+                    report["metadata_enriched"] = bool(original.get("metadata_enriched"))
+                except Fault as error:
+                    if isinstance(error, Deferred):
+                        raise
+                    report["metadata_code"] = error.code
+            break
+        # Refresh the existing source's lookup key before binding another provider.
+        await local(self.bind, original["provider"], original, job["recording_id"])
         for account in accounts:
             provider = account["provider"]
             client = self.music.client(provider)
@@ -57,9 +78,16 @@ class Resolver:
                     if not candidates:
                         query = search_title(original) + " " + " ".join(original.get("artists", []))
                         found = await client.search(query, cookie)
+                        reasons = [recording_mismatch(original, t) for t in found]
+                        checked["search_results"] = len(found)
+                        checked["rejected_matches"] = dict(
+                            Counter(reason for reason in reasons if reason)
+                        )
                         candidates = list(
                             {
-                                t["source_id"]: t for t in found if same_recording(original, t)
+                                t["source_id"]: t
+                                for t, reason in zip(found, reasons)
+                                if reason is None
                             }.values()
                         )
                         # Multiple editions with indistinguishable metadata need explicit identity evidence.
@@ -110,6 +138,14 @@ class Resolver:
                 code in {"music_auth_required", "music_account_unavailable"} for code in failures
             ):
                 raise Fault("music_auth_required", 409)
+            for code in (
+                "music_upstream_unavailable",
+                "music_download_unavailable",
+                "music_upstream_rejected",
+            ):
+                if code in failures:
+                    # One rejected entitlement must not hide another channel's failed query.
+                    raise Fault(code, 502)
             if "music_download_forbidden" in failures or "music_preview_rejected" in failures:
                 raise Fault("music_download_forbidden", 409)
             if failures:

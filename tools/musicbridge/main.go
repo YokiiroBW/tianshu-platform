@@ -285,14 +285,7 @@ func execute(r request) (any, error) {
 		if r.Provider == "qq" {
 			return resolveQQ(r)
 		}
-		link, err := c.GetDownloadURL(&r.Song)
-		if err != nil {
-			return nil, err
-		}
-		if link == "" {
-			return nil, errors.New("download forbidden")
-		}
-		return map[string]any{"url": link, "level": "observed", "size": nil, "md5": nil}, nil
+		return resolveKugou(r)
 	}
 	return nil, errors.New("unsupported operation")
 }
@@ -307,6 +300,12 @@ func playlist(c client, id string) (any, error) {
 
 func errorCode(err error) string {
 	value := strings.ToLower(err.Error())
+	if strings.Contains(value, "kugou song info unavailable, errcode=1002") {
+		return "music_rate_limited"
+	}
+	if strings.Contains(value, "kugou song info unavailable, errcode=0") {
+		return "music_quality_unavailable"
+	}
 	if strings.Contains(value, "rate limited") || strings.Contains(value, "too many requests") {
 		return "music_rate_limited"
 	}

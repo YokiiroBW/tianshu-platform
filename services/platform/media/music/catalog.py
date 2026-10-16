@@ -15,7 +15,16 @@ def normalized(value):
 
 
 def artists(track):
-    return sorted({normalized(a) for a in track.get("artists", []) if normalized(a)})
+    # Some providers serialize a list of credits as one slash-delimited string.
+    # Normalize only the comparison key; preserve the supplied display/tag names.
+    return sorted(
+        {
+            normalized(name)
+            for credit in track.get("artists", [])
+            for name in re.split(r"\s*/\s*|、", credit)
+            if normalized(name)
+        }
+    )
 
 
 def search_title(track):
@@ -32,15 +41,27 @@ def lookup_key(track):
     return digest({"title": title, "artists": names}) if title and names else None
 
 
-def same_recording(left, right):
-    """Only a unique, corroborated metadata match is eligible before hearing the audio."""
+def album_identity(track):
+    value = unicodedata.normalize("NFKC", str(track.get("album") or ""))
+    # Catalogs disagree about whether the advisory belongs in the album title.
+    # Keep the advisory separately so explicit and clean editions cannot match.
+    match = re.search(r"\s*[\[(](explicit|clean)(?:\s+(?:version|edition))?[\])]\s*$", value, re.I)
+    return (
+        (normalized(value[: match.start()]), match[1].casefold())
+        if match
+        else (normalized(value), None)
+    )
+
+
+def recording_mismatch(left, right):
+    """Explain a rejected metadata candidate without conflating it with entitlement."""
     if not lookup_key(left) or lookup_key(left) != lookup_key(right):
-        return False
+        return "title_or_artists"
     durations = [value.get("duration_ms") for value in (left, right)]
     if not all(isinstance(d, (int, float)) and d > 0 for d in durations):
-        return False
+        return "missing_duration"
     if abs(durations[0] - durations[1]) > min(2000, min(durations) * 0.008):
-        return False
+        return "duration"
     version_words = r"live|remaster(?:ed)?|remix|acoustic|instrumental|karaoke|现场|翻唱|重制|伴奏|纯音乐|演唱会"
     versions = [
         sorted(
@@ -49,16 +70,24 @@ def same_recording(left, right):
         for t in (left, right)
     ]
     if versions[0] != versions[1]:
-        return False
+        return "version"
+    left_album, left_edition = album_identity(left)
+    right_album, right_edition = album_identity(right)
+    if left_edition and right_edition and left_edition != right_edition:
+        return "edition"
     a, b = normalized(left.get("isrc")), normalized(right.get("isrc"))
     if a and b:
-        return a == b
+        return None if a == b else "isrc"
     for key in ("disc", "track_number"):
         a, b = str(left.get(key) or "").lstrip("0"), str(right.get(key) or "").lstrip("0")
         if a and b and a != b:
-            return False
-    album = normalized(left.get("album"))
-    return bool(album and album == normalized(right.get("album")))
+            return "disc_or_track"
+    return None if left_album and left_album == right_album else "album"
+
+
+def same_recording(left, right):
+    """Only a unique, corroborated metadata match is eligible before hearing the audio."""
+    return recording_mismatch(left, right) is None
 
 
 def source_key(provider, identity, private_scope=""):
@@ -98,7 +127,34 @@ class Catalog:
         candidates, method = [], "source"
         if existing:
             identity = self.resolve(existing["recording_id"], db)
+            previous_identity = identity
             method = existing.get("match_method", "source")
+            if (
+                track.get("metadata_enriched")
+                and method != "user"
+                and not self.file(identity, db=db)
+            ):
+                targets = {self.resolve(i, db) for i in (indexed or {}).get("recordings", [])}
+                exact = [
+                    i
+                    for i in targets
+                    if i != identity
+                    and same_recording(
+                        track, self.repo._document(db, "music_recording", i)["metadata"]
+                    )
+                ]
+                # Reuse an existing recording only after a same-hash metadata refresh,
+                # and never merge away an archived file or an explicit user binding.
+                if len(exact) == 1:
+                    identity = self.merge(identity, exact[0], db)
+                    method = "metadata_strict"
+            recording = self.repo._document(db, "music_recording", identity)
+            if (
+                track.get("metadata_enriched")
+                and identity == previous_identity
+                and recording["metadata"].get("source_id") == track["source_id"]
+            ):
+                self.repo.put("music_recording", identity, {**recording, "metadata": track}, db=db)
         else:
             candidates = sorted(
                 {self.resolve(i, db) for i in (indexed or {}).get("recordings", [])}

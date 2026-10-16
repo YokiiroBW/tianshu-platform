@@ -81,6 +81,76 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         matched = {**original, "isrc": "CN-A01-26-00001"}
         self.assertTrue(same_recording(matched, {**matched, "album": "精选集", "track_number": 9}))
 
+    def test_joined_credits_and_album_advisory_match_without_merging_other_editions(self):
+        original = {
+            **self.api.value["tracks"][0],
+            "artists": ["Artist A/Artist B"],
+            "album": "Album (Explicit)",
+        }
+        candidate = {**original, "artists": ["Artist B", "Artist A"], "album": "Album"}
+        self.assertEqual(lookup_key(original), lookup_key(candidate))
+        self.assertTrue(same_recording(original, candidate))
+        for changes in (
+            {"album": "Album (Clean)"},
+            {"album": "Album (Live)"},
+            {"album": "Another Album"},
+            {"duration_ms": None},
+            {"artists": ["Artist C"]},
+        ):
+            self.assertFalse(same_recording(original, {**candidate, **changes}))
+        with self.repo.transaction() as db:
+            first = self.library.catalog.register("kugou", original, db)
+            second = self.library.catalog.register("qq", {**candidate, "source_id": "qq-other"}, db)
+        self.assertEqual(first["recording_id"], second["recording_id"])
+
+    def test_same_hash_metadata_enrichment_keeps_recording_and_enables_cross_source_binding(self):
+        original = {**self.api.value["tracks"][0], "artists": [], "album": "", "duration_ms": None}
+        enriched = {**self.api.value["tracks"][0], "metadata_enriched": True}
+        with self.repo.transaction() as db:
+            first = self.library.catalog.register("kugou", original, db)
+            refreshed = self.library.catalog.register("kugou", enriched, db)
+            second = self.library.catalog.register(
+                "qq", {**enriched, "source_id": "qq-enriched", "metadata_enriched": False}, db
+            )
+        self.assertEqual(
+            self.library.catalog.recording(first["recording_id"])["recording_id"],
+            refreshed["recording_id"],
+        )
+        self.assertEqual(refreshed["recording_id"], second["recording_id"])
+
+    def test_enrichment_preserves_existing_archive_and_explicit_identity(self):
+        for protection in ("archive", "user"):
+            original = {
+                **self.api.value["tracks"][0],
+                "source_id": protection,
+                "album": "",
+                "duration_ms": None,
+            }
+            enriched = {
+                **self.api.value["tracks"][0],
+                "source_id": protection,
+                "metadata_enriched": True,
+            }
+            with self.repo.transaction() as db:
+                first = self.library.catalog.register("kugou", original, db)
+                if protection == "archive":
+                    self.repo.put(
+                        "music_library_file",
+                        first["recording_id"],
+                        {"quality": {"level": "lossless"}},
+                        db=db,
+                    )
+                else:
+                    source = self.repo._document(db, "music_source", first["source_key"])
+                    self.repo.put(
+                        "music_source",
+                        first["source_key"],
+                        {**source, "match_method": "user"},
+                        db=db,
+                    )
+                refreshed = self.library.catalog.register("kugou", enriched, db)
+            self.assertEqual(first["recording_id"], refreshed["recording_id"])
+
     def test_strict_playlist_quality_is_not_weakened_by_another_playlist(self):
         combined = aggregate(
             [

@@ -34,6 +34,21 @@ from services.platform.media.worker import Worker
 
 
 class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
+    def test_kugou_preserves_official_http_but_never_downgrades_https_or_sends_credentials(self):
+        address = "http://fs.youthandroid2.kugou.com/fixture.mp3?key=synthetic"
+        self.assertEqual(media_url(address, "kugou"), address)
+        self.assertEqual(
+            media_url(address.replace("http:", "https:"), "kugou"),
+            address.replace("http:", "https:"),
+        )
+        for unsafe in (
+            "http://kugou.com.evil.invalid/a",
+            "http://user:password@fs.kugou.com/a",
+            "http://fs.kugou.com:8080/a",
+        ):
+            with self.assertRaises(Fault):
+                media_url(unsafe, "kugou")
+
     @classmethod
     def setUpClass(cls):
         cls.ffmpeg = os.environ.get("MEDIA_TEST_FFMPEG") or shutil.which("ffmpeg")

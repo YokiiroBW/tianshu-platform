@@ -1,8 +1,9 @@
 import copy
 import unittest
+from unittest.mock import AsyncMock
 
 from services.platform.contracts import Fault
-from services.platform.media.music.providers import Bridge
+from services.platform.media.music.providers import Bridge, track
 
 
 class RecordedBridge(Bridge):
@@ -30,6 +31,69 @@ class RecordedBridge(Bridge):
 
 
 class MusicProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_kugou_download_uses_each_quality_hash_without_repeating_sq(self):
+        api = Bridge("kugou")
+        api.call = AsyncMock(
+            return_value={
+                "url": "http://fs.example.kugou.com/audio.mp3?key=fixture",
+                "level": "observed",
+            }
+        )
+        value = track(
+            {
+                "id": "a" * 32,
+                "extra": {
+                    "hash": "a" * 32,
+                    "sq_hash": "a" * 32,
+                    "hq_hash": "b" * 32,
+                    "file_hash": "c" * 32,
+                },
+            },
+            "kugou",
+        )
+        with self.assertRaises(Fault) as error:
+            await api.download_track(value, "hires", {})
+        self.assertEqual(error.exception.code, "music_quality_unavailable")
+        api.call.assert_not_awaited()
+        for level, expected in (
+            ("lossless", "a" * 32),
+            ("exhigh", "b" * 32),
+            ("standard", "c" * 32),
+        ):
+            offer = await api.download_track(value, level, {})
+            song = api.call.call_args.kwargs["song"]
+            self.assertEqual(song["id"], expected)
+            self.assertEqual(song["extra"]["hash"], expected)
+            self.assertNotIn("sq_hash", song["extra"])
+            self.assertTrue(offer["url"].startswith("http://"))
+
+    async def test_missing_metadata_requires_shared_hash_and_keeps_playlist_identity(self):
+        api = Bridge("kugou")
+        original = track(
+            {"id": "a" * 32, "name": "Local filename.mp3", "extra": {"hq_hash": "b" * 32}}, "kugou"
+        )
+        canonical = track(
+            {
+                "id": "c" * 32,
+                "name": "Recording (Extended)",
+                "artist": "Artist",
+                "album": "Album",
+                "duration": 300,
+                "extra": {"hq_hash": "b" * 32},
+            },
+            "kugou",
+        )
+        api._search = AsyncMock(return_value=[{**canonical, "provider_data": {}}])
+        self.assertEqual(await api.enrich(original, {}), original)
+        api._search.return_value = [canonical]
+        enriched = await api.enrich(original, {"_music_account_revision": 2})
+        self.assertEqual(enriched["source_id"], original["source_id"])
+        self.assertEqual(enriched["duration_ms"], 300000)
+        self.assertEqual(enriched["title"], "Recording (Extended)")
+        self.assertTrue(enriched["metadata_enriched"])
+        self.assertEqual(await api.enrich(original, {"_music_account_revision": 2}), enriched)
+        self.assertEqual(api._search.await_count, 2)
+
     async def test_missing_song_id_preserves_position_without_blocking_valid_members(self):
         api = RecordedBridge(
             "123",

@@ -7,8 +7,29 @@ from . import tools
 from .transfer import media_url
 from .request_control import request_slot
 from .metadata_cache import MetadataCache
+from .catalog import search_title
 
 PROVIDERS = {"netease": "网易云音乐", "qq": "QQ 音乐", "kugou": "酷狗音乐"}
+KUGOU_HASHES = {
+    "hires": ("res_hash",),
+    "lossless": ("sq_hash", "sqhash"),
+    "exhigh": ("hq_hash", "hqhash", "ogg_320_hash"),
+    "higher": ("hq_hash", "hqhash", "ogg_320_hash"),
+    "standard": ("file_hash", "ogg_128_hash"),
+}
+
+
+def kugou_hashes(value):
+    extra = value.get("provider_data") or {}
+    return {
+        str(v).lower()
+        for v in [
+            value.get("source_id"),
+            extra.get("hash"),
+            *[extra.get(k) for keys in KUGOU_HASHES.values() for k in keys],
+        ]
+        if isinstance(v, str) and re.fullmatch(r"[a-fA-F0-9]{32}", v)
+    }
 
 
 def identity(value):
@@ -257,10 +278,64 @@ class Bridge:
         rows = await self.call("search", cookie, query=query)
         return [track(row, self.provider) for row in (rows or [])[:30]]
 
+    async def enrich(self, value, cookie):
+        if self.provider != "kugou" or all(
+            value.get(k) for k in ("artists", "album", "duration_ms")
+        ):
+            return value
+
+        async def fetch():
+            query = search_title(value) + " " + " ".join(value.get("artists", []))
+            rows = await self._search(query.strip(), cookie)
+            hashes = kugou_hashes(value)
+            matches = [row for row in rows if hashes & kugou_hashes(row)]
+            if not matches:
+                return value
+            signatures = {
+                digest({k: row.get(k) for k in ("title", "artists", "album", "duration_ms")})
+                for row in matches
+            }
+            require(len(signatures) == 1, "music_match_ambiguous", 409)
+            found = matches[0]
+            return {
+                **value,
+                **{k: v for k, v in found.items() if v and k not in {"source_id", "provider_data"}},
+                "source_id": value["source_id"],
+                "provider_data": {
+                    **value.get("provider_data", {}),
+                    **found.get("provider_data", {}),
+                },
+                "metadata_enriched": True,
+            }
+
+        # A hash match, never a title guess, supplies missing source metadata.
+        return await self.cache.read("enrich", cookie, value, fetch, ttl=86400)
+
     async def download_track(self, value, level, cookie):
-        offered = await self.call(
-            "download", cookie, level=level, song=bridge_song(value, self.provider)
-        )
+        song = bridge_song(value, self.provider)
+        if self.provider == "kugou":
+            extra = song["extra"]
+            fields = {key for keys in KUGOU_HASHES.values() for key in keys}
+            known = any(extra.get(key) for key in fields)
+            selected = next(
+                (
+                    extra[key]
+                    for key in KUGOU_HASHES["hires" if level == "best" else level]
+                    if extra.get(key)
+                ),
+                None,
+            )
+            if not known:
+                selected = extra.get("hash") or song["id"]
+            require(selected, "music_quality_unavailable", 409)
+            # A playlist can name the SQ hash even when the account can only get MP3.
+            # The resolver tries each tier; do not silently retry that same SQ hash.
+            song = {
+                **song,
+                "id": selected,
+                "extra": {**{k: v for k, v in extra.items() if k not in fields}, "hash": selected},
+            }
+        offered = await self.call("download", cookie, level=level, song=song)
         offered["url"] = media_url(offered["url"], self.provider)
         require(
             offered.get("level")

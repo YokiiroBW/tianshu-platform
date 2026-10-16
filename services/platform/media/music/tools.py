@@ -61,6 +61,7 @@ async def invoke(name, request, *, timeout=120, meter=None):
                     seconds if type(seconds) in (int, float) and 0 <= seconds <= 2592000 else 0
                 )
             allowed = {
+                "music_quality_unavailable",
                 "music_download_forbidden",
                 "music_auth_required",
                 "music_upstream_invalid",
