@@ -249,7 +249,7 @@ class InfrastructurePosixLifetimeTests(unittest.IsolatedAsyncioTestCase):
             "-B",
             supervisor.__file__,
             "--parent-pid",
-            "1",
+            str(os.getpid() + 1),
             "--",
             sys.executable,
             "-c",

@@ -31,12 +31,18 @@ def adopt_descendants(parent_pid):
 def retire_children(executor):
     # Killing a direct child reparents its descendants here, regardless of setsid.
     # Repeat kill+wait until ECHILD, rather than relying on a snapshot of a running tree.
-    children_file = Path(f"/proc/self/task/{os.getpid()}/children")
+    owner = os.getpid()
     while True:
-        for value in children_file.read_text().split():
+        # DSM kernels may omit /proc/<pid>/task/<tid>/children. stat's PPid is
+        # available there; only direct, still-unwaited children belong to us.
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdecimal():
+                continue
             try:
-                os.kill(int(value), signal.SIGKILL)
-            except ProcessLookupError:
+                fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                if int(fields[1]) == owner:
+                    os.kill(int(entry.name), signal.SIGKILL)
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
                 pass
         while True:
             try:
