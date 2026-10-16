@@ -29,7 +29,15 @@ class WebMusic:
                 "routing": "automatic",
                 "imports": await local(music.imports.view),
                 "navidrome": await local(music.navidrome.state.view),
+                "maintenance": await local(music.maintenance.view),
             }
+        if operation == "maintenance/save":
+            self.fields(
+                body, {"enabled", "playlist_interval_seconds", "expected_revision", "client_id"}
+            )
+            return await self.web.receipt(
+                body, "music/" + operation, session, lambda db: music.maintenance.save(body, db)
+            )
         if operation == "library/scan":
             self.fields(body, set())
             result = await local(music.imports.enqueue)
@@ -119,7 +127,11 @@ class WebMusic:
             account, cookie = await local(library.account, body["account_id"])
             connector = music.client(account["provider"])
             try:
-                result = await connector.playlists(account["user_id"], cookie)
+                result = (
+                    await connector.playlists(account["user_id"], cookie, fresh=True)
+                    if hasattr(connector, "cache")
+                    else await connector.playlists(account["user_id"], cookie)
+                )
             except TimeoutError:
                 raise Fault("music_upstream_unavailable", 502) from None
             except Fault as error:

@@ -75,6 +75,20 @@ async function musicFixture(page: Page, connected = true) {
         body: JSON.stringify(value),
       });
     if (operation === "view") return reply(state.view);
+    if (operation === "maintenance/save") {
+      const settings = state.view.maintenance!.settings;
+      if (body.expected_revision !== settings.revision)
+        return reply({ code: "version_conflict" }, 409);
+      settings.enabled = Boolean(body.enabled);
+      settings.playlist_interval_seconds = Number(
+        body.playlist_interval_seconds,
+      );
+      settings.revision += 1;
+      return reply({
+        settings,
+        playlists_updated: state.view.playlists.length,
+      });
+    }
     if (operation === "navidrome/test")
       return reply({
         version: "synthetic",
@@ -750,4 +764,72 @@ test("incomplete sync and account disconnect retain the local playlist", async (
       .getByRole("region", { name: "歌单歌曲", exact: true })
       .getByRole("cell", { name: "清晨", exact: true }),
   ).toHaveCount(2);
+});
+
+test("music maintenance keeps 12 hour sync separate from weekly checks and exposes shared cooldown", async ({
+  page,
+}) => {
+  const state = await musicFixture(page);
+  state.view.maintenance = {
+    settings: {
+      enabled: true,
+      interval_seconds: 604800,
+      playlist_interval_seconds: 43200,
+      revision: 1,
+    },
+    counts: { tracked: 100, checked: 80, due: 20, upgrades: 5 },
+    requests: {
+      interval_seconds: 3,
+      hourly_limit: 600,
+      daily_limit: 3000,
+      scopes: [
+        {
+          provider: "netease",
+          account_id: null,
+          hour_used: 100,
+          day_used: 300,
+          cooldown_until: Date.now() / 1000 + 1800,
+          auth_required: false,
+          code: "music_rate_limited",
+        },
+      ],
+    },
+    recent: [
+      {
+        recording_id: "song-1",
+        title: "合成升级歌曲",
+        outcome: "upgraded",
+        checked_at: 1792079887,
+      },
+    ],
+  };
+  await page.goto("/#/subscriptions/5");
+  const panel = page.getByRole("region", { name: "音乐自动维护" });
+  await expect(panel).toContainText("每 7 天");
+  await expect(page.getByLabel("歌单自动同步周期")).toHaveValue("43200");
+  await expect(
+    page.getByRole("combobox", { name: "同步周期", exact: true }),
+  ).toHaveValue("43200");
+  await panel.getByText("请求节流与最近检查", { exact: true }).click();
+  await expect(panel).toContainText("冷却至");
+  await expect(panel).toContainText("合成升级歌曲");
+  await panel.getByRole("checkbox").uncheck();
+  await panel.getByRole("button", { name: "保存维护设置" }).click();
+  await expect(panel).toContainText("已暂停");
+  const saved = state.calls.find(
+    (call) => call.operation === "maintenance/save",
+  )!;
+  expect(saved.body).toMatchObject({
+    enabled: false,
+    playlist_interval_seconds: 43200,
+    expected_revision: 1,
+  });
+  expect(saved.body.client_id).toMatch(/^[0-9a-f-]{36}$/);
+  await page.reload();
+  await expect(panel.getByRole("checkbox")).not.toBeChecked();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
 });

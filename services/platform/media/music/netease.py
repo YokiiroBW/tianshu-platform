@@ -14,6 +14,8 @@ from ...contracts import Fault, require
 from .protocol import compact, eapi, weapi
 from .quality import LEVELS
 from .transfer import cdn_url
+from .request_control import Limited, request_slot, retry_after
+from .metadata_cache import MetadataCache
 
 MAX_TRACKS = 20000
 COOKIE_NAMES = {"MUSIC_U", "MUSIC_A", "__csrf", "NMTID", "__remember_me", "deviceId"}
@@ -88,11 +90,17 @@ def track_info(row):
 
 class Netease:
     def __init__(
-        self, *, web_origin="https://music.163.com", api_origin="https://interface.music.163.com"
+        self,
+        *,
+        web_origin="https://music.163.com",
+        api_origin="https://interface.music.163.com",
+        control=None,
     ):
         self.web_origin = web_origin.rstrip("/")
         self.api_origin = api_origin.rstrip("/")
         self.session = None
+        self.control = control
+        self.cache = MetadataCache()
 
     async def close(self):
         if self.session is not None:
@@ -100,6 +108,15 @@ class Netease:
             self.session = None
 
     async def request(self, path, data, cookie=None, *, mode="weapi", codes=(200,)):
+        async with request_slot(
+            self.control,
+            "netease",
+            (cookie or {}).get("_music_account_id"),
+            account_revision=(cookie or {}).get("_music_account_revision"),
+        ):
+            return await self._request(path, data, cookie, mode=mode, codes=codes)
+
+    async def _request(self, path, data, cookie=None, *, mode="weapi", codes=(200,)):
         if self.session is None:
             self.session = aiohttp.ClientSession(
                 cookie_jar=aiohttp.DummyCookieJar(), timeout=aiohttp.ClientTimeout(total=15)
@@ -132,7 +149,9 @@ class Netease:
             async with self.session.post(
                 url, data=form, cookies=cookies, headers=headers, allow_redirects=False
             ) as response:
-                require(response.status != 429, "music_rate_limited", 429)
+                if response.status == 429:
+                    raise Limited(retry_after(response.headers.get("Retry-After"), time.time()))
+                require(response.status != 401, "music_auth_required", 409)
                 require(response.status == 200, "music_upstream_unavailable", 502)
                 raw = bytearray()
                 async for chunk in response.content.iter_chunked(65536):
@@ -142,7 +161,8 @@ class Netease:
                 require(isinstance(value, dict), "music_upstream_invalid", 502)
                 code = value.get("code")
                 require(code not in {301, 401}, "music_auth_required", 409)
-                require(code not in {429, 460}, "music_rate_limited", 429)
+                if code in {429, 460}:
+                    raise Limited(retry_after(response.headers.get("Retry-After"), time.time()))
                 require(code in codes, "music_upstream_rejected", 502)
                 received = {k: v.value for k, v in response.cookies.items() if k in COOKIE_NAMES}
                 return value, {**retained, **received}
@@ -184,6 +204,11 @@ class Netease:
         }
 
     async def search(self, query, cookie):
+        if self.control is None:
+            return await self._search(query, cookie)
+        return await self.cache.read("search", cookie, query, lambda: self._search(query, cookie))
+
+    async def _search(self, query, cookie):
         require(isinstance(query, str) and 0 < len(query) <= 512, "invalid_input", 400)
         value, _ = await self.request(
             "/api/cloudsearch/pc", {"s": query, "type": 1, "limit": 30, "offset": 0}, cookie
@@ -263,7 +288,14 @@ class Netease:
             "date": date,
         }
 
-    async def playlists(self, uid, cookie):
+    async def playlists(self, uid, cookie, *, fresh=False):
+        if self.control is None:
+            return await self._playlists(uid, cookie)
+        return await self.cache.read(
+            "playlists", cookie, uid, lambda: self._playlists(uid, cookie), fresh=fresh
+        )
+
+    async def _playlists(self, uid, cookie):
         result, seen = [], set()
         async with asyncio.timeout(90):
             for offset in range(0, 10000, 100):
@@ -289,6 +321,9 @@ class Netease:
         raise Fault("music_snapshot_too_large", 502)
 
     async def snapshot(self, playlist_id, uid, cookie):
+        return await self.snapshot_since(playlist_id, uid, cookie, None)
+
+    async def snapshot_since(self, playlist_id, uid, cookie, previous):
         async def detail():
             value, _ = await self.request(
                 "/api/v6/playlist/detail",
@@ -311,6 +346,14 @@ class Netease:
             return info, ids
 
         info, ids = await detail()
+        if (
+            previous
+            and previous.get("complete")
+            and isinstance(info["source_updated_at"], int)
+            and info["source_updated_at"] == previous.get("source_updated_at")
+            and ids == previous.get("entries")
+        ):
+            return {"playlist": info, "entries": ids, "unchanged": True}
         tracks = {}
         unique = list(dict.fromkeys(ids))
         for offset in range(0, len(unique), 300):

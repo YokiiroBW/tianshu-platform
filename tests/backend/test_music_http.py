@@ -14,6 +14,24 @@ class MusicHttpTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = existing.MediaRuntimeTests.asyncSetUp
     post = existing.MediaRuntimeTests.post
 
+    async def test_maintenance_schedule_receipt_and_public_control_state(self):
+        await self.login_music()
+        view = await self.post("music/view", {})
+        self.assertFalse(view["maintenance"]["settings"]["enabled"])
+        command = {
+            "enabled": True,
+            "playlist_interval_seconds": 43200,
+            "expected_revision": 0,
+            "client_id": str(uuid.uuid4()),
+        }
+        saved = await self.post("music/maintenance/save", command)
+        self.assertTrue(saved["settings"]["enabled"])
+        self.assertTrue((await self.post("music/maintenance/save", command))["replayed"])
+        await self.post("music/maintenance/save", {**command, "client_id": str(uuid.uuid4())}, 409)
+        view = await self.post("music/view", {})
+        self.assertEqual(view["maintenance"]["settings"]["playlist_interval_seconds"], 43200)
+        self.assertNotIn("secret", json.dumps(view["maintenance"]))
+
     async def test_navidrome_connection_playlist_receipts_and_auth(self):
         from test_music_navidrome import SyntheticNavidrome
 

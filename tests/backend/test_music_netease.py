@@ -58,6 +58,21 @@ class RecordedNetease(Netease):
 
 
 class MusicNeteaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unchanged_version_and_members_skip_track_detail_but_unknown_version_does_not(
+        self,
+    ):
+        api = RecordedNetease()
+        first = await api.snapshot("900", "123", {})
+        previous = {**first["playlist"], "entries": first["entries"], "complete": True}
+        api.requests.clear()
+        unchanged = await api.snapshot_since("900", "123", {}, previous)
+        self.assertTrue(unchanged["unchanged"])
+        self.assertEqual(len(api.requests), 1)
+        self.assertNotIn("tracks", unchanged)
+        api.requests.clear()
+        await api.snapshot_since("900", "123", {}, {**previous, "source_updated_at": None})
+        self.assertTrue(any(path == "/api/v3/song/detail" for path, _ in api.requests))
+
     async def test_download_request_and_denied_preview_unknown_quality(self):
         api = Netease()
         row = {

@@ -14,6 +14,7 @@ from .resolver import Resolver
 from .selection import Selection
 from .storage import AudioStorage
 from .transfer import Transfer
+from .request_control import Deferred
 
 
 async def settled(local, operation, *args):
@@ -40,7 +41,7 @@ async def settled(local, operation, *args):
 class Downloads:
     def __init__(self, music):
         self.music, self.media = music, music.media
-        self.storage, self.transfer = AudioStorage(music), Transfer()
+        self.storage, self.transfer = AudioStorage(music), Transfer(control=music.requests)
         self.decoder = Decoder(self.media, self.storage)
         self.resolver = Resolver(music)
         self.selection = Selection(self)
@@ -76,6 +77,7 @@ class Downloads:
             expected_md5=offered.get("md5"),
             progress=lambda value: update(progress=value),
             provider=provider,
+            account_id=candidate["account"]["account_id"],
         )
         await update(state="validating", stage="validating", code="validating")
         raw, _, unlock, artwork, warnings = await self.decoder.prepare(
@@ -334,6 +336,7 @@ class Downloads:
             except (Fault, OSError):
                 pass  # Existing retention pump retries cleanup after confirmed publication.
             await self.exclusive(self.storage.export_related, job)
+            await local(self.music.maintenance.record, job)
         except asyncio.CancelledError:
             current = await local(repo.job, identity, include_deleted=True)
             if current and current["generation"] == generation and current["state"] != "completed":
@@ -352,7 +355,8 @@ class Downloads:
             raise
         except (Fault, OSError, TimeoutError) as error:
             code = error.code if isinstance(error, Fault) else "media_io_failure"
-            attempts = job.get("attempts", 0) + (0 if code == "busy" else 1)
+            deferred = isinstance(error, Deferred)
+            attempts = job.get("attempts", 0) + (0 if code == "busy" or deferred else 1)
             transient = code in {
                 "music_download_unavailable",
                 "music_upstream_unavailable",
@@ -365,15 +369,29 @@ class Downloads:
                 else "auth_required"
                 if code in {"music_auth_required", "music_account_unavailable", "account_changed"}
                 else "retry_wait"
-                if code == "busy" or transient and attempts < 4
+                if code == "busy" or deferred or transient and attempts < 4
                 else "failed"
             )
+            review_failed = (
+                job.get("quality_review")
+                and state in {"failed", "auth_required"}
+                and job.get("audio_receipt")
+                and await local(self.storage.matches, job["audio_receipt"])
+            )
+            if review_failed:
+                await local(self.music.maintenance.failed, job, code)
+                state, code = "completed", "music_quality_check_failed"
             try:
                 await update(
                     state=state,
                     code=code,
                     attempts=attempts,
-                    retry_delay=5 if code == "busy" else min(300, 15 * 2**attempts),
+                    quality_review=False if review_failed else job.get("quality_review", False),
+                    retry_delay=max(1, error.until - repo.clock())
+                    if deferred
+                    else 5
+                    if code == "busy"
+                    else min(300, 15 * 2**attempts),
                 )
             except Fault:
                 pass  # Lost lease/cancel is settled by its owner; never overwrite a newer worker.

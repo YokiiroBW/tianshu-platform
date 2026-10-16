@@ -12,6 +12,8 @@ from .providers import Bridge, PROVIDERS
 from .imports import Imports
 from .navidrome import Navidrome
 from . import tools
+from .request_control import RequestControl, Deferred
+from .maintenance import Maintenance
 
 
 class Music:
@@ -19,12 +21,14 @@ class Music:
         self.media = media
         self.library = MusicLibrary(media.repo, media.accounts)
         self.library.catalog.bootstrap()
-        self.connector = Netease()
-        self.connectors = {name: Bridge(name) for name in ("qq", "kugou")}
+        self.requests = RequestControl(media)
+        self.connector = Netease(control=self.requests)
+        self.connectors = {name: Bridge(name, self.requests) for name in ("qq", "kugou")}
         self.qr = {}
         self.downloads = Downloads(self)
         self.imports = Imports(self)
         self.navidrome = Navidrome(self)
+        self.maintenance = Maintenance(self)
 
     def client(self, provider):
         require(provider in PROVIDERS, "invalid_input", 400)
@@ -65,9 +69,15 @@ class Music:
         pulse = asyncio.create_task(heartbeat())
         try:
             async with asyncio.timeout(120):
-                snapshot = await self.client(account["provider"]).snapshot(
-                    subscription["source_id"], account["user_id"], cookie
-                )
+                client = self.client(account["provider"])
+                if hasattr(client, "snapshot_since"):
+                    snapshot = await client.snapshot_since(
+                        subscription["source_id"], account["user_id"], cookie, subscription
+                    )
+                else:
+                    snapshot = await client.snapshot(
+                        subscription["source_id"], account["user_id"], cookie
+                    )
             return await media.local(
                 self.library.complete_scan, account, subscription, snapshot, owner, generation
             )
@@ -83,7 +93,9 @@ class Music:
                     {
                         **current,
                         "code": error.code,
-                        "next_scan_at": repo.clock() + max(300, current["interval_seconds"]),
+                        "next_scan_at": max(repo.clock() + 60, error.until)
+                        if isinstance(error, Deferred)
+                        else repo.clock() + max(300, current["interval_seconds"]),
                     },
                     current["revision"],
                 )
@@ -106,3 +118,4 @@ class Music:
             group.create_task(pump_scans(self.media, "music_playlist", "playlist_id", self.scan))
             group.create_task(self.imports.pump())
             group.create_task(self.navidrome.pump())
+            group.create_task(self.maintenance.pump())

@@ -3,6 +3,7 @@
 from ...contracts import Fault, require
 from .catalog import same_recording, search_title
 from .quality import LEVELS, aggregate, requested_levels
+from .request_control import Deferred
 
 
 class Resolver:
@@ -87,6 +88,8 @@ class Resolver:
                             # One provider's best available offer is enough; actual audio is checked below.
                             break
                         except Fault as error:
+                            if isinstance(error, Deferred):
+                                raise
                             failures.append(error.code)
                             checked["failures"].append(error.code)
                             if error.code not in {
@@ -96,6 +99,8 @@ class Resolver:
                             }:
                                 break
             except (Fault, TimeoutError) as error:
+                if isinstance(error, Deferred):
+                    raise
                 code = error.code if isinstance(error, Fault) else "music_upstream_unavailable"
                 failures.append(code)
                 checked["failures"].append(code)

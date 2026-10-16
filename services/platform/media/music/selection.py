@@ -6,6 +6,7 @@ from ...contracts import Fault
 from .audio import inspect_audio
 from .decoding import encrypted_format
 from .quality import LEVELS, LOSSLESS_CODECS, minimum_level, quality_rank, verify_quality
+from .request_control import Deferred
 
 
 class Selection:
@@ -33,6 +34,8 @@ class Selection:
         try:
             offers = await downloads.resolver.offers(job, report=report)
         except Fault as error:
+            if isinstance(error, Deferred):
+                raise
             offers, failure = [], error
         # No full audio transfer begins until every account's search/entitlement check finishes.
         await update(
@@ -55,7 +58,10 @@ class Selection:
             observed = None
             try:
                 await downloads.transfer.sample(
-                    candidate["offered"]["url"], path, provider=candidate["provider"]
+                    candidate["offered"]["url"],
+                    path,
+                    provider=candidate["provider"],
+                    account_id=candidate["account"]["account_id"],
                 )
                 encrypted = await local(
                     encrypted_format,
@@ -73,6 +79,8 @@ class Selection:
                         )
                         evidence.update(probe="header", quality=observed)
             except Fault as error:
+                if isinstance(error, Deferred):
+                    raise
                 evidence["probe_code"] = error.code
             # Unknown formats stay eligible: full validation may be needed to compare them.
             priority = (
@@ -116,6 +124,8 @@ class Selection:
                 else:
                     evidence["decision"] = "existing_candidate_better"
             except Fault as error:
+                if isinstance(error, Deferred):
+                    raise
                 if error.code in {"job_cancelled", "lease_conflict", "scope_changed"}:
                     raise
                 failure = error

@@ -367,7 +367,7 @@ class Repository:
         now = self.clock()
         with self.transaction() as db:
             rows = db.execute(
-                "SELECT id,state,generation,body FROM jobs WHERE (state='queued' OR (state='retry_wait' AND lease<?) OR (owner IS NOT NULL AND lease<?)) AND state NOT IN ('completed','published','cancelled','failed','unknown','auth_required','waiting_metadata') ORDER BY created LIMIT 500",
+                "SELECT id,state,generation,body FROM jobs WHERE (state='queued' OR (state='retry_wait' AND lease<?) OR (owner IS NOT NULL AND lease<?)) AND state NOT IN ('completed','published','cancelled','failed','unknown','auth_required','waiting_metadata') ORDER BY coalesce(json_extract(body,'$.quality_review'),0),created LIMIT 500",
                 (now, now),
             ).fetchall()
             occupied = [

@@ -76,6 +76,7 @@ def enqueue_playlist(library, identity, db, *, manual=False):
             updates = {
                 "request_ids": request_ids,
                 "request_version": job.get("request_version", 0) + 1,
+                "quality_review": False,
             }
         if (manual or changed) and job["state"] in {
             "failed",

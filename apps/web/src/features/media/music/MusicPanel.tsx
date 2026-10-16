@@ -16,13 +16,14 @@ import { providerNames } from "./types";
 import { MusicLibrary } from "./MusicLibrary";
 import { NavidromeConnection } from "./NavidromeConnection";
 import { NavidromePlaylist } from "./NavidromePlaylist";
+import { MusicMaintenance } from "./MusicMaintenance";
 
 export function MusicPanel({ media }: { media: MediaController }) {
   const [view, setView] = useState<MusicView | null>(null);
   const [accountId, setAccountId] = useState("");
   const [catalog, setCatalog] = useState<SourcePlaylist[] | null>(null);
   const [detail, setDetail] = useState<PlaylistDetail | null>(null);
-  const [interval, setInterval] = useState("3600");
+  const [interval, setInterval] = useState("43200");
   const [reading, setReading] = useState("");
   const detailCursor = useRef<{ playlist_id: string; offset: number } | null>(
     null,
@@ -72,6 +73,10 @@ export function MusicPanel({ media }: { media: MediaController }) {
         current.current.cancel(slot);
     };
   }, [refresh]);
+  useEffect(() => {
+    if (view?.maintenance)
+      setInterval(String(view.maintenance.settings.playlist_interval_seconds));
+  }, [view?.maintenance?.settings.revision]);
   useEffect(() => {
     if (
       view &&
@@ -152,6 +157,14 @@ export function MusicPanel({ media }: { media: MediaController }) {
         />
       </div>
       <MusicLibrary media={media} status={view.imports} refresh={refresh} />
+      {view.maintenance && (
+        <MusicMaintenance
+          key={view.maintenance.settings.revision}
+          media={media}
+          view={view.maintenance}
+          refresh={refresh}
+        />
+      )}
       <NavidromeConnection
         key={view.navidrome?.connection?.revision ?? 0}
         media={media}
@@ -195,6 +208,7 @@ export function MusicPanel({ media }: { media: MediaController }) {
               <option value="900">每 15 分钟</option>
               <option value="3600">每小时</option>
               <option value="21600">每 6 小时</option>
+              <option value="43200">每 12 小时</option>
               <option value="86400">每天</option>
             </select>
           </label>
@@ -275,6 +289,7 @@ export function MusicPanel({ media }: { media: MediaController }) {
                 <p className="muted">
                   {item.member_count} 首 · {word(item.state)} ·{" "}
                   {timestamp(item.synced_at)}
+                  {" · "}每 {item.interval_seconds / 3600} 小时同步
                 </p>
                 {item.code !== "ready" && (
                   <p className="media-warning">

@@ -27,17 +27,19 @@ import (
 const sourceRevision = "deb29cf7c49051df9744d788e2a573b280b300f2"
 
 type request struct {
-	Provider  string     `json:"provider"`
-	Operation string     `json:"operation"`
-	Cookie    string     `json:"cookie"`
-	ID        string     `json:"id"`
-	Key       string     `json:"key"`
-	Query     string     `json:"query"`
-	Level     string     `json:"level"`
-	LoginType string     `json:"login_type"`
-	Page      int        `json:"page"`
-	Limit     int        `json:"limit"`
-	Song      model.Song `json:"song"`
+	Provider          string     `json:"provider"`
+	Operation         string     `json:"operation"`
+	Cookie            string     `json:"cookie"`
+	ID                string     `json:"id"`
+	Key               string     `json:"key"`
+	Query             string     `json:"query"`
+	Level             string     `json:"level"`
+	LoginType         string     `json:"login_type"`
+	Page              int        `json:"page"`
+	Limit             int        `json:"limit"`
+	Song              model.Song `json:"song"`
+	RequestLimit      int        `json:"request_limit"`
+	RequestIntervalMS int        `json:"request_interval_ms"`
 }
 
 type client interface {
@@ -47,7 +49,10 @@ type client interface {
 	provider.QRLoginProvider
 }
 
-type officialTransport struct{ next http.RoundTripper }
+type officialTransport struct {
+	next   http.RoundTripper
+	pacing *requestPacing
+}
 
 func (t officialTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	host := strings.ToLower(r.URL.Hostname())
@@ -64,8 +69,19 @@ func (t officialTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	target := *r.URL
 	target.Scheme = "https"
 	clone.URL = &target
+	if t.pacing != nil {
+		if err := t.pacing.before(clone); err != nil {
+			return nil, err
+		}
+	}
 	response, err := t.next.RoundTrip(clone)
 	if err == nil {
+		if t.pacing != nil {
+			if blocked := t.pacing.observe(response); blocked != nil {
+				response.Body.Close()
+				return nil, blocked
+			}
+		}
 		response.Body = &limitedBody{Reader: io.LimitReader(response.Body, 32<<20), close: response.Body}
 	}
 	return response, err
@@ -291,6 +307,9 @@ func playlist(c client, id string) (any, error) {
 
 func errorCode(err error) string {
 	value := strings.ToLower(err.Error())
+	if strings.Contains(value, "rate limited") || strings.Contains(value, "too many requests") {
+		return "music_rate_limited"
+	}
 	if strings.Contains(value, "forbidden") || strings.Contains(value, "vip required") || strings.Contains(value, "no valid download") {
 		return "music_download_forbidden"
 	}
@@ -306,13 +325,15 @@ func errorCode(err error) string {
 func main() {
 	log.SetOutput(io.Discard)
 	debug.SetMemoryLimit(256 << 20)
-	http.DefaultTransport = officialTransport{next: http.DefaultTransport}
 	http.DefaultClient.Timeout = 25 * time.Second
 	output := map[string]any{}
+	pacing := &requestPacing{limit: 32}
 	defer func() {
 		if recover() != nil {
 			output = map[string]any{"ok": false, "code": "music_upstream_invalid"}
 		}
+		output["requests_used"] = pacing.used
+		output["retry_after_seconds"] = pacing.retryAfter
 		_ = json.NewEncoder(os.Stdout).Encode(output)
 	}()
 	var r request
@@ -321,7 +342,17 @@ func main() {
 		output["code"] = "invalid_input"
 		return
 	}
+	if r.RequestLimit > 0 && r.RequestLimit <= 32 {
+		pacing.limit = r.RequestLimit
+	}
+	if r.RequestIntervalMS > 0 && r.RequestIntervalMS <= 10000 {
+		pacing.interval = time.Duration(r.RequestIntervalMS) * time.Millisecond
+	}
+	http.DefaultTransport = officialTransport{next: http.DefaultTransport, pacing: pacing}
 	value, err := execute(r)
+	if pacing.stopped != nil {
+		err = pacing.stopped
+	}
 	if err != nil {
 		output["ok"] = false
 		output["code"] = errorCode(err)

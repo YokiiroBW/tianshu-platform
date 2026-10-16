@@ -36,7 +36,11 @@ class MusicLibrary:
             account is not None and account["state"] != "revoked", "music_account_unavailable", 409
         )
         require(account["state"] == "ready", "music_auth_required", 409)
-        return account, json.loads(self.accounts.unseal(identity, account["secret"]))
+        return account, {
+            **json.loads(self.accounts.unseal(identity, account["secret"])),
+            "_music_account_id": identity,
+            "_music_account_revision": account["revision"],
+        }
 
     def check_account(self, account, db):
         current = self.repo._document(db, "music_account", account["account_id"])
@@ -47,6 +51,7 @@ class MusicLibrary:
         )
 
     def save_account(self, profile, cookie, provider="netease"):
+        cookie = {key: value for key, value in cookie.items() if not key.startswith("_music_")}
         require(provider in PROVIDERS, "invalid_input", 400)
         account_id = provider + ":" + identity(profile["user_id"])
         require(
@@ -70,6 +75,11 @@ class MusicLibrary:
                 },
                 db=db,
             )
+            control = self.repo._document(db, "music_request_control", account_id)
+            if control and control.get("auth_required"):
+                self.repo.put(
+                    "music_request_control", account_id, {**control, "auth_required": False}, db=db
+                )
             return public_account(account)
 
     def account_state(self, account, state):
@@ -263,6 +273,22 @@ class MusicLibrary:
     def complete_scan(self, account, subscription, snapshot, owner, generation):
         with self.repo.transaction() as db:
             self.repo.require_scan(db, "music:" + subscription["playlist_id"], owner, generation)
+            if snapshot.get("unchanged"):
+                self.check_account(account, db)
+                result = self.repo.put(
+                    "music_playlist",
+                    subscription["playlist_id"],
+                    {
+                        **subscription,
+                        **snapshot["playlist"],
+                        "code": "ready",
+                        "synced_at": self.repo.clock(),
+                        "next_scan_at": self.repo.clock() + subscription["interval_seconds"],
+                    },
+                    subscription["revision"],
+                    db=db,
+                )
+                return {"playlist": summary(result)}
             return self.install_snapshot(
                 account, subscription["playlist_id"], snapshot, subscription, db
             )

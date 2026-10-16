@@ -6,6 +6,9 @@ from contextlib import asynccontextmanager
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
+import time
+
+from .request_control import Limited, request_slot, retry_after
 
 from ...contracts import Fault, require
 
@@ -52,11 +55,14 @@ def cdn_url(value):
 
 
 class Transfer:
-    def __init__(self, *, validate_url=cdn_url):
+    def __init__(self, *, validate_url=cdn_url, control=None):
         self.validate_url = validate_url
+        self.control = control
 
     @asynccontextmanager
-    async def response(self, url, *, provider=None, artwork=False, headers=None, timeout=1800):
+    async def response(
+        self, url, *, provider=None, account_id=None, artwork=False, headers=None, timeout=1800
+    ):
         # Account cookies never enter either quality probes or full transfers.
         async with aiohttp.ClientSession(
             cookie_jar=aiohttp.DummyCookieJar(),
@@ -69,20 +75,31 @@ class Transfer:
                         if provider and self.validate_url is cdn_url
                         else self.validate_url(url)
                     )
-                    async with session.get(url, headers=headers, allow_redirects=False) as response:
-                        if response.status in {301, 302, 303, 307, 308}:
-                            url = urljoin(url, response.headers.get("Location", ""))
-                            continue
-                        yield response
-                        return
+                    async with request_slot(self.control, provider or "netease", account_id):
+                        async with session.get(
+                            url, headers=headers, allow_redirects=False
+                        ) as response:
+                            if response.status == 429:
+                                raise Limited(
+                                    retry_after(response.headers.get("Retry-After"), time.time())
+                                )
+                            if response.status in {301, 302, 303, 307, 308}:
+                                url = urljoin(url, response.headers.get("Location", ""))
+                                continue
+                            yield response
+                            return
                 raise Fault("music_download_url_invalid", 502)
             except (aiohttp.ClientError, TimeoutError):
                 raise Fault("music_download_unavailable", 502) from None
 
-    async def sample(self, url, destination, *, provider):
+    async def sample(self, url, destination, *, provider, account_id=None):
         maximum = 1024**2
         async with self.response(
-            url, provider=provider, headers={"Range": f"bytes=0-{maximum - 1}"}, timeout=30
+            url,
+            provider=provider,
+            account_id=account_id,
+            headers={"Range": f"bytes=0-{maximum - 1}"},
+            timeout=30,
         ) as response:
             require(response.status in {200, 206}, "music_download_unavailable", 502)
             if response.status == 206:
@@ -112,9 +129,12 @@ class Transfer:
         expected_md5=None,
         progress=None,
         provider=None,
+        account_id=None,
         artwork=False,
     ):
-        async with self.response(url, provider=provider, artwork=artwork) as response:
+        async with self.response(
+            url, provider=provider, account_id=account_id, artwork=artwork
+        ) as response:
             require(response.status == 200, "music_download_unavailable", 502)
             length = response.content_length
             require(length is None or 0 < length <= maximum, "music_file_too_large", 409)

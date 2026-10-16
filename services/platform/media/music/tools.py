@@ -7,6 +7,7 @@ import shutil
 import subprocess
 
 from ...contracts import Fault, require
+from .request_control import Limited
 
 
 def executable(name):
@@ -14,7 +15,7 @@ def executable(name):
     return override or shutil.which("tianshu-" + name)
 
 
-async def invoke(name, request, *, timeout=120):
+async def invoke(name, request, *, timeout=120, meter=None):
     program = executable(name)
     require(program is not None, "music_tool_unavailable", 503)
     environment = {
@@ -50,8 +51,15 @@ async def invoke(name, request, *, timeout=120):
         require(process.returncode == 0 and len(raw) <= 32 * 1024**2, "music_tool_failed", 502)
         value = json.loads(raw)
         require(isinstance(value, dict), "music_upstream_invalid", 502)
+        if meter is not None and type(value.get("requests_used")) is int:
+            meter["used"] = value["requests_used"]
         if not value.get("ok"):
             code = value.get("code")
+            if code == "music_rate_limited":
+                seconds = value.get("retry_after_seconds", 0)
+                raise Limited(
+                    seconds if type(seconds) in (int, float) and 0 <= seconds <= 2592000 else 0
+                )
             allowed = {
                 "music_download_forbidden",
                 "music_auth_required",

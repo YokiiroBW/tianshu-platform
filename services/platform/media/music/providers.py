@@ -5,6 +5,8 @@ import re
 from ...contracts import digest, require
 from . import tools
 from .transfer import media_url
+from .request_control import request_slot
+from .metadata_cache import MetadataCache
 
 PROVIDERS = {"netease": "网易云音乐", "qq": "QQ 音乐", "kugou": "酷狗音乐"}
 
@@ -121,22 +123,33 @@ def playlist_track(row, provider, source):
 
 
 class Bridge:
-    def __init__(self, provider):
+    def __init__(self, provider, control=None):
         self.provider = provider
+        self.control, self.cache = control, MetadataCache()
 
     async def close(self):
         pass
 
     async def call(self, operation, cookie=None, **body):
-        return await tools.invoke(
-            "musicbridge",
-            {
-                "provider": self.provider,
-                "operation": operation,
-                "cookie": (cookie or {}).get("cookie", ""),
-                **body,
-            },
-        )
+        async with request_slot(
+            self.control,
+            self.provider,
+            (cookie or {}).get("_music_account_id"),
+            32,
+            (cookie or {}).get("_music_account_revision"),
+        ) as ticket:
+            return await tools.invoke(
+                "musicbridge",
+                {
+                    "provider": self.provider,
+                    "operation": operation,
+                    "cookie": (cookie or {}).get("cookie", ""),
+                    **body,
+                    "request_limit": 32,
+                    "request_interval_ms": 3000 if self.control else 0,
+                },
+                meter=ticket,
+            )
 
     async def qr_start(self, login_type="qq"):
         value = await self.call("qr_start", login_type=login_type)
@@ -164,7 +177,14 @@ class Bridge:
             "label": PROVIDERS[self.provider] + " " + str(value["user_id"]),
         }
 
-    async def playlists(self, uid, cookie):
+    async def playlists(self, uid, cookie, *, fresh=False):
+        if self.control is None:
+            return await self._playlists(uid, cookie)
+        return await self.cache.read(
+            "playlists", cookie, uid, lambda: self._playlists(uid, cookie), fresh=fresh
+        )
+
+    async def _playlists(self, uid, cookie):
         result, seen = [], set()
         for page in range(1, 101):
             rows = await self.call("playlists", cookie, page=page, limit=100)
@@ -193,7 +213,12 @@ class Bridge:
             and info["track_count"] == 0
         ):
             current = next(
-                (p for p in await self.playlists(uid, cookie) if p["source_id"] == source), None
+                (
+                    p
+                    for p in await self.playlists(uid, cookie, fresh=True)
+                    if p["source_id"] == source
+                ),
+                None,
             )
             require(current and current["track_count"] == 0, "music_source_changed", 409)
             return {"playlist": current, "entries": [], "tracks": []}
@@ -224,6 +249,11 @@ class Bridge:
         }
 
     async def search(self, query, cookie):
+        if self.control is None:
+            return await self._search(query, cookie)
+        return await self.cache.read("search", cookie, query, lambda: self._search(query, cookie))
+
+    async def _search(self, query, cookie):
         rows = await self.call("search", cookie, query=query)
         return [track(row, self.provider) for row in (rows or [])[:30]]
 

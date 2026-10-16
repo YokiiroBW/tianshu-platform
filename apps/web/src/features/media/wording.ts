@@ -55,6 +55,13 @@ export const destinationModeWords = {
   custom: "自定义目录",
 };
 export const reasonWords: Record<string, string> = {
+  music_request_deferred: "等待共享请求时段",
+  music_request_budget: "本时段请求预算已用完，稍后自动继续",
+  music_account_cooling: "平台请求冷却中，稍后自动继续",
+  music_quality_check_queued: "等待音质巡检",
+  music_quality_check_failed: "本轮音质巡检未完成，保留已归档文件",
+  music_quality_check_partial: "部分渠道暂不可用，将择日复查",
+  music_quality_review_paused: "音质巡检已暂停，已归档文件保留",
   music_archived: "音乐及元数据已归档",
   music_indexed: "本地曲库已登记",
   music_file_unreadable:
@@ -124,6 +131,9 @@ export const reasonWords: Record<string, string> = {
   error_short_circuit: "前面的规则执行失败，后续规则未执行",
 };
 export const errorWords: Record<string, string> = {
+  music_request_deferred: reasonWords.music_request_deferred,
+  music_request_budget: reasonWords.music_request_budget,
+  music_account_cooling: reasonWords.music_account_cooling,
   invalid_destination_subdirectory:
     "请检查整理子目录：使用相对目录，不含空层级、.、..、保留文件名或不兼容字符。",
   destination_not_supported:
