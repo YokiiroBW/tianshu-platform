@@ -368,6 +368,34 @@ class NavidromeTests(unittest.IsolatedAsyncioTestCase):
             files,
         )
 
+    async def test_real_path_matches_reused_recording_despite_different_album_label(self):
+        self.link()
+        first = self.server.songs[0]
+        actual = first["path"]
+        self.server.songs[0] = {
+            **first,
+            "album": "另一发行专辑",
+            "path": "artist/other/01 - song.flac",
+        }
+        self.server.native_songs[first["id"]] = {
+            "id": first["id"],
+            "path": actual.removeprefix("/music/"),
+            "libraryPath": "/music",
+            "libraryId": 1,
+            "size": first["size"],
+            "missing": False,
+        }
+        _, tracks = self.library.export_snapshot(self.playlist["playlist_id"])
+        self.assertEqual(
+            mapped_members(tracks, self.server.songs, self.nav.state.connection())[0]["code"],
+            "waiting_index",
+        )
+        await self.nav.tick()
+        row = self.repo.get(LINK, self.link_id)
+        self.assertEqual(row["members"][0]["song_id"], "101")
+        self.assertEqual(row["members"][0]["method"], "path_size")
+        self.assertEqual(self.repo.job_count(), 0)
+
     async def test_native_lookup_failure_preserves_ambiguity_but_syncs_other_songs(self):
         self.link()
         self.server.songs[0]["path"] = "artist/album/01 - song.flac"

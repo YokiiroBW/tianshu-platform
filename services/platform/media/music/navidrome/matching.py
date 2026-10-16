@@ -84,5 +84,11 @@ def match_file(track, artifact, audio, by_path, by_size, connection):
         return {"song_id": candidates[0]["id"], "code": "matched", "method": "metadata_size"}
     return {
         "code": "ambiguous" if candidates else "waiting_index",
-        "candidate_ids": [r["id"] for r in candidates],
+        # A recording verified by PCM may be reused across different album
+        # releases. Its actual archive path, rather than the playlist's album
+        # label, remains authoritative for the optional native lookup.
+        "candidate_ids": [
+            r["id"]
+            for r in candidates or by_size.get((audio["size_bytes"], path.suffix[1:].lower()), [])
+        ],
     }

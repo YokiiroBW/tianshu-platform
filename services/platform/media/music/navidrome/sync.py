@@ -166,14 +166,14 @@ class Navidrome:
         if catalog.get("songs") is None:
             catalog["songs"] = await self.client.songs(connection)
         members = await local(mapped_members, tracks, catalog["songs"], connection)
-        ambiguous = {
+        unresolved = {
             identity
             for member in members
-            if member["code"] == "ambiguous"
+            if member["code"] in {"ambiguous", "waiting_index"}
             for identity in member.get("candidate_ids", [])
         }
-        if ambiguous:
-            paths = await self.client.paths.resolve(connection, ambiguous)
+        if unresolved:
+            paths = await self.client.paths.resolve(connection, unresolved)
             songs = [
                 {**song, "real_path": paths[song["id"]]["path"]}
                 if song["id"] in paths and paths[song["id"]]["size"] == song.get("size")

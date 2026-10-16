@@ -182,6 +182,31 @@ class MusicSelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["audio_routing"]["deferred"][0]["stage"], "download")
         self.assertEqual(result.get("attempts", 0), 0)
 
+    async def test_pcm_identity_reuse_updates_receipt_and_next_request_avoids_transfer(self):
+        self.queue()
+        original = await self.run_job()
+        path = self.file(original)
+        before = (path.read_bytes(), path.stat().st_mtime_ns)
+        other = self.value(["102"])
+        other["playlist"]["source_id"] = "902"
+        other["tracks"][0]["album"] = "Another release"
+        playlist = self.subscribe(other)
+        self.queue(playlist)
+        reused = await self.run_job()
+        self.assertTrue(reused["audio_reused"])
+        self.assertTrue(reused["audio_routing"]["selected"]["reused"])
+        self.assertEqual(
+            reused["audio_routing"]["selected"]["source_id"], original["download_source_id"]
+        )
+        self.assertEqual(self.file(reused), path)
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+        transferred = self.audio_transfers
+        self.queue(playlist)
+        again = await self.run_job()
+        self.assertTrue(again["audio_reused"])
+        self.assertEqual(self.audio_transfers, transferred)
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
+
     async def test_metadata_cooldown_still_compares_other_providers(self):
         queried, transfers = self.channels(
             {

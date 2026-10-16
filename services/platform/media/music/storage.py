@@ -186,9 +186,21 @@ class AudioStorage:
             pending = json.loads(row["body"]).get("request_version", 0) != job.get(
                 "processing_request_version", 0
             )
+            comparison = {}
+            if job.get("audio_routing"):
+                comparison["audio_routing"] = {
+                    **job["audio_routing"],
+                    "selected": {
+                        "provider": artifact.get("download_provider", "local"),
+                        "source_id": artifact.get("download_source_id"),
+                        "quality": artifact["quality"],
+                        "reused": reused,
+                    },
+                }
             completed = self.repo.update_job(
                 job["job_id"],
                 {
+                    **comparison,
                     "state": "queued" if pending else "completed",
                     "stage": "queued" if pending else "completed",
                     "code": "queued" if pending else "music_archived",
