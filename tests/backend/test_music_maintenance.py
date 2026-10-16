@@ -87,7 +87,7 @@ class MusicMaintenanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.repo.list(CHECK)[0]["outcome"], "upgraded")
         self.assertEqual(self.repo.list(CHECK)[0]["upgrades"], 1)
 
-    async def test_cooling_defers_review_without_spending_retry_or_touching_archive_and_pause_survives(
+    async def test_cooling_keeps_archive_and_schedules_channel_completion_independent_of_weekly_pause(
         self,
     ):
         self.queue()
@@ -103,12 +103,56 @@ class MusicMaintenanceTests(unittest.IsolatedAsyncioTestCase):
 
         self.api.download = deferred
         job = await self.run_job()
-        self.assertEqual(job["state"], "retry_wait")
+        self.assertEqual(job["state"], "completed")
         self.assertEqual(job["attempts"], 0)
         self.assertEqual(self.file(job).read_bytes(), before)
+        self.assertTrue(self.repo.list(CHECK)[0]["pending_channels"])
         self.enabled(False)
-        self.assertEqual(Maintenance(self.music).plan()["state"], "paused")
+        self.assertEqual(Maintenance(self.music).plan()["state"], "scheduled")
         self.assertEqual(self.repo.job(job["job_id"])["state"], "completed")
+        self.due()
+        self.assertEqual(Maintenance(self.music).plan()["state"], "reviewing")
+        self.assertTrue(self.repo.job(job["job_id"])["quality_catchup"])
+
+    async def test_channel_completion_runs_with_backlog_and_reuses_equal_archive(self):
+        self.queue()
+        original = await self.run_job()
+        before = (self.file(original).read_bytes(), self.audio_transfers)
+        row = self.repo.list(CHECK)[0]
+        with self.repo.transaction() as db:
+            key, _ = self.music.maintenance.key(original, db)
+            self.repo.put(
+                CHECK,
+                key,
+                {
+                    **row,
+                    "next_check_at": self.repo.clock() - 1,
+                    "pending_channels": [
+                        {
+                            "provider": "netease",
+                            "account_id": self.account["account_id"],
+                            "retry_at": self.repo.clock() - 1,
+                            "code": "music_request_budget",
+                            "stage": "entitlement",
+                        }
+                    ],
+                },
+                db=db,
+            )
+        later = self.value(["102"])
+        later["playlist"]["source_id"] = "902"
+        self.queue(self.subscribe(later))
+        # An unfinished download comparison resumes even while weekly maintenance
+        # is disabled and other new songs remain queued.
+        with self.repo.transaction() as db:
+            p = self.repo._document(db, "music_playlist", self.playlist["playlist_id"])
+            self.repo.put("music_playlist", p["playlist_id"], {**p, "auto_download": True}, db=db)
+        self.assertEqual(Maintenance(self.music).plan()["state"], "reviewing")
+        result = await self.run_job()
+        self.assertEqual(result["job_id"], original["job_id"])
+        self.assertTrue(result["audio_reused"])
+        self.assertEqual((self.file(result).read_bytes(), self.audio_transfers), before)
+        self.assertEqual(self.repo.list(CHECK)[0]["pending_channels"], [])
 
     async def test_12_hour_sync_is_staggered_and_foreground_jobs_precede_reviews(self):
         self.queue()

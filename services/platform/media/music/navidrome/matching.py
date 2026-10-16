@@ -12,7 +12,7 @@ def mapped_members(tracks, songs, connection):
     for song in songs:
         if not isinstance(song.get("size"), int) or not isinstance(song.get("suffix"), str):
             continue
-        path = str(song.get("path", "")).replace("\\", "/")
+        path = str(song.get("real_path", song.get("path", ""))).replace("\\", "/")
         by_path.setdefault(path, []).append(song)
         by_size.setdefault((song.get("size"), song.get("suffix", "").lower()), []).append(song)
     members, cached = [], {}
@@ -44,7 +44,7 @@ def match_file(track, artifact, audio, by_path, by_size, connection):
     if len(exact) == 1:
         return {"song_id": exact[0]["id"], "code": "matched", "method": "path_size"}
     if exact:
-        return {"code": "ambiguous"}
+        return {"code": "ambiguous", "candidate_ids": [r["id"] for r in exact]}
     # Navidrome normally reports a synthetic Artist/Album path. Require unique,
     # corroborated metadata AND the exact archived byte size/format in that mode.
     metadata = {
@@ -58,7 +58,7 @@ def match_file(track, artifact, audio, by_path, by_size, connection):
             continue
         if not all(isinstance(song.get(k), str) for k in ("title", "album")):
             continue
-        reported = str(song.get("path", "")).replace("\\", "/")
+        reported = str(song.get("real_path", song.get("path", ""))).replace("\\", "/")
         if reported.startswith("/"):
             continue  # A real path pointing elsewhere is not our archived file.
         raw_artists = song.get("artists") or []
@@ -82,4 +82,7 @@ def match_file(track, artifact, audio, by_path, by_size, connection):
             candidates.append(song)
     if len(candidates) == 1:
         return {"song_id": candidates[0]["id"], "code": "matched", "method": "metadata_size"}
-    return {"code": "ambiguous" if candidates else "waiting_index"}
+    return {
+        "code": "ambiguous" if candidates else "waiting_index",
+        "candidate_ids": [r["id"] for r in candidates],
+    }

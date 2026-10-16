@@ -14,6 +14,7 @@ import test_music_foundation as foundation
 from services.platform.contracts import Fault
 from services.platform.media.music.navidrome.matching import mapped_members
 from services.platform.media.music.navidrome.state import LINK, mark_dirty
+from services.platform.media.music.navidrome.paths import native_path
 from services.platform.media.organizer import library_lock
 
 
@@ -32,10 +33,15 @@ class SyntheticNavidrome:
         self.long_scan = False
         self.scanning = False
         self.bad_catalog = False
+        self.native_songs = {}
+        self.native_calls = []
+        self.native_unavailable = False
 
     async def start(self):
         app = web.Application()
         app.router.add_post("/rest/{method}.view", self.handle)
+        app.router.add_post("/auth/login", self.native_login)
+        app.router.add_get("/api/song/{identity}", self.native_song)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -44,6 +50,24 @@ class SyntheticNavidrome:
 
     async def close(self):
         await self.runner.cleanup()
+
+    async def native_login(self, request):
+        self.native_calls.append("login")
+        body = await request.json()
+        assert not request.query
+        assert body == {"username": "synthetic", "password": self.password}
+        return web.json_response({"token": "synthetic-native-token"})
+
+    async def native_song(self, request):
+        identity = request.match_info["identity"]
+        self.native_calls.append(identity)
+        assert not request.query
+        assert request.headers["X-ND-Authorization"] == "Bearer synthetic-native-token"
+        if self.native_unavailable:
+            return web.Response(status=503)
+        if identity not in self.native_songs:
+            return web.Response(status=404)
+        return web.json_response(self.native_songs[identity])
 
     async def handle(self, request):
         body = await request.post()
@@ -297,6 +321,88 @@ class NavidromeTests(unittest.IsolatedAsyncioTestCase):
         await self.nav.tick()
         self.assertEqual(self.repo.get(LINK, self.link_id)["code"], "navidrome_creation_unverified")
         self.assertEqual(self.server.creates, 1)
+
+    async def test_real_path_disambiguates_old_copies_and_repeat_sync_reuses_cached_read(self):
+        self.link()
+        first = self.server.songs[0]
+        exact = first["path"]
+        self.server.songs[0] = {**first, "path": "artist/album/01 - song.flac"}
+        self.server.songs.append({**self.server.songs[0], "id": "old-copy"})
+        self.server.native_songs = {
+            first["id"]: {
+                "id": first["id"],
+                "path": exact.removeprefix("/music/"),
+                "libraryPath": "/music",
+                "libraryId": 1,
+                "size": first["size"],
+                "missing": False,
+            },
+            "old-copy": {
+                "id": "old-copy",
+                "path": "音乐存档/old-copy.flac",
+                "libraryPath": "/music",
+                "libraryId": 1,
+                "size": first["size"],
+                "missing": False,
+            },
+        }
+        files = {
+            str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in self.directory.rglob("*.flac")
+        }
+        await self.nav.tick()
+        row = self.repo.get(LINK, self.link_id)
+        self.assertEqual(row["members"][0]["song_id"], "101")
+        self.assertEqual(row["members"][0]["method"], "path_size")
+        self.assertEqual(row["members"][2]["song_id"], "101")
+        self.assertEqual(self.server.native_calls, ["login", "101", "old-copy"])
+        self.control("sync")
+        await self.nav.tick()
+        self.assertEqual(self.repo.get(LINK, self.link_id)["remote_id"], row["remote_id"])
+        self.assertEqual(self.server.creates, 1)
+        self.assertEqual(self.server.native_calls, ["login", "101", "old-copy"])
+        self.assertEqual(
+            {
+                str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+                for p in self.directory.rglob("*.flac")
+            },
+            files,
+        )
+
+    async def test_native_lookup_failure_preserves_ambiguity_but_syncs_other_songs(self):
+        self.link()
+        self.server.songs[0]["path"] = "artist/album/01 - song.flac"
+        self.server.songs.append({**self.server.songs[0], "id": "old-copy"})
+        self.server.native_unavailable = True
+        await self.nav.tick()
+        row = self.repo.get(LINK, self.link_id)
+        self.assertEqual(row["members"][0]["code"], "ambiguous")
+        self.assertEqual(row["members"][1]["song_id"], "102")
+        self.assertEqual(row["status"], "partial")
+        self.control("sync")
+        await self.nav.tick()
+        self.assertEqual(self.server.native_calls, ["login", "101"])
+
+    def test_native_paths_require_same_song_library_and_contained_path(self):
+        row = {
+            "id": "101",
+            "libraryId": 1,
+            "libraryPath": "/music",
+            "path": "音乐存档/a.flac",
+            "size": 100,
+        }
+        self.assertEqual(
+            native_path(row, "101", "1"), {"path": "/music/音乐存档/a.flac", "size": 100}
+        )
+        for changes in (
+            {"id": "other"},
+            {"libraryId": 2},
+            {"path": "../elsewhere.flac"},
+            {"path": "/outside/song.flac"},
+            {"missing": True},
+            {"size": "100"},
+        ):
+            with self.subTest(changes=changes):
+                self.assertIsNone(native_path({**row, **changes}, "101", "1"))
 
     async def test_mapping_uses_path_or_unique_metadata_and_size_not_title(self):
         _, tracks = self.library.export_snapshot(self.playlist["playlist_id"])

@@ -638,6 +638,36 @@ test("mixed download list renders audio evidence without video editing controls"
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
+  Object.assign(audio.audio_routing!, {
+    complete: false,
+    deferred: [
+      { provider: "kugou", code: "music_request_budget", retry_at: 1900000000 },
+    ],
+  });
+  Object.assign(audio.audio_routing!.providers[0], {
+    code: "music_request_budget",
+    retry_at: 1900000000,
+  });
+  await page.reload();
+  await page
+    .locator('[data-job-id="audio-one"]')
+    .getByRole("button", { name: "查看任务详情", exact: true })
+    .click();
+  await expect(
+    detail.getByText("聚合比较：已检查 2 个账号，优先最高可用音质。", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    detail.getByText(
+      "部分渠道待补查，当前选择可用渠道中的最高音质；补查后仅替换更高音质版本。",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await detail.getByText("各平台查询结果", { exact: true }).click();
+  await expect(
+    detail.getByText("酷狗音乐：暂不可查询，待补查", { exact: true }),
+  ).toBeVisible();
   await page.screenshot({
     path: info.outputPath("music-job.png"),
     fullPage: true,

@@ -7,6 +7,7 @@ from .audio import inspect_audio
 from .decoding import encrypted_format
 from .quality import LEVELS, LOSSLESS_CODECS, minimum_level, quality_rank, verify_quality
 from .request_control import Deferred
+from .comparison import defer_channel, deferred_error
 
 
 class Selection:
@@ -46,7 +47,8 @@ class Selection:
             and (best is None or quality_rank(current["quality"]) >= quality_rank(best["quality"]))
         ):
             best, package = current, None
-        # No full audio transfer begins until every account's search/entitlement check finishes.
+        # Compare all currently queryable accounts before transferring audio.
+        # Deferred accounts remain explicit and are revisited after their budget/cooldown.
         await update(
             state="validating",
             stage="music_comparing",
@@ -89,7 +91,10 @@ class Selection:
                         evidence.update(probe="header", quality=observed)
             except Fault as error:
                 if isinstance(error, Deferred):
-                    raise
+                    defer_channel(report, candidate["account"], error, "probe")
+                    evidence.update(probe="deferred", code=error.code)
+                    report["candidates"].append(evidence)
+                    continue
                 evidence["probe_code"] = error.code
             # Unknown formats stay eligible: full validation may be needed to compare them.
             priority = (
@@ -134,7 +139,9 @@ class Selection:
                     evidence["decision"] = "existing_candidate_better"
             except Fault as error:
                 if isinstance(error, Deferred):
-                    raise
+                    defer_channel(report, candidate["account"], error, "download")
+                    evidence.update(decision="deferred", code=error.code)
+                    continue
                 if error.code in {"job_cancelled", "lease_conflict", "scope_changed"}:
                     raise
                 failure = error
@@ -151,7 +158,7 @@ class Selection:
                 await update(audio_attempts=attempts)
         if best is None:
             await update(audio_routing=report)
-            raise failure or Fault("music_download_forbidden", 409)
+            raise deferred_error(report) or failure or Fault("music_download_forbidden", 409)
         report["selected"] = {
             "provider": best.get("download_provider", "local"),
             "source_id": best.get("download_source_id"),

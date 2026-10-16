@@ -336,7 +336,6 @@ class Downloads:
             except (Fault, OSError):
                 pass  # Existing retention pump retries cleanup after confirmed publication.
             await self.exclusive(self.storage.export_related, job)
-            await local(self.music.maintenance.record, job)
         except asyncio.CancelledError:
             current = await local(repo.job, identity, include_deleted=True)
             if current and current["generation"] == generation and current["state"] != "completed":

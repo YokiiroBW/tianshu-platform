@@ -35,6 +35,7 @@ export function MusicMaintenance({
       <p className="muted">
         每 7
         天分批检查已归档的订阅歌曲，比较全部可用渠道，只升级验证后更高音质的版本。同一首歌只检查一次；新歌下载优先，限流或预算耗尽时顺延。
+        暂不可查询的渠道单独等待，其他渠道继续比较；恢复后自动补查并复用同等或更好的本地文件。
       </p>
       <div className="music-select-row">
         <label>

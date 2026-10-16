@@ -6,6 +6,7 @@ from music_fixtures import SyntheticNetease
 import test_music_downloads as fixtures
 from test_music_library import encrypted_ncm
 from services.platform.media.music.providers import track, bridge_song
+from services.platform.media.music.request_control import Deferred
 
 
 class MusicSelectionTests(unittest.IsolatedAsyncioTestCase):
@@ -89,6 +90,117 @@ class MusicSelectionTests(unittest.IsolatedAsyncioTestCase):
         self.music.downloads.transfer.sample = sampled
         self.music.downloads.transfer.fetch = fetched
         return queried, full_transfers
+
+    async def test_budget_blocked_channel_does_not_hide_later_highest_offer(self):
+        queried, transfers = self.channels(
+            {
+                "netease": (self.audio["flac"], "lossless"),
+                "kugou": (self.audio["mp3"], "standard"),
+                "qq": (self.audio["hires"], "hires"),
+            }
+        )
+        until = self.repo.clock() + 86400
+
+        async def blocked(*args):
+            queried.append("kugou")
+            raise Deferred(until, "music_request_budget")
+
+        self.music.connectors["kugou"].download = blocked
+        self.queue()
+        result = await self.run_job()
+        self.assertEqual(result["state"], "completed", result.get("code"))
+        self.assertEqual(transfers, ["qq"])
+        self.assertEqual(set(queried), {"netease", "qq", "kugou"})
+        self.assertFalse(result["audio_routing"]["complete"])
+        pending = result["audio_routing"]["deferred"]
+        self.assertEqual([(r["provider"], r["retry_at"]) for r in pending], [("kugou", until)])
+        self.assertEqual(self.repo.list("music_quality_check")[0]["pending_channels"], pending)
+        self.assertNotIn(self.origin, str(result["audio_routing"]))
+
+    async def test_all_channels_deferred_waits_without_terminal_failure_or_spending_retry(self):
+        async def blocked(*args):
+            raise Deferred(self.repo.clock() + 1800, "music_account_cooling")
+
+        self.api.download = blocked
+        self.queue()
+        result = await self.run_job()
+        self.assertEqual(result["state"], "retry_wait")
+        self.assertEqual(result["code"], "music_account_cooling")
+        self.assertEqual(result["attempts"], 0)
+        self.assertEqual(self.audio_transfers, 0)
+        self.assertFalse(result["audio_routing"]["complete"])
+
+    async def test_probe_budget_recovers_with_one_upgrade_then_no_equal_redownload(self):
+        _, transfers = self.channels(
+            {"netease": (self.audio["flac"], "lossless"), "kugou": (self.audio["hires"], "hires")}
+        )
+        sample = self.music.downloads.transfer.sample
+
+        async def blocked(*args, **kwargs):
+            if kwargs["provider"] == "kugou":
+                raise Deferred(self.repo.clock() + 3600, "music_request_budget")
+            return await sample(*args, **kwargs)
+
+        self.music.downloads.transfer.sample = blocked
+        self.queue()
+        first = await self.run_job()
+        self.assertEqual(first["state"], "completed", first.get("code"))
+        self.assertEqual(first["download_provider"], "netease")
+        self.assertEqual(first["audio_routing"]["deferred"][0]["stage"], "probe")
+        self.music.downloads.transfer.sample = sample
+        self.queue()
+        upgraded = await self.run_job()
+        self.assertEqual(upgraded["actual_quality"], "hires")
+        before = (self.file(upgraded).read_bytes(), self.file(upgraded).stat().st_mtime_ns)
+        self.queue()
+        reused = await self.run_job()
+        self.assertTrue(reused["audio_reused"])
+        self.assertEqual(transfers, ["netease", "kugou"])
+        self.assertEqual(self.repo.job_count(), 1)
+        self.assertEqual(len(list(self.library_root.rglob("*.flac"))), 1)
+        self.assertEqual(
+            (self.file(reused).read_bytes(), self.file(reused).stat().st_mtime_ns), before
+        )
+        self.assertEqual(self.repo.list("music_quality_check")[0]["pending_channels"], [])
+
+    async def test_download_cooldown_uses_another_compared_offer_without_failing_job(self):
+        _, transfers = self.channels(
+            {"netease": (self.audio["flac"], "lossless"), "kugou": (self.audio["hires"], "hires")}
+        )
+        acquire = self.music.downloads.acquire
+
+        async def blocked(job, candidate, update):
+            if candidate["provider"] == "kugou":
+                raise Deferred(self.repo.clock() + 1800, "music_account_cooling")
+            return await acquire(job, candidate, update)
+
+        self.music.downloads.acquire = blocked
+        self.queue()
+        result = await self.run_job()
+        self.assertEqual(result["state"], "completed", result.get("code"))
+        self.assertEqual(transfers, ["netease"])
+        self.assertEqual(result["audio_routing"]["deferred"][0]["stage"], "download")
+        self.assertEqual(result.get("attempts", 0), 0)
+
+    async def test_metadata_cooldown_still_compares_other_providers(self):
+        queried, transfers = self.channels(
+            {
+                "netease": (self.audio["flac"], "lossless"),
+                "kugou": (self.audio["hires"], "hires"),
+                "qq": (self.audio["mp3"], "standard"),
+            }
+        )
+
+        async def blocked(*args):
+            queried.append("netease")
+            raise Deferred(self.repo.clock() + 300, "music_request_budget")
+
+        self.api.enrich = blocked
+        self.queue()
+        result = await self.run_job()
+        self.assertEqual(result["state"], "completed", result.get("code"))
+        self.assertEqual(transfers, ["kugou"])
+        self.assertEqual(result["audio_routing"]["deferred"][0]["stage"], "metadata")
 
     async def test_later_provider_hires_beats_first_downloadable_source(self):
         queried, transfers = self.channels(

@@ -6,6 +6,7 @@ from collections import Counter
 from .catalog import recording_mismatch, search_title
 from .quality import LEVELS, aggregate, requested_levels
 from .request_control import Deferred
+from .comparison import defer_channel
 
 
 class Resolver:
@@ -41,7 +42,9 @@ class Resolver:
             a for a in await local(self.repo.list, "music_account") if a["state"] == "ready"
         ]
         report = report if report is not None else {}
-        report.update(policy="highest_available", providers=[], candidates=[])
+        report.update(
+            policy="highest_available", providers=[], candidates=[], deferred=[], complete=True
+        )
         require(accounts, "music_auth_required", 409)
         offers, failures = [], []
         original = {**job["track"], "provider": job.get("provider", "netease")}
@@ -59,7 +62,7 @@ class Resolver:
                     report["metadata_enriched"] = bool(original.get("metadata_enriched"))
                 except Fault as error:
                     if isinstance(error, Deferred):
-                        raise
+                        defer_channel(report, account, error, "metadata")
                     report["metadata_code"] = error.code
             break
         # Refresh the existing source's lookup key before binding another provider.
@@ -69,6 +72,13 @@ class Resolver:
             client = self.music.client(provider)
             checked = {"provider": provider, "matches": 0, "available_levels": [], "failures": []}
             report["providers"].append(checked)
+            blocked = next(
+                (row for row in report["deferred"] if row["account_id"] == account["account_id"]),
+                None,
+            )
+            if blocked:
+                checked.update(code=blocked["code"], retry_at=blocked["retry_at"])
+                continue
             try:
                 account, cookie = await local(library.account, account["account_id"])
                 if provider == original["provider"]:
@@ -128,12 +138,28 @@ class Resolver:
                                 break
             except (Fault, TimeoutError) as error:
                 if isinstance(error, Deferred):
-                    raise
+                    defer_channel(report, account, error, "entitlement")
+                    checked.update(code=error.code, retry_at=error.until)
+                    continue
                 code = error.code if isinstance(error, Fault) else "music_upstream_unavailable"
                 failures.append(code)
                 checked["failures"].append(code)
         offers.sort(key=lambda item: LEVELS.get(item["offered"]["level"], -1), reverse=True)
+        if any(
+            code
+            in {
+                "music_upstream_unavailable",
+                "music_download_unavailable",
+                "music_upstream_rejected",
+            }
+            for code in failures
+        ):
+            report["complete"] = False
         if not offers:
+            if report["deferred"]:
+                # The caller may still reuse a local archive. With no archive it
+                # waits for the earliest channel, without consuming a retry.
+                return []
             if failures and all(
                 code in {"music_auth_required", "music_account_unavailable"} for code in failures
             ):

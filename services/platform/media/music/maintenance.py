@@ -75,7 +75,7 @@ class Maintenance:
         if not body["enabled"]:
             # A queued review can return to its already archived state. In-flight publication settles normally.
             for raw in db.execute(
-                "SELECT body FROM jobs WHERE state IN ('queued','retry_wait') AND owner IS NULL AND json_extract(body,'$.quality_review')=1"
+                "SELECT body FROM jobs WHERE state IN ('queued','retry_wait') AND owner IS NULL AND json_extract(body,'$.quality_review')=1 AND coalesce(json_extract(body,'$.quality_catchup'),0)=0"
             ).fetchall():
                 job = json.loads(raw[0])
                 self.repo.update_job(
@@ -96,55 +96,71 @@ class Maintenance:
             {"recording": recording, "directory": job["destination_directory"]}
         ), recording
 
-    def record(self, job):
+    def record(self, job, db=None):
+        if db is None:
+            with self.repo.transaction() as db:
+                return self.record(job, db)
         if job.get("state") != "completed" or not job.get("audio_routing"):
-            return
+            return job
         now = self.repo.clock()
-        incomplete = any(
+        deferred = job["audio_routing"].get("deferred", [])
+        incomplete = bool(deferred) or any(
             code
-            in {"music_upstream_unavailable", "music_download_unavailable", "music_rate_limited"}
+            in {
+                "music_upstream_unavailable",
+                "music_download_unavailable",
+                "music_upstream_rejected",
+                "music_rate_limited",
+            }
             for provider in job["audio_routing"].get("providers", [])
             for code in provider.get("failures", [])
         )
-        with self.repo.transaction() as db:
-            current = db.execute(
-                "SELECT state,generation FROM jobs WHERE id=?", (job["job_id"],)
-            ).fetchone()
-            if (
-                current is None
-                or current["state"] != "completed"
-                or current["generation"] != job["generation"]
-            ):
-                return
-            key, recording = self.key(job, db)
-            prior = self.repo._document(db, CHECK, key) or {}
-            outcome = (
-                "partial"
-                if incomplete
-                else "upgraded"
-                if job.get("quality_review") and not job.get("audio_reused")
-                else "unchanged"
-                if job.get("audio_reused")
-                else "downloaded"
-            )
-            self.repo.put(
-                CHECK,
-                key,
-                {
-                    **prior,
-                    "recording_id": recording,
-                    "job_id": job["job_id"],
-                    "title": job["title"],
-                    "checked_at": now,
-                    "next_check_at": now + (86400 if incomplete else WEEK),
-                    "outcome": outcome,
-                    "code": "music_quality_check_partial" if incomplete else "ready",
-                    "quality": job.get("audio_quality"),
-                    "upgrades": prior.get("upgrades", 0) + (outcome == "upgraded"),
-                },
-                db=db,
-            )
-            self.repo.update_job(job["job_id"], {"quality_review": False}, db=db)
+        current = db.execute(
+            "SELECT state,generation FROM jobs WHERE id=?", (job["job_id"],)
+        ).fetchone()
+        if (
+            current is None
+            or current["state"] != "completed"
+            or current["generation"] != job["generation"]
+        ):
+            return
+        key, recording = self.key(job, db)
+        prior = self.repo._document(db, CHECK, key) or {}
+        next_check = (
+            max(now + 60, min(row["retry_at"] for row in deferred)) + phase(key, 300)
+            if deferred
+            else now + (86400 if incomplete else WEEK)
+        )
+        outcome = (
+            "partial"
+            if incomplete
+            else "upgraded"
+            if job.get("quality_review") and not job.get("audio_reused")
+            else "unchanged"
+            if job.get("audio_reused")
+            else "downloaded"
+        )
+        self.repo.put(
+            CHECK,
+            key,
+            {
+                **prior,
+                "recording_id": recording,
+                "job_id": job["job_id"],
+                "title": job["title"],
+                "checked_at": now,
+                "next_check_at": next_check,
+                "pending_channels": deferred,
+                "outcome": outcome,
+                "code": "music_quality_check_partial" if incomplete else "ready",
+                "quality": job.get("audio_quality"),
+                "upgrades": prior.get("upgrades", 0) + (outcome == "upgraded"),
+            },
+            db=db,
+        )
+        return self.repo.update_job(
+            job["job_id"], {"quality_review": False, "quality_catchup": False}, db=db
+        )
 
     def failed(self, job, code):
         with self.repo.transaction() as db:
@@ -170,7 +186,11 @@ class Maintenance:
         now = self.repo.clock()
         with self.repo.transaction() as db:
             settings = self.settings(db)
-            if not settings["enabled"]:
+            pending = db.execute(
+                "SELECT 1 FROM documents WHERE kind=? AND json_array_length(body,'$.pending_channels')>0 LIMIT 1",
+                (CHECK,),
+            ).fetchone()
+            if not settings["enabled"] and not pending:
                 return {"state": "paused"}
             foreground = db.execute(
                 "SELECT 1 FROM jobs WHERE "
@@ -182,7 +202,7 @@ class Maintenance:
                 + VISIBLE
                 + " AND state IN ('queued','downloading','validating','publishing','retry_wait') AND json_extract(body,'$.quality_review')=1 LIMIT 1"
             ).fetchone()
-            if foreground or reviewing:
+            if reviewing:
                 return {"state": "waiting_downloads" if foreground else "reviewing"}
             playlists = {
                 row["playlist_id"]: row
@@ -220,6 +240,8 @@ class Maintenance:
                     continue
                 row = self.repo._document(db, CHECK, key)
                 if row is None:
+                    if not settings["enabled"]:
+                        continue
                     row = self.repo.put(
                         CHECK,
                         key,
@@ -234,11 +256,17 @@ class Maintenance:
                         },
                         db=db,
                     )
-                if row["next_check_at"] <= now:
-                    due.append((row["next_check_at"], job))
+                catchup = bool(row.get("pending_channels"))
+                if row["next_check_at"] <= now and (
+                    catchup or settings["enabled"] and not foreground
+                ):
+                    due.append((not catchup, row["next_check_at"], job))
             if not due:
-                return {"state": "scheduled", "recordings": len(seen)}
-            job = min(due, key=lambda item: (item[0], item[1]["job_id"]))[1]
+                return {
+                    "state": "waiting_downloads" if foreground else "scheduled",
+                    "recordings": len(seen),
+                }
+            weekly, _, job = min(due, key=lambda item: (item[0], item[1], item[2]["job_id"]))
             self.repo.update_job(
                 job["job_id"],
                 {
@@ -246,6 +274,7 @@ class Maintenance:
                     "stage": "queued",
                     "code": "music_quality_check_queued",
                     "quality_review": True,
+                    "quality_catchup": not weekly,
                     "attempts": 0,
                     "cancel_requested": False,
                 },

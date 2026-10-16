@@ -68,11 +68,19 @@ export type AudioAttempt = {
 };
 export type AudioRouting = {
   policy: "highest_available";
+  complete?: boolean;
+  deferred?: {
+    provider: keyof typeof providerNames;
+    code: string;
+    retry_at: number;
+  }[];
   providers: {
     provider: keyof typeof providerNames;
     matches: number;
     available_levels: string[];
     failures: string[];
+    code?: string;
+    retry_at?: number;
   }[];
   selected?: {
     provider: keyof typeof providerNames;

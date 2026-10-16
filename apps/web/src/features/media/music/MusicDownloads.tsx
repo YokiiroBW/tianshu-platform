@@ -210,9 +210,21 @@ export function MusicAudioReceipt({
       {routing && (
         <div className="media-stack">
           <p>
-            聚合比较：已检查 {routing.providers.length}{" "}
+            聚合比较：已检查{" "}
+            {routing.providers.filter((p) => !p.retry_at).length}{" "}
             个账号，优先最高可用音质。
           </p>
+          {routing.complete === false && (
+            <p className="media-warning">
+              部分渠道待补查，当前选择可用渠道中的最高音质；补查后仅替换更高音质版本。
+            </p>
+          )}
+          {routing.deferred?.map((channel, index) => (
+            <p className="muted" key={index}>
+              {providerNames[channel.provider]}：{word(channel.code)}
+              ，恢复后自动补查。
+            </p>
+          ))}
           {routing.selected && (
             <p>
               {routing.selected.reused
@@ -226,13 +238,15 @@ export function MusicAudioReceipt({
             {routing.providers.map((provider, index) => (
               <p key={index}>
                 {providerNames[provider.provider]}：
-                {provider.available_levels.length
-                  ? provider.available_levels
-                      .map((level) => musicLevels[level] ?? "待核验音质")
-                      .join("、")
-                  : provider.matches === 0
-                    ? "未找到可确认的同版本歌曲"
-                    : "未取得可用音源"}
+                {provider.retry_at
+                  ? "暂不可查询，待补查"
+                  : provider.available_levels.length
+                    ? provider.available_levels
+                        .map((level) => musicLevels[level] ?? "待核验音质")
+                        .join("、")
+                    : provider.matches === 0
+                      ? "未找到可确认的同版本歌曲"
+                      : "未取得可用音源"}
                 {provider.failures
                   .filter((code) => code !== "music_download_forbidden")
                   .map((code) => ` · ${word(code)}`)

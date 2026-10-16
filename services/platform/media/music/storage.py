@@ -186,7 +186,7 @@ class AudioStorage:
             pending = json.loads(row["body"]).get("request_version", 0) != job.get(
                 "processing_request_version", 0
             )
-            return self.repo.update_job(
+            completed = self.repo.update_job(
                 job["job_id"],
                 {
                     "state": "queued" if pending else "completed",
@@ -205,6 +205,8 @@ class AudioStorage:
                 generation=job["generation"],
                 db=db,
             )
+            # Publication and the deferred-channel follow-up share one commit.
+            return self.music.maintenance.record(completed, db) or completed
 
     def reuse(self, job, owner, compared=None):
         self.guard(job, owner)

@@ -8,6 +8,7 @@ import aiohttp
 
 from ....contracts import Fault, require
 from ...publication import validate_connection
+from .paths import NativePaths
 
 
 def object_field(value, key):
@@ -30,8 +31,10 @@ def rows_field(value, key, id_types=(str,)):
 class Client:
     def __init__(self):
         self.session = None
+        self.paths = NativePaths()
 
     async def close(self):
+        await self.paths.close()
         if self.session is not None:
             await self.session.close()
             self.session = None
