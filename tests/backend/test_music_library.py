@@ -118,6 +118,34 @@ class MusicLibraryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(refreshed["recording_id"], second["recording_id"])
 
+    def test_existing_unarchived_legacy_identity_reindexes_and_reuses_unique_recording(self):
+        original = {
+            **self.api.value["tracks"][0],
+            "title": "Duet",
+            "artists": ["A/B"],
+            "album": "Record (Explicit)",
+        }
+        candidate = {
+            **original,
+            "source_id": "other-duet",
+            "artists": ["A", "B"],
+            "album": "Record",
+        }
+        with self.repo.transaction() as db:
+            first = self.library.catalog.register("kugou", original, db)
+            db.execute(
+                "DELETE FROM documents WHERE kind='music_match_index' AND id=?",
+                (lookup_key(original),),
+            )
+            second = self.library.catalog.register("netease", candidate, db)
+            self.assertNotEqual(first["recording_id"], second["recording_id"])
+            refreshed = self.library.catalog.register("kugou", original, db)
+        self.assertEqual(refreshed["recording_id"], second["recording_id"])
+        self.assertEqual(
+            self.library.catalog.recording(first["recording_id"])["recording_id"],
+            second["recording_id"],
+        )
+
     def test_enrichment_preserves_existing_archive_and_explicit_identity(self):
         for protection in ("archive", "user"):
             original = {

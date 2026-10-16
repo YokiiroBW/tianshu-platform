@@ -129,11 +129,7 @@ class Catalog:
             identity = self.resolve(existing["recording_id"], db)
             previous_identity = identity
             method = existing.get("match_method", "source")
-            if (
-                track.get("metadata_enriched")
-                and method != "user"
-                and not self.file(identity, db=db)
-            ):
+            if method != "user" and not self.file(identity, db=db):
                 targets = {self.resolve(i, db) for i in (indexed or {}).get("recordings", [])}
                 exact = [
                     i
@@ -143,8 +139,8 @@ class Catalog:
                         track, self.repo._document(db, "music_recording", i)["metadata"]
                     )
                 ]
-                # Reuse an existing recording only after a same-hash metadata refresh,
-                # and never merge away an archived file or an explicit user binding.
+                # Reconsider old unmatched sources after normalization/enrichment,
+                # without merging away an archive or an explicit user binding.
                 if len(exact) == 1:
                     identity = self.merge(identity, exact[0], db)
                     method = "metadata_strict"
