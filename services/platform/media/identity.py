@@ -93,11 +93,11 @@ def require_relative_path(value: object, field: str = "path") -> str:
 
     if not isinstance(value, str) or not value:
         raise _reject("invalid_relative_path", field)
-    if ".." in value or "\\" in value or value.startswith("/") or value.endswith("/"):
+    if "\\" in value or value.startswith("/") or value.endswith("/"):
         raise _reject("invalid_relative_path", field)
     if len(value) > 1 and value[1] == ":":
         raise _reject("invalid_relative_path", field)
-    if any(not segment or segment == "." for segment in value.split("/")):
+    if any(not segment or segment in {".", ".."} for segment in value.split("/")):
         raise _reject("invalid_relative_path", field)
     return value
 

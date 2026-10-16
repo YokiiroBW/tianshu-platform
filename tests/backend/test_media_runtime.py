@@ -33,6 +33,18 @@ from web_fixtures import PASSWORD
 
 
 class MediaRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_health_detects_a_stopped_media_background_loop(self):
+        import asyncio
+
+        self.media.started = True
+        self.media.background.start("worker_0", asyncio.Event().wait)
+        self.addAsyncCleanup(self.media.background.close)
+        self.assertEqual(self.platform.health.runtime_state(), "running")
+        task = self.media.background.tasks["worker_0"]
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(self.platform.health.runtime_state(), "degraded")
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

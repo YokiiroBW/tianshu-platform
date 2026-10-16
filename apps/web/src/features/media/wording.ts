@@ -55,6 +55,8 @@ export const destinationModeWords = {
   custom: "自定义目录",
 };
 export const reasonWords: Record<string, string> = {
+  media_worker_failed: "此任务遇到内部错误，其他下载继续运行；可重试此任务。",
+  media_background_restarting: "后台任务异常退出，正在自动恢复。",
   music_request_deferred: "等待共享请求时段",
   music_request_budget: "本时段请求预算已用完，稍后自动继续",
   music_account_cooling: "平台请求冷却中，稍后自动继续",

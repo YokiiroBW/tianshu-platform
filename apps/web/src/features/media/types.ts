@@ -203,6 +203,12 @@ export type MediaView = {
     destination_modes?: DestinationMode[];
   };
   engine: { state: string; version: string | null; code: string };
+  background?: {
+    name: string;
+    state: string;
+    restarts: number;
+    code: string | null;
+  }[];
   accounts: Account[];
   targets: Target[];
   subscriptions: Subscription[];

@@ -32,6 +32,7 @@ from .metadata_refresh import MetadataRefresh
 from .import_metadata import ImportMetadata
 from .music.runtime import Music
 from .overview import RuntimeSample
+from .background import Background
 
 JOB_FIELDS = (
     "media_kind",
@@ -140,7 +141,7 @@ class Media:
         self.config = validate_media(settings)
         self.local = local
         self.started = False
-        self.tasks = []
+        self.background = Background()
         self.previews = {}
         self.qr = {}
         self.wake = asyncio.Event()
@@ -184,26 +185,25 @@ class Media:
         self.storage_breakdown.closed = False
         await self.connector.start()
         await self.engine.check()
-        self.tasks = [asyncio.create_task(self.subscriptions.pump())]
-        self.tasks.append(asyncio.create_task(self.music.pump()))
-        self.tasks.append(asyncio.create_task(self.retention.pump()))
-        self.tasks += [
-            asyncio.create_task(self.worker.pump(index)) for index in range(self.config["workers"])
-        ]
+        self.background.start("subscriptions", self.subscriptions.pump)
+        self.music.start_background(self.background)
+        self.background.start("retention", self.retention.pump)
+        for index in range(self.config["workers"]):
+            self.background.start("worker_" + str(index), self.worker.pump, index)
 
     async def close(self):
         if self.config is None:
             return
         await self.storage_breakdown.close()
-        for task in self.tasks:
-            task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
-        self.tasks = []
+        await self.background.close()
         await self.evaluator.aclose()
         await self.connector.close()
         await self.remote.close()
         await self.music.close()
         self.started = False
+
+    def healthy(self):
+        return not self.started or self.background.healthy()
 
     async def view(self):
         if self.config is None:
@@ -253,6 +253,7 @@ class Media:
         )
         return {
             "configured": True,
+            "background": self.background.view(),
             "capabilities": {
                 "provider": "bilibili",
                 "source_kinds": list(SOURCE_KINDS),

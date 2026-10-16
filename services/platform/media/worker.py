@@ -47,6 +47,22 @@ class Worker:
             except asyncio.CancelledError:
                 if asyncio.current_task().cancelling():
                     raise
+            except Exception:
+                # One malformed item must not retire this shared worker. Keep
+                # its original job and publication evidence for recovery.
+                current = await self.media.local(self.media.repo.job, job["job_id"])
+                if (
+                    current
+                    and current["generation"] == job["generation"]
+                    and current["state"] not in {"completed", "published", "cancelled", "queued"}
+                ):
+                    await self.media.local(
+                        self.media.repo.update_job,
+                        job["job_id"],
+                        {"state": "failed", "code": "media_worker_failed"},
+                        owner=owner,
+                        generation=job["generation"],
+                    )
             finally:
                 self.active.pop(job["job_id"], None)
 

@@ -228,6 +228,24 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
             f["path"] for f in job["audio_receipt"]["files"] if f["kind"] == kind
         )
 
+    async def test_ellipsis_album_publishes_and_reuses_same_archive(self):
+        value = self.value(["101"])
+        value["tracks"][0]["album"] = "我...真的受伤了"
+        with self.repo.transaction() as db:
+            self.library.install_snapshot(
+                self.account, self.playlist["playlist_id"], value, self.playlist, db
+            )
+        self.playlist = self.repo.get("music_playlist", self.playlist["playlist_id"])
+        self.queue()
+        job = await self.run_job()
+        self.assertEqual(job["state"], "completed")
+        self.assertIn("我...真的受伤了", str(self.file(job)))
+        transfers = self.audio_transfers
+        self.queue()
+        repeated = await self.run_job()
+        self.assertTrue(repeated["audio_reused"])
+        self.assertEqual(self.audio_transfers, transfers)
+
     def test_track_and_disc_numbers_accept_zero_padding_without_inventing_values(self):
         for value, expected in (
             (4, "4"),

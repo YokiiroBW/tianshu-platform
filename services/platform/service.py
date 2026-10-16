@@ -369,7 +369,11 @@ class Platform:
             credential_names=self.other_credentials,
             credential_present=lambda name: credential_present(settings, name),
             log_state=log_state,
-            runtime_state=lambda: self._runtime_state,
+            runtime_state=lambda: (
+                self._runtime_state
+                if not hasattr(self, "media") or self.media.healthy()
+                else "degraded"
+            ),
             config_problem=self.contract_problem,
         )
         from .local_work import LocalWork

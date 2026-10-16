@@ -185,6 +185,21 @@ export function RuntimePanel({
           label={word(view.engine.state)}
         />
         <ReasonNote code={view.engine.code} />
+        {view.background && view.background.length > 0 && (
+          <p role="status">
+            后台执行：
+            {view.background.filter((row) => row.state === "running").length}/
+            {view.background.length} 项运行 · 下载工作线程：
+            {
+              view.background.filter(
+                (row) =>
+                  row.name.startsWith("worker_") && row.state === "running",
+              ).length
+            }
+            {view.background.some((row) => row.state !== "running") &&
+              " · 部分后台任务正在恢复，请留意下载进展。"}
+          </p>
+        )}
         <p className="muted">
           引擎版本：{view.engine.version || "尚未取得"} · 最近采样：
           {timestamp(view.overview?.runtime?.sampled_at ?? null)}

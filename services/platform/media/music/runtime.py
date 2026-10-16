@@ -113,9 +113,10 @@ class Music:
     async def tick(self):
         await scan_due(self.media, "music_playlist", "playlist_id", self.scan)
 
-    async def pump(self):
-        async with asyncio.TaskGroup() as group:
-            group.create_task(pump_scans(self.media, "music_playlist", "playlist_id", self.scan))
-            group.create_task(self.imports.pump())
-            group.create_task(self.navidrome.pump())
-            group.create_task(self.maintenance.pump())
+    def start_background(self, background):
+        background.start(
+            "music_playlists", pump_scans, self.media, "music_playlist", "playlist_id", self.scan
+        )
+        background.start("music_imports", self.imports.pump)
+        background.start("music_navidrome", self.navidrome.pump)
+        background.start("music_maintenance", self.maintenance.pump)
