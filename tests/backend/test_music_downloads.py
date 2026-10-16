@@ -370,7 +370,7 @@ class MusicDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tags["tracknumber"], ["4"])
         self.assertEqual(tags["discnumber"], ["1"])
         self.assertEqual(tags["date"], ["2026-01-02"])
-        self.assertEqual(tags["lyrics"], ["[00:00.00]合成歌词"])
+        self.assertEqual(tags["lyrics"], ["[00:00.000]合成歌词 ／ 合成译文"])
         self.assertEqual(len(tags.pictures), 1)
         self.assertEqual(job["audio_quality"]["codec"], "flac")
         self.assertTrue(job["audio_quality"]["lossless"])

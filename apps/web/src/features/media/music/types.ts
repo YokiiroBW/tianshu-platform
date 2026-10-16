@@ -95,6 +95,12 @@ export type MusicSettings = {
   revision: number;
 };
 export type MusicView = {
+  lyrics?: {
+    tracked: number;
+    synced: number;
+    translated: number;
+    counts: Record<string, number>;
+  };
   maintenance?: MusicMaintenanceView;
   navidrome?: NavidromeView;
   imports?: {
@@ -115,6 +121,12 @@ export type MusicView = {
   accounts: MusicAccount[];
   playlists: MusicPlaylist[];
   settings: MusicSettings;
+};
+export type MusicLyrics = {
+  state: string;
+  coverage: { original: boolean; synced: boolean; translation_synced: boolean };
+  source?: { provider: keyof typeof providerNames } | null;
+  next_check_at?: number;
 };
 export type MusicMaintenanceView = {
   settings: {

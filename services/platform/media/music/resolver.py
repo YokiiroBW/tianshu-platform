@@ -36,6 +36,27 @@ class Resolver:
             )
         return binding
 
+    async def matching_tracks(self, account, cookie, original, recording_id, checked):
+        """Share recording matching with lyrics, without requesting audio entitlements."""
+        provider = account["provider"]
+        if provider == original.get("provider"):
+            return [original]
+        local, catalog = self.music.media.local, self.music.library.catalog
+        candidates = await local(catalog.sources, recording_id, provider)
+        if not candidates:
+            query = search_title(original) + " " + " ".join(original.get("artists", []))
+            found = await self.music.client(provider).search(query, cookie)
+            reasons = [recording_mismatch(original, t) for t in found]
+            checked["search_results"] = len(found)
+            checked["rejected_matches"] = dict(Counter(reason for reason in reasons if reason))
+            candidates = list(
+                {t["source_id"]: t for t, reason in zip(found, reasons) if reason is None}.values()
+            )
+            require(len(candidates) <= 1, "music_match_ambiguous", 409)
+        for track in candidates:
+            await local(self.bind, provider, track, recording_id)
+        return candidates
+
     async def offers(self, job, *, report=None):
         local, library = self.music.media.local, self.music.library
         accounts = [
@@ -81,29 +102,9 @@ class Resolver:
                 continue
             try:
                 account, cookie = await local(library.account, account["account_id"])
-                if provider == original["provider"]:
-                    candidates = [original]
-                else:
-                    candidates = await local(library.catalog.sources, job["recording_id"], provider)
-                    if not candidates:
-                        query = search_title(original) + " " + " ".join(original.get("artists", []))
-                        found = await client.search(query, cookie)
-                        reasons = [recording_mismatch(original, t) for t in found]
-                        checked["search_results"] = len(found)
-                        checked["rejected_matches"] = dict(
-                            Counter(reason for reason in reasons if reason)
-                        )
-                        candidates = list(
-                            {
-                                t["source_id"]: t
-                                for t, reason in zip(found, reasons)
-                                if reason is None
-                            }.values()
-                        )
-                        # Multiple editions with indistinguishable metadata need explicit identity evidence.
-                        require(len(candidates) <= 1, "music_match_ambiguous", 409)
-                    for track in candidates:
-                        await local(self.bind, provider, track, job["recording_id"])
+                candidates = await self.matching_tracks(
+                    account, cookie, original, job["recording_id"], checked
+                )
                 checked["matches"] = len(candidates)
                 for track in candidates:
                     for level in requested_levels(job["quality"]):

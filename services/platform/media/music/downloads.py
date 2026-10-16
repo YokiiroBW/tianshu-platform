@@ -13,6 +13,7 @@ from .quality import verify_quality, satisfies
 from .resolver import Resolver
 from .selection import Selection
 from .storage import AudioStorage
+from .lyrics_text import render as render_lyrics, sidecars as lyric_sidecars
 from .transfer import Transfer
 from .request_control import Deferred
 
@@ -156,7 +157,7 @@ class Downloads:
             raw, observed = converted_path, converted
         audio = await local(self.storage.stage, job, "audio." + quality["extension"])
         raw.replace(audio)
-        await settled(local, write_tags, audio, track, artwork, lyrics.get("original", ""))
+        await settled(local, write_tags, audio, track, artwork, render_lyrics(lyrics))
         # Confirm that tag insertion left a fully decodable audio stream.
         tagged = await probe(audio, track, self.media.config["engine"])
         require(
@@ -169,13 +170,8 @@ class Downloads:
         )
         files = [(audio, "." + quality["extension"], "audio")]
         extras = {}
-        for key, suffix in (
-            ("original", ".lrc"),
-            ("translated", ".zh.lrc"),
-            ("romanized", ".rom.lrc"),
-        ):
-            if lyrics.get(key):
-                extras[suffix] = lyrics[key].encode("utf-8")
+        for suffix, text in lyric_sidecars(lyrics).items():
+            extras[suffix] = (text + "\n").encode("utf-8")
         if artwork:
             extras[".jpg"] = artwork
         extras[".source.json"] = json.dumps(

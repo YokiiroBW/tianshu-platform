@@ -1,7 +1,12 @@
 import { useState } from "react";
 import type { MediaController } from "../useMediaController";
 import { timestamp, word } from "../wording";
-import { providerNames, type AudioQuality, type AudioUnlock } from "./types";
+import {
+  providerNames,
+  type AudioQuality,
+  type AudioUnlock,
+  type MusicLyrics,
+} from "./types";
 import { audioQualityText, unlockText } from "./MusicDownloads";
 
 type Catalog = {
@@ -15,6 +20,7 @@ type Catalog = {
       download_provider?: keyof typeof providerNames;
       quality: AudioQuality;
       unlock?: AudioUnlock | null;
+      lyrics?: MusicLyrics;
       files: { kind: string; path: string }[];
     } | null;
   }[];
@@ -134,6 +140,24 @@ export function MusicLibrary({
                           {item.file.unlock && (
                             <p className="muted">
                               {unlockText(item.file.unlock)}
+                            </p>
+                          )}
+                          {item.file.lyrics && (
+                            <p className="muted">
+                              {item.file.lyrics.coverage.synced
+                                ? "滚动歌词"
+                                : item.file.lyrics.coverage.original
+                                  ? "纯文本歌词"
+                                  : "歌词待补齐"}
+                              {item.file.lyrics.coverage.translation_synced
+                                ? " · 同步翻译"
+                                : ""}
+                              {item.file.lyrics.source
+                                ? ` · ${providerNames[item.file.lyrics.source.provider]}`
+                                : ""}
+                              {item.file.lyrics.state === "retry_wait"
+                                ? ` · 下次补查 ${timestamp(item.file.lyrics.next_check_at)}`
+                                : ""}
                             </p>
                           )}
                           <p className="music-file">

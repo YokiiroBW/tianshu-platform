@@ -157,6 +157,20 @@ export function MusicPanel({ media }: { media: MediaController }) {
         />
       </div>
       <MusicLibrary media={media} status={view.imports} refresh={refresh} />
+      {view.lyrics && (
+        <section className="media-card" aria-label="歌词自动补齐">
+          <h3>歌词自动补齐</h3>
+          <p>
+            {view.lyrics.synced} 首滚动歌词 · {view.lyrics.translated}{" "}
+            首同步翻译 · {view.lyrics.counts.queued ?? 0} 首待检查 ·{" "}
+            {view.lyrics.counts.retry_wait ?? 0} 首等待重试
+          </p>
+          <p className="muted">
+            新下载和已有歌曲自动跨渠道补词，共用一份歌词，不重新下载音频。失败从
+            6 小时起逐步延后，缺词按周补查；原文与翻译对齐后合并显示。
+          </p>
+        </section>
+      )}
       {view.maintenance && (
         <MusicMaintenance
           key={view.maintenance.settings.revision}
