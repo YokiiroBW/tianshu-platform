@@ -141,6 +141,15 @@ class MusicRequestControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retry_after("NaN", 0), 0)
         self.assertEqual(retry_after(None, 0), 0)
 
+    async def test_login_traffic_is_counted_once_in_public_provider_totals(self):
+        async with self.control.access("netease"):
+            pass
+        async with self.control.access("netease", "netease:1"):
+            pass
+        totals = [row for row in self.control.view()["scopes"] if row["account_id"] is None]
+        self.assertEqual(len(totals), 1)
+        self.assertEqual(totals[0]["hour_used"], 2)
+
     def test_expired_request_lease_can_resume_and_old_release_cannot_clear_new_owner(self):
         first = self.control.reserve("qq", "qq:1", 1, "old")
         self.now += 61
