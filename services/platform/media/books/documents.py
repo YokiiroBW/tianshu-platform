@@ -268,10 +268,11 @@ def apply_package_metadata(package, metadata, identifier, modified):
     if not node.findall(f"{{{DC}}}identifier"):
         ET.SubElement(node, f"{{{DC}}}identifier", {"id": "book-id"}).text = identifier
         package.set("unique-identifier", "book-id")
-    if "tags" in metadata:
+    if "tags" in metadata or "category" in metadata:
         for old in list(node.findall(f"{{{DC}}}subject")):
             node.remove(old)
-        for tag in metadata["tags"]:
+        subjects = [metadata["category"]] if metadata.get("category") else []
+        for tag in dict.fromkeys(subjects + metadata.get("tags", [])):
             ET.SubElement(node, f"{{{DC}}}subject").text = tag
     if metadata.get("isbn"):
         for old in list(node.findall(f"{{{DC}}}identifier")):

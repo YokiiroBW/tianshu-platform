@@ -64,8 +64,8 @@ def parseBookInfo(bS, urlObj, content, evalJs):
         bookInfo['intro'] = Fmt.html(
             getString(content, ruleBookInfo['intro'], evalJs, rawContent=_content))
     if ruleBookInfo.get('coverUrl', None):
-        bookInfo['coverUrl'] = urljoin(urlObj['url'], getString(
-            content, ruleBookInfo['coverUrl'], evalJs, rawContent=_content))
+        cover = getString(content, ruleBookInfo['coverUrl'], evalJs, rawContent=_content).strip()
+        bookInfo['coverUrl'] = urljoin(urlObj['url'], cover) if cover else ''
     if ruleBookInfo.get('tocUrl', None):
         result = getStrings(
             content, ruleBookInfo['tocUrl'], evalJs, rawContent=_content)

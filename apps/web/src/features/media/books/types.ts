@@ -4,6 +4,7 @@ export type BookMetadata = {
   description?: string;
   language?: string;
   tags?: string[];
+  category?: string;
   cover_url?: string;
   publisher?: string;
   published_at?: string;
@@ -56,6 +57,7 @@ export type BookSource = {
     content: boolean;
     javascript: boolean;
     unsupported: string[];
+    webview_http_fallback?: boolean;
   };
 };
 

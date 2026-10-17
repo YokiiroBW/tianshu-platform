@@ -8,7 +8,7 @@ import re
 import socket
 import ssl
 from dataclasses import dataclass
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 from ...contracts import Fault, require
 
@@ -118,7 +118,9 @@ class Network:
                     )
                     request_headers[key] = value
             parsed = urlsplit(current)
-            target = (parsed.path or "/") + ("?" + parsed.query if parsed.query else "")
+            target = quote(parsed.path or "/", safe="/%:@!$&'()*+,;=-._~")
+            if parsed.query:
+                target += "?" + quote(parsed.query, safe="=&%+;:/?@,!$'()*-._~")
             connection = PinnedConnection(host, port, addresses[0], scheme == "https", timeout)
             try:
                 connection.request(method, target, body=body, headers=request_headers)

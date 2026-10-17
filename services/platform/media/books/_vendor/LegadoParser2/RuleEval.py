@@ -136,6 +136,7 @@ def jsProcessor(content, evalJs: "EvalJs", rule, **kwargs):
                 jlst[innerRules[idx][i][1] + 1] = ""
 
         evalJs.set("result", result)
+        evalJs.set("src", result)
         result = evalJs.eval("".join(jlst))
     if isinstance(result, list):
         return result

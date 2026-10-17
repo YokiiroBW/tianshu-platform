@@ -265,6 +265,9 @@ export function BookSources({
                 </span>
                 <span>{bookCode(source.code)}</span>
                 {source.capabilities.javascript && <span>含脚本规则</span>}
+                {source.capabilities.webview_http_fallback && (
+                  <span>尝试普通网页读取</span>
+                )}
                 {source.capabilities.unsupported.length > 0 && (
                   <span className="media-warning">部分能力待支持</span>
                 )}

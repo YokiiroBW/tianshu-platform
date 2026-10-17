@@ -114,7 +114,9 @@ def urljoin(baseUrl, relativeUrl):
 
 def getContent(urlObj):
     from services.platform.contracts import require
-    require(not urlObj.get("webView") and not urlObj.get("webJs"), "book_rule_capability_unsupported", 409)
+    # Many sources mark ordinary server-rendered POST searches as webView.
+    # Read their HTTP response; scripts requiring an actual browser still fail explicitly.
+    require(not urlObj.get("webJs"), "book_rule_capability_unsupported", 409)
     if urlObj['method'] == 'GET':
         method = 0
     elif urlObj['method'] == 'POST':

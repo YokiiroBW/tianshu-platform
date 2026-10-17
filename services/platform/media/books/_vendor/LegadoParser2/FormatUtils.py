@@ -40,6 +40,8 @@ class Fmt():
 
     @classmethod
     def html(cls, text, otherRegex=otherHtmlRegex):
+        from services.platform.media.books.documents import plain_text
+        text = plain_text(text)
         text = unicodedata.normalize('NFC', text)
         text = text.replace('\ufeff', '')
         text = text.replace('\u200b', '')

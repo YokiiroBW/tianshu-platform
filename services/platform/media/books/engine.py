@@ -13,9 +13,10 @@ from ...contracts import Fault, require
 def capabilities(source):
     serialized = json.dumps(source, ensure_ascii=False)
     unsupported = []
-    if re.search(r"[\"']?webView[\"']?\s*:\s*true", serialized, re.I) or source.get(
-        "ruleContent", {}
-    ).get("webJs"):
+    webview_hint = bool(
+        re.search(r"[\"']?webView[\"']?\s*:\s*true", serialized.replace('\\"', '"'), re.I)
+    )
+    if source.get("ruleContent", {}).get("webJs"):
         unsupported.append("webview")
     if source.get("loginUi") or source.get("loginCheckJs"):
         unsupported.append("interactive_login")
@@ -24,6 +25,7 @@ def capabilities(source):
         "content": bool(source.get("ruleToc") and source.get("ruleContent")),
         "javascript": "@js:" in serialized or "<js>" in serialized or "{{" in serialized,
         "unsupported": unsupported,
+        "webview_http_fallback": webview_hint,
     }
 
 

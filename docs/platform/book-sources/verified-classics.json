@@ -1,0 +1,55 @@
+[
+  {
+    "bookSourceName": "殆知阁（古籍全文）",
+    "bookSourceUrl": "https://daizhige.org",
+    "bookSourceGroup": "已实测·古籍",
+    "bookSourceType": 0,
+    "enabled": true,
+    "searchUrl": "/api/search?q={{java.encodeURI(key)}}&page={{page-1}}&size=20&mode=exact",
+    "ruleSearch": {
+      "bookList": "$.data.results[*].source",
+      "name": "$.title",
+      "bookUrl": "$.url",
+      "kind": "$.book_category",
+      "intro": "$.collection"
+    },
+    "ruleBookInfo": {
+      "name": "h2@text",
+      "kind": "@js:\"国学古籍\""
+    },
+    "ruleToc": {
+      "chapterList": "h2",
+      "chapterName": "text",
+      "chapterUrl": "@js:baseUrl"
+    },
+    "ruleContent": {
+      "content": ".markdown-content@html"
+    }
+  },
+  {
+    "bookSourceName": "维基文库（作品与分卷）",
+    "bookSourceUrl": "https://zh.wikisource.org",
+    "bookSourceGroup": "已实测·古籍",
+    "bookSourceType": 0,
+    "enabled": true,
+    "searchUrl": "/w/api.php?action=query&list=search&srsearch={{java.encodeURI(key)}}&srnamespace=0&srlimit=20&sroffset={{(page-1)*20}}&format=json",
+    "ruleSearch": {
+      "bookList": "$.query.search[*]",
+      "name": "$.title",
+      "bookUrl": "@js:\"/w/api.php?action=parse&pageid=\"+JSON.parse(result).pageid+\"&prop=text%7Clinks&format=json&redirects=1\"",
+      "intro": "$.snippet",
+      "kind": "@js:\"公版文献\""
+    },
+    "ruleBookInfo": {
+      "name": "$.parse.title"
+    },
+    "ruleToc": {
+      "chapterList": "@js:\nconst p = JSON.parse(result).parse;\nconst prefix = p.title + '/';\nconst parts = (p.links || []).filter(l => l.ns === 0 && l['*'].startsWith(prefix) && !l['*'].slice(prefix.length).includes('/'));\nparts.length ? parts.map(l => ({name:l['*'].slice(prefix.length), url:source.key+'/w/api.php?action=parse&page='+encodeURIComponent(l['*'])+'&prop=text%7Clinks&format=json&redirects=1'})) : [{name:p.title, url:baseUrl}];",
+      "chapterName": "$.name",
+      "chapterUrl": "$.url"
+    },
+    "ruleContent": {
+      "content": "$.parse.text['*']"
+    }
+  }
+]

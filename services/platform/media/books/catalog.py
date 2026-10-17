@@ -9,6 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 from ...contracts import digest, require
 from .documents import clean_text, plain_text, title_key
 from .engine import capabilities
+from .organization import book_category
 
 METADATA_FIELDS = frozenset(
     {
@@ -17,6 +18,7 @@ METADATA_FIELDS = frozenset(
         "description",
         "language",
         "tags",
+        "category",
         "publisher",
         "published_at",
         "isbn",
@@ -52,7 +54,7 @@ def public_source(source):
 
 
 def public_book(book):
-    return {
+    result = {
         key: book.get(key)
         for key in (
             "book_id",
@@ -74,6 +76,11 @@ def public_book(book):
             "has_cover",
         )
     }
+    result["metadata"] = {
+        **book["metadata"],
+        "category": book_category(book["metadata"], book.get("source_name", "")),
+    }
+    return result
 
 
 class Catalog:
@@ -226,9 +233,20 @@ class Catalog:
             previous = self.repo._document(db, "book_source", identity)
             fingerprint = digest(entry)
             if previous and previous["digest"] == fingerprint:
-                if previous.get("upstream_removed"):
+                current_capabilities = capabilities(entry)
+                if (
+                    previous.get("upstream_removed")
+                    or previous.get("capabilities") != current_capabilities
+                ):
                     self.repo.put(
-                        "book_source", identity, {**previous, "upstream_removed": False}, db=db
+                        "book_source",
+                        identity,
+                        {
+                            **previous,
+                            "upstream_removed": False,
+                            "capabilities": current_capabilities,
+                        },
+                        db=db,
                     )
                 source_ids.append(identity)
                 results.append({"index": index, "state": "unchanged", "source_id": identity})
@@ -472,7 +490,7 @@ class Catalog:
     def enqueue(self, book, *, db, refresh=True):
         settings = self.settings(db)
         artifact = book.get("artifact")
-        directory = artifact["root"] if artifact else settings["directory"]
+        directory = settings["directory"] or (artifact["root"] if artifact else "")
         require(directory, "book_directory_required", 409)
         key = digest({"book": book["book_id"], "directory": directory})
         row = db.execute("SELECT body FROM jobs WHERE dedupe=?", ("book:" + key,)).fetchone()

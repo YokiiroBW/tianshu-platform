@@ -367,6 +367,94 @@ class BookTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["state"], "completed")
         self.assertLessEqual(len(self.books.sources.searches), 32)
 
+    async def test_webview_hint_http_script_helpers_and_browser_script_rejection(self):
+        rules = self.site.source()
+        rules["searchUrl"] = self.site.url + '/search?key={{java.encodeURI(key)}},{"webView":true}'
+        rules["ruleToc"]["chapterList"] = (
+            '@js:java.setContent(result); java.getElements("$.chapters[*]");'
+        )
+        rules["ruleContent"]["content"] = '@js:java.setContent(src); java.getString("$.content");'
+        await self.source(rules)
+        found = await self.search()
+        identity = found["books"][0]["book_id"]
+        await self.call("subscriptions/save", {"book_id": identity})
+        job = await self.run_job()
+        self.assertEqual(job["state"], "completed", job["code"])
+        self.assertEqual(job["book_artifact"]["chapters"], 2)
+        path, _, _ = await self.books.file(identity, "epub")
+        validate_epub(path)
+        rules["searchUrl"] = self.site.url + '/search,{"webJs":"document.body.innerText"}'
+        with self.assertRaises(Fault) as caught:
+            await self.books.engine.call(rules, "search", query="山")
+        self.assertEqual(caught.exception.code, "book_rule_capability_unsupported")
+        source_id = found["sources"][0]["source_id"]
+        source = self.repo.get("book_source", source_id)
+        self.repo.put("book_source", source_id, {**source, "enabled": False, "capabilities": {}})
+        rules["searchUrl"] = self.site.url + '/search?key={{java.encodeURI(key)}},{"webView":true}'
+        await self.source(rules)
+        refreshed = self.repo.get("book_source", source_id)
+        self.assertFalse(refreshed["enabled"])
+        self.assertTrue(refreshed["capabilities"]["webview_http_fallback"])
+
+    async def test_unicode_remote_paths_preserve_existing_escapes(self):
+        for suffix in (
+            "/古籍/中文.html?书名=大学",
+            "/%E5%8F%A4%E7%B1%8D/%E4%B8%AD%E6%96%87.html?%E4%B9%A6%E5%90%8D=%E5%A4%A7%E5%AD%A6",
+        ):
+            response = await asyncio.to_thread(self.books.network.fetch, self.site.url + suffix)
+            self.assertEqual(
+                json.loads(response.text), {"path": "/古籍/中文.html", "query": "大学"}
+            )
+
+    async def test_category_reorganization_and_new_root_preserve_previous_files(self):
+        book = await self.book()
+        await self.call("subscriptions/save", {"book_id": book["book_id"]})
+        first = await self.run_job()
+        old_path, _, _ = await self.books.file(book["book_id"], "epub")
+        old_bytes = old_path.read_bytes()
+        new_root = self.library.parent / "新书库"
+        new_root.mkdir()
+        settings = self.books.catalog.settings()
+        await self.call(
+            "settings/save",
+            {**settings, "directory": str(new_root), "expected_revision": settings["revision"]},
+        )
+        current = self.books.catalog.book(book["book_id"])
+        await self.call(
+            "metadata/apply",
+            {
+                "book_id": book["book_id"],
+                "expected_revision": current["metadata_revision"],
+                "fields": {"category": "文学诗词"},
+                "source": "manual",
+            },
+        )
+        moved = await self.run_job()
+        self.assertEqual(moved["state"], "completed", moved["code"])
+        path, _, _ = await self.books.file(book["book_id"], "epub")
+        self.assertTrue(path.is_relative_to(new_root / "文学诗词"))
+        self.assertEqual(old_path.read_bytes(), old_bytes)
+        self.assertEqual(moved["book_artifact"]["version"], first["book_artifact"]["version"] + 1)
+        with zipfile.ZipFile(path) as archive:
+            package = ET.fromstring(archive.read("EPUB/package.opf"))
+            self.assertIn(
+                "文学诗词", [x.text for x in package.findall(f"{{{OPF}}}metadata/{{{DC}}}subject")]
+            )
+        await self.call("downloads/create", {"book_id": book["book_id"]})
+        repeated = await self.run_job()
+        self.assertTrue(repeated["book_reused"])
+        self.assertEqual(self.site.hits["/chapter/1"], 1)
+
+    async def test_hidden_web_style_is_not_published_as_book_text(self):
+        rules = self.site.source()
+        rules["ruleContent"]["content"] = (
+            '@js:"<style>.hidden {color:red}</style><p>可读正文</p><script>doNotRun()</script>"'
+        )
+        content = await self.books.engine.call(rules, "content", url=self.site.url + "/chapter/1")
+        self.assertIn("可读正文", content["content"])
+        self.assertNotIn("color:red", content["content"])
+        self.assertNotIn("doNotRun", content["content"])
+
     async def test_download_cancel_keeps_cached_chapters_and_retry_resumes(self):
         book = await self.book()
         chapters = self.books.catalog.directory(book["book_id"])

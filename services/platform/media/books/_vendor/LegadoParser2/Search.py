@@ -95,8 +95,8 @@ def getSearchResult(bS, urlObj, content, evalJs: EvalJs, **kwargs):
             if ruleSearch.get('kind', None):
                 bookInfo['kind'] = ','.join(getStrings(e, ruleSearch['kind'], evalJs)).strip()
             if ruleSearch.get('coverUrl', None):
-                bookInfo['coverUrl'] = urljoin(finalUrl,
-                                               getString(e, ruleSearch['coverUrl'], evalJs).strip())
+                cover = getString(e, ruleSearch['coverUrl'], evalJs).strip()
+                bookInfo['coverUrl'] = urljoin(finalUrl, cover) if cover else ''
             if ruleSearch.get('wordCount', None):
                 bookInfo['wordCount'] = Fmt.wordCount(
                     getString(e, ruleSearch['wordCount'], evalJs).strip())

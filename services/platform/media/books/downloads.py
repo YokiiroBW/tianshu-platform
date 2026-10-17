@@ -8,10 +8,11 @@ import zipfile
 from pathlib import Path
 
 from ...contracts import Fault, digest, require
-from ..destination import safe_path, path_component
+from ..destination import safe_path
 from ..organizer import library_lock
 from ..video_storage import sync_directory, sync_file
 from .documents import build_epub, validate_epub
+from .organization import book_category, book_relative_path
 
 
 class Downloads:
@@ -240,21 +241,7 @@ class Downloads:
         self.guard(job, owner)
         previous = book.get("artifact")
         pending = self.repo.get("book_publication", book["book_id"])
-        location = previous or (pending if pending and pending["root"] == str(root) else None)
-        relative = (
-            location["relative_path"]
-            if location
-            else "/".join(
-                (
-                    path_component(book["metadata"].get("author"), "未知作者", 80),
-                    path_component(book["metadata"]["title"], "未命名书籍", 100)
-                    + " ["
-                    + book["book_id"][:8]
-                    + "]",
-                    "book.epub",
-                )
-            )
-        )
+        relative = book_relative_path(book)
         target = safe_path(root, relative)
         content_digest = digest(
             [(chapter["chapter_id"], chapter["content_hash"]) for chapter in chapters]
@@ -273,7 +260,13 @@ class Downloads:
                         )
                     if recovered:
                         previous = {**pending, "mtime_ns": target.stat().st_mtime_ns}
-                require(previous, "book_file_conflict", 409)
+                require(
+                    previous
+                    and previous["root"] == str(root)
+                    and previous["relative_path"] == relative,
+                    "book_file_conflict",
+                    409,
+                )
                 stat = target.stat()
                 if (
                     stat.st_mtime_ns != previous.get("mtime_ns")
@@ -312,6 +305,13 @@ class Downloads:
                     },
                 }
             )
+            export_book = {
+                **export_book,
+                "metadata": {
+                    **export_book["metadata"],
+                    "category": book_category(book["metadata"], book.get("source_name", "")),
+                },
+            }
             build_epub(
                 staged_epub,
                 export_book,
@@ -361,6 +361,7 @@ class Downloads:
             self.guard(job, owner)
             artifact = {
                 "root": str(root),
+                "category": book_category(book["metadata"], book.get("source_name", "")),
                 "relative_path": relative,
                 "bytes": staged_epub.stat().st_size,
                 "sha256": fingerprint,

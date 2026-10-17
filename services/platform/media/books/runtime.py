@@ -69,6 +69,10 @@ class Books:
                 "detail",
                 url=book["source_url"],
                 variables=book.get("variables", {}),
+                book={
+                    "name": book["metadata"]["title"],
+                    "author": book["metadata"].get("author", ""),
+                },
             )
             source, _ = await self.media.local(self.catalog.source, book["source_id"])
             result["bookUrl"] = book["source_url"]
@@ -79,6 +83,10 @@ class Books:
                 "chapters",
                 url=book["toc_url"] or book["source_url"],
                 variables=book.get("variables", {}),
+                book={
+                    "name": book["metadata"]["title"],
+                    "author": book["metadata"].get("author", ""),
+                },
             )
             book, directory = await self.media.local(self.catalog.save_directory, book, entries)
         return book, directory
@@ -108,6 +116,7 @@ class Books:
             url=chapter["url"],
             variables=chapter.get("variables", {}),
             next_url=next_url,
+            book={"name": book["metadata"]["title"], "author": book["metadata"].get("author", "")},
         )
         saved = await self.media.local(
             self.catalog.save_chapter, identity, chapter, result.get("content", "")

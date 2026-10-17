@@ -23,6 +23,7 @@ def run(request):
         allowed_private_origins=request.get("allowed_private_origins", ())
     )
     source = dict(request["source"])
+    source["_tianshu_book"] = request.get("book", {})
     for key in ("ruleSearch", "ruleBookInfo", "ruleToc", "ruleContent", "ruleExplore"):
         source.setdefault(key, {})
     compiled = compileBookSource(source)
@@ -37,6 +38,7 @@ def run(request):
         require(len(result) <= 20000, "book_directory_invalid", 502)
         return result
     if operation == "content":
+        require(not source["ruleContent"].get("webJs"), "book_rule_capability_unsupported", 409)
         result = getChapterContent(compiled, request["url"], variables, request.get("next_url", ""))
         require(
             isinstance(result, dict) and result.get("content", "").strip(),

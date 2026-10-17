@@ -10,6 +10,7 @@ import type {
 const fields: [keyof BookMetadata, string][] = [
   ["title", "书名"],
   ["author", "作者"],
+  ["category", "书籍类别"],
   ["language", "语言"],
   ["isbn", "ISBN"],
   ["publisher", "出版社"],

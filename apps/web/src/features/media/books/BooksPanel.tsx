@@ -49,6 +49,8 @@ const slots = [
 export function BooksPanel({ media }: { media: MediaController }) {
   const current = useRef(media);
   current.current = media;
+  const mutations = useRef(0);
+  const [mutating, setMutating] = useState(false);
   const [view, setView] = useState<BooksView | null>(null);
   const [tab, setTab] = useState("search");
   const [warehouseOpen, setWarehouseOpen] = useState(false);
@@ -123,16 +125,16 @@ export function BooksPanel({ media }: { media: MediaController }) {
   useEffect(() => {
     if (!pendingFeeds) return;
     const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
+      if (!document.hidden && !mutations.current) void refresh();
     }, 2500);
     return () => clearInterval(timer);
   }, [pendingFeeds, refresh]);
   useEffect(() => {
     const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
+      if (!document.hidden && !mutations.current) void refresh();
     }, 30000);
     const visible = () => {
-      if (!document.hidden) void refresh();
+      if (!document.hidden && !mutations.current) void refresh();
     };
     document.addEventListener("visibilitychange", visible);
     return () => {
@@ -175,12 +177,23 @@ export function BooksPanel({ media }: { media: MediaController }) {
   }, [search?.search_id, search?.state]);
 
   async function mutate<T>(operation: string, body: object, notice?: string) {
-    const result = await current.current.command<T>("books/" + operation, body);
-    if (result) {
-      if (notice) current.current.setNotice(notice);
-      await refresh();
+    mutations.current += 1;
+    setMutating(true);
+    current.current.cancel("books-view");
+    try {
+      const result = await current.current.command<T>(
+        "books/" + operation,
+        body,
+      );
+      if (result) {
+        if (notice) current.current.setNotice(notice);
+        await refresh();
+      }
+      return result;
+    } finally {
+      mutations.current -= 1;
+      if (!mutations.current) setMutating(false);
     }
-    return result;
   }
   async function stopSearch() {
     const result = searchRef.current;
@@ -493,7 +506,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
       {tab === "subscriptions" && (
         <BookSubscriptions
           subscriptions={view.subscriptions}
-          busy={!!media.busy}
+          busy={!!media.busy || mutating}
           onControl={(subscription, action, interval) => {
             void mutate(
               "subscriptions/control",
@@ -529,7 +542,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
         <BookLibrary
           books={library.books}
           total={library.total}
-          busy={!!media.busy}
+          busy={!!media.busy || mutating}
           onPreview={(book) => void openBook(book)}
           onImport={importLocal}
           onRefresh={(query) => void readLibrary(query)}
@@ -542,7 +555,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
       {tab === "sources" && (
         <BookSources
           view={view}
-          busy={!!media.busy}
+          busy={!!media.busy || mutating}
           onWarehouse={() => setWarehouseOpen(true)}
           onImport={(sources) =>
             mutate<SourceImportResult>("sources/import", { sources })
@@ -571,7 +584,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
         <BookSettings
           key={view.settings.revision}
           settings={view.settings}
-          busy={!!media.busy}
+          busy={!!media.busy || mutating}
           onSave={(body) => void saveSettings(body)}
         />
       )}
@@ -603,7 +616,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
           detail={detail}
           preview={preview}
           alternatives={alternatives}
-          busy={!!media.busy}
+          busy={!!media.busy || mutating}
           onClose={closeBook}
           onOpen={(book) => void openBook(book)}
           onChapter={(chapter) => void readChapter(selected, chapter)}

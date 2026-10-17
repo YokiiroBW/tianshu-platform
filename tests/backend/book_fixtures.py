@@ -56,6 +56,8 @@ class BookSite:
     async def handle(self, request):
         self.hits[request.path] += 1
         self.received_headers[request.path] = dict(request.headers)
+        if request.path == "/古籍/中文.html":
+            return web.json_response({"path": request.path, "query": request.query.get("书名")})
         if request.path == "/__fixture/warehouse" and request.method == "POST":
             body = await request.json()
             self.warehouse_version = body.get("version", self.warehouse_version)

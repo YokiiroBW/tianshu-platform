@@ -39,6 +39,8 @@ class EvalJs(object):
         self.context.add_callable('pyAjax', self.ajax)
         self.context.add_callable('pyGetZipStringContent', getZipStringContent)
         self.context.add_callable('pyGetString', self.getString)
+        from services.platform.media.books.engine_script import install_helpers
+        install_helpers(self)
 
     def set(self, name, value):
         if isinstance(value, (list, dict)):
@@ -84,13 +86,14 @@ class EvalJs(object):
         try:
             if DEBUG_MODE:
                 print(url)
-            urlObj = parseUrl(url, self)
+            urlObj = parseUrl(url, self, self.get('baseUrl') or self.bS.get('bookSourceUrl', ''))
             content = getContent(urlObj)[0]
         except Exception:
             if DEBUG_MODE:
                 print('ajax出错了')
                 print(f'ajax url {url}')
                 print(traceback.format_exc())
+            raise
         return content
 
     def getString(self, rule, isUrl):
