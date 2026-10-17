@@ -23,6 +23,11 @@ export const bookWords: Record<string, string> = {
   book_source_address_denied:
     "书源地址无法访问；本地书库请通过 OPDS 设置连接。",
   book_feed_pending: "等待更新规则",
+  book_feed_partial: "规则已更新，部分条目跳过",
+  book_source_type_unsupported: "暂不支持此资源类型（仅导入文本书源）",
+  book_warehouse_choose_entry:
+    "请选择源仓库中的具体书源或合集，或填写对应详情页。",
+  book_warehouse_changed: "仓库页面格式有变化或未返回有效内容，请稍后重试。",
   book_source_input_invalid: "规则集合格式有误",
   book_content_incomplete: "部分章节未取得，重试会继续补齐。",
   book_incomplete_kept_previous: "本次章节不完整，已保留之前的完整 EPUB。",

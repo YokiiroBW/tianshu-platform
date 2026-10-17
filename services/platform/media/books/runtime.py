@@ -17,6 +17,7 @@ from .engine import RuleEngine
 from .metadata import Metadata
 from .network import Network, origin
 from .sources import Sources
+from .warehouse import Warehouse
 
 
 class Books:
@@ -26,6 +27,7 @@ class Books:
         self.engine = RuleEngine()
         self.network = Network()
         self.sources = Sources(self)
+        self.warehouse = Warehouse(self)
         self.metadata = Metadata(self)
         self.data_root = Path(self.repo.database).with_suffix(".book-content")
         from .downloads import Downloads

@@ -2,6 +2,8 @@
 
 import asyncio
 from collections import Counter
+from html import escape
+import re
 
 from aiohttp import web
 
@@ -19,6 +21,9 @@ class BookSite:
         self.content_delay = 0
         self.bad_feed = False
         self.url = ""
+        self.warehouse_version = 1
+        self.warehouse_failure = False
+        self.warehouse_page_failure = False
 
     def source(self):
         return {
@@ -51,6 +56,16 @@ class BookSite:
     async def handle(self, request):
         self.hits[request.path] += 1
         self.received_headers[request.path] = dict(request.headers)
+        if request.path == "/__fixture/warehouse" and request.method == "POST":
+            body = await request.json()
+            self.warehouse_version = body.get("version", self.warehouse_version)
+            return web.json_response({"version": self.warehouse_version})
+        if request.path.startswith("/yuedu/"):
+            return self.warehouse(request)
+        if request.path == "/large-rules.json":
+            import json
+
+            return web.Response(text=" " * (9 * 1024 * 1024) + json.dumps([self.source()]))
         if request.path == "/search":
             if self.delay:
                 await asyncio.sleep(self.delay)
@@ -132,6 +147,64 @@ class BookSite:
     def connect(self, books):
         books.engine = RuleEngine(allowed_private_origins=[self.url])
         books.network = Network(allowed_private_origins=[self.url])
+        books.warehouse.base_url = self.url
+
+    def warehouse(self, request):
+        """The same HTML selectors and stable endpoints as the public warehouse."""
+        part = request.path.split("/")[2]
+        if part not in {"shuyuan", "shuyuans"}:
+            raise web.HTTPNotFound()
+        names = {"101": "山海书源", "102": "林间书源", "103": "远山书源", "201": "合成精选合集"}
+        path = f"/yuedu/{part}"
+        match = re.search(r"/id/(\d+)\.(json|html)$", request.path)
+        if match:
+            identity = match[1]
+            if identity not in names:
+                raise web.HTTPNotFound()
+            if match[2] == "json":
+                if self.warehouse_failure:
+                    raise web.HTTPServiceUnavailable()
+                ids = ["101", "102"] if part == "shuyuans" else [identity]
+                rules = [
+                    {
+                        **self.source(),
+                        "bookSourceUrl": self.url + "/source/" + item,
+                        "bookSourceName": names[item] + f" · v{self.warehouse_version}",
+                    }
+                    for item in ids
+                ]
+                if part == "shuyuans":
+                    rules.append({**self.source(), "bookSourceType": 1})
+                return web.json_response(rules)
+            if self.warehouse_page_failure:
+                return web.Response(text="<html>maintenance</html>")
+            return web.Response(
+                content_type="text/html",
+                text=f'''
+                <h1>{names[identity]}<p>https://fixture.invalid</p></h1>
+                <blockquote><p>合成作者 · 1天前</p></blockquote>
+                <div class="contents"><p>用于验证源仓库浏览的合成说明。</p><script>window.warehouseUnsafe = true</script></div>
+                <input id="jsonurl" value="{self.url}{path}/json/id/{identity}.json">
+                <pre>private rule content must not be projected</pre>''',
+            )
+        if self.warehouse_page_failure:
+            return web.Response(text="<html>maintenance</html>")
+        ids = ["201"] if part == "shuyuans" else ["101", "102", "103"]
+        query = request.query.get("keys", "")
+        ids = [identity for identity in ids if query in names[identity]]
+        page = int(request.query.get("page", "1"))
+        selected = ids[(page - 1) * 2 : page * 2]
+        rows = "".join(
+            f'''<div class="ylist"><h2><a href="{path}/content/id/{identity}.html">{names[identity]}</a><p>1天前</p></h2><span>用户: 合成作者</span><span>3.X</span><span>下载:42</span></div>'''
+            for identity in selected
+        )
+        more = (
+            f'<a href="{path}/index.html?page={page + 1}">下一页</a>' if len(ids) > page * 2 else ""
+        )
+        return web.Response(
+            content_type="text/html",
+            text=f'<nav id="navsub">阅读</nav>{rows}<div class="layui-laypage">{more}</div><script>{escape(query)}</script>',
+        )
 
 
 class LiveConsole:

@@ -62,12 +62,41 @@ export type BookSource = {
 export type BookFeed = {
   feed_id: string;
   url: string;
+  title?: string;
+  warehouse_key?: string;
+  page_url?: string;
+  interval_seconds: number;
   state: string;
   code: string;
   revision: number;
   last_scan_at?: number;
   next_scan_at: number;
-  result?: { imported: number; invalid: number };
+  result?: {
+    imported: number;
+    invalid: number;
+    added?: number;
+    updated?: number;
+    unchanged?: number;
+    reasons?: Record<string, number>;
+  };
+};
+
+export type WarehouseEntry = {
+  kind: "source" | "collection";
+  entry_id: string;
+  key: string;
+  title: string;
+  page_url: string;
+  url: string;
+  badges: string[];
+  updated?: string;
+  description?: string;
+};
+export type WarehousePage = {
+  entries: WarehouseEntry[];
+  page: number;
+  has_next: boolean;
+  page_url: string;
 };
 
 export type BookSubscription = {

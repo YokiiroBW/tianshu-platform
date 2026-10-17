@@ -198,11 +198,60 @@ class Sources:
         self.searches[identity]["task"].cancel()
         return {**result, "state": "cancelled"}
 
+    def save_feed(self, url, db, *, title="", interval=86400):
+        require(type(interval) is int and 3600 <= interval <= 2592000, "invalid_input", 400)
+        url, entry = self.books.warehouse.normalize(url)
+        identity = digest(url)[:24]
+        current = self.repo._document(db, "book_feed", identity)
+        # Older manually saved HTTP/:443 URLs refer to the same warehouse entry.
+        if entry and not current:
+            for row in db.execute("SELECT body FROM documents WHERE kind='book_feed'").fetchall():
+                feed = json.loads(row[0])
+                try:
+                    _, reference = self.books.warehouse.normalize(feed["url"])
+                except Fault:
+                    continue
+                if reference and reference["key"] == entry["key"]:
+                    identity, current = feed["feed_id"], feed
+                    break
+        if current:
+            # Repeated selection must not reset pause, interval, scan state or source ownership.
+            updated = {
+                **current,
+                "url": url,
+                "title": current.get("title") or title,
+                "warehouse_key": entry["key"] if entry else None,
+                "page_url": entry["page_url"] if entry else None,
+            }
+            return (
+                current
+                if updated == current
+                else self.repo.put("book_feed", identity, updated, db=db)
+            )
+        return self.repo.put(
+            "book_feed",
+            identity,
+            {
+                "feed_id": identity,
+                "url": url,
+                "title": title,
+                "warehouse_key": entry["key"] if entry else None,
+                "page_url": entry["page_url"] if entry else None,
+                "state": "active",
+                "interval_seconds": interval,
+                "next_scan_at": self.repo.clock(),
+                "code": "book_feed_pending",
+            },
+            db=db,
+        )
+
     async def refresh_feed(self, identity):
         feed = await self.media.local(self.repo.get, "book_feed", identity)
         require(feed, "not_found", 404)
         try:
-            response = await asyncio.to_thread(self.books.network.fetch, feed["url"])
+            response = await asyncio.to_thread(
+                self.books.network.fetch, feed["url"], max_bytes=32 * 1024 * 1024, timeout=25
+            )
             entries = json.loads(response.text)
             require(isinstance(entries, (list, dict)), "book_source_input_invalid", 400)
 
@@ -236,11 +285,30 @@ class Sources:
                             **feed,
                             "last_scan_at": self.repo.clock(),
                             "next_scan_at": self.repo.clock() + feed["interval_seconds"],
-                            "code": "ready",
+                            "code": "book_feed_partial" if result["invalid"] else "ready",
                             "digest": digest(entries),
                             "result": {
                                 "imported": result["imported"],
                                 "invalid": result["invalid"],
+                                "added": sum(
+                                    row["state"] == "imported" for row in result["results"]
+                                ),
+                                "updated": sum(
+                                    row["state"] == "updated" for row in result["results"]
+                                ),
+                                "unchanged": sum(
+                                    row["state"] == "unchanged" for row in result["results"]
+                                ),
+                                "reasons": {
+                                    code: sum(row.get("code") == code for row in result["results"])
+                                    for code in sorted(
+                                        {
+                                            row["code"]
+                                            for row in result["results"]
+                                            if row.get("code")
+                                        }
+                                    )
+                                },
                             },
                         },
                         db=db,

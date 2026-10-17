@@ -7,7 +7,6 @@ import json
 from ...contracts import Fault, digest, require
 from .catalog import public_book, public_source
 from .documents import import_file
-from .network import origin
 
 
 class WebBooks:
@@ -20,6 +19,31 @@ class WebBooks:
         books, repo, local = self.books, self.media.repo, self.media.local
         if operation == "view":
             return await books.view()
+        if operation == "warehouse/browse":
+            return await books.warehouse.browse(body)
+        if operation == "warehouse/detail":
+            return await books.warehouse.detail(body)
+        if operation == "warehouse/subscribe":
+            entries = books.warehouse.selection(body.get("entries"))
+
+            def subscribe_sources(db):
+                return {
+                    "feeds": [
+                        books.sources.save_feed(
+                            entry["url"],
+                            db,
+                            title=entry["title"],
+                            interval=body.get("interval_seconds", 86400),
+                        )
+                        for entry in entries
+                    ]
+                }
+
+            result = await self.web.receipt(
+                body, "books/warehouse/subscribe", session, subscribe_sources
+            )
+            self.media.wake.set()
+            return result
         if operation == "settings/save":
             return await self.web.receipt(
                 body,
@@ -91,41 +115,29 @@ class WebBooks:
                 rules["header"] = ""
             return {"sources": [rules]}
         if operation == "feeds/save":
-            url = body.get("url", "")
-            require(isinstance(url, str) and len(url) <= 8192, "invalid_input", 400)
-            url = url.strip()
-            origin(url)
-            identity = digest(url)[:24]
-
-            def save(db):
-                current = repo._document(db, "book_feed", identity)
-                feed = repo.put(
-                    "book_feed",
-                    identity,
-                    {
-                        **(current or {}),
-                        "feed_id": identity,
-                        "url": url,
-                        "state": "active",
-                        "interval_seconds": 86400,
-                        "next_scan_at": repo.clock(),
-                        "code": "book_feed_pending",
-                    },
-                    db=db,
-                )
-                return {"feed": feed}
-
-            result = await self.web.receipt(body, "books/feeds/save", session, save)
+            result = await self.web.receipt(
+                body,
+                "books/feeds/save",
+                session,
+                lambda db: {"feed": books.sources.save_feed(body.get("url"), db)},
+            )
             self.media.wake.set()
             return result
         if operation == "feeds/refresh":
             return await books.sources.refresh_feed(body.get("feed_id"))
         if operation == "feeds/control":
-            require(body.get("action") in {"pause", "resume", "remove"}, "invalid_input", 400)
+            require(
+                body.get("action") in {"pause", "resume", "remove", "interval"},
+                "invalid_input",
+                400,
+            )
 
             def feed_control(db):
                 feed = repo._document(db, "book_feed", body["feed_id"])
                 require(feed, "not_found", 404)
+                require(feed["revision"] == body.get("expected_revision"), "version_conflict", 409)
+                interval = body.get("interval_seconds", feed["interval_seconds"])
+                require(type(interval) is int and 3600 <= interval <= 2592000, "invalid_input", 400)
                 if body["action"] == "remove":
                     db.execute(
                         "DELETE FROM documents WHERE kind='book_feed' AND id=?", (body["feed_id"],)
@@ -137,8 +149,18 @@ class WebBooks:
                         body["feed_id"],
                         {
                             **feed,
-                            "state": "active" if body["action"] == "resume" else "paused",
-                            "next_scan_at": repo.clock(),
+                            "state": "active"
+                            if body["action"] == "resume"
+                            else "paused"
+                            if body["action"] == "pause"
+                            else feed["state"],
+                            "interval_seconds": interval,
+                            "code": "book_feed_pending"
+                            if body["action"] == "resume"
+                            else feed["code"],
+                            "next_scan_at": repo.clock() + interval
+                            if body["action"] == "interval" and feed.get("last_scan_at")
+                            else repo.clock(),
                         },
                         body.get("expected_revision"),
                         db=db,

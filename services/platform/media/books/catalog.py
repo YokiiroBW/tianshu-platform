@@ -184,6 +184,16 @@ class Catalog:
         results = []
         source_ids = []
         for index, entry in enumerate(entries):
+            if isinstance(entry, dict):
+                entry = dict(entry)
+                for key in ("ruleSearch", "ruleBookInfo", "ruleToc", "ruleContent", "ruleExplore"):
+                    if key in entry and entry[key] in (None, []):
+                        entry[key] = {}
+                if entry.get("bookSourceType", 0) not in (0, None):
+                    results.append(
+                        {"index": index, "state": "invalid", "code": "book_source_type_unsupported"}
+                    )
+                    continue
             valid = isinstance(entry, dict) and all(
                 isinstance(entry.get(key), str) and entry[key].strip()
                 for key in ("bookSourceName", "bookSourceUrl")
@@ -216,6 +226,10 @@ class Catalog:
             previous = self.repo._document(db, "book_source", identity)
             fingerprint = digest(entry)
             if previous and previous["digest"] == fingerprint:
+                if previous.get("upstream_removed"):
+                    self.repo.put(
+                        "book_source", identity, {**previous, "upstream_removed": False}, db=db
+                    )
                 source_ids.append(identity)
                 results.append({"index": index, "state": "unchanged", "source_id": identity})
                 continue

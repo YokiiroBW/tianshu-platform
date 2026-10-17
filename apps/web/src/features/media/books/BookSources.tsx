@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Download, Plus, RefreshCw, Search } from "lucide-react";
+import { Download, Globe, Plus, RefreshCw, Search } from "lucide-react";
 import { Drawer } from "../../../components/Drawer";
 import type { BookSource, BookFeed, BooksView } from "./types";
-import { bookCode } from "./presentation";
+import { bookCode, bookFeedCode } from "./presentation";
 import { timestamp } from "../wording";
 
 export type SourceImportResult = {
@@ -14,6 +14,7 @@ export type SourceImportResult = {
 export function BookSources({
   view,
   busy,
+  onWarehouse,
   onImport,
   onFeed,
   onFeedAction,
@@ -23,9 +24,10 @@ export function BookSources({
 }: {
   view: BooksView;
   busy: boolean;
+  onWarehouse: () => void;
   onImport: (sources: unknown) => Promise<SourceImportResult | undefined>;
   onFeed: (url: string) => Promise<boolean>;
-  onFeedAction: (feed: BookFeed, action: string) => void;
+  onFeedAction: (feed: BookFeed, action: string, interval?: number) => void;
   onToggle: (source: BookSource) => Promise<BookSource | undefined>;
   onExport: (source: BookSource) => void;
   onLoad: (
@@ -90,10 +92,16 @@ export function BookSources({
           <h3>书源与规则集合</h3>
           <p className="muted">规则订阅更新书源；书籍订阅负责追更章节。</p>
         </div>
-        <button className="button primary" onClick={() => setOpen(true)}>
-          <Plus aria-hidden="true" />
-          导入书源
-        </button>
+        <div className="book-controls">
+          <button className="button primary" onClick={onWarehouse}>
+            <Globe aria-hidden="true" />
+            打开源仓库
+          </button>
+          <button className="button" onClick={() => setOpen(true)}>
+            <Plus aria-hidden="true" />
+            导入书源
+          </button>
+        </div>
       </div>
       <form
         className="media-card book-feed-form"
@@ -107,7 +115,7 @@ export function BookSources({
         <label>
           订阅规则集合
           <input
-            type="url"
+            type="text"
             value={url}
             onChange={(event) => setUrl(event.target.value)}
             placeholder="粘贴书源 JSON 直链"
@@ -118,8 +126,8 @@ export function BookSources({
           添加规则订阅
         </button>
         <p className="muted">
-          填写实际规则链接；网站首页不能作为 JSON
-          导入。远端失联时继续保留本地规则。
+          可填写 JSON
+          直链、源仓库详情页或阅读一键导入链接。也可打开内置源仓库直接选择。远端失联时继续保留本地规则。
         </p>
       </form>
       {view.feeds.length > 0 && (
@@ -127,14 +135,66 @@ export function BookSources({
           {view.feeds.map((feed) => (
             <div className="media-card book-feed" key={feed.feed_id}>
               <div>
-                <strong>{feed.url}</strong>
+                <strong>{feed.title || feed.url}</strong>
                 <p className="muted">
-                  {feed.state === "paused" ? "已暂停" : bookCode(feed.code)} ·{" "}
+                  {feed.state === "paused" ? "已暂停" : bookFeedCode(feed.code)}{" "}
+                  ·{" "}
                   {feed.last_scan_at
                     ? timestamp(feed.last_scan_at)
                     : "尚未更新"}
                   {feed.result ? ` · ${feed.result.imported} 个书源` : ""}
                 </p>
+                {feed.result && (
+                  <p
+                    className={feed.result.invalid ? "media-warning" : "muted"}
+                  >
+                    {feed.result.added !== undefined
+                      ? `本次新增 ${feed.result.added} · 更新 ${feed.result.updated} · 未变 ${feed.result.unchanged}`
+                      : ""}
+                    {feed.result.invalid > 0 &&
+                      ` · 跳过 ${feed.result.invalid} 项`}
+                  </p>
+                )}
+                {feed.result?.invalid ? (
+                  <details>
+                    <summary>查看跳过原因</summary>
+                    {Object.entries(feed.result.reasons ?? {}).map(
+                      ([code, count]) => (
+                        <p key={code}>
+                          {bookCode(code)}：{count} 项
+                        </p>
+                      ),
+                    )}
+                  </details>
+                ) : null}
+                {feed.state === "active" && (
+                  <p className="muted">
+                    下次检查：{timestamp(feed.next_scan_at)}
+                  </p>
+                )}
+                <label className="book-feed-interval">
+                  更新频率
+                  <select
+                    aria-label={`${feed.title || feed.url} 更新频率`}
+                    value={feed.interval_seconds}
+                    disabled={busy}
+                    onChange={(event) =>
+                      onFeedAction(feed, "interval", Number(event.target.value))
+                    }
+                  >
+                    <option value={3600}>每小时</option>
+                    <option value={21600}>每 6 小时</option>
+                    <option value={86400}>每天</option>
+                    <option value={604800}>每周</option>
+                    {![3600, 21600, 86400, 604800].includes(
+                      feed.interval_seconds,
+                    ) && (
+                      <option value={feed.interval_seconds}>
+                        每 {feed.interval_seconds / 3600} 小时
+                      </option>
+                    )}
+                  </select>
+                </label>
               </div>
               <div className="book-controls">
                 <button
@@ -239,7 +299,7 @@ export function BookSources({
         <div className="book-empty">
           <h3>{query ? "没有匹配的书源" : "还没有导入书源"}</h3>
           <p className="muted">
-            可以上传 JSON 文件、粘贴规则，或订阅实际规则直链。
+            打开源仓库即可浏览并添加，也可以上传 JSON 文件或订阅规则链接。
           </p>
         </div>
       )}

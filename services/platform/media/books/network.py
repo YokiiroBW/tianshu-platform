@@ -75,7 +75,9 @@ class Network:
         self.allowed_private_origins = {origin(url) for url in allowed_private_origins}
         self.timeout, self.max_bytes = timeout, max_bytes
 
-    def fetch(self, url, *, method="GET", headers=None, body=None):
+    def fetch(self, url, *, method="GET", headers=None, body=None, max_bytes=None, timeout=None):
+        max_bytes = self.max_bytes if max_bytes is None else max_bytes
+        timeout = self.timeout if timeout is None else timeout
         require(isinstance(url, str) and len(url) <= 16384, "book_invalid_url", 400)
         require(method in {"GET", "POST", "HEAD"}, "book_request_unsupported", 400)
         current = url
@@ -117,7 +119,7 @@ class Network:
                     request_headers[key] = value
             parsed = urlsplit(current)
             target = (parsed.path or "/") + ("?" + parsed.query if parsed.query else "")
-            connection = PinnedConnection(host, port, addresses[0], scheme == "https", self.timeout)
+            connection = PinnedConnection(host, port, addresses[0], scheme == "https", timeout)
             try:
                 connection.request(method, target, body=body, headers=request_headers)
                 response = connection.getresponse()
@@ -142,12 +144,12 @@ class Network:
                 if response.status == 429:
                     raise Fault("book_source_rate_limited", 429)
                 require(200 <= response.status < 300, "book_source_unavailable", 502)
-                content = response.read(self.max_bytes + 1)
-                require(len(content) <= self.max_bytes, "book_response_too_large", 413)
+                content = response.read(max_bytes + 1)
+                require(len(content) <= max_bytes, "book_response_too_large", 413)
                 if response_headers.get("content-encoding", "").lower() == "gzip":
                     with gzip.GzipFile(fileobj=io.BytesIO(content)) as compressed:
-                        content = compressed.read(self.max_bytes + 1)
-                    require(len(content) <= self.max_bytes, "book_response_too_large", 413)
+                        content = compressed.read(max_bytes + 1)
+                    require(len(content) <= max_bytes, "book_response_too_large", 413)
                 return Response(content, current, response_headers, tuple(history), response.status)
             except (OSError, http.client.HTTPException, ValueError):
                 raise Fault("book_source_unavailable", 502) from None

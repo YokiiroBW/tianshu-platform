@@ -21,6 +21,10 @@ export function bookCode(code: string) {
   return code === "ready" ? "可用" : (bookWords[code] ?? code);
 }
 
+export function bookFeedCode(code: string) {
+  return code === "ready" ? "规则已同步" : bookCode(code);
+}
+
 export function bookFileUrl(book: Book, kind: "epub" | "cover") {
   return `/api/web/media/books/files/${encodeURIComponent(book.book_id)}/${kind}?v=${book.metadata_revision}`;
 }

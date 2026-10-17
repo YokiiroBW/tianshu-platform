@@ -6,6 +6,7 @@ import { BookSearch } from "./BookSearch";
 import { BookDetail } from "./BookDetail";
 import { BookSubscriptions } from "./BookSubscriptions";
 import { BookSources } from "./BookSources";
+import { BookWarehouse } from "./BookWarehouse";
 import { BookSettings } from "./BookSettings";
 import { BookLibrary } from "./BookLibrary";
 import type {
@@ -50,6 +51,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
   current.current = media;
   const [view, setView] = useState<BooksView | null>(null);
   const [tab, setTab] = useState("search");
+  const [warehouseOpen, setWarehouseOpen] = useState(false);
   const [search, setSearch] = useState<BookSearchResult | null>(null);
   const searchRef = useRef(search);
   searchRef.current = search;
@@ -115,6 +117,16 @@ export function BooksPanel({ media }: { media: MediaController }) {
   useEffect(() => {
     if (!media.loading) void refresh();
   }, [media.loading, refresh]);
+  const pendingFeeds = view?.feeds.some(
+    (feed) => feed.state === "active" && feed.code === "book_feed_pending",
+  );
+  useEffect(() => {
+    if (!pendingFeeds) return;
+    const timer = setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [pendingFeeds, refresh]);
   useEffect(() => {
     const timer = setInterval(() => {
       if (!document.hidden) void refresh();
@@ -369,7 +381,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
     });
     return result?.source;
   }
-  async function feedAction(feed: BookFeed, action: string) {
+  async function feedAction(feed: BookFeed, action: string, interval?: number) {
     if (action === "refresh") {
       const result = await current.current.request(
         "books-feed",
@@ -385,6 +397,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
         feed_id: feed.feed_id,
         expected_revision: feed.revision,
         action,
+        ...(interval ? { interval_seconds: interval } : {}),
       });
   }
   async function exportSource(source: BookSource) {
@@ -530,6 +543,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
         <BookSources
           view={view}
           busy={!!media.busy}
+          onWarehouse={() => setWarehouseOpen(true)}
           onImport={(sources) =>
             mutate<SourceImportResult>("sources/import", { sources })
           }
@@ -540,7 +554,9 @@ export function BooksPanel({ media }: { media: MediaController }) {
               "规则订阅已保存，后台将检查实际内容。",
             ))
           }
-          onFeedAction={(feed, action) => void feedAction(feed, action)}
+          onFeedAction={(feed, action, interval) =>
+            void feedAction(feed, action, interval)
+          }
           onToggle={toggleSource}
           onExport={(source) => void exportSource(source)}
           onLoad={(offset, query) =>
@@ -557,6 +573,27 @@ export function BooksPanel({ media }: { media: MediaController }) {
           settings={view.settings}
           busy={!!media.busy}
           onSave={(body) => void saveSettings(body)}
+        />
+      )}
+      {warehouseOpen && (
+        <BookWarehouse
+          media={media}
+          feeds={view.feeds}
+          onClose={() => setWarehouseOpen(false)}
+          onSubscribe={async (entries, interval) => {
+            const result = await mutate<{ feeds: BookFeed[] }>(
+              "warehouse/subscribe",
+              {
+                entries: entries.map(({ kind, entry_id, title }) => ({
+                  kind,
+                  entry_id,
+                  title,
+                })),
+                interval_seconds: interval,
+              },
+            );
+            return result?.feeds;
+          }}
         />
       )}
       {selected && (

@@ -44,7 +44,8 @@ async def serve():
         import json
 
         (runtime / "book-browser-input.json").write_text(
-            json.dumps({"source": site.source(), "directory": str(library)}), encoding="utf-8"
+            json.dumps({"source": site.source(), "directory": str(library), "site_url": site.url}),
+            encoding="utf-8",
         )
         runner = web.AppRunner(app, access_log=None)
         try:
