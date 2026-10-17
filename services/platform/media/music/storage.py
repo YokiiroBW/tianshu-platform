@@ -2,12 +2,10 @@
 
 import json
 import os
-import unicodedata
 from pathlib import Path
 
 from ...contracts import Fault, digest, require
-from ..destination import safe_path
-from ..identity import looks_like_windows_device_name
+from ..destination import safe_path, path_component as component
 from ..organizer import library_lock
 from ..video_storage import copy_file, sync_directory, sync_file
 from .audio import record, probe
@@ -15,20 +13,6 @@ from .quality import satisfies, quality_rank
 from .catalog import source_key
 from .navidrome.state import mark_dirty
 from .navidrome.exports import ignore_export
-
-
-def component(value, fallback="未知", maximum=100):
-    value = unicodedata.normalize("NFC", value or fallback)
-    value = (
-        "".join(
-            "_" if ord(c) < 32 or 0xD800 <= ord(c) <= 0xDFFF or c in '/\\:<>"|?*' else c
-            for c in value
-        ).strip(" .")
-        or fallback
-    )
-    if looks_like_windows_device_name(value):
-        value = "_" + value
-    return value.encode("utf-8")[:maximum].decode("utf-8", errors="ignore").rstrip(" .") or fallback
 
 
 def stem(track, layout):

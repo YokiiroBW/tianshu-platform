@@ -31,10 +31,16 @@ from .creator_cache import CreatorCache
 from .metadata_refresh import MetadataRefresh
 from .import_metadata import ImportMetadata
 from .music.runtime import Music
+from .books.runtime import Books
 from .overview import RuntimeSample
 from .background import Background
 
 JOB_FIELDS = (
+    "book_id",
+    "book_artifact",
+    "book_chapters_done",
+    "book_chapters_total",
+    "book_reused",
     "media_kind",
     "provider",
     "source_id",
@@ -145,12 +151,13 @@ class Media:
         self.previews = {}
         self.qr = {}
         self.wake = asyncio.Event()
-        if self.config is None:
-            self.repo = None
-            return
-        self.contract = PackageContract(self.config["package_contract_directory"])
         self.repo = Repository(settings["database_path"] + ".media.sqlite", clock=clock)
         self.accounts = Accounts(self.repo)
+        self.books = Books(self)
+        self.worker = Worker(self)
+        if self.config is None:
+            return
+        self.contract = PackageContract(self.config["package_contract_directory"])
         self.music = Music(self)
         self.connector = Bilibili(clock=clock)
         self.engine = Engine(self.config["engine"])
@@ -167,7 +174,6 @@ class Media:
         self.servers = MediaServers(self.remote, self.creator_cache)
         self.evaluator = RuleEvaluator()
         self.subscriptions = Subscriptions(self)
-        self.worker = Worker(self)
         self.retention = Retention(self)
         self.download_cache = DownloadCache(self)
         self.imports = Imports(self)
@@ -179,9 +185,13 @@ class Media:
         self.runtime_sample = RuntimeSample(clock=clock)
 
     async def start(self):
-        if self.config is None or self.started:
+        if self.started:
             return
         self.started = True
+        self.books.start_background(self.background)
+        self.background.start("book_worker", self.worker.pump, 0, ("book",))
+        if self.config is None:
+            return
         self.storage_breakdown.closed = False
         await self.connector.start()
         await self.engine.check()
@@ -189,10 +199,15 @@ class Media:
         self.music.start_background(self.background)
         self.background.start("retention", self.retention.pump)
         for index in range(self.config["workers"]):
-            self.background.start("worker_" + str(index), self.worker.pump, index)
+            self.background.start(
+                "worker_" + str(index), self.worker.pump, index, ("video", "audio")
+            )
 
     async def close(self):
         if self.config is None:
+            await self.background.close()
+            await self.books.close()
+            self.started = False
             return
         await self.storage_breakdown.close()
         await self.background.close()
@@ -200,6 +215,7 @@ class Media:
         await self.connector.close()
         await self.remote.close()
         await self.music.close()
+        await self.books.close()
         self.started = False
 
     def healthy(self):
@@ -207,6 +223,7 @@ class Media:
 
     async def view(self):
         if self.config is None:
+            jobs, _ = await self.local(self.repo.jobs)
             return {
                 "configured": False,
                 "capabilities": {
@@ -222,7 +239,7 @@ class Media:
                 "accounts": [],
                 "targets": [],
                 "subscriptions": [],
-                "jobs": [],
+                "jobs": [public_job(job) for job in jobs],
                 "overview": None,
             }
         from .accounts import public_account

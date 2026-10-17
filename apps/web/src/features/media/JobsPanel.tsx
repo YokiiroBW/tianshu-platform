@@ -11,6 +11,7 @@ import { qualityWord, timestamp, tone, word } from "./wording";
 import { consumeJobsFilter, initialJobsFilter } from "./jobsNavigation";
 import { audioQualityText, MusicAudioReceipt } from "./music/MusicDownloads";
 import { providerNames } from "./music/types";
+import { BookDownloadReceipt } from "./books/BookDownloadReceipt";
 
 const serverWords: Record<string, string> = {
   verified: "已核对",
@@ -328,7 +329,9 @@ export function JobsPanel({ media }: { media: MediaController }) {
                   <div>
                     <h3>{job.title || job.bvid}</h3>
                     <p className="muted">
-                      {job.media_kind === "audio" ? (
+                      {job.media_kind === "book" ? (
+                        `${job.creator || "作者未提供"} · 书籍 · ${job.book_chapters_total ?? 0} 章`
+                      ) : job.media_kind === "audio" ? (
                         `${job.creator || "未知艺术家"} · ${providerNames[job.provider as keyof typeof providerNames] ?? "音乐"} ${job.source_id}`
                       ) : (
                         <>
@@ -341,7 +344,9 @@ export function JobsPanel({ media }: { media: MediaController }) {
                   <StatusRail
                     tone={tone(job.state)}
                     label={
-                      job.media_kind === "audio" && job.state === "completed"
+                      (job.media_kind === "audio" ||
+                        job.media_kind === "book") &&
+                      job.state === "completed"
                         ? "已归档"
                         : word(job.state)
                     }
@@ -354,12 +359,18 @@ export function JobsPanel({ media }: { media: MediaController }) {
                   </div>
                   <div>
                     <dt>
-                      {job.media_kind === "audio" ? "实际音质" : "实际画质"}
+                      {job.media_kind === "book"
+                        ? "章节进度"
+                        : job.media_kind === "audio"
+                          ? "实际音质"
+                          : "实际画质"}
                     </dt>
                     <dd>
-                      {job.media_kind === "audio"
-                        ? audioQualityText(job.audio_quality)
-                        : qualityWord(job.actual_quality)}
+                      {job.media_kind === "book"
+                        ? `${job.book_chapters_done ?? 0} / ${job.book_chapters_total || "待查"} 章`
+                        : job.media_kind === "audio"
+                          ? audioQualityText(job.audio_quality)
+                          : qualityWord(job.actual_quality)}
                     </dd>
                   </div>
                   <div>
@@ -369,11 +380,13 @@ export function JobsPanel({ media }: { media: MediaController }) {
                   <div>
                     <dt>目标库</dt>
                     <dd>
-                      {job.media_kind === "audio"
-                        ? "音乐库"
-                        : (media.view?.targets.find(
-                            (target) => target.target_id === job.target_id,
-                          )?.label ?? job.target_id)}
+                      {job.media_kind === "book"
+                        ? "书籍库"
+                        : job.media_kind === "audio"
+                          ? "音乐库"
+                          : (media.view?.targets.find(
+                              (target) => target.target_id === job.target_id,
+                            )?.label ?? job.target_id)}
                     </dd>
                   </div>
                   <div>
@@ -531,14 +544,18 @@ export function JobsPanel({ media }: { media: MediaController }) {
                     </div>
                     <div>
                       <dt>
-                        {detail.job.media_kind === "audio"
-                          ? "实际音质"
-                          : "下载画质"}
+                        {detail.job.media_kind === "book"
+                          ? "成品格式"
+                          : detail.job.media_kind === "audio"
+                            ? "实际音质"
+                            : "下载画质"}
                       </dt>
                       <dd>
-                        {detail.job.media_kind === "audio"
-                          ? audioQualityText(detail.job.audio_quality)
-                          : qualityWord(detail.job.actual_quality)}
+                        {detail.job.media_kind === "book"
+                          ? "EPUB"
+                          : detail.job.media_kind === "audio"
+                            ? audioQualityText(detail.job.audio_quality)
+                            : qualityWord(detail.job.actual_quality)}
                       </dd>
                     </div>
                     <div>
@@ -575,7 +592,9 @@ export function JobsPanel({ media }: { media: MediaController }) {
                       </div>
                     )}
                   </dl>
-                  {detail.job.media_kind === "audio" ? (
+                  {detail.job.media_kind === "book" ? (
+                    <BookDownloadReceipt job={detail.job} />
+                  ) : detail.job.media_kind === "audio" ? (
                     <>
                       <MusicAudioReceipt
                         receipt={detail.job.audio_receipt}
@@ -655,6 +674,7 @@ export function JobsPanel({ media }: { media: MediaController }) {
                     </>
                   )}
                   {detail.job.media_kind !== "audio" &&
+                    detail.job.media_kind !== "book" &&
                     !["completed", "published", "cancelled"].includes(
                       detail.job.state,
                     ) &&
@@ -667,6 +687,7 @@ export function JobsPanel({ media }: { media: MediaController }) {
                       />
                     )}
                   {detail.job.media_kind !== "audio" &&
+                    detail.job.media_kind !== "book" &&
                     [
                       "waiting_metadata",
                       "failed",

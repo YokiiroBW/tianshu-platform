@@ -29,10 +29,10 @@ class Worker:
         self.media = media
         self.active = {}
 
-    async def pump(self, index):
+    async def pump(self, index, kinds=None):
         owner = str(uuid.uuid4()) + ":" + str(index)
         while True:
-            job = await self.media.local(self.media.repo.claim, owner)
+            job = await self.media.local(self.media.repo.claim, owner, kinds=kinds)
             if job is None:
                 self.media.wake.clear()
                 try:
@@ -67,6 +67,8 @@ class Worker:
                 self.active.pop(job["job_id"], None)
 
     async def run(self, job, owner):
+        if job.get("media_kind") == "book":
+            return await self.media.books.downloads.run(job, owner)
         if job.get("media_kind") == "audio":
             return await self.media.music.downloads.run(job, owner)
         generation = job["generation"]

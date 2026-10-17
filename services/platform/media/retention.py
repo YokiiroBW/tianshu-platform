@@ -371,6 +371,8 @@ class Retention:
     def finish(self, job):
         if job.get("state") != "completed":
             return
+        if job.get("media_kind") == "book":
+            return
         if job.get("media_kind") == "audio":
             self.media.music.downloads.storage.cleanup(job)
             return

@@ -1,0 +1,16 @@
+{
+  "project": "https://github.com/821938089/LegadoParser",
+  "commit": "44104b9c513221e08b47ef44e9ac89642b442ee8",
+  "archive_sha256": "92dc08007ec7cb48ebc858dad2035d21a708c78fe24abfc432431e0c4f99f3d9",
+  "scope": "Python/JavaScript rule implementation only; no upstream binaries, models or browser downloader",
+  "local_changes": [
+    "bounded verified HTTP transport",
+    "system QuickJS binding",
+    "lxml parsing on both supported operating systems",
+    "explicit unsupported WebView instead of silent HTTP fallback",
+    "bounded in-memory ZIP decoding",
+    "relative XPath dispatch",
+    "sequential pagination within each source",
+    "unused upstream debug runner omitted"
+  ]
+}

@@ -108,7 +108,12 @@ export type Subscription = {
   counts: { members: number; queued: number };
 };
 export type Job = {
-  media_kind?: "audio" | "video" | null;
+  media_kind?: "audio" | "video" | "book" | null;
+  book_id?: string;
+  book_chapters_done?: number;
+  book_chapters_total?: number;
+  book_artifact?: import("./books/types").BookArtifact | null;
+  book_reused?: boolean;
   provider?: string;
   source_id?: string;
   audio_quality?: import("./music/types").AudioQuality | null;
@@ -136,7 +141,7 @@ export type Job = {
   created_at: number;
   updated_at: number;
   target_id: string;
-  quality: Quality | import("./music/types").MusicQuality;
+  quality: Quality | import("./music/types").MusicQuality | { mode: "book" };
   destination_subdirectory?: string;
   destination_directory?: string | null;
   download_reused_cids?: string[];
@@ -232,7 +237,14 @@ export type MediaView = {
       members: number;
       files: number;
     };
-    recent?: { video: RecentJob[]; audio: RecentJob[] };
+    books?: {
+      total: number;
+      active: number;
+      paused: number;
+      attention: number;
+      files: number;
+    };
+    recent?: { video: RecentJob[]; audio: RecentJob[]; book?: RecentJob[] };
     music_storage?: MediaStorage;
     jobs: {
       total: number;

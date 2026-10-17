@@ -542,11 +542,53 @@ class WebConsole:
             # Never extend server-side absolute expiry by polling.
             self.set_cookie(response, token, session["authenticated"])
             return response
+        if request.path.startswith(MEDIA_PREFIX + "books/files/") and request.method in {
+            "GET",
+            "HEAD",
+        }:
+            require(
+                session is not None
+                and await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            parts = request.path[len(MEDIA_PREFIX + "books/files/") :].split("/")
+            require(len(parts) == 2, "not_found", 404)
+            target, filename, content_type = await self.platform.media.books.file(
+                parts[0], parts[1]
+            )
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            request[CONSOLE_AUTH] = AUTH_SUCCEEDED
+            from urllib.parse import quote
+
+            response = web.FileResponse(
+                target, headers={"Content-Type": content_type, "Cache-Control": "no-store"}
+            )
+            if parts[1] == "epub":
+                response.headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(
+                    filename
+                )
+            return response
         require(request.method == "POST", "not_found", 404)
         require(request.headers.getall("Origin", []) == [self.config["origin"]], "forbidden", 403)
         require(session is not None, "session_expired", 401)
         csrf = request.headers.get("X-CSRF-Token", "")
         require(csrf.isascii() and hmac.compare_digest(csrf, session["csrf"]), "forbidden", 403)
+        book_upload = request.path in {
+            MEDIA_PREFIX + "books/library/import",
+            MEDIA_PREFIX + "books/sources/import",
+        }
+        if book_upload:
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            request[CONSOLE_AUTH] = AUTH_SUCCEEDED
         if request.path.startswith("/api/web/content/upload/"):
             require(
                 await self.platform.local_work.run(self.session_valid, session),
@@ -564,13 +606,19 @@ class WebConsole:
         )
         data = bytearray()
         try:
-            async with asyncio.timeout(5):
+            async with asyncio.timeout(60 if book_upload else 5):
                 async for chunk in request.content.iter_chunked(4096):
                     data.extend(chunk)
                     require(
                         len(data)
                         <= (
-                            6 * 1024 * 1024
+                            44 * 1024 * 1024
+                            if request.path
+                            in {
+                                MEDIA_PREFIX + "books/library/import",
+                                MEDIA_PREFIX + "books/sources/import",
+                            }
+                            else 6 * 1024 * 1024
                             if request.path.startswith(MEDIA_PREFIX)
                             else 1048576
                             if request.path.startswith(

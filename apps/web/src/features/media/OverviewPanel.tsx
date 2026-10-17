@@ -13,6 +13,7 @@ import { timestamp, tone, word } from "./wording";
 import { count } from "./overviewPresentation";
 import { OverviewSubscriptions } from "./OverviewSubscriptions";
 import { OverviewStorage } from "./OverviewStorage";
+import { BookOverview } from "./books/BookOverview";
 import { RuntimeCards, LatencyCard } from "./RuntimePanel";
 import "./overview.css";
 
@@ -32,7 +33,7 @@ export function OverviewPanel({
   responseMs: number | null;
   stale: boolean;
 }) {
-  const [medium, setMedium] = useState<"video" | "audio">("video");
+  const [medium, setMedium] = useState<"video" | "audio" | "book">("video");
   const counts = view.overview?.jobs;
   const available =
     counts &&
@@ -47,9 +48,7 @@ export function OverviewPanel({
   const recent =
     view.overview?.recent?.[medium] ??
     view.jobs
-      .filter(
-        (job) => (job.media_kind === "audio" ? "audio" : "video") === medium,
-      )
+      .filter((job) => (job.media_kind ?? "video") === medium)
       .slice(0, 5);
   return (
     <section className="media-overview" aria-label="订阅概览">
@@ -95,6 +94,7 @@ export function OverviewPanel({
         <div className="overview-main">
           <OverviewSubscriptions view={view} />
           <OverviewSubscriptions view={view} music />
+          <BookOverview view={view} />
         </div>
         <aside className="overview-side" aria-label="存储与下载摘要">
           <OverviewStorage view={view} />
@@ -112,14 +112,18 @@ export function OverviewPanel({
               role="group"
               aria-label="最近下载类型"
             >
-              {(["video", "audio"] as const).map((kind) => (
+              {(["video", "audio", "book"] as const).map((kind) => (
                 <button
                   key={kind}
                   className={medium === kind ? "is-selected" : ""}
                   aria-pressed={medium === kind}
                   onClick={() => setMedium(kind)}
                 >
-                  {kind === "video" ? "视频" : "音乐"}
+                  {kind === "video"
+                    ? "视频"
+                    : kind === "audio"
+                      ? "音乐"
+                      : "书籍"}
                 </button>
               ))}
             </div>
@@ -145,7 +149,13 @@ export function OverviewPanel({
               </div>
             ) : (
               <p className="overview-empty muted">
-                近期暂无{medium === "video" ? "视频" : "音乐"}任务
+                近期暂无
+                {medium === "video"
+                  ? "视频"
+                  : medium === "audio"
+                    ? "音乐"
+                    : "书籍"}
+                任务
               </p>
             )}
           </section>

@@ -178,13 +178,15 @@ class Repository:
                 return self.enqueue(payload, db=transaction)
         if payload.get("media_kind") == "audio":
             return self.insert_job(payload, "audio:" + payload["audio_key"], db)
+        if payload.get("media_kind") == "book":
+            return self.insert_job(payload, "book:" + payload["book_key"], db)
         # The job is one complete selected-P package, with per-CID membership retained inside it.
         for existing in db.execute(
             "SELECT body FROM jobs WHERE " + VISIBLE + " AND state NOT IN ('cancelled','failed')"
         ):
             prior = json.loads(existing[0])
             if (
-                prior.get("media_kind") != "audio"
+                prior.get("media_kind") not in {"audio", "book"}
                 and prior["bvid"] == payload["bvid"]
                 and same_destination(prior, payload)
                 and prior["quality"] == payload["quality"]
@@ -315,8 +317,20 @@ class Repository:
                 AND json_extract(r.body,'$.merged_into') IS NULL
                 AND coalesce(json_extract(f.body,'$.missing'),0)=0
             """).fetchone()[0]
+            books = dict(
+                db.execute("""
+                SELECT count(*) AS total,
+                  coalesce(sum(json_extract(body,'$.state')='active'),0) AS active,
+                  coalesce(sum(json_extract(body,'$.state')='paused'),0) AS paused,
+                  coalesce(sum(coalesce(json_extract(body,'$.code'),'ready') NOT IN ('','ready')),0) AS attention
+                FROM documents WHERE kind='book_subscription'
+            """).fetchone()
+            )
+            books["files"] = db.execute(
+                "SELECT count(*) FROM documents WHERE kind='book' AND json_extract(body,'$.artifact.relative_path') IS NOT NULL"
+            ).fetchone()[0]
             recent = {}
-            for kind in ("video", "audio"):
+            for kind in ("video", "audio", "book"):
                 rows = db.execute(
                     "SELECT body FROM jobs WHERE " + VISIBLE + " AND "
                     "coalesce(json_extract(body,'$.media_kind'),'video')=? "
@@ -344,6 +358,7 @@ class Repository:
             size = None
         return {
             "music": music,
+            "books": books,
             "recent": recent,
             "database": {
                 "state": "ready",
@@ -364,12 +379,24 @@ class Repository:
                 )
             ]
 
-    def claim(self, owner, lease_seconds=30):
+    def claim(self, owner, lease_seconds=30, *, kinds=None):
         now = self.clock()
         with self.transaction() as db:
+            kind_clause = ""
+            kind_values = ()
+            if kinds is not None:
+                require(kinds and set(kinds) <= {"video", "audio", "book"}, "invalid_input", 400)
+                kind_values = tuple(kinds)
+                kind_clause = (
+                    " AND coalesce(json_extract(body,'$.media_kind'),'video') IN ("
+                    + ",".join("?" for _ in kinds)
+                    + ")"
+                )
             rows = db.execute(
-                "SELECT id,state,generation,body FROM jobs WHERE (state='queued' OR (state='retry_wait' AND lease<?) OR (owner IS NOT NULL AND lease<?)) AND state NOT IN ('completed','published','cancelled','failed','unknown','auth_required','waiting_metadata') ORDER BY (owner IS NOT NULL AND lease<?) DESC, CASE WHEN json_extract(body,'$.quality_review')=1 AND coalesce(json_extract(body,'$.quality_catchup'),0)=0 THEN 1 ELSE 0 END,created LIMIT 500",
-                (now, now, now),
+                "SELECT id,state,generation,body FROM jobs WHERE (state='queued' OR (state='retry_wait' AND lease<?) OR (owner IS NOT NULL AND lease<?)) AND state NOT IN ('completed','published','cancelled','failed','unknown','auth_required','waiting_metadata')"
+                + kind_clause
+                + " ORDER BY (owner IS NOT NULL AND lease<?) DESC, CASE WHEN json_extract(body,'$.quality_review')=1 AND coalesce(json_extract(body,'$.quality_catchup'),0)=0 THEN 1 ELSE 0 END,created LIMIT 500",
+                (now, now, *kind_values, now),
             ).fetchall()
             occupied = [
                 json.loads(value[0])
@@ -413,6 +440,12 @@ class Repository:
 
     @staticmethod
     def jobs_overlap(left, right):
+        if left.get("media_kind") == "book" or right.get("media_kind") == "book":
+            return (
+                left.get("media_kind") == right.get("media_kind") == "book"
+                and left["book_id"] == right["book_id"]
+                and left["destination_directory"] == right["destination_directory"]
+            )
         if left.get("media_kind") == "audio" or right.get("media_kind") == "audio":
             return (
                 left.get("media_kind") == right.get("media_kind") == "audio"

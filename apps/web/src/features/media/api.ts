@@ -18,7 +18,12 @@ export async function mediaCall<T>(
   signal: AbortSignal,
 ): Promise<T> {
   const serialized = JSON.stringify(body);
-  if (new TextEncoder().encode(serialized).byteLength > 6 * 1024 * 1024)
+  const maximum = ["books/library/import", "books/sources/import"].includes(
+    operation,
+  )
+    ? 44 * 1024 * 1024
+    : 6 * 1024 * 1024;
+  if (new TextEncoder().encode(serialized).byteLength > maximum)
     throw new MediaError("budget_exceeded", 413);
   const response = await webFetch(`/api/web/media/${operation}`, {
     method: "POST",

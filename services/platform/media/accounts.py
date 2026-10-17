@@ -43,7 +43,9 @@ class Accounts:
                 not repository.list("account")
                 and not repository.list("media_target")
                 and not repository.list("music_account")
-                and not repository.list("music_navidrome"),
+                and not repository.list("music_navidrome")
+                and not repository.list("book_source")
+                and not any(row.get("opds_secret") for row in repository.list("book_settings")),
                 "media_credentials_unavailable",
                 503,
             )
@@ -63,6 +65,11 @@ class Accounts:
                     self._decrypt(account)
             for connection in repository.list("music_navidrome"):
                 self.unseal(connection["connection_id"], connection["secret"])
+            for source in repository.list("book_source"):
+                self.unseal(source["source_id"], source["secret"])
+            for settings in repository.list("book_settings"):
+                if settings.get("opds_secret"):
+                    self.unseal("book-opds", settings["opds_secret"])
         except (ValueError, OSError):
             raise Fault("media_credentials_unavailable", 503) from None
 

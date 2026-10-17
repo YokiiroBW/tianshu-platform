@@ -19,6 +19,7 @@ from .types import MetadataValidationError
 from .rules import RuleValidationError, parse_policy
 from .rule_context import build_rule_context, public_rule_context, rule_snapshot_revision
 from .music.web import WebMusic
+from .books.web import WebBooks
 
 PREFIX = "/api/web/media/"
 JOB_STATES = frozenset(
@@ -60,6 +61,7 @@ class WebMedia:
         self.media = media
         self.console = console
         self.music = WebMusic(self)
+        self.books = WebBooks(self)
 
     async def live(self, session):
         require(await self.media.local(self.console.session_valid, session), "session_expired", 401)
@@ -69,10 +71,17 @@ class WebMedia:
         require(path.startswith(PREFIX) and isinstance(body, dict), "invalid_input", 400)
         if operation.startswith("music/"):
             return await self.music.route(operation[len("music/") :], body, session)
+        if operation.startswith("books/"):
+            return await self.books.route(operation[len("books/") :], body, session)
         if operation == "view":
             require(body == {}, "invalid_input", 400)
             return await self.media.view()
-        require(self.media.config is not None, "media_not_configured", 503)
+        require(
+            self.media.config is not None
+            or operation in {"jobs/detail", "jobs/list", "jobs/control", "jobs/delete"},
+            "media_not_configured",
+            503,
+        )
         await self.live(session)
         method = {
             "resolve": self.resolve,
@@ -371,7 +380,7 @@ class WebMedia:
         require(set(body) == {"job_id"}, "invalid_input", 400)
         job = await self.media.local(self.media.repo.job, body["job_id"])
         require(job is not None, "not_found", 404)
-        if job.get("media_kind") == "audio":
+        if job.get("media_kind") in {"audio", "book"}:
             return {
                 "job": public_job(job),
                 "metadata": None,
@@ -484,6 +493,8 @@ class WebMedia:
                     "library_attempts": 0,
                 }
             )
+            if job.get("media_kind") == "book" and body["action"] == "retry":
+                changes["book_rule_snapshot"] = None
             if (
                 body["action"] == "cancel"
                 and body["job_id"] not in self.media.worker.active
@@ -516,7 +527,7 @@ class WebMedia:
             require(row is not None, "not_found", 404)
             job = json.loads(row[0])
             require(job["revision"] == body["expected_revision"], "version_conflict", 409)
-            require(job.get("media_kind") != "audio", "job_action_conflict", 409)
+            require(job.get("media_kind") not in {"audio", "book"}, "job_action_conflict", 409)
             require(
                 job["state"] in {"waiting_metadata", "failed", "published", "completed"},
                 "job_action_conflict",

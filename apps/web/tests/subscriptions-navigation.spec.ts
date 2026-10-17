@@ -50,6 +50,7 @@ test("subscription routes have one owner and reject malformed children", () => {
     expect(resolveRoute(`#/subscriptions/${index}`)?.section).toBe(index);
   }
   expect(resolveRoute("#/subscriptions")?.section).toBe(4);
+  expect(resolveRoute("#/subscriptions/8")?.section).toBe(8);
   expect(resolveRoute("#/resources")?.section).toBe(0);
   expect(resolveRoute("#/resources/2")).toMatchObject({
     module: { id: "subscriptions" },
@@ -57,7 +58,7 @@ test("subscription routes have one owner and reject malformed children", () => {
     redirectHash: "#/subscriptions/0",
   });
   for (const hash of [
-    "#/subscriptions/8",
+    "#/subscriptions/9",
     "#/subscriptions/-1",
     "#/subscriptions/1/extra",
     "#/resources/3",
@@ -95,6 +96,7 @@ test("subscription is a main navigation entry with one child navigation and lega
     "概览",
     "视频订阅",
     "音乐订阅",
+    "书籍订阅",
     "链接下载",
     "下载中心",
     "账号与媒体库",

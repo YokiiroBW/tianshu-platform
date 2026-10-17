@@ -10,11 +10,13 @@ import { StorageDetails } from "./OverviewStorage";
 import { SubscriptionsPanel } from "./SubscriptionsPanel";
 import { useMediaController } from "./useMediaController";
 import { MusicPanel } from "./music/MusicPanel";
+import { BooksPanel } from "./books/BooksPanel";
 import { tone, word } from "./wording";
 import "./media.css";
 
 export default function MediaPage({ section = 4 }: { section?: number }) {
   const media = useMediaController();
+  if (section === 8) return <BooksPanel media={media} />;
   return (
     <div className={`media-page${section === 4 ? " media-overview-page" : ""}`}>
       {section !== 5 && (
@@ -22,7 +24,7 @@ export default function MediaPage({ section = 4 }: { section?: number }) {
           {media.view && section !== 4 && (
             <StatusRail
               tone={tone(media.view.engine.state)}
-              label={`下载引擎 · ${word(media.view.engine.state)}`}
+              label={`视频下载引擎 · ${word(media.view.engine.state)}`}
             />
           )}
           <button
@@ -61,7 +63,7 @@ export default function MediaPage({ section = 4 }: { section?: number }) {
         <StatePanel kind="error" title="暂时无法读取视频订阅">
           <p>重新读取后继续，后台既有任务不会因关闭页面而取消。</p>
         </StatePanel>
-      ) : !media.view.configured ? (
+      ) : !media.view.configured && section !== 2 ? (
         <StatePanel kind="unconfigured" title="视频订阅服务尚未配置">
           <p>此部署还没有登记视频账号、下载引擎和发布目标。</p>
         </StatePanel>

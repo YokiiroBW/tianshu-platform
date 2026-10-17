@@ -613,7 +613,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 await infrastructure.close()
 
         app.cleanup_ctx.append(infrastructure_context)
-    if not public and platform.media.config is not None:
+    if not public:
 
         async def media_context(app):
             await platform.media.start()

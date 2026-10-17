@@ -11,6 +11,21 @@ from .identity import looks_like_windows_device_name, require_relative_path
 DESTINATION_MODES = ("source", "custom")
 
 
+def path_component(value, fallback="未知", maximum=100):
+    """Portable display-name component shared by managed music and book files."""
+    value = unicodedata.normalize("NFC", value or fallback)
+    value = (
+        "".join(
+            "_" if ord(c) < 32 or 0xD800 <= ord(c) <= 0xDFFF or c in '/\\:<>"|?*' else c
+            for c in value
+        ).strip(" .")
+        or fallback
+    )
+    if looks_like_windows_device_name(value):
+        value = "_" + value
+    return value.encode("utf-8")[:maximum].decode("utf-8", errors="ignore").rstrip(" .") or fallback
+
+
 def supports_subdirectory(target):
     return target.get("kind") == "media_server" and bool(target.get("directory"))
 
