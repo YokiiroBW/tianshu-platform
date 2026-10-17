@@ -2,6 +2,7 @@
   display: grid;
   gap: var(--space-4);
   min-width: 0;
+  container: infrastructure / inline-size;
 }
 .infra-pane {
   padding: var(--space-5);
@@ -231,13 +232,98 @@
   color: var(--color-muted);
 }
 .infra-docker-layout {
+  --infra-pane-height: clamp(36rem, calc(100dvh - 23rem), 76rem);
   display: grid;
-  grid-template-columns: 11rem minmax(20rem, 1fr) minmax(18rem, 0.9fr);
+  grid-template-columns: 13.5rem minmax(0, 1.2fr) minmax(0, 1fr);
   gap: var(--space-4);
-  align-items: start;
+  align-items: stretch;
 }
 .infra-docker-layout > .infra-pane {
   padding: var(--space-4);
+  height: var(--infra-pane-height);
+  min-height: 0;
+  overflow: hidden;
+}
+.infra-docker-selector,
+.infra-container-list,
+.infra-container-detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.infra-docker-selector > h3,
+.infra-docker-selector > a,
+.infra-container-list > .infra-heading,
+.infra-container-list > .infra-filters,
+.infra-container-list > .infra-pagination,
+.infra-detail-heading {
+  flex: none;
+}
+.infra-docker-selector > div {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  padding: var(--space-1);
+}
+.infra-selector-nodes {
+  max-height: 35%;
+  flex: 0 1 auto;
+}
+.infra-selector-apps {
+  flex: 1;
+}
+.infra-docker-layout .infra-docker-selector .infra-node-choice,
+.infra-docker-selector .infra-app-choice {
+  min-width: 0;
+  width: 100%;
+  gap: var(--space-1);
+  padding: var(--space-2);
+}
+.infra-docker-selector .infra-node-choice > strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.infra-docker-selector .infra-app-choice {
+  margin-bottom: var(--space-1);
+}
+.infra-container-scroll,
+.infra-detail-scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  padding: var(--space-1);
+  overflow-wrap: anywhere;
+}
+.infra-detail-heading {
+  padding: var(--space-1) var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--color-line);
+}
+.infra-detail-heading .infra-heading {
+  flex-wrap: nowrap;
+}
+.infra-detail-heading h3 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.infra-docker-layout > .infra-detail-state {
+  overflow: auto;
+}
+.infra-docker-layout .infra-freshness {
+  margin-block: var(--space-2);
+  overflow-wrap: anywhere;
+}
+.infra-resource-readings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
 }
 .infra-filters {
   display: grid;
@@ -249,23 +335,30 @@
 .infra-filters label:first-child {
   grid-column: 1 / -1;
 }
+.infra-container-list .infra-filters label {
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+}
 .infra-container-rows {
   display: grid;
   gap: var(--space-2);
+  align-content: start;
 }
 .infra-container-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 4.1rem 5.2rem;
-  align-items: start;
-  gap: var(--space-2);
+  grid-template-columns: minmax(0, 1fr) clamp(10rem, 28%, 26rem);
+  align-items: center;
+  gap: var(--space-3);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-control);
-  padding: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   background: var(--color-surface);
   color: var(--color-text);
   text-align: left;
   cursor: pointer;
   width: 100%;
+  min-width: 0;
+  line-height: 1.4;
 }
 .infra-container-row[aria-pressed="true"] {
   outline: 1px solid var(--color-accent);
@@ -275,30 +368,40 @@
 .infra-row-identity {
   min-width: 0;
   display: grid;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
-.infra-row-identity > strong {
-  overflow-wrap: anywhere;
-}
+.infra-row-identity > strong,
 .infra-row-identity > small {
-  color: var(--color-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.infra-row-metric {
-  display: grid;
-  gap: var(--space-2);
-  font-variant-numeric: tabular-nums;
+.infra-row-identity > strong {
+  font-size: var(--text-small);
 }
-.infra-row-metric small {
+.infra-row-identity > small {
   color: var(--color-muted);
   font-size: 0.75rem;
 }
-.infra-row-metric strong {
-  font-size: var(--text-small);
-  font-weight: 500;
-  white-space: nowrap;
+.infra-row-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.infra-row-state .status-rail {
+  padding-inline: var(--space-1);
+}
+.infra-row-state .rail-label,
+.infra-row-state .infra-health {
+  font-size: 0.75rem;
+}
+.infra-row-resources {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  min-width: 0;
 }
 .infra-health {
   font-size: var(--text-small);
@@ -357,9 +460,9 @@
   margin-top: var(--space-4);
   font-size: var(--text-small);
 }
-@media (max-width: 1250px) {
+@container infrastructure (max-width: 56rem) {
   .infra-docker-layout {
-    grid-template-columns: 10rem minmax(0, 1fr);
+    grid-template-columns: 13.5rem minmax(0, 1fr);
   }
   .infra-container-detail {
     grid-column: 1 / -1;
@@ -368,9 +471,36 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+@container infrastructure (max-width: 40rem) {
+  .infra-docker-layout {
+    --infra-pane-height: clamp(26rem, 72dvh, 42rem);
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .infra-docker-layout > .infra-docker-selector {
+    height: 22rem;
+  }
+  .infra-docker-selector > .infra-selector-nodes,
+  .infra-docker-selector > .infra-selector-apps {
+    display: block;
+  }
+  .infra-container-detail .infra-small-metrics {
+    grid-template-columns: 1fr;
+  }
+  .infra-container-list .infra-filters label {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@container infrastructure (max-width: 25rem) {
+  .infra-container-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+  .infra-resource-readings {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 700px) {
   .infra-node-layout,
-  .infra-docker-layout,
   .infra-metrics,
   .infra-network-grid {
     grid-template-columns: 1fr;
@@ -392,9 +522,6 @@
   .infra-pane,
   .infra-docker-layout > .infra-pane {
     padding: var(--space-3);
-  }
-  .infra-container-detail .infra-small-metrics {
-    grid-template-columns: 1fr;
   }
   .infra-heading .button {
     white-space: normal;
