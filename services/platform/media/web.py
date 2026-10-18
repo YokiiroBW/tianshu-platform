@@ -20,6 +20,7 @@ from .rules import RuleValidationError, parse_policy
 from .rule_context import build_rule_context, public_rule_context, rule_snapshot_revision
 from .music.web import WebMusic
 from .books.web import WebBooks
+from .comics.web import WebComics
 
 PREFIX = "/api/web/media/"
 JOB_STATES = frozenset(
@@ -62,6 +63,7 @@ class WebMedia:
         self.console = console
         self.music = WebMusic(self)
         self.books = WebBooks(self)
+        self.comics = WebComics(self)
 
     async def live(self, session):
         require(await self.media.local(self.console.session_valid, session), "session_expired", 401)
@@ -73,6 +75,8 @@ class WebMedia:
             return await self.music.route(operation[len("music/") :], body, session)
         if operation.startswith("books/"):
             return await self.books.route(operation[len("books/") :], body, session)
+        if operation.startswith("comics/"):
+            return await self.comics.route(operation[len("comics/") :], body, session)
         if operation == "view":
             require(body == {}, "invalid_input", 400)
             return await self.media.view()
@@ -380,7 +384,7 @@ class WebMedia:
         require(set(body) == {"job_id"}, "invalid_input", 400)
         job = await self.media.local(self.media.repo.job, body["job_id"])
         require(job is not None, "not_found", 404)
-        if job.get("media_kind") in {"audio", "book"}:
+        if job.get("media_kind") in {"audio", "book", "comic"}:
             return {
                 "job": public_job(job),
                 "metadata": None,
@@ -527,7 +531,9 @@ class WebMedia:
             require(row is not None, "not_found", 404)
             job = json.loads(row[0])
             require(job["revision"] == body["expected_revision"], "version_conflict", 409)
-            require(job.get("media_kind") not in {"audio", "book"}, "job_action_conflict", 409)
+            require(
+                job.get("media_kind") not in {"audio", "book", "comic"}, "job_action_conflict", 409
+            )
             require(
                 job["state"] in {"waiting_metadata", "failed", "published", "completed"},
                 "job_action_conflict",

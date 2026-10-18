@@ -161,16 +161,18 @@ class Repository:
                 return {**json.loads(row[1]), "replayed": True}
             return None
 
-    def fact(self, kind, identity, changes, expected):
-        with self.transaction() as db:
-            current = self._document(db, kind, identity)
-            require(current and current["revision"] == expected, "version_conflict", 409)
-            body = {**current, **changes}
-            db.execute(
-                "UPDATE documents SET body=? WHERE kind=? AND id=?",
-                (json.dumps(body, ensure_ascii=False), kind, identity),
-            )
-            return body
+    def fact(self, kind, identity, changes, expected, *, db=None):
+        if db is None:
+            with self.transaction() as transaction:
+                return self.fact(kind, identity, changes, expected, db=transaction)
+        current = self._document(db, kind, identity)
+        require(current and current["revision"] == expected, "version_conflict", 409)
+        body = {**current, **changes}
+        db.execute(
+            "UPDATE documents SET body=? WHERE kind=? AND id=?",
+            (json.dumps(body, ensure_ascii=False), kind, identity),
+        )
+        return body
 
     def enqueue(self, payload, *, db=None):
         if db is None:
@@ -186,7 +188,7 @@ class Repository:
         ):
             prior = json.loads(existing[0])
             if (
-                prior.get("media_kind") not in {"audio", "book"}
+                prior.get("media_kind") not in {"audio", "book", "comic"}
                 and prior["bvid"] == payload["bvid"]
                 and same_destination(prior, payload)
                 and prior["quality"] == payload["quality"]
@@ -385,7 +387,11 @@ class Repository:
             kind_clause = ""
             kind_values = ()
             if kinds is not None:
-                require(kinds and set(kinds) <= {"video", "audio", "book"}, "invalid_input", 400)
+                require(
+                    kinds and set(kinds) <= {"video", "audio", "book", "comic"},
+                    "invalid_input",
+                    400,
+                )
                 kind_values = tuple(kinds)
                 kind_clause = (
                     " AND coalesce(json_extract(body,'$.media_kind'),'video') IN ("
@@ -440,6 +446,12 @@ class Repository:
 
     @staticmethod
     def jobs_overlap(left, right):
+        if left.get("media_kind") == "comic" or right.get("media_kind") == "comic":
+            return (
+                left.get("media_kind") == right.get("media_kind") == "comic"
+                and left["comic_chapter_id"] == right["comic_chapter_id"]
+                and left["comic_target"] == right["comic_target"]
+            )
         if left.get("media_kind") == "book" or right.get("media_kind") == "book":
             return (
                 left.get("media_kind") == right.get("media_kind") == "book"
@@ -506,7 +518,11 @@ class Repository:
                 "INSERT INTO events VALUES(?,?,?,?)",
                 (identity, body["state"], body["code"], body["updated_at"]),
             )
-        if changes.get("state") == "asset_indexed" and body.get("asset_receipt"):
+        if (
+            changes.get("state") == "asset_indexed"
+            and body.get("asset_receipt")
+            and body.get("media_kind") != "comic"
+        ):
             self.put(
                 "target_head",
                 head_key(body),

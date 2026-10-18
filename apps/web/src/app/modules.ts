@@ -56,7 +56,7 @@ export const modules = [
     label: "订阅",
     icon: Rss,
     group: "个人空间",
-    description: "关注视频、音乐与书籍，管理订阅和本地收藏",
+    description: "关注视频、音乐、书籍和漫画，管理订阅和本地收藏",
     sections: [
       "视频订阅",
       "链接下载",
@@ -67,6 +67,7 @@ export const modules = [
       "运行状态",
       "存储空间",
       "书籍订阅",
+      "漫画订阅",
     ],
   },
   {
@@ -125,6 +126,7 @@ export const subscriptionNavigation = [
   { section: 0, icon: Rss, href: "#/subscriptions/0" },
   { section: 5, icon: Music2, href: "#/subscriptions/5" },
   { section: 8, icon: BookOpen, href: "#/subscriptions/8" },
+  { section: 9, icon: BookOpen, href: "#/subscriptions/9" },
   { section: 1, icon: Link, href: "#/subscriptions/1" },
   { section: 2, icon: Download, href: "#/subscriptions/2" },
   { section: 3, icon: UserRound, href: "#/subscriptions/3" },

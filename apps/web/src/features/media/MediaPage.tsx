@@ -11,12 +11,14 @@ import { SubscriptionsPanel } from "./SubscriptionsPanel";
 import { useMediaController } from "./useMediaController";
 import { MusicPanel } from "./music/MusicPanel";
 import { BooksPanel } from "./books/BooksPanel";
+import { ComicsPanel } from "./comics/ComicsPanel";
 import { tone, word } from "./wording";
 import "./media.css";
 
 export default function MediaPage({ section = 4 }: { section?: number }) {
   const media = useMediaController();
   if (section === 8) return <BooksPanel media={media} />;
+  if (section === 9) return <ComicsPanel media={media} />;
   return (
     <div className={`media-page${section === 4 ? " media-overview-page" : ""}`}>
       {section !== 5 && (

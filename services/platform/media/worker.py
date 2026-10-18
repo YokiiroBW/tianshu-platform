@@ -67,6 +67,8 @@ class Worker:
                 self.active.pop(job["job_id"], None)
 
     async def run(self, job, owner):
+        if job.get("media_kind") == "comic":
+            return await self.media.comics.downloads.run(job, owner)
         if job.get("media_kind") == "book":
             return await self.media.books.downloads.run(job, owner)
         if job.get("media_kind") == "audio":

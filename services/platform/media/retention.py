@@ -371,6 +371,9 @@ class Retention:
     def finish(self, job):
         if job.get("state") != "completed":
             return
+        if job.get("media_kind") == "comic":
+            self.media.comics.downloads.cleanup(job)
+            return
         if job.get("media_kind") == "book":
             return
         if job.get("media_kind") == "audio":

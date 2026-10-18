@@ -108,7 +108,13 @@ export type Subscription = {
   counts: { members: number; queued: number };
 };
 export type Job = {
-  media_kind?: "audio" | "video" | "book" | null;
+  media_kind?: "audio" | "video" | "book" | "comic" | null;
+  comic_id?: string;
+  comic_chapter_id?: string;
+  comic_library_kind?: "general" | "private";
+  comic_pages_done?: number;
+  comic_pages_total?: number;
+  comic_relative_path?: string;
   book_id?: string;
   book_chapters_done?: number;
   book_chapters_total?: number;
@@ -141,7 +147,10 @@ export type Job = {
   created_at: number;
   updated_at: number;
   target_id: string;
-  quality: Quality | import("./music/types").MusicQuality | { mode: "book" };
+  quality:
+    | Quality
+    | import("./music/types").MusicQuality
+    | { mode: "book" | "comic-original" };
   destination_subdirectory?: string;
   destination_directory?: string | null;
   download_reused_cids?: string[];
@@ -154,6 +163,8 @@ export type Job = {
   revision: number;
   asset_receipt: Record<string, unknown> | null;
   library_results: {
+    reader_url?: string;
+    page_count?: number;
     server_id: string;
     kind: string;
     state: string;

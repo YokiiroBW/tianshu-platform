@@ -1,5 +1,6 @@
 import { videoQualities } from "./streamPolicy";
 import { bookWords } from "./books/wording";
+import { comicWords } from "./comics/wording";
 
 export const storageReasonWords: Record<string, string> = {
   storage_scanning: "正在后台统计分类占用。",
@@ -136,6 +137,7 @@ export const reasonWords: Record<string, string> = {
 };
 export const errorWords: Record<string, string> = {
   ...bookWords,
+  ...comicWords,
   music_request_deferred: reasonWords.music_request_deferred,
   music_request_budget: reasonWords.music_request_budget,
   music_account_cooling: reasonWords.music_account_cooling,

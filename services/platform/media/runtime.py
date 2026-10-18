@@ -32,10 +32,17 @@ from .metadata_refresh import MetadataRefresh
 from .import_metadata import ImportMetadata
 from .music.runtime import Music
 from .books.runtime import Books
+from .comics.runtime import Comics
 from .overview import RuntimeSample
 from .background import Background
 
 JOB_FIELDS = (
+    "comic_id",
+    "comic_chapter_id",
+    "comic_library_kind",
+    "comic_pages_done",
+    "comic_pages_total",
+    "comic_relative_path",
     "book_id",
     "book_artifact",
     "book_chapters_done",
@@ -154,6 +161,7 @@ class Media:
         self.repo = Repository(settings["database_path"] + ".media.sqlite", clock=clock)
         self.accounts = Accounts(self.repo)
         self.books = Books(self)
+        self.comics = Comics(self)
         self.worker = Worker(self)
         if self.config is None:
             return
@@ -190,6 +198,8 @@ class Media:
         self.started = True
         self.books.start_background(self.background)
         self.background.start("book_worker", self.worker.pump, 0, ("book",))
+        self.comics.start_background(self.background)
+        self.background.start("comic_worker", self.worker.pump, 0, ("comic",))
         if self.config is None:
             return
         self.storage_breakdown.closed = False
@@ -207,6 +217,7 @@ class Media:
         if self.config is None:
             await self.background.close()
             await self.books.close()
+            await self.comics.close()
             self.started = False
             return
         await self.storage_breakdown.close()
@@ -216,6 +227,7 @@ class Media:
         await self.remote.close()
         await self.music.close()
         await self.books.close()
+        await self.comics.close()
         self.started = False
 
     def healthy(self):

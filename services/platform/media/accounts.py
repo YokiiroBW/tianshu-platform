@@ -45,7 +45,12 @@ class Accounts:
                 and not repository.list("music_account")
                 and not repository.list("music_navidrome")
                 and not repository.list("book_source")
-                and not any(row.get("opds_secret") for row in repository.list("book_settings")),
+                and not any(row.get("opds_secret") for row in repository.list("book_settings"))
+                and not any(
+                    c.get("secret")
+                    for row in repository.list("comic_settings")
+                    for c in row.get("connections", {}).values()
+                ),
                 "media_credentials_unavailable",
                 503,
             )
@@ -70,6 +75,10 @@ class Accounts:
             for settings in repository.list("book_settings"):
                 if settings.get("opds_secret"):
                     self.unseal("book-opds", settings["opds_secret"])
+            for settings in repository.list("comic_settings"):
+                for name, connection in settings.get("connections", {}).items():
+                    if connection.get("secret"):
+                        self.unseal("comic-" + name, connection["secret"])
         except (ValueError, OSError):
             raise Fault("media_credentials_unavailable", 503) from None
 

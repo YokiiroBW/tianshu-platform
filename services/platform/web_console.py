@@ -573,6 +573,27 @@ class WebConsole:
                     filename
                 )
             return response
+        if request.path.startswith(MEDIA_PREFIX + "comics/files/") and request.method in {
+            "GET",
+            "HEAD",
+        }:
+            require(
+                session is not None
+                and await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            parts = request.path[len(MEDIA_PREFIX + "comics/files/") :].split("/")
+            target, content_type = await self.platform.media.comics.file(parts)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            request[CONSOLE_AUTH] = AUTH_SUCCEEDED
+            return web.FileResponse(
+                target, headers={"Content-Type": content_type, "Cache-Control": "no-store"}
+            )
         require(request.method == "POST", "not_found", 404)
         require(request.headers.getall("Origin", []) == [self.config["origin"]], "forbidden", 403)
         require(session is not None, "session_expired", 401)
