@@ -96,6 +96,38 @@ class ComicTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((self.output / path).read_bytes(), content)
         self.assertNotIn("comic_cache", public_job(third))
 
+    async def test_latest_uses_suwayomi_reading_order_and_only_catches_new_chapters(self):
+        self.site.count = 3
+        comic = await self.comic()
+        subscribed = await self.call(
+            "subscriptions/save",
+            {"comic_id": comic["comic_id"], "mode": "latest", "latest_count": 1},
+        )
+        self.assertEqual(len(subscribed["job_ids"]), 1)
+        latest = await self.run_job()
+        self.assertEqual(latest["state"], "completed", latest["code"])
+        self.assertEqual(latest["comic_chapter"]["engine_chapter_id"], 3)
+        original = self.output / latest["comic_relative_path"]
+        original_bytes = original.read_bytes()
+        prior = {
+            chapter["chapter_id"]: chapter["file_order"]
+            for chapter in self.comics.catalog.chapters(comic["comic_id"])
+        }
+        self.site.count = 4
+        added = await self.call("subscriptions/scan", {"comic_id": comic["comic_id"]})
+        self.assertEqual(len(added["job_ids"]), 1)
+        newest = await self.run_job()
+        self.assertEqual(newest["state"], "completed", newest["code"])
+        self.assertEqual(newest["comic_chapter"]["engine_chapter_id"], 4)
+        self.assertEqual(original.read_bytes(), original_bytes)
+        current = self.comics.catalog.chapters(comic["comic_id"])
+        self.assertEqual([chapter["engine_chapter_id"] for chapter in current], [1, 2, 3, 4])
+        self.assertEqual(
+            {chapter["chapter_id"]: chapter["file_order"] for chapter in current[:-1]}, prior
+        )
+        self.assertEqual(self.site.hits["/image/1/1"], 0)
+        self.assertEqual(self.site.hits["/image/2/1"], 0)
+
     async def test_restart_resumes_pages_and_lost_asset_reply_reconciles_same_key(self):
         comic = await self.comic()
         chapter = self.comics.catalog.chapters(comic["comic_id"])[0]

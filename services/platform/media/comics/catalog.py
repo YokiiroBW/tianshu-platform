@@ -127,8 +127,9 @@ class Catalog:
 
     def save_directory(self, comic_id, rows):
         require(0 < len(rows) <= 20000, "comic_directory_empty", 409)
-        # Suwayomi sourceOrder is newest-first. Stable chapter identity never uses that index.
-        rows = sorted(rows, key=lambda r: (-int(r.get("sourceOrder", 0)), int(r["id"])))
+        # Suwayomi exposes oldest-first ranks, unlike the extension's raw list.
+        # Stable chapter identity and existing file names never use a fresh rank.
+        rows = sorted(rows, key=lambda r: (int(r.get("sourceOrder", 0)), int(r["id"])))
         with self.repo.transaction() as db:
             comic = self.comic(comic_id, db)
             old = {c["chapter_id"]: c for c in self.chapters(comic_id, db)}

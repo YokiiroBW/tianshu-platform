@@ -101,7 +101,7 @@ class ComicSite:
                     "name": f"第{i}章 星间来信",
                     "chapterNumber": i,
                     "pageCount": 3,
-                    "sourceOrder": self.count - i,
+                    "sourceOrder": i,
                     "scanlator": "测试版本",
                     "url": f"/chapter/{i}",
                     "uploadDate": i * 1000,
