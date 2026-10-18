@@ -44,7 +44,7 @@ AssetLibrary只读纳管协议是TS198候选 `/assetlink/v1/service-imports/{key
 
 AS侧保留现有Documents库和真实原生根。其目录链需要read/search与inotify，不能仅授x权限。AS Root已在隔离Synology ACL克隆证明：仅对Documents、Cartoon、漫画、本子这四个祖先目录增1654本目录只读ACE、不继承，可允许目录句柄及watch而保持旧子树拒绝。此操作与新输出根权限、真实native root登记由AS部署单写者在联验后处理；生产ACL尚未变更。Documents现有库尚无native root binding或initial snapshot，不能仅配置target就宣称归档ready。
 
-Suwayomi实机为2.3.2243、Komga为1.24.4-master；未升级。Suwayomi代理指向已失效的旧mihomo地址，代理方案待用户确认。Komga浏览器已登录，新增专用API key的操作确认待回复。
+Suwayomi实机为2.3.2243、Komga为1.24.4-master；未升级。按用户明确要求停用Suwayomi旧SOCKS开关，由路由器分流；两个真实普通源聚合和官方源目录/原图解码已通过。Komga专用密钥已获动作确认并保存到现有Accounts加密设置，两个原库API通过，旧密钥和其他媒体配置保持；完整归档/阅读仍待串行发布。
 
 ## 验证
 
