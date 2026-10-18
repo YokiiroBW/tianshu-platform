@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 
 from ...contracts import Fault, require
 from .network import Network, origin
@@ -10,6 +11,46 @@ network = Network()
 request_count = 0
 request_bytes = 0
 lock = threading.Lock()
+rate_limit = 0
+rate_period = 0
+rate_started_at = 0
+rate_requests = 0
+
+
+def configure_rate(value, state):
+    """Reader3 concurrentRate is an interval in ms, or requests/interval in ms."""
+    global rate_limit, rate_period, rate_started_at, rate_requests
+    rate_limit, rate_period = 0, 0
+    try:
+        parts = str(value or "0").split("/")
+        limit, milliseconds = (1, int(parts[0])) if len(parts) == 1 else map(int, parts)
+        if limit > 0 and milliseconds > 0:
+            rate_limit, rate_period = limit, milliseconds / 1000
+    except (ValueError, TypeError):
+        pass
+    rate_started_at = state.get("started_at", 0)
+    rate_requests = state.get("requests", 0)
+
+
+def rate_state():
+    return {"started_at": rate_started_at, "requests": rate_requests}
+
+
+def before_request():
+    """Pace every HTTP request, including script calls and redirects."""
+    global request_count, rate_started_at, rate_requests
+    with lock:
+        request_count += 1
+        require(request_count <= 64, "book_request_limit", 413)
+        if not rate_limit:
+            return
+        now = time.monotonic()
+        if rate_requests >= rate_limit:
+            time.sleep(max(0, rate_started_at + rate_period - now))
+            now = time.monotonic()
+        if now >= rate_started_at + rate_period:
+            rate_started_at, rate_requests = now, 0
+        rate_requests += 1
 
 
 def scoped_headers(headers, source_url, target_url):
@@ -44,11 +85,8 @@ def req(
     allow_redirects=True,
 ):
     del cellphone_mode, proxy_type, timeout, allow_redirects
-    global request_count, request_bytes
+    global request_bytes
     require(not file_name and not proxy, "book_rule_capability_unsupported", 400)
-    with lock:
-        request_count += 1
-        require(request_count <= 64, "book_request_limit", 413)
     headers = dict(header or {})
     if cookies:
         headers["Cookie"] = cookies

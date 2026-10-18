@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 
 from ...contracts import Fault, require
 
@@ -35,13 +36,25 @@ class RuleEngine:
         self.timeout = timeout
         self.semaphore = asyncio.Semaphore(4)
         self.processes = set()
+        self.rate_states = {}
+        self.rate_locks = {}
 
     async def call(self, source, operation, **values):
+        key = source.get("bookSourceUrl", "")
+        if source.get("concurrentRate") and key:
+            async with self.rate_locks.setdefault(key, asyncio.Lock()):
+                return await self._call(source, operation, **values)
+        return await self._call(source, operation, **values)
+
+    async def _call(self, source, operation, **values):
+        key = source.get("bookSourceUrl", "")
+        paced = bool(source.get("concurrentRate") and key)
         request = {
             "source": source,
             "operation": operation,
             **values,
             "allowed_private_origins": self.allowed_private_origins,
+            "rate_state": self.rate_states.get(key, {}) if paced else {},
         }
         payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
         require(len(payload) <= 4 * 1024 * 1024, "book_rule_too_large", 413)
@@ -66,6 +79,7 @@ class RuleEngine:
                 env=environment,
             )
             self.processes.add(process)
+            rate_received = False
             try:
                 try:
                     output, _ = await asyncio.wait_for(process.communicate(payload), self.timeout)
@@ -80,6 +94,9 @@ class RuleEngine:
                     result = json.loads(output)
                 except ValueError:
                     raise Fault("book_rule_failed", 502) from None
+                if paced:
+                    self.rate_states[key] = result.get("rate_state", {})
+                    rate_received = True
                 require(result.get("ok"), result.get("code", "book_rule_failed"), 502)
                 return result["data"]
             finally:
@@ -87,6 +104,12 @@ class RuleEngine:
                     process.kill()
                 await process.wait()
                 self.processes.discard(process)
+                if paced and not rate_received:
+                    # An interrupted worker may have sent requests before termination.
+                    self.rate_states[key] = {
+                        "started_at": time.monotonic(),
+                        "requests": 2147483647,
+                    }
 
     async def close(self):
         for process in tuple(self.processes):

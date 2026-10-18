@@ -1,6 +1,7 @@
 """Actual loopback HTTP pagination, using the shipped isolated rule worker."""
 
 import json
+import time
 import unittest
 
 from aiohttp import web
@@ -15,11 +16,13 @@ class PagedSite(BookSite):
         super().__init__()
         self.multiple = False
         self.empty_middle = False
+        self.request_times = []
 
     async def handle(self, request):
         if not request.path.startswith("/paging/"):
             return await super().handle(request)
         self.hits[request.path] += 1
+        self.request_times.append(time.monotonic())
         self.received_headers[request.path] = dict(request.headers)
         if request.headers.get("X-Book-Source") != "fixture":
             raise web.HTTPUnauthorized()
@@ -100,6 +103,29 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
             [self.site.url + f"/paging/toc/{n}/chapter-{n}.html" for n in (1, 2, 3)],
         )
         self.assertEqual(list(self.site.hits.values()), [1, 1, 1])
+
+    async def test_interval_applies_to_every_directory_and_script_request(self):
+        self.rules["concurrentRate"] = "150"
+        await self.directory()
+        self.rules["ruleContent"] = {
+            "content": '@js:java.ajax(\'info,{"headers":{"X-Mode":"explicit"}}\')',
+            "nextContentUrl": "@js:null",
+        }
+        await self.chapter()
+        times = self.site.request_times
+        self.assertEqual(len(times), 5)
+        self.assertTrue(all(b - a >= 0.13 for a, b in zip(times, times[1:])), times)
+
+    async def test_rate_window_survives_worker_boundary_and_failed_request(self):
+        self.rules["concurrentRate"] = "2/1500"
+        self.rules["ruleContent"] = {"content": "$.content"}
+        await self.chapter()
+        with self.assertRaises(Fault):
+            await self.engine.call(self.rules, "content", url=self.site.url + "/paging/missing")
+        await self.chapter()
+        times = self.site.request_times
+        self.assertEqual(len(times), 3)
+        self.assertGreaterEqual(times[2] - times[0], 1.48)
 
     async def test_page_array_walks_in_order_without_cycles_or_repeated_requests(self):
         self.site.multiple = True

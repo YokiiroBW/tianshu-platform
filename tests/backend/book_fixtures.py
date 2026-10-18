@@ -15,6 +15,7 @@ class BookSite:
     def __init__(self):
         self.count = 2
         self.failed = set()
+        self.rate_limited = set()
         self.hits = Counter()
         self.received_headers = {}
         self.delay = 0
@@ -105,6 +106,8 @@ class BookSite:
             if self.content_delay:
                 await asyncio.sleep(self.content_delay)
             index = int(request.path.rsplit("/", 1)[-1])
+            if index in self.rate_limited:
+                raise web.HTTPTooManyRequests()
             if index in self.failed:
                 raise web.HTTPServiceUnavailable()
             return web.json_response(

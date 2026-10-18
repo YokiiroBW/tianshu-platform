@@ -147,14 +147,55 @@ class BookTests(unittest.IsolatedAsyncioTestCase):
         self.site.count, self.site.failed = 3, {3}
         await self.books.scan(book["book_id"])
         job = await self.run_job()
-        self.assertEqual(job["code"], "book_incomplete_kept_previous")
+        self.assertEqual(job["code"], "book_source_unavailable")
+        self.assertEqual(job["state"], "retry_wait")
         self.assertEqual(path.read_bytes(), previous)
         self.site.failed.clear()
-        await self.call("downloads/create", {"book_id": book["book_id"]})
+        now = self.repo.clock() + job["retry_delay"] + 1
+        self.repo.clock = lambda: now
         job = await self.run_job()
         self.assertEqual(job["state"], "completed")
         self.assertEqual(self.site.hits["/chapter/1"], 1)
         self.assertEqual(self.site.hits["/chapter/3"], 2)
+
+    async def test_rate_limited_partial_download_resumes_automatically_from_cache(self):
+        book = await self.book()
+        identity = book["book_id"]
+        self.site.rate_limited = {2}
+        await self.call("subscriptions/save", {"book_id": identity})
+        first = await self.run_job()
+        self.assertEqual(first["state"], "retry_wait")
+        self.assertEqual(first["code"], "book_source_rate_limited")
+        self.assertEqual(self.books.catalog.book(identity)["downloaded"], 1)
+        self.assertIsNone(self.repo.claim("too-early", kinds=("book",)))
+        self.site.rate_limited.clear()
+        now = self.repo.clock() + first["retry_delay"] + 1
+        self.repo.clock = lambda: now
+        await self.media.start()
+        async with asyncio.timeout(20):
+            while True:
+                job = await self.media.local(self.repo.job, first["job_id"])
+                if job["state"] == "completed":
+                    break
+                await asyncio.sleep(0.05)
+        self.assertTrue(job["book_artifact"]["complete"])
+        self.assertEqual(job["book_artifact"]["chapters"], 2)
+        self.assertEqual(self.site.hits["/chapter/1"], 1)
+        self.assertEqual(self.site.hits["/chapter/2"], 2)
+
+    async def test_transient_failures_stop_after_bounded_automatic_retries(self):
+        book = await self.book()
+        self.site.rate_limited = {2}
+        await self.call("subscriptions/save", {"book_id": book["book_id"]})
+        for attempt in range(1, 5):
+            job = await self.run_job()
+            self.assertEqual(job["attempts"], attempt)
+            self.assertEqual(job["state"], "retry_wait" if attempt < 4 else "failed")
+            now = self.repo.clock() + job["retry_delay"] + 1
+            self.repo.clock = lambda: now
+        self.assertIsNone(self.repo.claim("exhausted", kinds=("book",)))
+        self.assertEqual(self.site.hits["/chapter/1"], 1)
+        self.assertEqual(self.site.hits["/chapter/2"], 4)
 
     async def test_source_bundle_partial_validation_feed_failure_and_encryption(self):
         rules = self.site.source()

@@ -71,9 +71,12 @@ class PinnedConnection(http.client.HTTPConnection):
 
 
 class Network:
-    def __init__(self, *, allowed_private_origins=(), timeout=12, max_bytes=MAX_RESPONSE):
+    def __init__(
+        self, *, allowed_private_origins=(), timeout=12, max_bytes=MAX_RESPONSE, before_request=None
+    ):
         self.allowed_private_origins = {origin(url) for url in allowed_private_origins}
         self.timeout, self.max_bytes = timeout, max_bytes
+        self.before_request = before_request
 
     def fetch(self, url, *, method="GET", headers=None, body=None, max_bytes=None, timeout=None):
         max_bytes = self.max_bytes if max_bytes is None else max_bytes
@@ -123,6 +126,8 @@ class Network:
                 target += "?" + quote(parsed.query, safe="=&%+;:/?@,!$'()*-._~")
             connection = PinnedConnection(host, port, addresses[0], scheme == "https", timeout)
             try:
+                if self.before_request:
+                    self.before_request()
                 connection.request(method, target, body=body, headers=request_headers)
                 response = connection.getresponse()
                 response_headers = {key.lower(): value for key, value in response.getheaders()}

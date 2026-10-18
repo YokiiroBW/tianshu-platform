@@ -3,6 +3,7 @@
   "bookSourceName": "书海阁（公开网页）",
   "bookSourceType": 0,
   "bookSourceUrl": "https://book.washai.net",
+  "concurrentRate": "3000",
   "bookUrlPattern": "https?:\\/\\/book\\.washai\\.net\\/book\\/indexList-[0-9]+\\.html",
   "customOrder": 0,
   "enabled": true,

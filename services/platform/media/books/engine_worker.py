@@ -19,10 +19,12 @@ def run(request):
     from LegadoParser2.ChapterList import getChapterList
     from LegadoParser2.Chapter import getChapterContent
 
-    engine_http.network = Network(
-        allowed_private_origins=request.get("allowed_private_origins", ())
-    )
     source = dict(request["source"])
+    engine_http.configure_rate(source.get("concurrentRate"), request.get("rate_state", {}))
+    engine_http.network = Network(
+        allowed_private_origins=request.get("allowed_private_origins", ()),
+        before_request=engine_http.before_request,
+    )
     source["_tianshu_book"] = request.get("book", {})
     for key in ("ruleSearch", "ruleBookInfo", "ruleToc", "ruleContent", "ruleExplore"):
         source.setdefault(key, {})
@@ -57,13 +59,20 @@ def main():
         request = json.loads(raw)
         with contextlib.redirect_stdout(io.StringIO()):
             result = run(request)
-        output = json.dumps({"ok": True, "data": result}, ensure_ascii=False)
+        output = json.dumps(
+            {"ok": True, "data": result, "rate_state": engine_http.rate_state()},
+            ensure_ascii=False,
+        )
         if len(output.encode("utf-8")) > 8 * 1024 * 1024:
             raise Fault("book_response_too_large", 413)
     except Fault as error:
-        output = json.dumps({"ok": False, "code": error.code})
+        output = json.dumps(
+            {"ok": False, "code": error.code, "rate_state": engine_http.rate_state()}
+        )
     except Exception:
-        output = json.dumps({"ok": False, "code": "book_rule_failed"})
+        output = json.dumps(
+            {"ok": False, "code": "book_rule_failed", "rate_state": engine_http.rate_state()}
+        )
     sys.stdout.buffer.write(output.encode("utf-8"))
 
 

@@ -14,6 +14,13 @@ from ..video_storage import sync_directory, sync_file
 from .documents import build_epub, validate_epub
 from .organization import book_category, book_relative_path
 
+RETRYABLE_ERRORS = {
+    "book_source_unavailable",
+    "book_source_rate_limited",
+    "book_rule_timeout",
+    "busy",
+}
+
 
 class Downloads:
     def __init__(self, books):
@@ -86,6 +93,13 @@ class Downloads:
                         )
                         consecutive_failures = 0
                     except Fault as error:
+                        if error.code in RETRYABLE_ERRORS:
+                            # Leave cached chapters and the last complete EPUB intact.
+                            # The normal job backoff will resume only the missing content.
+                            await self.media.local(
+                                self.books.catalog.progress, book["book_id"], len(available)
+                            )
+                            raise
                         last_error = error.code
                         consecutive_failures += 1
                 if cached:
@@ -196,16 +210,7 @@ class Downloads:
             raise
         except Fault as error:
             attempts = job.get("attempts", 0) + 1
-            retry = (
-                error.code
-                in {
-                    "book_source_unavailable",
-                    "book_source_rate_limited",
-                    "book_rule_timeout",
-                    "busy",
-                }
-                and attempts < 4
-            )
+            retry = error.code in RETRYABLE_ERRORS and attempts < 4
             await self.media.local(
                 self.repo.update_job,
                 identity,
