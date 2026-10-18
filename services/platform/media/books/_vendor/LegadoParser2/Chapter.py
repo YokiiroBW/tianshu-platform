@@ -1,17 +1,14 @@
-import json
-import sys
 from LegadoParser2.FormatUtils import Fmt
-from LegadoParser2.RuleUrl.Url import parseUrl, getContent, urljoin
+from LegadoParser2.RuleUrl.Url import parseUrl, getContent
 from LegadoParser2.RuleJs.JS import EvalJs
-from lxml.etree import HTML
-from LegadoParser2.RuleEval import getElements, getString, getStrings
-from concurrent.futures import ThreadPoolExecutor
+from LegadoParser2.RuleEval import getString
+from services.platform.contracts import require
+from services.platform.media.books.engine_pages import read_pages
 from LegadoParser2.config import DEBUG_MODE
 try:
     from LegadoParser2.fontutils import checkPUA, fixPUAStr, collectPUAChars
 except ImportError:
     pass
-from LegadoParser2._html import parse
 
 
 def getChapterContent(compiledBookSource, url, variables, nextChapterUrl=''):
@@ -39,51 +36,20 @@ def parseContent(bS, urlObj, content, evalJs, **kwargs):
 
     _content = content
 
-    if content and content.startswith('<') and content.endswith('>'):
-        try:
-            content = parse(content, sanitize_names=False)
-        except Exception:
-            content = HTML(content)
-    elif content and content.startswith('{') and content.endswith('}'):
-        content = json.loads(content)
-
     chapterContent = {'content': ''}
 
     def parseCt(content):
 
         if ruleContent.get('content'):
-            chapterContent['content'] += getString(
+            text = getString(
                 content, ruleContent['content'], evalJs, rawContent=_content)
-            chapterContent['content'] += '\n'
-        if ruleContent.get('nextContentUrl'):
-            nextContentUrls = getStrings(
-                content, ruleContent['nextContentUrl'], evalJs, rawContent=_content)
-        else:
-            nextContentUrls = None
+            require(text.strip(), 'book_content_empty', 502)
+            chapterContent['content'] += text + '\n'
 
-        return nextContentUrls
-
-    nextContentUrls = parseCt(content)
-
-    if nextContentUrls:
-        if len(nextContentUrls) == 1:
-            nextUrl = urljoin(urlObj['url'], nextContentUrls[0])
-            allNextUrls = []
-            if nextChapterUrl:
-                allNextUrls.append(nextChapterUrl)
-            while nextContentUrls and nextUrl not in allNextUrls:
-                allNextUrls.append(nextUrl)
-                urlObj = parseUrl(nextUrl, evalJs, urlObj['finalurl'])
-                content, __ = getContent(urlObj)
-                nextContentUrls = parseCt(content)
-                if nextContentUrls:
-                    nextUrl = urljoin(urlObj['url'], nextContentUrls[0])
-                else:
-                    break
-        else:
-            contents = fetchContents(nextContentUrls, urlObj)
-            for content, __ in contents:
-                parseCt(content)
+    for page, body in read_pages(urlObj, _content, evalJs, ruleContent.get('nextContentUrl'),
+                                 headers=bS.get('header', ''), stop_urls=(nextChapterUrl,)):
+        urlObj, _content = page, body
+        parseCt(body)
 
     if chapterContent['content']:
         chapterContent['content'] = Fmt.html(chapterContent['content'])
@@ -105,16 +71,3 @@ def parseContent(bS, urlObj, content, evalJs, **kwargs):
             print('parseContent OCR修复出错，已取消进行')
 
     return chapterContent
-
-
-def fetchContents(urls, urlObject):
-    evalJs = EvalJs({})
-    executor = ThreadPoolExecutor(max_workers=1)
-    tasks = []
-    results = []
-    for u in urls:
-        urlObj = parseUrl(u, evalJs, urlObject['finalurl'])
-        task = executor.submit(getContent, urlObj)
-        tasks.append(task)
-    for task in tasks:
-        results.append(task.result())

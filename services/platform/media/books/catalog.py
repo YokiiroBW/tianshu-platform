@@ -411,8 +411,13 @@ class Catalog:
             )
         return current, directory
 
-    def directory(self, identity):
-        return (self.repo.get("book_directory", identity) or {}).get("chapters", [])
+    def directory(self, identity, db=None):
+        row = (
+            self.repo._document(db, "book_directory", identity)
+            if db
+            else self.repo.get("book_directory", identity)
+        )
+        return (row or {}).get("chapters", [])
 
     def chapter(self, book_id, chapter_id):
         return self.repo.get("book_chapter", book_id + ":" + chapter_id)

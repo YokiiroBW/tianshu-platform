@@ -10,6 +10,7 @@ export const bookWords: Record<string, string> = {
   book_completed: "EPUB 已保存到书籍库。",
   book_interrupted: "任务中断，恢复后继续处理。",
   book_metadata_changed: "资料在整理期间有更新，正在重新生成 EPUB。",
+  book_directory_changed: "下载期间发现新章节，正在继续补齐并更新 EPUB。",
   book_source_imported: "已导入，尚未验证",
   book_source_previous_restored: "已恢复可用规则",
   book_source_unavailable: "来源暂不可用，请稍后重试或选择其他书源。",

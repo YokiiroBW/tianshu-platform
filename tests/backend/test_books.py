@@ -396,6 +396,69 @@ class BookTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(refreshed["enabled"])
         self.assertTrue(refreshed["capabilities"]["webview_http_fallback"])
 
+    async def test_background_due_scan_downloads_only_new_chapters(self):
+        book = await self.book()
+        identity = book["book_id"]
+        await self.call("subscriptions/save", {"book_id": identity})
+        first = await self.run_job()
+        self.assertEqual(first["state"], "completed")
+        now = self.repo.clock() + 3601
+        self.repo.clock = lambda: now
+        self.site.count = 3
+        await self.media.start()
+        async with asyncio.timeout(20):
+            while True:
+                current = await self.media.local(self.books.catalog.book, identity)
+                if current.get("artifact", {}).get("chapters") == 3:
+                    break
+                await asyncio.sleep(0.05)
+        subscription = self.repo.get("book_subscription", identity)
+        self.assertEqual(subscription["last_scan_at"], now)
+        self.assertGreater(subscription["next_scan_at"], now)
+        self.assertEqual(self.site.hits["/chapter/1"], 1)
+        self.assertEqual(self.site.hits["/chapter/2"], 1)
+        self.assertEqual(self.site.hits["/chapter/3"], 1)
+        self.assertTrue(current["artifact"]["complete"])
+        self.assertEqual(current["artifact"]["version"], first["book_artifact"]["version"] + 1)
+
+    async def test_update_during_long_download_queues_new_chapters_immediately(self):
+        book = await self.book()
+        identity = book["book_id"]
+        await self.call("subscriptions/save", {"book_id": identity})
+        chapters_saved, continue_publication = asyncio.Event(), asyncio.Event()
+        enrich = self.books.metadata.enrich
+
+        async def wait_before_publication(current):
+            chapters_saved.set()
+            await continue_publication.wait()
+            return await enrich(current)
+
+        self.books.metadata.enrich = wait_before_publication
+        downloading = asyncio.create_task(self.run_job())
+        async with asyncio.timeout(10):
+            await chapters_saved.wait()
+        self.site.count = 3
+        await self.books.scan(identity)
+        continue_publication.set()
+        first = await downloading
+        self.assertEqual(
+            first["state"],
+            "queued",
+            (
+                first.get("code"),
+                first.get("book_chapters_total"),
+                len(self.books.catalog.directory(identity)),
+            ),
+        )
+        self.assertEqual(first["code"], "book_directory_changed")
+        self.books.metadata.enrich = enrich
+        caught_up = await self.run_job()
+        self.assertEqual(caught_up["state"], "completed")
+        self.assertEqual(caught_up["book_artifact"]["chapters"], 3)
+        self.assertEqual(self.site.hits["/chapter/1"], 1)
+        self.assertEqual(self.site.hits["/chapter/2"], 1)
+        self.assertEqual(self.site.hits["/chapter/3"], 1)
+
     async def test_unicode_remote_paths_preserve_existing_escapes(self):
         for suffix in (
             "/古籍/中文.html?书名=大学",

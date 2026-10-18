@@ -1,0 +1,47 @@
+{
+  "bookSourceGroup": "网文·已实测",
+  "bookSourceName": "书海阁（公开网页）",
+  "bookSourceType": 0,
+  "bookSourceUrl": "https://book.washai.net",
+  "bookUrlPattern": "https?:\\/\\/book\\.washai\\.net\\/book\\/indexList-[0-9]+\\.html",
+  "customOrder": 0,
+  "enabled": true,
+  "enabledCookieJar": true,
+  "enabledExplore": false,
+  "lastUpdateTime": "1791948013458",
+  "respondTime": 180000,
+  "ruleBookInfo": {
+    "author": "#bookAuthor@text",
+    "coverUrl": "#bookCoverImg@src",
+    "intro": "#bookDesc@text",
+    "kind": "#bookCatBadge@text",
+    "lastChapter": "#lastIndexLink@text",
+    "name": "#bookName@text",
+    "tocUrl": "#allIndexLink@href",
+    "wordCount": "#bookWordCount@text"
+  },
+  "ruleContent": {
+    "content": ".readChapterAppendBody@html",
+    "title": "#indexName@text"
+  },
+  "ruleExplore": [],
+  "ruleSearch": {
+    "bookList": "#bookList article.classBookCard",
+    "bookUrl": ".classBookTitle a@href",
+    "name": ".classBookTitle a@text",
+    "author": ".classBookAuthor a@text",
+    "coverUrl": ".classBookCover img@src",
+    "kind": ".classCoverCat@text",
+    "intro": ".classBookDesc@text",
+    "lastChapter": ".classBookChapter a@text"
+  },
+  "ruleToc": {
+    "chapterList": "#bookIndexList li a",
+    "chapterName": "ownText",
+    "chapterUrl": "href",
+    "nextTocUrl": "text.下一页@href"
+  },
+  "weight": 0,
+  "bookSourceComment": "依据书海阁公开网页补齐搜索；详情、目录、正文参考源仓库7948。2026-10-18天枢实测。",
+  "searchUrl": "/book/bookclass.html?k={{java.encodeURI(key)}}"
+}

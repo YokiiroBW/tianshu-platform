@@ -60,7 +60,7 @@ def parseUrl(ruleUrl, evalJs, baseUrl='', headers=''):
 
         if headers:
             try:
-                urlObj['headers'].update(GSON.parse(headers))
+                urlObj['headers'] = {**GSON.parse(headers), **urlObj['headers']}
             except Exception:
                 pass
 

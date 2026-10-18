@@ -144,7 +144,14 @@ class Downloads:
                         },
                         db=db,
                     )
-                    changed = digest(current["metadata"]) != artifact["metadata_digest"]
+                    metadata_changed = digest(current["metadata"]) != artifact["metadata_digest"]
+                    current_directory = self.books.catalog.directory(book["book_id"], db)
+                    directory_changed = [row["chapter_id"] for row in current_directory] != [
+                        row["chapter_id"] for row in directory
+                    ]
+                    # A scheduled scan can discover chapters while this snapshot downloads.
+                    # Keep the cached chapters and continue immediately with the new directory.
+                    changed = metadata_changed or directory_changed
                     state = "failed" if missing else "queued" if changed else "completed"
                     return self.repo.update_job(
                         identity,
@@ -153,6 +160,8 @@ class Downloads:
                             "stage": "book_partial" if missing else "book_published",
                             "code": "book_content_incomplete"
                             if missing
+                            else "book_directory_changed"
+                            if directory_changed
                             else "book_metadata_changed"
                             if changed
                             else "book_completed",

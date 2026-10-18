@@ -3,13 +3,27 @@
 import json
 import threading
 
-from ...contracts import require
-from .network import Network
+from ...contracts import Fault, require
+from .network import Network, origin
 
 network = Network()
 request_count = 0
 request_bytes = 0
 lock = threading.Lock()
+
+
+def scoped_headers(headers, source_url, target_url):
+    """Inherited source credentials stay on their original HTTP origin."""
+    try:
+        if origin(source_url) == origin(target_url):
+            return headers
+    except Fault:
+        pass
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in {"authorization", "cookie"}
+    }
 
 
 def req(

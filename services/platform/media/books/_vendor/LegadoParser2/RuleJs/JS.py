@@ -63,8 +63,8 @@ class EvalJs(object):
         result = self.context.eval(f'{{{expression}}}')
         if isinstance(result, Object):
             return json.loads(result.json())
-        # elif result is None:
-        #     return None
+        if result is None:
+            return ''
         else:
             return str(result)
 
@@ -83,10 +83,14 @@ class EvalJs(object):
 
     def ajax(self, url):
         from LegadoParser2.RuleUrl.Url import parseUrl, getContent
+        from services.platform.media.books.engine_http import scoped_headers
         try:
             if DEBUG_MODE:
                 print(url)
-            urlObj = parseUrl(url, self, self.get('baseUrl') or self.bS.get('bookSourceUrl', ''))
+            urlObj = parseUrl(url, self, self.get('baseUrl') or self.bS.get('bookSourceUrl', ''),
+                              headers=self.bS.get('header', ''))
+            urlObj['headers'] = scoped_headers(urlObj['headers'],
+                self.bS.get('bookSourceUrl') or self.get('baseUrl'), urlObj['url'])
             content = getContent(urlObj)[0]
         except Exception:
             if DEBUG_MODE:

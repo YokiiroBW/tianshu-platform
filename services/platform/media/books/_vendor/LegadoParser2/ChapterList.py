@@ -1,8 +1,8 @@
 from LegadoParser2.RuleUrl.Url import parseUrl, getContent, urljoin
 from LegadoParser2.RuleJs.JS import EvalJs
-from LegadoParser2.RuleEval import getElements, getString, getStrings
+from LegadoParser2.RuleEval import getElements, getString
 from LegadoParser2.utils import validateFlag
-from concurrent.futures import ThreadPoolExecutor
+from services.platform.media.books.engine_pages import read_pages
 
 
 # from lxml.etree import HTML
@@ -28,7 +28,6 @@ def parseChapterList(bS, urlObj, content, evalJs: EvalJs):
     #     return []
 
     chapterList = []
-
     chapterUrlSet = set()
 
     def parseCL(content):
@@ -45,11 +44,11 @@ def parseChapterList(bS, urlObj, content, evalJs: EvalJs):
                     chapter['url'] = urljoin(urlObj['finalurl'], chapter['url'])
                 else:
                     chapter['url'] = urlObj['rawUrl']
-                chapterUrlSet.add(chapter['url'])
             else:
                 chapter['url'] = urlObj['rawUrl']
             if not chapter.get('url'):
                 chapter['url'] = urlObj['rawUrl']
+            chapterUrlSet.add(chapter['url'])
             if ruleToc.get('isPay', None):
                 chapter['isPay'] = getString(e, ruleToc['isPay'], evalJs)
                 chapter['isPay'] = validateFlag(chapter['isPay'])
@@ -65,52 +64,13 @@ def parseChapterList(bS, urlObj, content, evalJs: EvalJs):
             if chapter['name']:
                 chapterList.append(chapter)
 
-        if ruleToc.get('nextTocUrl', None):
-            nextTocUrls = getStrings(content, ruleToc['nextTocUrl'], evalJs)
-            if nextTocUrls:
-                nextTocUrls = [nextTocUrl for nextTocUrl in nextTocUrls if urljoin(
-                    urlObj['finalurl'], nextTocUrl) not in chapterUrlSet]
-        else:
-            nextTocUrls = None
-
-        return nextTocUrls
-
-    nextTocUrls = parseCL(content)
-
-    if nextTocUrls:
-        if len(nextTocUrls) == 1:
-            nextUrl = nextTocUrls[0]
-            allNextUrls = []
-            while nextTocUrls and nextUrl not in allNextUrls:
-                allNextUrls.append(nextUrl)
-                urlObj = parseUrl(nextUrl, evalJs, urlObj['finalurl'])
-                content, __ = getContent(urlObj)
-                nextTocUrls = parseCL(content)
-                if nextTocUrls:
-                    nextUrl = nextTocUrls[0]
-                else:
-                    break
-        else:
-            contents = fetchContents(nextTocUrls, urlObj['url'])
-            for content, __ in contents:
-                parseCL(content)
+    for page, body in read_pages(urlObj, content, evalJs, ruleToc.get('nextTocUrl'),
+                                 headers=bS.get('header', ''), stop_urls=chapterUrlSet):
+        urlObj = page
+        parseCL(body)
     chapterList = removeLatestChapter(chapterList)
 
     return chapterList
-
-
-def fetchContents(urls, baseUrl):
-    evalJs = EvalJs({})
-    executor = ThreadPoolExecutor(max_workers=1)
-    tasks = []
-    results = []
-    for u in urls:
-        urlObj = parseUrl(u, evalJs, baseUrl)
-        task = executor.submit(getContent, urlObj)
-        tasks.append(task)
-    for task in tasks:
-        results.append(task.result())
-    return results
 
 
 # 移除章节列表中上方的最新章节

@@ -7,10 +7,12 @@
     "bounded verified HTTP transport",
     "system QuickJS binding",
     "lxml parsing on both supported operating systems",
-    "explicit unsupported WebView instead of silent HTTP fallback",
+    "explicit HTTP fallback for webView hints; browser scripts remain unsupported",
     "bounded in-memory ZIP decoding",
     "relative XPath dispatch",
-    "sequential pagination within each source",
+    "sequential pagination with current-page context, loop deduplication and chapter boundaries",
+    "source request headers inherited by pagination and ajax with origin-scoped credentials",
+    "null script results stay empty and empty content pages fail explicitly",
     "unused upstream debug runner omitted"
   ]
 }
