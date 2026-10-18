@@ -15,6 +15,7 @@ from .packages import (
     package_cbz,
 )
 from .publication import file_hash, publish
+from .publisher_client import Publisher
 
 RETRYABLE = {
     "comic_source_connection_refused",
@@ -23,6 +24,7 @@ RETRYABLE = {
     "comic_source_rate_limited",
     "comic_archive_unavailable",
     "comic_archive_pending",
+    "comic_publisher_unavailable",
     "comic_komga_unavailable",
     "comic_reader_index_pending",
     "busy",
@@ -34,9 +36,11 @@ class Downloads:
     def __init__(self, comics):
         self.comics, self.media, self.repo = comics, comics.media, comics.repo
         self.archive = Archive(comics)
+        self.publisher = Publisher()
 
     async def close(self):
         await self.archive.close()
+        await self.publisher.close()
 
     def cleanup(self, job):
         if job.get("state") != "completed" or job.get("comic_cache_cleaned"):
@@ -150,7 +154,10 @@ class Downloads:
                 )
                 await update(state="publishing", stage="comic_archive", code="comic_archiving")
                 if not job["comic_artifact"].get("published_at"):
-                    publication = await self.media.local(publish, self.repo, job, path, owner)
+                    if job["comic_target"].get("publisher_socket"):
+                        publication = await self.publisher.publish(job, path, checkpoint)
+                    else:
+                        publication = await self.media.local(publish, self.repo, job, path, owner)
                     await update(comic_artifact={**job["comic_artifact"], **publication})
                 receipt = await self.archive.observe(job, checkpoint)
                 await update(

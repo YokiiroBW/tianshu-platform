@@ -34,6 +34,7 @@ class Settings:
             "revision": value["revision"],
             "interval_seconds": value["interval_seconds"],
             "import_directory": value["import_directory"],
+            "publisher_socket": value.get("publisher_socket", ""),
             "connections": {
                 name: {
                     "url": row.get("url", ""),
@@ -68,6 +69,15 @@ class Settings:
             and len(directory) <= 4096
             and (not directory or Path(directory).is_absolute()),
             "comic_directory_absolute",
+            400,
+        )
+        publisher_socket = body.get("publisher_socket", old.get("publisher_socket", ""))
+        require(
+            isinstance(publisher_socket, str)
+            and len(publisher_socket) <= 4096
+            and (not publisher_socket or Path(publisher_socket).is_absolute())
+            and not any(ord(c) < 32 for c in publisher_socket),
+            "invalid_input",
             400,
         )
         incoming = body.get("connections", {})
@@ -146,6 +156,7 @@ class Settings:
         current = {
             "interval_seconds": interval,
             "import_directory": directory,
+            "publisher_socket": publisher_socket,
             "connections": connections,
             "targets": checked,
         }
@@ -181,6 +192,9 @@ class Settings:
         return {
             "kind": kind,
             **target,
+            **(
+                {"publisher_socket": row["publisher_socket"]} if row.get("publisher_socket") else {}
+            ),
             "asset_url": row["connections"]["assetlibrary"]["url"],
             "komga_url": row["connections"]["komga"]["url"],
         }

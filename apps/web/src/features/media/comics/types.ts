@@ -73,6 +73,7 @@ export type Target = {
   komga_root: string;
 };
 export type Settings = {
+  publisher_socket?: string;
   revision: number;
   import_directory: string;
   interval_seconds: number;

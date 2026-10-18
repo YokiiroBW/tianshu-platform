@@ -28,6 +28,17 @@ class WebComics:
                     result[name] = {"state": "ready", "value": await call()}
                 except Fault as error:
                     result[name] = {"state": "unavailable", "code": error.code}
+            settings = await local(comics.settings.read)
+            if settings.get("publisher_socket"):
+                try:
+                    result["publisher"] = {
+                        "state": "ready",
+                        "value": await comics.downloads.publisher.probe(
+                            settings["publisher_socket"]
+                        ),
+                    }
+                except Fault as error:
+                    result["publisher"] = {"state": "unavailable", "code": error.code}
             return result
         if operation == "sources/list":
             return {"sources": await comics.sources.list()}

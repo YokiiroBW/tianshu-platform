@@ -26,7 +26,17 @@
 
 NAS已只读核实：`/volume1/Documents/Cartoon`（用户共享 `\\YokiiroNAS\Documents\Cartoon`），原Komga库为漫画与本子，保留4704个既有CBZ及原阅读记录。拟新增输出 `漫画/天枢`、`本子/天枢`；Komga对应路径 `/Cartoon/漫画/天枢`、`/Cartoon/本子/天枢`。
 
-AssetLibrary只读纳管协议是TS198候选 `/assetlink/v1/service-imports/{key}/observe`（GET原键和targets）；生产尚未接主Host/迁移/角色。真实客户端与隔离C#/PostgreSQL/NTFS/HTTPS联验已通过，不能称NAS已纳管。NAS Linux原生lease要求文件owner：Platform 10001与AS 1654不同，需要完成受限发布角色的部署设计和实测，不能修改旧目录权限或绕开lease。
+AssetLibrary只读纳管协议是TS198候选 `/assetlink/v1/service-imports/{key}/observe`（GET原键和targets）；生产尚未接主Host/迁移/角色。真实客户端与隔离C#/PostgreSQL/NTFS/HTTPS联验已通过，不能称NAS已纳管。NAS Linux原生lease要求文件owner：Platform 10001与AS 1654不同，因此使用下面的专用文件写入进程，保留旧目录权限和原生lease要求。
+
+### NAS 专用写入进程
+
+同一 Platform 镜像使用独立入口 `python -m services.platform.media.comics.publisher_service --settings /etc/comics-writer.json`。部署配置只含 `targets`（comic-main/comic-adult 对应容器内两个输出根绝对路径）、`socket`（独立共享卷内路径）、`client_uid`（10001）。进程以1654:10001运行，仅两处新输出根可写，不挂旧Documents、平台数据库或服务凭据。平台仍以10001运行，原Cartoon作为导入源只读挂载；共享socket卷在平台侧只读，socket权限0660，服务端用Linux SO_PEERCRED核对连接进程UID。没有网络监听或新访问令牌。
+
+平台漫画设置的 `publisher_socket` 指向该socket，缺省为空时沿用同进程本地发布（用于同UID部署及开发）。部署设置会随目标快照保存在任务中，网页保存其他设置不会清除它。连接探测同时返回写入进程状态。
+
+专用进程只处理已生成CBZ的传输和不可变发布，不承担订阅、搜索或资产索引。稳定意图键绑定目标/路径/长度/SHA；4MiB分块校验并fsync后记录进度。进程中断后截去未确认尾部，从确认偏移续传；同键不同意图拒绝。完整SHA通过后复用现有volume lock和原子create-if-absent，删除暂存硬链接、同步目录，再给完成回执。已存在的不同字节永不覆盖；发布后回执丢失会核对同一文件并恢复，AS观察前最终文件只剩一个硬链接。AS仍从原Documents只读挂载读取，不跨挂载别名。
+
+此角色的Windows协议与实际平台工作队列测试已通过；跨UID、只读socket卷、Btrfs及AS原生lease仍需NAS隔离实测。未把该进程接入生产Compose。
 
 Suwayomi实机为2.3.2243、Komga为1.24.4-master；未升级。Suwayomi代理指向已失效的旧mihomo地址，代理方案待用户确认。Komga浏览器已登录，新增专用API key的操作确认待回复。
 

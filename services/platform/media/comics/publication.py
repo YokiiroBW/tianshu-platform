@@ -26,6 +26,29 @@ def verify(path, artifact):
     )
 
 
+def install(root, temporary, relative, artifact):
+    """Install verified bytes while the caller owns library_lock and its job fence."""
+    destination = safe_path(root, relative)
+    if destination.exists():
+        verify(destination, artifact)
+        return True
+    pending = []
+    parent = destination.parent
+    while not parent.exists():
+        pending.append(parent)
+        parent = parent.parent
+    for folder in reversed(pending):
+        folder.mkdir(exist_ok=True)
+        sync_directory(folder.parent)
+    safe_path(root, relative)
+    try:
+        os.link(temporary, destination)
+    except FileExistsError:
+        require(False, "comic_file_conflict", 409)
+    sync_directory(destination.parent)
+    return False
+
+
 def publish(repo, job, source, owner):
     # Reuse the existing cross-process volume lock and relative-path protections.
     with library_lock(job["comic_target"]["directory"]) as (root, control):
@@ -37,8 +60,6 @@ def publish(repo, job, source, owner):
         try:
             copy_file(source, temporary)
             verify(temporary, job["comic_artifact"])
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            safe_path(root, job["comic_relative_path"])
             # Fence the final filesystem change with the same job generation as the worker.
             with repo.transaction() as db:
                 row = db.execute(
@@ -52,12 +73,8 @@ def publish(repo, job, source, owner):
                     409,
                 )
                 require(not json.loads(row["body"])["cancel_requested"], "job_cancelled", 409)
-                try:
-                    # Atomic create-if-absent; unlike replace(), this never overwrites an outsider.
-                    os.link(temporary, destination)
-                except FileExistsError:
-                    require(False, "comic_file_conflict", 409)
-                sync_directory(destination.parent)
-            return {"reused": False, "published_at": repo.clock()}
+                reused = install(root, temporary, job["comic_relative_path"], job["comic_artifact"])
+            return {"reused": reused, "published_at": repo.clock()}
         finally:
             temporary.unlink(missing_ok=True)
+            sync_directory(control)
