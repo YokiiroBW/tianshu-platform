@@ -17,6 +17,12 @@ class WebBooks:
     async def route(self, operation, body, session):
         await self.web.live(session)
         books, repo, local = self.books, self.media.repo, self.media.local
+        if operation.startswith("reading/"):
+            return await books.reading.web(self, operation[8:], body, session)
+        if operation.startswith("audio/"):
+            from .audio.web import route
+
+            return await route(self, operation[6:], body, session)
         if operation == "view":
             return await books.view()
         if operation == "warehouse/browse":

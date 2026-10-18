@@ -16,6 +16,7 @@ NATIVE_SHA256 = "832abdbfbbb49d71bffc0aabdd816f4de92d892680f26cc5f05402e397d3426
 WEB_SHA256 = "3ccb44c13f5969ce4cd279c51d14f58d95c9cd4e75ca85cd8d6af286b3db0417"
 LIFE_SHA256 = "7be7507d58f897a739b269de3c096ba948c92b25266888a91fa50130d342c551"
 RUNTIME_PACKAGES = {
+    "reading-state/v1": "2dc05bb8658988a46e286de6ef283d49bfb286e45141a4d2cfc0501d79bf1ebb",
     "skills/v1": "0ad3a444e8bff26721c14664260d08b463feb3288a556364e1af35f3e277d0f2",
     "life-runtime/v2": "85aff438f91cb96876e259204b5a198e2fedaead56db64a2265aa520a59ea7e3",
     "image-backend/v1": "62e71dd2f42fb5b1376c439c362a555619da41cb7f7ae26d07acc1182b80ffbd",
@@ -245,6 +246,7 @@ class Contracts:
             "knowledge-content",
             "image-backend",
             "skills",
+            "reading-state",
         }:
             package, file = {
                 "life-runtime": ("life-runtime/v2", "life"),
@@ -253,6 +255,7 @@ class Contracts:
                 "knowledge-content": ("knowledge-content/v1", "schema"),
                 "image-backend": ("image-backend/v1", "image-backend"),
                 "skills": ("skills/v1", "schemas/skills"),
+                "reading-state": ("reading-state/v1", "schema"),
             }[family]
             self.load_runtime(package)
         try:

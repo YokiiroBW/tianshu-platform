@@ -12,8 +12,13 @@ import type {
 import { BookMetadataEditor } from "./BookMetadataEditor";
 import { bookFileUrl, bookReadability } from "./presentation";
 import { BookSourceStatus } from "./BookSourceStatus";
+import type { MediaController } from "../useMediaController";
+import type { AudioView } from "./audioTypes";
+import { BookAudioPanel } from "./BookAudioPanel";
+import { BookReader } from "./BookReader";
 
 export function BookDetail({
+  media,
   book,
   detail,
   preview,
@@ -29,6 +34,7 @@ export function BookDetail({
   onMetadataSearch,
   onMetadataApply,
 }: {
+  media: MediaController;
   book: Book;
   detail: Detail | null;
   preview: ChapterPreview | null;
@@ -48,6 +54,8 @@ export function BookDetail({
   ) => Promise<boolean>;
 }) {
   const [tab, setTab] = useState("reading");
+  const [audioView, setAudioView] = useState<AudioView | null>(null);
+  const [autoplay, setAutoplay] = useState(false);
   const current = detail?.book ?? book;
   const options = alternatives.some(
     (candidate) => candidate.book_id === current.book_id,
@@ -106,6 +114,14 @@ export function BookDetail({
             </button>
           </div>
         </div>
+        {tab === "reading" && (
+          <BookAudioPanel
+            media={media}
+            bookId={current.book_id}
+            chapterId={preview?.chapter.chapter_id}
+            onView={setAudioView}
+          />
+        )}
         {tab === "reading" ? (
           <div className="book-reader">
             <nav aria-label="章节目录">
@@ -120,7 +136,10 @@ export function BookDetail({
                           ? "is-selected"
                           : ""
                       }
-                      onClick={() => onChapter(chapter)}
+                      onClick={() => {
+                        setAutoplay(false);
+                        onChapter(chapter);
+                      }}
                     >
                       {chapter.title}
                     </button>
@@ -137,30 +156,28 @@ export function BookDetail({
                 </p>
               )}
             </nav>
-            <article className="book-prose">
-              {preview ? (
-                <>
-                  <h3>{preview.chapter.title}</h3>
-                  <div>{preview.chapter.content}</div>
-                  <p className="book-fineprint muted">
-                    {preview.chapter.origin?.source_name
-                      ? `本章来自 ${preview.chapter.origin.source_name} · `
-                      : ""}
-                    {preview.cached
-                      ? "使用已经保存的正文"
-                      : "已从来源取得并保存正文"}
-                  </p>
-                </>
-              ) : (
-                <div className="book-reader-empty" role="status">
-                  {error
-                    ? "本次试读未取得正文，可以选择其他章节或切换来源。"
-                    : detail
-                      ? "选择一个章节开始试读"
-                      : "正在读取书籍详情…"}
-                </div>
-              )}
-            </article>
+            {preview ? (
+              <BookReader
+                key={preview.chapter.chapter_id}
+                media={media}
+                bookId={current.book_id}
+                preview={preview}
+                jobs={audioView?.jobs ?? []}
+                autoplay={autoplay}
+                onNext={(chapter) => {
+                  setAutoplay(true);
+                  onChapter(chapter);
+                }}
+              />
+            ) : (
+              <div className="book-prose book-reader-empty" role="status">
+                {error
+                  ? "本次试读未取得正文，可以选择其他章节或切换来源。"
+                  : detail
+                    ? "选择一个章节开始试读"
+                    : "正在读取书籍详情…"}
+              </div>
+            )}
           </div>
         ) : (
           <BookMetadataEditor

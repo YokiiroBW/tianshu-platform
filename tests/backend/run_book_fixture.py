@@ -13,6 +13,7 @@ from book_fixtures import BookSite
 from fixtures import ENV, ROOT
 from services.platform.server import create_app
 from services.platform.service import Platform
+from services.platform.contracts import canonical
 from web_fixtures import web_settings
 
 
@@ -24,6 +25,16 @@ async def serve():
         site = await BookSite().start()
         configuration = web_settings(directory, "http://127.0.0.1:18913", ROOT / "apps/web/dist")
         platform = Platform(configuration)
+        # Synthetic ownership mapping for reading grants; no live user or model calls.
+        with platform.store.connect(write=True) as db:
+            db.execute(
+                "INSERT OR REPLACE INTO identities VALUES(?,?,?)",
+                (canonical(configuration["principals"]["admin"]["account"]), "person:reader", 1),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO channels VALUES(?,?)",
+                (canonical(configuration["entries"]["actor-a"]["channel"]), "conversation:reader"),
+            )
         books = platform.media.books
         site.connect(books)
         library = Path(directory) / "Books"
@@ -40,11 +51,24 @@ async def serve():
                 db,
             )
         app = create_app(platform)
+        speech = None
+        if os.environ.get("BOOK_AUDIO_FIXTURE") == "1":
+            from book_audio_fixtures import AudioSite, ffmpeg_path
+
+            speech = await AudioSite(Path(directory)).start()
+            books.audio.files.ffmpeg = ffmpeg_path()
 
         import json
 
         (runtime / "book-browser-input.json").write_text(
-            json.dumps({"source": site.source(), "directory": str(library), "site_url": site.url}),
+            json.dumps(
+                {
+                    "source": site.source(),
+                    "directory": str(library),
+                    "site_url": site.url,
+                    "audio_url": speech.url if speech else None,
+                }
+            ),
             encoding="utf-8",
         )
         runner = web.AppRunner(app, access_log=None)
@@ -56,6 +80,8 @@ async def serve():
         finally:
             await runner.cleanup()
             await site.runner.cleanup()
+            if speech:
+                await speech.runner.cleanup()
             platform.close()
 
 

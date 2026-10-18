@@ -9,6 +9,8 @@ import { BookSources } from "./BookSources";
 import { BookWarehouse } from "./BookWarehouse";
 import { BookSettings } from "./BookSettings";
 import { BookLibrary } from "./BookLibrary";
+import { BookAudioSettings } from "./BookAudioSettings";
+import type { ReadingView } from "./audioTypes";
 import type {
   Book,
   BooksView,
@@ -29,6 +31,7 @@ const tabs = [
   ["library", "本地书库"],
   ["sources", "书源管理"],
   ["settings", "整理设置"],
+  ["audio", "听书设置"],
 ] as const;
 const slots = [
   "books-view",
@@ -44,6 +47,7 @@ const slots = [
   "books-feed",
   "books-export",
   "books-scan",
+  "books-bookmark",
 ];
 
 export function BooksPanel({ media }: { media: MediaController }) {
@@ -270,8 +274,20 @@ export function BooksPanel({ media }: { media: MediaController }) {
     if (result && selectedId.current === book.book_id) {
       setDetail(result);
       setSelected(result.book);
-      if (result.chapters.length)
-        void readChapter(result.book, result.chapters[0]);
+      const bookmark = await current.current.request<ReadingView>(
+        "books-bookmark",
+        "books/reading/view",
+        { book_id: book.book_id },
+      );
+      if (selectedId.current !== book.book_id) return;
+      const chapter = bookmark?.progress
+        ? {
+            chapter_id: bookmark.progress.chapter_id,
+            title: "继续阅读",
+            order: 0,
+          }
+        : result.chapters[0];
+      if (chapter) void readChapter(result.book, chapter);
     }
   }
   function closeBook() {
@@ -635,8 +651,10 @@ export function BooksPanel({ media }: { media: MediaController }) {
           }}
         />
       )}
+      {tab === "audio" && <BookAudioSettings media={media} />}
       {selected && (
         <BookDetail
+          media={media}
           key={selected.book_id}
           book={selected}
           detail={detail}
