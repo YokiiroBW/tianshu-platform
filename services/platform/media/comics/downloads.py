@@ -123,9 +123,10 @@ class Downloads:
                         uuid.NAMESPACE_URL,
                         digest(
                             {
-                                "job": identity,
+                                "protocol": "service-imports-v1",
+                                "library_id": job["comic_target"]["asset_library_id"],
                                 "sha256": record["sha256"],
-                                "target": job["comic_target"],
+                                "target_id": job["comic_target"]["asset_target_id"],
                                 "path": relative,
                             }
                         ),

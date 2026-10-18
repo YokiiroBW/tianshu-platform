@@ -3,6 +3,7 @@
 import hashlib
 import os
 import re
+import shutil
 import unicodedata
 import uuid
 import warnings
@@ -237,9 +238,15 @@ def package_cbz(pages, output, metadata, chapter):
                 record = image_record(path)
                 require(record == expected, "comic_input_changed", 409)
                 name = f"{index:06d}" + record["extension"]
-                archive.write(path, name)
+                entry = zipfile.ZipInfo(name)
+                entry.file_size = record["size_bytes"]
+                entry.external_attr = 0o100644 << 16
+                with Path(path).open("rb") as incoming, archive.open(entry, "w") as outgoing:
+                    shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
                 manifest.append({"name": name, **record})
-            archive.writestr("ComicInfo.xml", comic_info(metadata, chapter, len(pages)))
+            archive.writestr(
+                zipfile.ZipInfo("ComicInfo.xml"), comic_info(metadata, chapter, len(pages))
+            )
         sync_file(temporary)
         with zipfile.ZipFile(temporary) as archive:
             require(archive.testzip() is None, "comic_archive_invalid", 409)

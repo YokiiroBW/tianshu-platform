@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import os
 import tempfile
 import unittest
 import uuid
@@ -185,6 +186,36 @@ class ComicTests(unittest.IsolatedAsyncioTestCase):
                 [(image, expected)], self.output / "unsafe.cbz", {"title": "test"}, {"title": "1"}
             )
         self.assertFalse((self.output / "unsafe.cbz").exists())
+
+    async def test_repacking_same_images_is_independent_of_download_timestamps(self):
+        image = self.inputs / "1.png"
+        image.write_bytes(page_bytes(1))
+        expected = image_record(image)
+        first = package_cbz(
+            [(image, expected)], self.output / "first.cbz", {"title": "作品"}, {"title": "章节"}
+        )
+        os.utime(image, (1600000000, 1600000000))
+        second = package_cbz(
+            [(image, expected)], self.output / "second.cbz", {"title": "作品"}, {"title": "章节"}
+        )
+        self.assertEqual(first["sha256"], second["sha256"])
+
+    async def test_deleted_task_reimport_uses_original_file_and_asset_intent(self):
+        comic = await self.comic()
+        chapter = self.comics.catalog.chapters(comic["comic_id"])[0]
+        body = {"comic_id": comic["comic_id"], "chapter_ids": [chapter["chapter_id"]]}
+        await self.call("downloads/enqueue", body)
+        first = await self.run_job()
+        with self.repo.transaction() as db:
+            self.repo.delete_job(first["job_id"], first["revision"], db=db)
+        await self.call("downloads/enqueue", body)
+        second = await self.run_job()
+        self.assertEqual(second["state"], "completed", second["code"])
+        self.assertEqual(
+            first["comic_artifact"]["archive_key"], second["comic_artifact"]["archive_key"]
+        )
+        self.assertEqual(len(list(self.output.rglob("*.cbz"))), 1)
+        self.assertEqual(first["asset_receipt"], second["asset_receipt"])
 
     async def test_credentials_redacted_and_key_loss_rejected(self):
         settings = (await self.call("view"))["settings"]
