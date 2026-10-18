@@ -90,6 +90,20 @@ test("chapter audio generates over real HTTP, reuses files, plays and shares onl
     path: info.outputPath("book-audio-reading-desktop.png"),
     fullPage: true,
   });
+  await audio.evaluate((element: HTMLAudioElement) => {
+    element.currentTime = element.duration - 0.1;
+    return element.play();
+  });
+  await expect(drawer.locator(".book-player h3")).toHaveText(
+    "第 2 章 山间来信",
+  );
+  await expect(
+    drawer.getByLabel("开启陪伴阅读", { exact: true }),
+  ).toBeChecked();
+  await expect(drawer.getByText(/正在共享阅读位置/)).toBeVisible();
+  await drawer
+    .locator("audio")
+    .evaluate((element: HTMLAudioElement) => element.pause());
   await drawer.getByLabel("开启陪伴阅读", { exact: true }).uncheck();
   await drawer.locator(".book-audio-panel > summary").click();
   await drawer.getByRole("button", { name: "计算待生成章节" }).click();

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { MediaController } from "../useMediaController";
 import type { ChapterPreview, BookChapter } from "./types";
 import type { AudioJob, AudioManifest } from "./audioTypes";
-import { useBookReading } from "./useBookReading";
+import { useBookReading, type ReadingPreference } from "./useBookReading";
 
 export function BookReader({
   media,
@@ -11,6 +11,7 @@ export function BookReader({
   jobs,
   onNext,
   autoplay,
+  preference,
 }: {
   media: MediaController;
   bookId: string;
@@ -18,12 +19,16 @@ export function BookReader({
   jobs: AudioJob[];
   onNext: (chapter: BookChapter) => void;
   autoplay: boolean;
+  preference: ReadingPreference;
 }) {
   const ready = jobs.filter(
     (j) => j.chapter_id === preview.chapter.chapter_id && j.state === "ready",
   );
   const [choice, setChoice] = useState("");
-  const job = ready.find((j) => j.id === choice) ?? ready.at(-1);
+  const job =
+    ready.find((j) => j.id === choice) ??
+    ready.find((j) => j.profile_id === preference.profileId) ??
+    ready.at(-1);
   const [manifest, setManifest] = useState<AudioManifest | null>(null);
   const current = useRef(media);
   current.current = media;
@@ -52,12 +57,28 @@ export function BookReader({
   return (
     <ReaderContent
       key={`${preview.chapter.chapter_id}:${manifest?.job_id ?? "text"}`}
-      {...{ media, bookId, preview, manifest, jobs, onNext, autoplay }}
+      {...{
+        media,
+        bookId,
+        preview,
+        manifest,
+        jobs,
+        onNext,
+        autoplay,
+        preference,
+      }}
       versionPicker={
         ready.length > 1 ? (
           <label>
             音频版本
-            <select value={job?.id} onChange={(e) => setChoice(e.target.value)}>
+            <select
+              value={job?.id}
+              onChange={(e) => {
+                setChoice(e.target.value);
+                preference.profileId =
+                  ready.find((j) => j.id === e.target.value)?.profile_id ?? "";
+              }}
+            >
               {ready.map((r, i) => (
                 <option key={r.id} value={r.id}>
                   版本 {i + 1} · {r.profile_id.slice(0, 8)}
@@ -80,6 +101,7 @@ function ReaderContent({
   onNext,
   autoplay,
   versionPicker,
+  preference,
 }: {
   media: MediaController;
   bookId: string;
@@ -89,6 +111,7 @@ function ReaderContent({
   onNext: (chapter: BookChapter) => void;
   autoplay: boolean;
   versionPicker: React.ReactNode;
+  preference: ReadingPreference;
 }) {
   const text = manifest?.text ?? preview.chapter.content;
   const hash = manifest?.content_hash ?? preview.chapter.content_hash;
@@ -97,6 +120,7 @@ function ReaderContent({
     bookId,
     preview.chapter.chapter_id,
     hash,
+    preference,
     manifest?.job_id,
   );
   const player = useRef<HTMLAudioElement>(null);
@@ -120,6 +144,14 @@ function ReaderContent({
         )
         .sort((a, b) => a.order - b.order)[0]
     : undefined;
+  const advance = (chapter: AudioJob) => {
+    if (current) preference.profileId = current.profile_id;
+    onNext({
+      chapter_id: chapter.chapter_id,
+      title: chapter.title,
+      order: chapter.order,
+    });
+  };
   const paragraphs = useMemo(() => {
     let at = 0;
     return text
@@ -213,12 +245,7 @@ function ReaderContent({
               }
               onEnded={() => {
                 void reading.save();
-                if (continuous && next?.state === "ready")
-                  onNext({
-                    chapter_id: next.chapter_id,
-                    title: next.title,
-                    order: next.order,
-                  });
+                if (continuous && next?.state === "ready") advance(next);
               }}
             />
             <div className="book-controls">
@@ -334,16 +361,7 @@ function ReaderContent({
         ))}
       </div>
       {next && (
-        <button
-          className="button"
-          onClick={() =>
-            onNext({
-              chapter_id: next.chapter_id,
-              title: next.title,
-              order: next.order,
-            })
-          }
-        >
+        <button className="button" onClick={() => advance(next)}>
           下一章：{next.title}
           {next.state !== "ready" ? "（音频未就绪）" : ""}
         </button>

@@ -4,11 +4,18 @@ import { requestId } from "../../../app/requestId";
 import type { MediaController } from "../useMediaController";
 import type { ReaderState, ReadingView } from "./audioTypes";
 
+export type ReadingPreference = {
+  sharing: boolean;
+  binding: string;
+  profileId: string;
+};
+
 export function useBookReading(
   media: MediaController,
   bookId: string,
   chapterId: string,
   hash: string,
+  preference: ReadingPreference,
   audioJob?: string,
 ) {
   const { session } = useAuth();
@@ -96,7 +103,15 @@ export function useBookReading(
       if (stopped || !view) return;
       setChoices(view.choices);
       const first = view.choices.find((c) => c.actors.length);
-      data.binding = first ? `${first.id}|${first.actors[0]}` : "";
+      const available = view.choices.flatMap((c) =>
+        c.actors.map((actor) => `${c.id}|${actor}`),
+      );
+      data.binding = available.includes(preference.binding)
+        ? preference.binding
+        : first
+          ? `${first.id}|${first.actors[0]}`
+          : "";
+      preference.binding = data.binding;
       setBinding(data.binding);
       const result = await current.current.media.request<{
         reader: ReaderState;
@@ -120,6 +135,12 @@ export function useBookReading(
       data.offset = result.reader.offset;
       data.seconds = result.reader.seconds;
       setReader(result.reader);
+      data.sharing = preference.sharing && !!data.binding && !document.hidden;
+      setSharing(data.sharing);
+      if (data.sharing) {
+        setSynced(false);
+        void save();
+      }
     }
     void open();
     const timer = setInterval(() => {
@@ -128,6 +149,7 @@ export function useBookReading(
     const hidden = () => {
       if (document.hidden && state.current === data) {
         data.sharing = false;
+        preference.sharing = false;
         setSharing(false);
         void save();
       }
@@ -158,11 +180,13 @@ export function useBookReading(
     },
     save,
     share: (enabled: boolean) => {
+      preference.sharing = enabled;
       state.current.sharing = enabled;
       setSharing(enabled);
       void save();
     },
     bind: (value: string) => {
+      preference.binding = value;
       state.current.binding = value;
       setBinding(value);
       if (state.current.sharing) void save();

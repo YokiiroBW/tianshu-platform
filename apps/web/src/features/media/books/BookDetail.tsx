@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Drawer } from "../../../components/Drawer";
 import { BookOpen, Download, RefreshCw } from "lucide-react";
 import type {
@@ -56,6 +56,11 @@ export function BookDetail({
   const [tab, setTab] = useState("reading");
   const [audioView, setAudioView] = useState<AudioView | null>(null);
   const [autoplay, setAutoplay] = useState(false);
+  const readingPreference = useRef({
+    sharing: false,
+    binding: "",
+    profileId: "",
+  });
   const current = detail?.book ?? book;
   const options = alternatives.some(
     (candidate) => candidate.book_id === current.book_id,
@@ -108,7 +113,10 @@ export function BookDetail({
             <button
               role="tab"
               aria-selected={tab === "metadata"}
-              onClick={() => setTab("metadata")}
+              onClick={() => {
+                readingPreference.current.sharing = false;
+                setTab("metadata");
+              }}
             >
               书籍资料
             </button>
@@ -164,6 +172,7 @@ export function BookDetail({
                 preview={preview}
                 jobs={audioView?.jobs ?? []}
                 autoplay={autoplay}
+                preference={readingPreference.current}
                 onNext={(chapter) => {
                   setAutoplay(true);
                   onChapter(chapter);
