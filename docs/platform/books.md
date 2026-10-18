@@ -87,6 +87,10 @@
 - 原生 EPUB 校验覆盖 ZIP/CRC、mimetype、OPF 清单、spine 和 XHTML；没有运行官方 EPUBCheck，也未承诺所有阅读器都已实测。
 - 仓库列表或规则导入成功不能替代搜索、目录、正文及成品验收。TS189已完成三古籍源的NAS网页/EPUB验收；TS191完成三网文源聚合/试读，以及书海阁《夜无疆》9页目录、835章正式EPUB、真实每小时扫描和隔离833→835章仅补新增验证。速读谷与得奇仍有偶发正文/请求失败，未验证其整本稳定；精确边界见对应任务交接，不将少量通过的来源扩大为整个仓库兼容。yckceo不可访问不会影响已保存规则和本地文件整理。
 
+## 听书与陪伴阅读
+
+书库阅读器支持按章节预生成、音频追更、播放与文本同步，以及显式开启的角色陪读。使用方法见[章节听书与陪伴阅读](book-audio.md)，本地服务协议见[本地听书接口](book-audio-local-api.md)。
+
 ## 开发验证
 
 后端沿用 unittest，套件为 `tests/backend/test_books.py`、`test_book_warehouse.py` 、`test_book_pagination.py` 和 `test_book_selection.py`。网页联合套件使用真实 Platform 登录、HTTP、SQLite、规则子进程、后台 worker 和文件下载，只有上游书站/仓库/账号是合成输入；没有拦截媒体 API 伪造结果。
