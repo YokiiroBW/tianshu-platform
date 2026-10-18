@@ -211,6 +211,27 @@ class BookAudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(jobs[0]["media_kind"], "book")
         self.assertEqual(jobs[0]["state"], "completed")
 
+    async def test_saving_same_speed_and_rotating_key_does_not_resynthesize(self):
+        body = await self.prepare_audio()
+        await self.enqueue(body)
+        await self.drain()
+        before = await self.call("audio/estimate", body)
+        config = self.audio.config.get("local")
+        await self.call(
+            "audio/settings/save",
+            {
+                "provider": "local",
+                "speed": 1,
+                "api_key": "rotated-synthetic-key",
+                "expected_revision": config["revision"],
+            },
+        )
+        after = await self.call("audio/estimate", body)
+        self.assertEqual(before["profile_id"], after["profile_id"])
+        self.assertEqual((await self.enqueue(body))["queued"], 0)
+        await self.drain()
+        self.assertEqual(self.speech.hits["/v1/audio/speech"], 2)
+
     async def test_partial_chapter_retry_reuses_completed_segments(self):
         body = await self.prepare_audio()
         chapter = self.books.catalog.directory(self.book_id)[0]

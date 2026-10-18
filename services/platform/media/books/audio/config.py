@@ -34,6 +34,8 @@ def profile(config):
         **{k: config[k] for k in ("provider", "endpoint", "model", "voice", "speed", "pitch")},
         "format": "mp3",
         "segment_version": 1,
+        # Browser JSON writes 1 where defaults may use 1.0; these must share one cache.
+        "speed": float(config["speed"]),
     }
 
 
