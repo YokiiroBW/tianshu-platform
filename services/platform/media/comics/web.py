@@ -29,6 +29,12 @@ class WebComics:
                 except Fault as error:
                     result[name] = {"state": "unavailable", "code": error.code}
             settings = await local(comics.settings.read)
+            if settings.get("import_socket"):
+                try:
+                    reader = await local(comics.imports.access)
+                    result["inputs"] = {"state": "ready", "value": await local(reader.probe)}
+                except Fault as error:
+                    result["inputs"] = {"state": "unavailable", "code": error.code}
             if settings.get("publisher_socket"):
                 try:
                     result["publisher"] = {

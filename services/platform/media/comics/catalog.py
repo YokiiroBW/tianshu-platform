@@ -182,7 +182,8 @@ class Catalog:
 
     def local_import(self, relative, title, chapters, library_kind):
         require(library_kind in {"general", "private"}, "invalid_input", 400)
-        root = self.comics.settings.read()["import_directory"]
+        settings = self.comics.settings.read()
+        root = settings["import_directory"]
         comic_id = digest({"root": root, "relative": relative})[:24]
         with self.repo.transaction() as db:
             old = self.repo._document(db, "comic", comic_id)
@@ -204,6 +205,7 @@ class Catalog:
                 "source_id": "local",
                 "source_name": "本地图片与漫画包",
                 "import_directory": root,
+                "import_socket": settings.get("import_socket", ""),
                 "import_relative": relative,
                 "library_kind": old.get("library_kind", library_kind) if old else library_kind,
                 "chapter_count": len(chapters),

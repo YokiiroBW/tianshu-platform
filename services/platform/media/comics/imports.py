@@ -3,15 +3,24 @@
 from pathlib import Path
 
 from ...contracts import digest, require
-from .packages import IMAGE_EXTENSIONS, folder_pages, input_path, linked, natural_key
+from .packages import (
+    IMAGE_EXTENSIONS,
+    MAX_PAGE_BYTES,
+    copy_page,
+    folder_pages,
+    image_record,
+    input_path,
+    linked,
+    natural_key,
+)
 
 
-class Imports:
-    def __init__(self, comics):
-        self.comics = comics
+class DirectoryInputs:
+    def __init__(self, directory):
+        self.directory = directory
 
     def root(self):
-        directory = self.comics.settings.read()["import_directory"]
+        directory = self.directory
         require(directory, "comic_import_not_configured", 409)
         return Path(directory)
 
@@ -104,8 +113,8 @@ class Imports:
             "input_digest": digest([c["input_digest"] for c in chapters]),
         }
 
-    def recheck(self, comic, chapter):
-        root = Path(comic["import_directory"])
+    def recheck(self, chapter):
+        root = self.root()
         selected = input_path(root, chapter["relative_path"])
         if chapter["input_kind"] == "archive":
             stat = selected.stat()
@@ -117,3 +126,45 @@ class Imports:
             ]
         require(digest(details) == chapter["input_digest"], "comic_input_changed", 409)
         return selected
+
+
+class Imports:
+    def __init__(self, comics):
+        self.comics = comics
+
+    def access(self, comic=None):
+        config = comic or self.comics.settings.read()
+        if config.get("import_socket"):
+            from .source_client import RemoteInputs
+
+            return RemoteInputs(config["import_socket"], config["import_directory"])
+        return DirectoryInputs(config["import_directory"])
+
+    def root(self):
+        return self.access().root()
+
+    def browse(self, relative="", offset=0):
+        return self.access().browse(relative, offset)
+
+    def inspect(self, relative):
+        return self.access().inspect(relative)
+
+    def recheck(self, comic, chapter):
+        return self.access(comic).recheck(chapter)
+
+    def archive_path(self, comic, chapter, directory):
+        reader = self.access(comic)
+        if isinstance(reader, DirectoryInputs):
+            return reader.recheck(chapter)
+        destination = directory / "original.cbz"
+        reader.copy_file(chapter["relative_path"], chapter["input_files"][0], destination)
+        return destination
+
+    def copy_image(self, comic, chapter, index, destination):
+        reader = self.access(comic)
+        record = chapter["input_files"][index]
+        relative = chapter["relative_path"] + "/" + record["name"]
+        if isinstance(reader, DirectoryInputs):
+            return copy_page(input_path(reader.root(), relative), destination)
+        reader.copy_file(relative, record, destination, maximum=MAX_PAGE_BYTES)
+        return image_record(destination)

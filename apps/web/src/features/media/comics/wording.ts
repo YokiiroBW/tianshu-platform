@@ -73,8 +73,10 @@ export const comicWords: Record<string, string> = {
   comic_image_origin_changed: "图片链接离开了已连接的下载服务。",
   comic_package_changed: "暂存成品已变化，未发布。",
   comic_storage_unavailable: "漫画目录无法写入，请检查空间、挂载和权限。",
-  comic_publisher_unavailable: "NAS 漫画写入服务暂不可用，已下载内容会保留并重试。",
-  comic_publisher_forbidden: "NAS 漫画写入服务的进程身份不匹配，请检查部署配置。",
+  comic_publisher_unavailable:
+    "NAS 漫画写入服务暂不可用，已下载内容会保留并重试。",
+  comic_publisher_forbidden:
+    "NAS 漫画写入服务的进程身份不匹配，请检查部署配置。",
   comic_publisher_target_missing: "NAS 漫画写入服务尚未登记此归档目录。",
   comic_publisher_conflict: "同一归档编号的文件信息不一致，原文件保持不变。",
   comic_publisher_invalid_response: "NAS 漫画写入服务返回的数据不完整。",
@@ -82,6 +84,10 @@ export const comicWords: Record<string, string> = {
   comic_publisher_offset_conflict: "NAS 漫画传输进度不一致，请重试原任务。",
   comic_publisher_chunk_mismatch: "NAS 漫画传输校验不一致，请重试原任务。",
   comic_publisher_incomplete: "漫画文件尚未全部传送到 NAS。",
+  comic_input_service_unavailable: "NAS 原图读取服务暂不可用，缓存已保留。",
+  comic_input_service_forbidden:
+    "NAS 原图读取服务的进程身份不匹配，请检查部署配置。",
+  comic_input_service_invalid_response: "NAS 原图读取服务返回的数据不完整。",
   comic_file_conflict: "目标位置已有不同内容，现有文件保持原样。",
   comic_preview_limit: "详情只预览前 3 页，完整阅读请打开 Komga。",
   comic_preview_after_import: "本地漫画包请先完成导入，再打开阅读。",

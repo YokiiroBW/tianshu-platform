@@ -69,9 +69,7 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         # Windows covers the real HTTP protocol and client. Only Linux tests below exercise SO_PEERCRED.
-        peer = patch(
-            "services.platform.media.comics.publisher_service.peer_uid", return_value=10001
-        )
+        peer = patch("services.platform.media.comics.unix_service.peer_uid", return_value=10001)
         self.peer = peer.start()
         self.addCleanup(peer.stop)
         self.server = TestServer(application(self.store, 10001))
@@ -214,9 +212,7 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
                 {"live": True},
             )
 
-        await call(
-            "settings/save", {**site.settings(inputs), "publisher_socket": self.socket_path}
-        )
+        await call("settings/save", {**site.settings(inputs), "publisher_socket": self.socket_path})
         saved = media.comics.settings.public()
         await call(
             "settings/save", {"expected_revision": saved["revision"], "interval_seconds": 7200}

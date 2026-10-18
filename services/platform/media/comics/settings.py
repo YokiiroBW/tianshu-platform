@@ -35,6 +35,7 @@ class Settings:
             "interval_seconds": value["interval_seconds"],
             "import_directory": value["import_directory"],
             "publisher_socket": value.get("publisher_socket", ""),
+            "import_socket": value.get("import_socket", ""),
             "connections": {
                 name: {
                     "url": row.get("url", ""),
@@ -71,15 +72,18 @@ class Settings:
             "comic_directory_absolute",
             400,
         )
-        publisher_socket = body.get("publisher_socket", old.get("publisher_socket", ""))
-        require(
-            isinstance(publisher_socket, str)
-            and len(publisher_socket) <= 4096
-            and (not publisher_socket or Path(publisher_socket).is_absolute())
-            and not any(ord(c) < 32 for c in publisher_socket),
-            "invalid_input",
-            400,
-        )
+        sockets = {}
+        for name in ("publisher_socket", "import_socket"):
+            value = body.get(name, old.get(name, ""))
+            require(
+                isinstance(value, str)
+                and len(value) <= 4096
+                and (not value or Path(value).is_absolute())
+                and not any(ord(c) < 32 for c in value),
+                "invalid_input",
+                400,
+            )
+            sockets[name] = value
         incoming = body.get("connections", {})
         require(
             isinstance(incoming, dict) and set(incoming) <= set(CONNECTIONS), "invalid_input", 400
@@ -156,7 +160,7 @@ class Settings:
         current = {
             "interval_seconds": interval,
             "import_directory": directory,
-            "publisher_socket": publisher_socket,
+            **sockets,
             "connections": connections,
             "targets": checked,
         }

@@ -74,6 +74,7 @@ export type Target = {
 };
 export type Settings = {
   publisher_socket?: string;
+  import_socket?: string;
   revision: number;
   import_directory: string;
   interval_seconds: number;

@@ -36,7 +36,13 @@ AssetLibrary只读纳管协议是TS198候选 `/assetlink/v1/service-imports/{key
 
 专用进程只处理已生成CBZ的传输和不可变发布，不承担订阅、搜索或资产索引。稳定意图键绑定目标/路径/长度/SHA；4MiB分块校验并fsync后记录进度。进程中断后截去未确认尾部，从确认偏移续传；同键不同意图拒绝。完整SHA通过后复用现有volume lock和原子create-if-absent，删除暂存硬链接、同步目录，再给完成回执。已存在的不同字节永不覆盖；发布后回执丢失会核对同一文件并恢复，AS观察前最终文件只剩一个硬链接。AS仍从原Documents只读挂载读取，不跨挂载别名。
 
-此角色的Windows协议与实际平台工作队列测试已通过；跨UID、只读socket卷、Btrfs及AS原生lease仍需NAS隔离实测。未把该进程接入生产Compose。
+此角色的Windows协议与实际平台工作队列测试已通过。19b472f源码在NAS隔离环境20项全过；实际10001客户端通过只读socket卷向1654写入9MiB三页CBZ，并真实终止link后的进程，nlink2恢复到同inode/nlink1；1654进程在Btrfs整体只读挂载、CapEff0下成功获取读lease，10001读者被拒。此为内核条件验证，尚未接入正式AS索引或生产Compose。
+
+### 旧图片目录只读输入
+
+实机Synology ACL仅允许原NAS用户1026等既有身份，平台10001无法直接读取旧漫画。输入角色使用相同镜像的 `python -m services.platform.media.comics.source_service --settings /etc/comics-inputs.json`，以1026:10001运行，只挂Cartoon只读和独立socket卷；无生产数据库、外部连接凭据或可写漫画目录。配置只含 `directory`、`socket`、`client_uid`，平台设置 `import_socket` 后复用原浏览/章节发现/自然排序/输入变更检查，通过Unix socket流式读取原图或旧CBZ到既有私有缓存。逐页断点、校验、封装与归档仍归原工作队列，不建立第二套下载/订阅系统。两类文件服务共用Linux peer UID与socket生命周期实现，安装不依赖新增DSM账号或递归修改旧文件ACL。
+
+AS侧保留现有Documents库和真实原生根。其目录链需要read/search与inotify，不能仅授x权限。AS Root已在隔离Synology ACL克隆证明：仅对Documents、Cartoon、漫画、本子这四个祖先目录增1654本目录只读ACE、不继承，可允许目录句柄及watch而保持旧子树拒绝。此操作与新输出根权限、真实native root登记由AS部署单写者在联验后处理；生产ACL尚未变更。Documents现有库尚无native root binding或initial snapshot，不能仅配置target就宣称归档ready。
 
 Suwayomi实机为2.3.2243、Komga为1.24.4-master；未升级。Suwayomi代理指向已失效的旧mihomo地址，代理方案待用户确认。Komga浏览器已登录，新增专用API key的操作确认待回复。
 

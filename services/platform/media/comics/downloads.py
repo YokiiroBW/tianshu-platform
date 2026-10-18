@@ -8,9 +8,7 @@ from ..destination import safe_path
 from .archive import Archive
 from .packages import (
     MAX_CHAPTER_BYTES,
-    copy_page,
     extract_images,
-    folder_pages,
     image_record,
     package_cbz,
 )
@@ -25,6 +23,7 @@ RETRYABLE = {
     "comic_archive_unavailable",
     "comic_archive_pending",
     "comic_publisher_unavailable",
+    "comic_input_service_unavailable",
     "comic_komga_unavailable",
     "comic_reader_index_pending",
     "busy",
@@ -305,16 +304,19 @@ class Downloads:
             )
             fingerprint = digest(inputs)
         else:
-            source_path = await self.media.local(self.comics.imports.recheck, comic, chapter)
+            await self.media.local(self.comics.imports.recheck, comic, chapter)
             if chapter["input_kind"] == "archive":
                 await update(stage="comic_pages", code="comic_unpacking")
+                source_path = await self.media.local(
+                    self.comics.imports.archive_path, comic, chapter, directory
+                )
                 pages = await self.media.local(extract_images, source_path, directory)
                 await self.media.local(self.comics.imports.recheck, comic, chapter)
                 await update(
                     comic_pages_done=len(pages), comic_pages_total=len(pages), progress=0.8
                 )
                 return pages
-            inputs = await self.media.local(folder_pages, source_path)
+            inputs = chapter["input_files"]
             fingerprint = chapter["input_digest"]
         if job.get("comic_input_fingerprint") != fingerprint:
             cache = []
@@ -345,7 +347,9 @@ class Downloads:
                     await self.comics.engine.download_page(source, path)
                     record = await self.media.local(image_record, path)
                 else:
-                    record = await self.media.local(copy_page, source, path)
+                    record = await self.media.local(
+                        self.comics.imports.copy_image, comic, chapter, index, path
+                    )
                 entry = {
                     "relative": path.relative_to(self.comics.data_root).as_posix(),
                     "record": record,

@@ -168,14 +168,20 @@ export function ComicSettings({
         </div>
         {probe && (
           <ul>
-            {names.map(([key, label]) => (
-              <li key={key}>
-                {label}：
-                {probe[key]?.state === "ready"
-                  ? "连接成功"
-                  : word(probe[key]?.code ?? "unavailable")}
-              </li>
-            ))}
+            {[
+              ...names,
+              ["publisher", "NAS 成品写入"],
+              ["inputs", "NAS 原图读取"],
+            ]
+              .filter(([key]) => !!probe[key])
+              .map(([key, label]) => (
+                <li key={key}>
+                  {label}：
+                  {probe[key]?.state === "ready"
+                    ? "连接成功"
+                    : word(probe[key]?.code ?? "unavailable")}
+                </li>
+              ))}
           </ul>
         )}
       </div>
@@ -190,7 +196,9 @@ export function ComicSettings({
           />
         </label>
         <p className="muted">
-          填写天枢容器内已挂载的漫画目录；导入时只读取原文件。
+          {settings.import_socket
+            ? "已连接 NAS 只读输入服务，导入时原文件保持原样。"
+            : "填写天枢容器内已挂载的漫画目录；导入时只读取原文件。"}
         </p>
         <label>
           默认追更周期
