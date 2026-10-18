@@ -106,6 +106,7 @@ export function useBookReading(
       const available = view.choices.flatMap((c) =>
         c.actors.map((actor) => `${c.id}|${actor}`),
       );
+      if (!available.includes(preference.binding)) preference.sharing = false;
       data.binding = available.includes(preference.binding)
         ? preference.binding
         : first

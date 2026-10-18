@@ -81,7 +81,7 @@ export function BookReader({
             >
               {ready.map((r, i) => (
                 <option key={r.id} value={r.id}>
-                  版本 {i + 1} · {r.profile_id.slice(0, 8)}
+                  已保存音频 · 版本 {i + 1}
                 </option>
               ))}
             </select>
