@@ -261,3 +261,123 @@ test("book subscription in existing shell searches, previews, subscribes, publis
   ).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test("automatic source selection repairs a stale unavailable source and preserves old chapter requests", async ({
+  page,
+  request,
+}, info) => {
+  const fixture = JSON.parse(
+    readFileSync(resolve(".runtime/book-browser-input.json"), "utf8"),
+  );
+  const switching = await (
+    await request.get(fixture.site_url + "/__fixture/switching")
+  ).json();
+  await page.goto("/#/subscriptions/8");
+  await page.getByLabel("管理员账号").fill("synthetic-admin");
+  await page
+    .getByLabel("密码", { exact: true })
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByRole("button", { name: "整理设置", exact: true }).click();
+  await page.getByLabel("书籍存档目录").fill(fixture.directory);
+  await page.getByRole("button", { name: "保存整理设置" }).click();
+  await page.getByRole("button", { name: "书源管理", exact: true }).click();
+  await page.getByRole("button", { name: "导入书源", exact: true }).click();
+  await page.getByLabel("规则 JSON").fill(JSON.stringify(switching.sources));
+  await page.getByRole("button", { name: "导入规则", exact: true }).click();
+  await expect(
+    page.getByText("导入或更新 2 项，0 项格式不符合要求。"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "关闭导入阅读书源" }).click();
+  await page
+    .getByRole("button", { name: "聚合搜索", exact: true })
+    .first()
+    .click();
+  await page.getByLabel("书名、作者或 ISBN", { exact: true }).fill("换源验证");
+  await page
+    .locator("form.book-search-form")
+    .getByRole("button", { name: "聚合搜索" })
+    .click();
+  const card = page
+    .locator(".book-card")
+    .filter({
+      has: page.getByRole("heading", { name: "换源验证", exact: true }),
+    });
+  await card.getByRole("button", { name: "预览与资料" }).click();
+  const drawer = page.getByRole("dialog");
+  await drawer.getByLabel("预览来源").selectOption({ label: "自动优选·主源" });
+  await expect(drawer.locator(".book-prose")).toContainText("合成正文");
+  await drawer.getByRole("button", { name: "订阅并下载" }).click();
+  const subscription = page
+    .locator(".book-subscription")
+    .filter({
+      has: page.getByRole("heading", { name: "换源验证", exact: true }),
+    });
+  await expect
+    .poll(
+      async () => {
+        await page
+          .getByRole("button", { name: "读取状态", exact: true })
+          .click();
+        return subscription.innerText();
+      },
+      { timeout: 30000 },
+    )
+    .toContain("5 / 5");
+  const before = await (
+    await request.get(fixture.site_url + "/__fixture/switching")
+  ).json();
+  await request.post(fixture.site_url + "/__fixture/switching", {
+    data: { new_count: 8, primary_failed: true },
+  });
+  await subscription
+    .getByRole("button", { name: "立即检查", exact: true })
+    .click();
+  await expect
+    .poll(
+      async () => {
+        await page
+          .getByRole("button", { name: "读取状态", exact: true })
+          .click();
+        return subscription.innerText();
+      },
+      { timeout: 30000 },
+    )
+    .toContain("8 / 8");
+  await expect(subscription).toContainText("已从其他来源补齐 3 章");
+  await subscription.locator("summary").click();
+  await expect(subscription).toContainText("自动优选·快源");
+  await expect(subscription).toContainText("来源暂不可用");
+  const after = await (
+    await request.get(fixture.site_url + "/__fixture/switching")
+  ).json();
+  const oldHits = (value: Record<string, number>) =>
+    Object.fromEntries(
+      Object.entries(value).filter(([path]) => /\/chapter\/[1-5]$/.test(path)),
+    );
+  expect(oldHits(after.hits)).toEqual(oldHits(before.hits));
+  await page.screenshot({
+    path: info.outputPath("source-selection-desktop.png"),
+    fullPage: true,
+  });
+  await subscription.getByRole("button", { name: "查看正文" }).click();
+  await drawer
+    .getByRole("button", { name: "第8章 切源8号信", exact: true })
+    .click();
+  await expect(drawer).toContainText("本章来自 自动优选·快源");
+  await page.screenshot({
+    path: info.outputPath("source-selection-reader.png"),
+    fullPage: true,
+  });
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: info.outputPath("source-selection-mobile.png"),
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+});

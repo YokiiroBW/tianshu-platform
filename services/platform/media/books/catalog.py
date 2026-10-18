@@ -10,6 +10,7 @@ from ...contracts import digest, require
 from .documents import clean_text, plain_text, title_key
 from .engine import capabilities
 from .organization import book_category
+from .matching import author_key
 
 METADATA_FIELDS = frozenset(
     {
@@ -75,12 +76,37 @@ def public_book(book):
             "group_key",
             "has_cover",
             "readability",
+            "source_selection",
         )
     }
     result["metadata"] = {
         **book["metadata"],
         "category": book_category(book["metadata"], book.get("source_name", "")),
     }
+    if book.get("source_selection"):
+        selection = book["source_selection"]
+        result["source_selection"] = {
+            key: selection.get(key)
+            for key in (
+                "mode",
+                "checked_at",
+                "code",
+                "preferred_book_id",
+                "preferred_source_name",
+                "added_chapters",
+                "unmatched_chapters",
+                "chapters_by_source",
+                "repaired_chapters",
+            )
+        }
+        result["source_selection"]["candidates"] = [
+            {
+                key: row.get(key)
+                for key in ("book_id", "source_name", "code", "readable", "latest_number")
+            }
+            for row in selection.get("candidates", [])
+        ]
+        result["source_selection"]["last_repair"] = selection.get("last_repair")
     return result
 
 
@@ -305,6 +331,33 @@ class Catalog:
         identity = identity or digest({"source": source["source_id"], "url": url})[:24]
         with self.repo.transaction() as db:
             previous = self.repo._document(db, "book", identity)
+            source_identity = {
+                "title": plain_text(item["name"]).strip(),
+                "author": plain_text(item.get("author", "")).strip(),
+            }
+            established = (previous or {}).get("source_identity")
+            if (
+                not established
+                and previous
+                and not set(previous.get("manual_fields", [])) & {"title", "author"}
+            ):
+                established = previous["metadata"]
+            if established:
+                require(
+                    title_key(established["title"]) == title_key(source_identity["title"]),
+                    "book_identity_mismatch",
+                    409,
+                )
+                require(
+                    not (
+                        author_key(established.get("author"))
+                        and author_key(source_identity.get("author"))
+                    )
+                    or author_key(established.get("author"))
+                    == author_key(source_identity.get("author")),
+                    "book_identity_mismatch",
+                    409,
+                )
             metadata = {
                 "title": plain_text(item["name"])[:512],
                 "author": plain_text(item.get("author", ""))[:512],
@@ -335,6 +388,9 @@ class Catalog:
                 "source_id": source["source_id"],
                 "source_name": source["name"],
                 "source_type": "remote",
+                "source_identity": source_identity
+                if source_identity["author"]
+                else established or source_identity,
                 "source_url": url,
                 "toc_url": item.get("tocUrl", previous.get("toc_url", "") if previous else ""),
                 "variables": item.get("variables", {}),
@@ -390,6 +446,18 @@ class Catalog:
             current = self.book(book["book_id"], db)
             require(current["source_id"] == book["source_id"], "version_conflict", 409)
             self.repo.put(
+                "book_source_directory",
+                book["book_id"],
+                {
+                    "book_id": book["book_id"],
+                    "chapters": directory,
+                    "checked_at": self.repo.clock(),
+                },
+                db=db,
+            )
+            if (current.get("source_selection") or {}).get("mode") == "automatic":
+                return current, directory
+            self.repo.put(
                 "book_directory",
                 book["book_id"],
                 {
@@ -411,6 +479,79 @@ class Catalog:
                 db=db,
             )
         return current, directory
+
+    def source_directory(self, identity):
+        row = self.repo.get("book_source_directory", identity)
+        return row["chapters"] if row else self.directory(identity)
+
+    def select_directory(self, identity, expected, chapters, selection):
+        with self.repo.transaction() as db:
+            book = self.book(identity, db)
+            require(
+                [c["chapter_id"] for c in self.directory(identity, db)] == expected, "busy", 409
+            )
+            self.repo.put(
+                "book_directory",
+                identity,
+                {"book_id": identity, "chapters": chapters, "checked_at": self.repo.clock()},
+                db=db,
+            )
+            previous = book.get("source_selection") or {}
+            selection = {
+                **selection,
+                "chapters_by_source": previous.get("chapters_by_source", []),
+                "repaired_chapters": previous.get("repaired_chapters", 0),
+                "last_repair": previous.get("last_repair"),
+            }
+            return self.repo.put(
+                "book",
+                identity,
+                {
+                    **book,
+                    "source_selection": selection,
+                    "chapter_count": len(chapters),
+                    "latest_chapter": chapters[-1]["title"],
+                    "updated_at": self.repo.clock(),
+                },
+                db=db,
+            )
+
+    def logical_book(self, identity, db):
+        book = self.book(identity, db)
+        alias = self.repo._document(db, "book_source_alias", identity)
+        if alias:
+            canonical = self.repo._document(db, "book", alias["book_id"])
+            if canonical and canonical.get("source_selection"):
+                from .matching import same_work
+
+                if same_work(book, canonical):
+                    return canonical
+        return book
+
+    def record_repair(self, identity, chapter, origin, failure):
+        with self.repo.transaction() as db:
+            book = self.book(identity, db)
+            selection = dict(book.get("source_selection") or {})
+            if selection.get("preferred_book_id") == failure["book_id"]:
+                selection.update(
+                    preferred_book_id=origin["book_id"],
+                    preferred_source_name=origin["source_name"],
+                    code="book_source_switched",
+                )
+            selection["last_repair"] = {
+                "chapter_title": chapter["title"],
+                "from_source": failure["source_name"],
+                "source_name": origin["source_name"],
+                "code": failure["code"],
+                "at": self.repo.clock(),
+            }
+            selection["candidates"] = [
+                {**row, "readable": False, "code": failure["code"]}
+                if row["book_id"] == failure["book_id"]
+                else row
+                for row in selection.get("candidates", [])
+            ]
+            self.repo.put("book", identity, {**book, "source_selection": selection}, db=db)
 
     def directory(self, identity, db=None):
         row = (
@@ -545,7 +686,7 @@ class Catalog:
         )
 
     def subscribe(self, body, db):
-        book = self.book(body["book_id"], db)
+        book = self.logical_book(body["book_id"], db)
         previous = self.repo._document(db, "book_subscription", book["book_id"])
         interval = body.get("interval_seconds", self.settings(db)["interval_seconds"])
         require(type(interval) is int and 3600 <= interval <= 2592000, "invalid_input", 400)

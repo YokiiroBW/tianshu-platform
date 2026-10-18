@@ -1,6 +1,7 @@
 import { BookOpen, Download } from "lucide-react";
 import type { Book } from "./types";
 import { bookFileUrl, bookReadability } from "./presentation";
+import { BookSourceStatus } from "./BookSourceStatus";
 
 export function BookCover({ book }: { book: Book }) {
   return (
@@ -79,6 +80,7 @@ export function BookCard({
           )}
         </div>
         <p className="book-fineprint muted">{bookReadability(book)}</p>
+        <BookSourceStatus book={book} />
         <div className="book-card-actions">
           <button className="button" onClick={() => onPreview(book)}>
             <BookOpen aria-hidden="true" />

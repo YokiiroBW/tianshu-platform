@@ -27,6 +27,59 @@ class BookSite:
         self.warehouse_version = 1
         self.warehouse_failure = False
         self.warehouse_page_failure = False
+        self.switch_counts = {"a": 5, "b": 5}
+        self.switch_primary_failed = False
+
+    def switching_source(self, side):
+        prefix = self.url + "/switch/" + side
+        return {
+            **self.source(),
+            "bookSourceName": "自动优选·主源" if side == "a" else "自动优选·快源",
+            "bookSourceUrl": prefix,
+            "bookSourceGroup": "换源测试",
+            "searchUrl": prefix + "/search?key={{key}}",
+        }
+
+    def switching(self, request):
+        parts = request.path.split("/")
+        side = parts[2]
+        prefix = "/switch/" + side
+        tail = "/".join(parts[3:])
+        if tail == "search":
+            return web.json_response(
+                {"books": [{"name": "换源验证", "author": "合成作者", "url": prefix + "/book/1"}]}
+            )
+        if tail == "book/1":
+            if side == "a" and self.switch_primary_failed:
+                raise web.HTTPServiceUnavailable()
+            return web.json_response(
+                {"name": "换源验证", "author": "合成作者", "toc": prefix + "/toc"}
+            )
+        if tail == "toc":
+            return web.json_response(
+                {
+                    "chapters": [
+                        {
+                            "name": f"第{number}章 切源{number}号信",
+                            "url": prefix + f"/chapter/{number}",
+                        }
+                        for number in range(1, self.switch_counts[side] + 1)
+                    ]
+                }
+            )
+        if tail.startswith("chapter/"):
+            number = int(parts[-1])
+            if side == "a" and self.switch_primary_failed:
+                raise web.HTTPServiceUnavailable()
+            return web.json_response(
+                {
+                    "content": "\n\n".join(
+                        f"第{number}章的旅人写下第{line}封信，沿山路寻找灯塔。这是自动优选书源的合成正文。"
+                        for line in range(12)
+                    )
+                }
+            )
+        raise web.HTTPNotFound()
 
     def source(self):
         return {
@@ -59,6 +112,23 @@ class BookSite:
     async def handle(self, request):
         self.hits[request.path] += 1
         self.received_headers[request.path] = dict(request.headers)
+        if request.path == "/__fixture/switching":
+            if request.method == "POST":
+                body = await request.json()
+                self.switch_counts["b"] = body.get("new_count", self.switch_counts["b"])
+                self.switch_primary_failed = body.get("primary_failed", self.switch_primary_failed)
+            return web.json_response(
+                {
+                    "sources": [self.switching_source(side) for side in ("a", "b")],
+                    "hits": {
+                        path: count
+                        for path, count in self.hits.items()
+                        if path.startswith("/switch/")
+                    },
+                }
+            )
+        if request.path.startswith("/switch/"):
+            return self.switching(request)
         if request.path == "/login":
             return web.Response(text='<form>请登录<input type="password"></form>')
         if request.path == "/__fixture/notices" and request.method == "POST":

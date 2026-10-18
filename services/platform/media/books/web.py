@@ -198,7 +198,7 @@ class WebBooks:
             def enqueue(db):
                 if operation == "subscriptions/save":
                     return books.catalog.subscribe(body, db)
-                book = books.catalog.book(body["book_id"], db)
+                book = books.catalog.logical_book(body["book_id"], db)
                 job = books.catalog.enqueue(book, db=db, refresh=operation == "downloads/create")
                 return {"job_id": job["job_id"]}
 

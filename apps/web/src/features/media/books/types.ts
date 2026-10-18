@@ -25,6 +25,30 @@ export type BookArtifact = {
 };
 
 export type Book = {
+  source_selection?: {
+    mode: string;
+    checked_at: number;
+    code: string;
+    preferred_book_id: string;
+    preferred_source_name: string;
+    repaired_chapters: number;
+    added_chapters: number;
+    unmatched_chapters: number;
+    chapters_by_source: { source_name: string; chapters: number }[];
+    last_repair?: {
+      chapter_title: string;
+      from_source: string;
+      source_name: string;
+      code: string;
+    } | null;
+    candidates: {
+      book_id: string;
+      source_name: string;
+      code: string;
+      readable: boolean;
+      latest_number?: number;
+    }[];
+  } | null;
   readability?: {
     state: "previewed" | "sampled" | "complete" | "failed";
     checked_at: number;
@@ -171,7 +195,11 @@ export type BookDetail = {
 };
 export type ChapterPreview = {
   readability?: Book["readability"];
-  chapter: BookChapter & { content: string; content_hash: string };
+  chapter: BookChapter & {
+    content: string;
+    content_hash: string;
+    origin?: { source_name: string; source_id: string; book_id: string } | null;
+  };
   cached: boolean;
 };
 export type MetadataCandidate = {

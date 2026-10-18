@@ -1,4 +1,14 @@
 export const bookWords: Record<string, string> = {
+  book_source_selected: "已按正文可读性和章节更新进度选择来源。",
+  book_source_switched: "原来源读取失败，已自动切换到通过同书核对的备用来源。",
+  book_source_single: "暂无可以核对的备用来源，继续使用当前书源。",
+  book_source_matching_unavailable:
+    "作者或章节结构不足以可靠匹配，沿用当前来源，不自动跨源拼接。",
+  book_source_ahead: "发现可对应的新章节，已加入补章队列。",
+  book_identity_mismatch: "书名、作者或正文对照不一致，未用于自动补章。",
+  book_identity_unverified: "同书证据不足，暂不自动合并此来源。",
+  book_chapter_mapping_ambiguous:
+    "章节编号、标题或分段存在冲突，保留原有顺序并跳过不明确的拼接。",
   book_checking: "检查正文可读性",
   book_checking_content:
     "正在抽查开头、中间和最新章节；通过后自动下载，无需人工确认。",

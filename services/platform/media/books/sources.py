@@ -66,6 +66,14 @@ class Sources:
                     db=db,
                 )
 
+    async def find(self, source, query, page=1):
+        result = await self.call(source["source_id"], "search", query=query, page=page)
+        books = []
+        for item in result:
+            if isinstance(item, dict) and item.get("name") and item.get("bookUrl"):
+                books.append(await self.media.local(self.books.catalog.register, source, item))
+        return books, len(result)
+
     async def start_search(self, body, session):
         query = body.get("query", "")
         require(isinstance(query, str) and 0 < len(query.strip()) <= 200, "invalid_input", 400)
@@ -127,17 +135,14 @@ class Sources:
 
         async def collect(source):
             try:
-                result = await self.call(source["source_id"], "search", query=query, page=page)
-                for item in result:
-                    if isinstance(item, dict) and item.get("name") and item.get("bookUrl"):
-                        book = await self.media.local(self.books.catalog.register, source, item)
-                        search["books"].append(public_book(book))
+                found, count = await self.find(source, query, page)
+                search["books"].extend(public_book(book) for book in found)
                 search["sources"].append(
                     {
                         "source_id": source["source_id"],
                         "name": source["name"],
                         "code": "ready",
-                        "count": len(result),
+                        "count": count,
                     }
                 )
             except Fault as error:

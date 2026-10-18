@@ -11,6 +11,7 @@ import type {
 } from "./types";
 import { BookMetadataEditor } from "./BookMetadataEditor";
 import { bookFileUrl, bookReadability } from "./presentation";
+import { BookSourceStatus } from "./BookSourceStatus";
 
 export function BookDetail({
   book,
@@ -61,6 +62,7 @@ export function BookDetail({
           {current.chapter_count ? ` · ${current.chapter_count} 章` : ""}
         </p>
         <p className="book-fineprint muted">{bookReadability(current)}</p>
+        <BookSourceStatus book={current} />
         {error && (
           <p className="media-message media-warning" role="alert">
             {error}
@@ -141,6 +143,9 @@ export function BookDetail({
                   <h3>{preview.chapter.title}</h3>
                   <div>{preview.chapter.content}</div>
                   <p className="book-fineprint muted">
+                    {preview.chapter.origin?.source_name
+                      ? `本章来自 ${preview.chapter.origin.source_name} · `
+                      : ""}
                     {preview.cached
                       ? "使用已经保存的正文"
                       : "已从来源取得并保存正文"}

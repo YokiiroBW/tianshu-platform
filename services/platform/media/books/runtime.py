@@ -18,6 +18,7 @@ from .metadata import Metadata
 from .network import Network, origin
 from .readability import Readability, check_content
 from .sources import Sources
+from .selection import SourceSelection
 from .warehouse import Warehouse
 
 
@@ -31,6 +32,7 @@ class Books:
         self.warehouse = Warehouse(self)
         self.metadata = Metadata(self)
         self.readability = Readability(self)
+        self.selection = SourceSelection(self)
         self.data_root = Path(self.repo.database).with_suffix(".book-content")
         from .downloads import Downloads
 
@@ -64,7 +66,13 @@ class Books:
 
     async def detail(self, identity, *, refresh=False):
         book = await self.media.local(self.catalog.book, identity)
-        directory = await self.media.local(self.catalog.directory, identity)
+        if (book.get("source_selection") or {}).get("mode") == "automatic":
+            return await self.selection.prepare(identity, refresh=refresh)
+        return await self.source_detail(identity, refresh=refresh)
+
+    async def source_detail(self, identity, *, refresh=False):
+        book = await self.media.local(self.catalog.book, identity)
+        directory = await self.media.local(self.catalog.source_directory, identity)
         if book["source_type"] == "remote" and (refresh or not directory):
             result = await self.sources.call(
                 book["source_id"],
@@ -122,14 +130,50 @@ class Books:
             except Fault:
                 cached = None
         if cached and not refresh:
-            return {
-                "chapter": {
-                    key: cached.get(key)
-                    for key in ("chapter_id", "title", "content", "content_hash", "downloaded_at")
-                },
-                "cached": True,
-            }
+            return self.preview_result(cached, cached=True)
+        if "origins" in chapter:
+            return await self.selection.content(book, chapter, pinned=pinned, refresh=refresh)
+        return await self.source_preview(identity, chapter_id, pinned=pinned, refresh=refresh)
+
+    @staticmethod
+    def preview_result(chapter, *, cached):
+        return {
+            "chapter": {
+                key: chapter.get(key)
+                for key in (
+                    "chapter_id",
+                    "title",
+                    "content",
+                    "content_hash",
+                    "downloaded_at",
+                    "origin",
+                )
+            },
+            "cached": cached,
+        }
+
+    async def source_preview(self, identity, chapter_id, *, pinned=None, refresh=False):
+        book = await self.media.local(self.catalog.book, identity)
+        directory = await self.media.local(self.catalog.source_directory, identity)
+        chapter = next((row for row in directory if row["chapter_id"] == chapter_id), None)
+        require(chapter, "not_found", 404)
+        cached = await self.media.local(self.catalog.chapter, identity, chapter_id)
+        if cached:
+            try:
+                check_content(cached["content"])
+                if (cached.get("origin") or {}).get("source_id", book["source_id"]) != book[
+                    "source_id"
+                ]:
+                    cached = None
+            except Fault:
+                cached = None
+        if cached and not refresh:
+            return self.preview_result(cached, cached=True)
         require(book["source_type"] == "remote", "book_content_unavailable", 409)
+        current = await self.media.local(self.repo.get, "book_source", book["source_id"])
+        require(current and current["enabled"], "book_source_disabled", 409)
+        if isinstance(pinned, dict):
+            pinned = pinned.get(book["source_id"])
         next_url = (
             directory[chapter["order"] + 1]["url"] if chapter["order"] + 1 < len(directory) else ""
         )
@@ -146,13 +190,7 @@ class Books:
         saved = await self.media.local(
             self.catalog.save_chapter, identity, chapter, result.get("content", "")
         )
-        return {
-            "chapter": {
-                key: saved.get(key)
-                for key in ("chapter_id", "title", "content", "content_hash", "downloaded_at")
-            },
-            "cached": False,
-        }
+        return self.preview_result(saved, cached=False)
 
     async def scan(self, identity):
         subscription = await self.media.local(self.repo.get, "book_subscription", identity)
@@ -169,7 +207,7 @@ class Books:
 
         lease = asyncio.create_task(renew())
         try:
-            book, _ = await self.detail(identity, refresh=True)
+            book, _ = await self.selection.prepare(identity, refresh=True)
 
             def save():
                 with self.repo.transaction() as db:

@@ -2,6 +2,7 @@ import { Pause, Play, RefreshCw, BookOpen } from "lucide-react";
 import type { Book, BookSubscription } from "./types";
 import { timestamp } from "../wording";
 import { bookCode } from "./presentation";
+import { BookSourceStatus } from "./BookSourceStatus";
 
 export function BookSubscriptions({
   subscriptions,
@@ -136,8 +137,9 @@ export function BookSubscriptions({
                 停止订阅
               </button>
             </div>
+            <BookSourceStatus book={book} />
             <p className="muted book-fineprint">
-              停止或暂停订阅会保留已下载文件；当前下载可在下载中心单独取消。
+              自动优选可读、更新领先的同书来源；已有章节继续复用。暂停或停止订阅保留文件。
             </p>
           </article>
         );

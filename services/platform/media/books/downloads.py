@@ -53,19 +53,11 @@ class Downloads:
         try:
             book = await self.media.local(self.books.catalog.book, job["book_id"])
             if book["source_type"] == "remote":
-                book, directory = await self.books.detail(
+                book, directory = await self.books.selection.prepare(
                     book["book_id"], refresh=job.get("refresh_directory", True)
                 )
-                snapshot = job.get("book_rule_snapshot")
-                if snapshot is None:
-                    snapshot, _ = await self.media.local(
-                        self.books.catalog.source, book["source_id"]
-                    )
-                    await update(book_rule_snapshot=snapshot, refresh_directory=False)
-                rules = json.loads(
-                    self.media.accounts.unseal(snapshot["source_id"], snapshot["secret"])
-                )
-                pinned = snapshot, rules
+                pinned = await self.books.selection.rules(book, directory)
+                await update(book_rule_snapshot=None, refresh_directory=False)
             else:
                 directory = await self.media.local(self.books.catalog.directory, book["book_id"])
                 pinned = None
@@ -90,10 +82,6 @@ class Downloads:
                         missing.append(chapter)
                         continue
                     try:
-                        current = await self.media.local(
-                            self.repo.get, "book_source", book["source_id"]
-                        )
-                        require(current and current["enabled"], "book_source_disabled", 409)
                         await self.books.preview(
                             book["book_id"], chapter["chapter_id"], pinned=pinned, observe=False
                         )
@@ -164,6 +152,16 @@ class Downloads:
                             "artifact": artifact,
                             "downloaded": len(available),
                             "updated_at": self.repo.clock(),
+                            **(
+                                {
+                                    "source_selection": {
+                                        **current["source_selection"],
+                                        **self.books.selection.provenance(book, available),
+                                    }
+                                }
+                                if current.get("source_selection")
+                                else {}
+                            ),
                             "readability": current.get("readability")
                             if missing
                             else {
@@ -368,6 +366,20 @@ class Downloads:
                 ],
                 "content_digest": content_digest,
                 "sha256": fingerprint,
+                "chapter_sources": [
+                    {
+                        "chapter_id": chapter["chapter_id"],
+                        "title": chapter["title"],
+                        "source": chapter.get("origin")
+                        or {
+                            "book_id": book["book_id"],
+                            "source_id": book["source_id"],
+                            "source_name": book["source_name"],
+                            "chapter_ids": [chapter["chapter_id"]],
+                        },
+                    }
+                    for chapter in chapters
+                ],
             }
             (stage / "source.json").write_text(
                 json.dumps(source, ensure_ascii=False, indent=2), encoding="utf-8"

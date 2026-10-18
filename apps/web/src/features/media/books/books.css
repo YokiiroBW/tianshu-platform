@@ -713,3 +713,16 @@
     width: 100%;
   }
 }
+.book-source-status {
+  margin-block: 0.65rem;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.book-source-status summary {
+  cursor: pointer;
+}
+
+.book-source-status li {
+  margin-block: 0.4rem;
+}
