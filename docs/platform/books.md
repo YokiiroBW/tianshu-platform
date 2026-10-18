@@ -89,7 +89,7 @@
 
 ## 开发验证
 
-后端沿用 unittest，套件为 `tests/backend/test_books.py`、`test_book_warehouse.py` 和 `test_book_pagination.py`。网页联合套件使用真实 Platform 登录、HTTP、SQLite、规则子进程、后台 worker 和文件下载，只有上游书站/仓库/账号是合成输入；没有拦截媒体 API 伪造结果。
+后端沿用 unittest，套件为 `tests/backend/test_books.py`、`test_book_warehouse.py` 、`test_book_pagination.py` 和 `test_book_selection.py`。网页联合套件使用真实 Platform 登录、HTTP、SQLite、规则子进程、后台 worker 和文件下载，只有上游书站/仓库/账号是合成输入；没有拦截媒体 API 伪造结果。
 
 ```text
 python -m unittest discover -s tests/backend -p "test_book*.py" -v
