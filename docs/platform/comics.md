@@ -24,30 +24,30 @@
 
 ## 部署接点与当前状态
 
-NAS已只读核实：`/volume1/Documents/Cartoon`（用户共享 `\\YokiiroNAS\Documents\Cartoon`），原Komga库为漫画与本子，保留4704个既有CBZ及原阅读记录。拟新增输出 `漫画/天枢`、`本子/天枢`；Komga对应路径 `/Cartoon/漫画/天枢`、`/Cartoon/本子/天枢`。
+2026-10-19已部署：Platform运行50e3c0cf，漫画根为`/volume1/Documents/Cartoon`（用户共享 `\\YokiiroNAS\Documents\Cartoon`）。输出为`漫画/天枢`与`本子/天枢`；Komga对应路径`/Cartoon/漫画/天枢`、`/Cartoon/本子/天枢`。原9887文件、579目录、4704本Komga书及旧阅读记录保留核对通过。四个新样本共65页已完成真实归档与逐页读取；天枢正式网页交互仍等待用户重新登录，不能将后端验收称为网页已验收。
 
-AssetLibrary只读纳管协议是TS198候选 `/assetlink/v1/service-imports/{key}/observe`（GET原键和targets）；生产尚未接主Host/迁移/角色。真实客户端与隔离C#/PostgreSQL/NTFS/HTTPS联验已通过，不能称NAS已纳管。NAS Linux原生lease要求文件owner：Platform 10001与AS 1654不同，因此使用下面的专用文件写入进程，保留旧目录权限和原生lease要求。
+AssetLibrary preview23/schema63已通过正式主Host的`/assetlink/v1/service-imports/{key}/observe`纳管，支持GET原键和targets。comic-main/comic-adult均已真实登记；凭据复用天枢加密连接，HTTPS保留证书验证。NAS Linux原生lease要求文件owner：Platform 10001与AS 1654不同，因此使用下面的专用文件写入进程，保留旧目录权限和原生lease要求。
 
 ### NAS 专用写入进程
 
 同一 Platform 镜像使用独立入口 `python -m services.platform.media.comics.publisher_service --settings /etc/comics-writer.json`。部署配置只含 `targets`（comic-main/comic-adult 对应容器内两个输出根绝对路径）、`socket`（独立共享卷内路径）、`client_uid`（10001）。进程以1654:10001运行，仅两处新输出根可写，不挂旧Documents、平台数据库或服务凭据。平台仍以10001运行；原Cartoon由下述输入角色只读访问。共享socket卷在平台侧只读，socket权限0660，服务端用Linux SO_PEERCRED核对连接进程UID。没有网络监听或新访问令牌。
 
-平台漫画设置的 `publisher_socket` 指向该socket，缺省为空时沿用同进程本地发布（用于同UID部署及开发）。部署设置会随目标快照保存在任务中，网页保存其他设置不会清除它。连接探测同时返回写入进程状态。4b20657运行候选镜像为ca01f2fabf36，安装代码/合同/网页及既有音乐与基础设施运行组件已核验，尚未生产启用。
+平台漫画设置的 `publisher_socket` 指向该socket，缺省为空时沿用同进程本地发布（用于同UID部署及开发）。部署设置会随目标快照保存在任务中，网页保存其他设置不会清除它。连接探测同时返回写入进程状态。正式两个文件角色保持4b20657/ca01镜像；主平台50e3c0cf/c99ff807仅修正Suwayomi章节次序，文件角色无需重建。主平台两socket目录挂载只读，文件角色采用NAS支持的cpu_shares=256和512MiB内存限制。
 
 专用进程只处理已生成CBZ的传输和不可变发布，不承担订阅、搜索或资产索引。稳定意图键绑定目标/路径/长度/SHA；4MiB分块校验并fsync后记录进度。进程中断后截去未确认尾部，从确认偏移续传；同键不同意图拒绝。完整SHA通过后复用现有volume lock和原子create-if-absent，删除暂存硬链接、同步目录，再给完成回执。已存在的不同字节永不覆盖；发布后回执丢失会核对同一文件并恢复，AS观察前最终文件只剩一个硬链接。AS仍从原Documents只读挂载读取，不跨挂载别名。
 
-此角色的Windows协议与实际平台工作队列测试已通过。19b472f源码在NAS隔离环境20项全过；实际10001客户端通过只读socket卷向1654写入9MiB三页CBZ，并真实终止link后的进程，nlink2恢复到同inode/nlink1；1654进程在Btrfs整体只读挂载、CapEff0下成功获取读lease，10001读者被拒。此为内核条件验证，尚未接入正式AS索引或生产Compose。
+真实中断/断点/同inode恢复、Btrfs只读lease与正式AS/Komga验收依据见[交付记录](../handoffs/TS-197.md)。
 
 ### 旧图片目录只读输入
 
 实机Synology ACL仅允许原NAS用户1026等既有身份，平台10001无法直接读取旧漫画。输入角色使用相同镜像的 `python -m services.platform.media.comics.source_service --settings /etc/comics-inputs.json`，以1026:10001运行，只挂Cartoon只读和独立socket卷；无生产数据库、外部连接凭据或可写漫画目录。配置只含 `directory`、`socket`、`client_uid`，平台设置 `import_socket` 后复用原浏览/章节发现/自然排序/输入变更检查，通过Unix socket流式读取原图或旧CBZ到既有私有缓存。逐页断点、校验、封装与归档仍归原工作队列，不建立第二套下载/订阅系统。两类文件服务共用Linux peer UID与socket生命周期实现，安装不依赖新增DSM账号或递归修改旧文件ACL。
 
-AS侧保留现有Documents库和真实原生根。其目录链需要read/search与inotify，不能仅授x权限。AS Root已在隔离Synology ACL克隆证明：仅对Documents、Cartoon、漫画、本子这四个祖先目录增1654本目录只读ACE、不继承，可允许目录句柄及watch而保持旧子树拒绝。此操作与新输出根权限、真实native root登记由AS部署单写者在联验后处理；生产ACL尚未变更。Documents现有库尚无native root binding或initial snapshot，不能仅配置target就宣称归档ready。
+AS侧保留现有Documents库和真实原生根。其目录链需要read/search与inotify，不能仅授x权限。AS部署单写者已对Documents、Cartoon、漫画、本子四祖先各增加1654本目录只读ACE，不继承；仅两新天枢root具有自身继承写权限。原ACE与旧子树权限保留，真实native root和target均已登记。后续部署沿用现有配置，不重复添加ACL、不递归修改旧目录。
 
-Suwayomi实机为2.3.2243、Komga为1.24.4-master；未升级。按用户明确要求停用Suwayomi旧SOCKS开关，由路由器分流；两个真实普通源聚合和官方源目录/原图解码已通过。Komga专用密钥已获动作确认并保存到现有Accounts加密设置，两个原库API通过，旧密钥和其他媒体配置保持；完整归档/阅读仍待串行发布。
+Suwayomi实机为2.3.2243、Komga为1.24.4-master；未升级。按用户明确要求停用Suwayomi旧SOCKS开关，由路由器分流；两个真实普通源聚合通过，其中官方目录源返回2项，另一搜索源返回0项，不代表所有插件可用。Komga专用密钥已获动作确认并保存到现有Accounts加密设置，旧密钥和其他媒体配置保持。真实最新22页、原目录13张图片、普通样本私密目标6页已通过完整归档与阅读，原序章24页保留；重复请求不产生新任务或文件。
 
 ## 验证
 
 后端沿用unittest：`python -m unittest discover -s tests/backend -p test_comics.py -v`。浏览器沿用Playwright：设置已发布合同目录 `TS012_CONTRACT_DIR` 和工具解释器 `COMIC_TEST_PYTHON`，构建后运行 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.comics.config.ts`。夹具只使用合成图像和本地HTTP同行，真实平台认证、工作队列、CBZ文件和读取接口执行。
 
-跨产品真实协议验证入口在AS TS198交接 `platform-joint-2026-10-18.md`；生产发布必须在听书和AS当前升级释放窗口、对齐最终历史与线上快照后串行进行。
+跨产品隔离与正式证据见[交付记录](../handoffs/TS-197.md)。后续生产发布仍需协调共享窗口并读取当前恢复代次，保留听书、音乐、既有媒体设置和两个socket挂载。真实追更扫描已验证无新章时零新增，新增章只抓新增部分由受控回归验证；尚未观测到作者自然更新。
