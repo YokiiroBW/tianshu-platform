@@ -37,6 +37,12 @@ class Books:
         from .downloads import Downloads
 
         self.downloads = Downloads(self)
+        from .audio import BookAudio
+
+        self.audio = BookAudio(self)
+        from .reading import Reading
+
+        self.reading = Reading(self)
 
     async def view(self):
         sources = await self.media.local(self.repo.list, "book_source")
@@ -397,6 +403,8 @@ class Books:
 
     async def file(self, identity, kind):
         book = await self.media.local(self.catalog.book, identity)
+        if kind.startswith("audio-"):
+            return await self.audio.file(identity, kind[6:])
         if kind == "cover":
             path = await self.cover(book)
             require(path and path.is_file(), "not_found", 404)
@@ -418,6 +426,7 @@ class Books:
         )
 
     def start_background(self, background):
+        background.start("book_audio", self.audio.loop)
         background.start(
             "book_subscriptions", pump_scans, self.media, "book_subscription", "book_id", self.scan
         )

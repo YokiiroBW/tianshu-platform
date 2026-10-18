@@ -387,6 +387,9 @@ class Platform:
         from .media.runtime import Media
 
         self.media = Media(settings, clock=clock, local=self.local_work.run)
+        from .media.books.reading import ReadingAccess
+
+        self.book_reading = ReadingAccess(self)
         self.infrastructure = Infrastructure(settings, clock=clock, local=self.local_work.run)
 
     def close(self):

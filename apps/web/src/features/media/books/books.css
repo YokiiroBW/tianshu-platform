@@ -726,3 +726,108 @@
 .book-source-status li {
   margin-block: 0.4rem;
 }
+
+.book-audio-panel {
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+  padding: 14px;
+  margin: 16px 0;
+}
+.book-audio-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.book-audio-controls,
+.book-co-reading,
+.book-player .book-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin-top: 12px;
+}
+.book-audio-controls label,
+.book-player label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+}
+.book-audio-controls .book-checkbox,
+.book-player .book-checkbox {
+  flex-direction: row;
+  align-items: center;
+}
+.book-audio-estimate {
+  margin: 12px 0;
+}
+.book-audio-queue {
+  max-height: 220px;
+  overflow: auto;
+  padding-left: 18px;
+}
+.book-audio-queue li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0;
+}
+.book-reading-view {
+  min-width: 0;
+}
+.book-player {
+  padding: 18px;
+  border-bottom: 1px solid var(--color-line);
+}
+.book-player h3 {
+  margin: 0 0 12px;
+}
+.book-player audio {
+  width: 100%;
+  height: 44px;
+}
+.book-co-reading {
+  border-top: 1px solid var(--color-line);
+  padding-top: 12px;
+}
+.book-co-reading p {
+  flex-basis: 100%;
+  margin: 0;
+}
+.book-co-reading select {
+  max-width: 100%;
+}
+.book-synced-prose {
+  max-height: 50vh;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+.book-reading-paragraph {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+  padding: 8px 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  cursor: pointer;
+}
+.book-reading-paragraph.is-reading {
+  background: color-mix(in srgb, var(--color-accent, #d89066) 17%, transparent);
+}
+@media (max-width: 640px) {
+  .book-audio-controls > label {
+    flex: 1 1 140px;
+  }
+  .book-co-reading > label {
+    max-width: 100%;
+  }
+  .book-synced-prose {
+    max-height: 40vh;
+  }
+}

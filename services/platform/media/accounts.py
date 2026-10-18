@@ -45,6 +45,7 @@ class Accounts:
                 and not repository.list("music_account")
                 and not repository.list("music_navidrome")
                 and not repository.list("book_source")
+                and not any(row.get("secret") for row in repository.list("book_audio_config"))
                 and not any(row.get("opds_secret") for row in repository.list("book_settings"))
                 and not any(
                     c.get("secret")
@@ -75,6 +76,9 @@ class Accounts:
             for settings in repository.list("book_settings"):
                 if settings.get("opds_secret"):
                     self.unseal("book-opds", settings["opds_secret"])
+            for speech in repository.list("book_audio_config"):
+                if speech.get("secret"):
+                    self.unseal("book-audio:" + speech["provider"], speech["secret"])
             for settings in repository.list("comic_settings"):
                 for name, connection in settings.get("connections", {}).items():
                     if connection.get("secret"):

@@ -236,6 +236,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             qq_admin_call = request.path == QQ_ADMIN_CHECK
             retrieval_call = request.path == RETRIEVAL_PATH
             credential_call = request.path == SERVICE_CREDENTIALS
+            reading_call = request.path == "/internal/v1/books/reading"
             require(
                 request.method == "POST"
                 and (
@@ -247,11 +248,15 @@ def create_app(platform, probe=None, *, console=None, public=False):
                     or qq_admin_call
                     or credential_call
                     or retrieval_call
+                    or reading_call
                 ),
                 "not_found",
                 404,
             )
-            if retrieval_call:
+            if reading_call:
+                require(len(raw) <= 4096, "budget_exceeded", 413)
+                platform.book_reading.validate(body)
+            elif retrieval_call:
                 require(len(raw) <= 1048576, "budget_exceeded", 413)
             elif renewal:
                 require(len(raw) <= 4096, "budget_exceeded", 413)
@@ -492,6 +497,13 @@ def create_app(platform, probe=None, *, console=None, public=False):
             )
         )
 
+    async def book_reading(request):
+        return web.json_response(
+            await platform.local_work.run(
+                platform.book_reading.read, request.headers["Authorization"], request[BODY]
+            )
+        )
+
     async def observation_verify(request):
         return web.json_response(
             await platform.local_work.run(
@@ -696,6 +708,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             # Default closed; only an explicit deployment setting registers the native port.
             app.router.add_post(NATIVE_SNAPSHOT, native_snapshot)
         app.router.add_post("/internal/v1/source-access/read", source_access)
+        app.router.add_post("/internal/v1/books/reading", book_reading)
         app.router.add_post(QQ_ADMIN_CHECK, qq_admin_check)
         if platform.bot_observation.catalog is not None:
             app.router.add_post(OBSERVATION_VERIFY, observation_verify)
