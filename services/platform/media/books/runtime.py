@@ -16,6 +16,7 @@ from .catalog import Catalog, public_book, public_source
 from .engine import RuleEngine
 from .metadata import Metadata
 from .network import Network, origin
+from .readability import Readability, check_content
 from .sources import Sources
 from .warehouse import Warehouse
 
@@ -29,6 +30,7 @@ class Books:
         self.sources = Sources(self)
         self.warehouse = Warehouse(self)
         self.metadata = Metadata(self)
+        self.readability = Readability(self)
         self.data_root = Path(self.repo.database).with_suffix(".book-content")
         from .downloads import Downloads
 
@@ -91,12 +93,34 @@ class Books:
             book, directory = await self.media.local(self.catalog.save_directory, book, entries)
         return book, directory
 
-    async def preview(self, identity, chapter_id, *, pinned=None, refresh=False):
+    async def preview(self, identity, chapter_id, *, pinned=None, refresh=False, observe=True):
+        try:
+            result = await self._preview(identity, chapter_id, pinned=pinned, refresh=refresh)
+            if observe:
+                result["readability"] = await self.media.local(
+                    self.readability.record, identity, "previewed", chapter=result["chapter"]
+                )
+            return result
+        except Fault as error:
+            directory = await self.media.local(self.catalog.directory, identity)
+            chapter = next((item for item in directory if item["chapter_id"] == chapter_id), None)
+            if chapter:
+                await self.media.local(
+                    self.readability.record, identity, "failed", chapter=chapter, code=error.code
+                )
+            raise
+
+    async def _preview(self, identity, chapter_id, *, pinned=None, refresh=False):
         book = await self.media.local(self.catalog.book, identity)
         directory = await self.media.local(self.catalog.directory, identity)
         chapter = next((item for item in directory if item["chapter_id"] == chapter_id), None)
         require(chapter, "not_found", 404)
         cached = await self.media.local(self.catalog.chapter, identity, chapter_id)
+        if cached and book["source_type"] == "remote":
+            try:
+                check_content(cached["content"])
+            except Fault:
+                cached = None
         if cached and not refresh:
             return {
                 "chapter": {
@@ -118,6 +142,7 @@ class Books:
             next_url=next_url,
             book={"name": book["metadata"]["title"], "author": book["metadata"].get("author", "")},
         )
+        check_content(result.get("content", ""))
         saved = await self.media.local(
             self.catalog.save_chapter, identity, chapter, result.get("content", "")
         )

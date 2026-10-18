@@ -74,6 +74,7 @@ def public_book(book):
             "status",
             "group_key",
             "has_cover",
+            "readability",
         )
     }
     result["metadata"] = {

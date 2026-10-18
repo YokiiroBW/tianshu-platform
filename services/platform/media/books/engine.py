@@ -31,7 +31,7 @@ def capabilities(source):
 
 
 class RuleEngine:
-    def __init__(self, *, allowed_private_origins=(), timeout=30):
+    def __init__(self, *, allowed_private_origins=(), timeout=60):
         self.allowed_private_origins = tuple(allowed_private_origins)
         self.timeout = timeout
         self.semaphore = asyncio.Semaphore(4)

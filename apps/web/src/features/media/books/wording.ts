@@ -1,4 +1,11 @@
 export const bookWords: Record<string, string> = {
+  book_checking: "检查正文可读性",
+  book_checking_content:
+    "正在抽查开头、中间和最新章节；通过后自动下载，无需人工确认。",
+  book_content_purchase_required:
+    "章节要求订阅或付费，未将提示页保存为正文。可换用有访问权限的来源。",
+  book_content_verification_required:
+    "来源要求验证码或网页验证，当前自动读取无法完成。",
   book_chapters: "获取章节",
   book_epub: "整理 EPUB",
   book_published: "书籍已归档",

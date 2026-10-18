@@ -13,6 +13,7 @@
     "sequential pagination with current-page context, loop deduplication and chapter boundaries",
     "source request headers inherited by pagination and ajax with origin-scoped credentials",
     "null script results stay empty and empty content pages fail explicitly",
+    "each content page rejects explicit short login, purchase and verification notices",
     "unused upstream debug runner omitted"
   ]
 }

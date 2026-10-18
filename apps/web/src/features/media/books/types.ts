@@ -25,6 +25,13 @@ export type BookArtifact = {
 };
 
 export type Book = {
+  readability?: {
+    state: "previewed" | "sampled" | "complete" | "failed";
+    checked_at: number;
+    sample_count: number;
+    chapter_title?: string;
+    code?: string;
+  } | null;
   has_cover?: boolean;
   book_id: string;
   metadata: BookMetadata;
@@ -163,6 +170,7 @@ export type BookDetail = {
   total: number;
 };
 export type ChapterPreview = {
+  readability?: Book["readability"];
   chapter: BookChapter & { content: string; content_hash: string };
   cached: boolean;
 };

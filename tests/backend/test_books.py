@@ -166,7 +166,11 @@ class BookTests(unittest.IsolatedAsyncioTestCase):
         first = await self.run_job()
         self.assertEqual(first["state"], "retry_wait")
         self.assertEqual(first["code"], "book_source_rate_limited")
-        self.assertEqual(self.books.catalog.book(identity)["downloaded"], 1)
+        self.assertIsNotNone(
+            self.books.catalog.chapter(
+                identity, self.books.catalog.directory(identity)[0]["chapter_id"]
+            )
+        )
         self.assertIsNone(self.repo.claim("too-early", kinds=("book",)))
         self.site.rate_limited.clear()
         now = self.repo.clock() + first["retry_delay"] + 1
@@ -196,6 +200,84 @@ class BookTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.repo.claim("exhausted", kinds=("book",)))
         self.assertEqual(self.site.hits["/chapter/1"], 1)
         self.assertEqual(self.site.hits["/chapter/2"], 4)
+
+    async def test_successful_search_does_not_claim_body_readable_and_notices_are_not_cached(self):
+        book = await self.book()
+        self.assertFalse(book.get("readability"))
+        chapter = self.books.catalog.directory(book["book_id"])[1]
+        for notice, code in (
+            ("", "book_content_empty"),
+            ("暂无正文。", "book_content_empty"),
+            ("访问过于频繁，请稍后重试。", "book_source_rate_limited"),
+            ("请先登录后阅读本章正文。", "book_source_auth_required"),
+            ("本章为VIP章节，请订阅后阅读。", "book_content_purchase_required"),
+            ("请完成人机验证后继续阅读。", "book_content_verification_required"),
+        ):
+            with self.subTest(code=code):
+                self.site.notices = {2: notice}
+                with self.assertRaises(Fault) as caught:
+                    await self.call(
+                        "preview", {"book_id": book["book_id"], "chapter_id": chapter["chapter_id"]}
+                    )
+                self.assertEqual(caught.exception.code, code)
+                self.assertIsNone(
+                    self.books.catalog.chapter(book["book_id"], chapter["chapter_id"])
+                )
+                self.assertEqual(
+                    self.books.catalog.book(book["book_id"])["readability"]["code"], code
+                )
+        self.site.notices = {
+            2: "旅人拿着地图登陆了小岛。他记起朋友曾经说过账号登录的事，但这里没有网络。本章完，感谢订阅支持。"
+        }
+        preview = await self.call(
+            "preview", {"book_id": book["book_id"], "chapter_id": chapter["chapter_id"]}
+        )
+        self.assertIn("小岛", preview["chapter"]["content"])
+        self.assertEqual(preview["readability"]["state"], "previewed")
+
+    async def test_subscription_automatically_checks_middle_before_bulk_download(self):
+        self.site.count = 9
+        self.site.notices = {5: "请先登录后查看章节正文。"}
+        book = await self.book()
+        await self.call("subscriptions/save", {"book_id": book["book_id"]})
+        job = await self.run_job()
+        self.assertEqual(job["code"], "book_source_auth_required")
+        self.assertEqual(job["state"], "failed")
+        self.assertIsNone(self.books.catalog.book(book["book_id"])["artifact"])
+        self.assertEqual(self.site.hits["/chapter/2"], 0)
+        self.assertEqual(self.site.hits["/chapter/5"], 1)
+
+    async def test_late_paywall_after_sample_pass_is_never_saved_as_chapter(self):
+        self.site.count = 9
+        self.site.notices = {3: "请购买本章后阅读正文。"}
+        book = await self.book()
+        await self.call("subscriptions/save", {"book_id": book["book_id"]})
+        job = await self.run_job()
+        self.assertEqual(job["state"], "failed")
+        self.assertEqual(job["book_artifact"]["chapters"], 8)
+        self.assertFalse(job["book_artifact"]["complete"])
+        chapter = self.books.catalog.directory(book["book_id"])[2]
+        self.assertIsNone(self.books.catalog.chapter(book["book_id"], chapter["chapter_id"]))
+        self.assertEqual(
+            self.books.catalog.book(book["book_id"])["readability"]["code"],
+            "book_content_purchase_required",
+        )
+        path, _, _ = await self.books.file(book["book_id"], "epub")
+        with zipfile.ZipFile(path) as archive:
+            for name in archive.namelist():
+                if name.endswith(".xhtml"):
+                    self.assertNotIn("请购买本章", archive.read(name).decode())
+
+    async def test_redirect_to_login_form_is_reported_as_auth_required(self):
+        book = await self.book()
+        self.site.login_chapters = {1}
+        chapter = self.books.catalog.directory(book["book_id"])[0]
+        with self.assertRaises(Fault) as caught:
+            await self.call(
+                "preview", {"book_id": book["book_id"], "chapter_id": chapter["chapter_id"]}
+            )
+        self.assertEqual(caught.exception.code, "book_source_auth_required")
+        self.assertIsNone(self.books.catalog.chapter(book["book_id"], chapter["chapter_id"]))
 
     async def test_source_bundle_partial_validation_feed_failure_and_encryption(self):
         rules = self.site.source()

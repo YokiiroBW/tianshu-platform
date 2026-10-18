@@ -151,6 +151,9 @@ test("book subscription in existing shell searches, previews, subscribes, publis
     .getByRole("button", { name: "聚合搜索" })
     .click();
   await expect(page.locator(".book-card h3")).toHaveText("山海之间");
+  await expect(page.locator(".book-card")).toContainText(
+    "仅搜索结果，正文待验证",
+  );
   await page.screenshot({
     path: info.outputPath("books-desktop.png"),
     fullPage: true,
@@ -160,6 +163,23 @@ test("book subscription in existing shell searches, previews, subscribes, publis
   await expect(drawer.locator(".book-prose")).toContainText("清晨的雾气", {
     timeout: 20000,
   });
+  await expect(drawer).toContainText("已取得试读正文，整本待验证");
+  await request.post(fixture.site_url + "/__fixture/notices", {
+    data: { 2: "请先登录后阅读本章正文。" },
+  });
+  await drawer
+    .getByRole("button", { name: "第 2 章 山间来信", exact: true })
+    .click();
+  await expect(drawer.getByRole("alert")).toContainText("来源需要登录");
+  await expect(drawer.locator(".book-prose")).not.toContainText(
+    "请先登录后阅读本章正文",
+  );
+  await request.post(fixture.site_url + "/__fixture/notices", { data: {} });
+  await drawer
+    .getByRole("button", { name: "第 2 章 山间来信", exact: true })
+    .click();
+  await expect(drawer.locator(".book-prose")).toContainText("清晨的雾气");
+  await expect(drawer.getByRole("alert")).toHaveCount(0);
   await page.screenshot({
     path: info.outputPath("books-reader-desktop.png"),
     fullPage: true,

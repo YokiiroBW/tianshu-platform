@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Search, Plus, Square, BookOpen } from "lucide-react";
 import type { Book, BooksView, BookSearchResult } from "./types";
 import { BookCard } from "./BookCard";
-import { bookCode, groupedBooks } from "./presentation";
+import { bookCode, groupedBooks, preferredBook } from "./presentation";
 
 export function BookSearch({
   view,
@@ -101,7 +101,7 @@ export function BookSearch({
             {groups.map((candidates) => (
               <BookCard
                 key={candidates[0].group_key}
-                book={candidates.find((book) => book.artifact) ?? candidates[0]}
+                book={preferredBook(candidates)}
                 alternatives={candidates}
                 subscribed={view.subscriptions.some(
                   (sub) => sub.book_id === candidates[0].book_id,

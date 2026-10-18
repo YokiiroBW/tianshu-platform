@@ -13,6 +13,7 @@ from ..organizer import library_lock
 from ..video_storage import sync_directory, sync_file
 from .documents import build_epub, validate_epub
 from .organization import book_category, book_relative_path
+from .readability import check_content
 
 RETRYABLE_ERRORS = {
     "book_source_unavailable",
@@ -69,6 +70,9 @@ class Downloads:
                 directory = await self.media.local(self.books.catalog.directory, book["book_id"])
                 pinned = None
             require(directory, "book_directory_empty", 409)
+            if pinned:
+                await update(stage="book_checking", code="book_checking_content")
+                await self.books.readability.verify(book, directory, pinned)
             available, missing = [], []
             consecutive_failures = 0
             last_error = "book_content_unavailable"
@@ -76,6 +80,11 @@ class Downloads:
                 cached = await self.media.local(
                     self.books.catalog.chapter, book["book_id"], chapter["chapter_id"]
                 )
+                if cached and pinned:
+                    try:
+                        check_content(cached["content"])
+                    except Fault:
+                        cached = None
                 if not cached:
                     if consecutive_failures >= 3:
                         missing.append(chapter)
@@ -86,7 +95,7 @@ class Downloads:
                         )
                         require(current and current["enabled"], "book_source_disabled", 409)
                         await self.books.preview(
-                            book["book_id"], chapter["chapter_id"], pinned=pinned
+                            book["book_id"], chapter["chapter_id"], pinned=pinned, observe=False
                         )
                         cached = await self.media.local(
                             self.books.catalog.chapter, book["book_id"], chapter["chapter_id"]
@@ -155,6 +164,13 @@ class Downloads:
                             "artifact": artifact,
                             "downloaded": len(available),
                             "updated_at": self.repo.clock(),
+                            "readability": current.get("readability")
+                            if missing
+                            else {
+                                "state": "complete",
+                                "checked_at": self.repo.clock(),
+                                "sample_count": len(available),
+                            },
                         },
                         db=db,
                     )

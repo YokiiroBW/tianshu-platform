@@ -45,7 +45,7 @@ def before_request():
         if not rate_limit:
             return
         now = time.monotonic()
-        if rate_requests >= rate_limit:
+        while rate_requests >= rate_limit and now < rate_started_at + rate_period:
             time.sleep(max(0, rate_started_at + rate_period - now))
             now = time.monotonic()
         if now >= rate_started_at + rate_period:

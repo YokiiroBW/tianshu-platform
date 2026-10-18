@@ -157,6 +157,10 @@ class Network:
                     with gzip.GzipFile(fileobj=io.BytesIO(content)) as compressed:
                         content = compressed.read(max_bytes + 1)
                     require(len(content) <= max_bytes, "book_response_too_large", 413)
+                if re.search(r"/(?:login|signin)(?:[./]|$)", parsed.path, re.I) and re.search(
+                    rb"type\s*=\s*['\"]?password\b", content, re.I
+                ):
+                    raise Fault("book_source_auth_required", 409)
                 return Response(content, current, response_headers, tuple(history), response.status)
             except (OSError, http.client.HTTPException, ValueError):
                 raise Fault("book_source_unavailable", 502) from None

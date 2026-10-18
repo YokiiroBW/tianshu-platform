@@ -4,6 +4,7 @@ from LegadoParser2.RuleJs.JS import EvalJs
 from LegadoParser2.RuleEval import getString
 from services.platform.contracts import require
 from services.platform.media.books.engine_pages import read_pages
+from services.platform.media.books.readability import check_content
 from LegadoParser2.config import DEBUG_MODE
 try:
     from LegadoParser2.fontutils import checkPUA, fixPUAStr, collectPUAChars
@@ -43,7 +44,10 @@ def parseContent(bS, urlObj, content, evalJs, **kwargs):
         if ruleContent.get('content'):
             text = getString(
                 content, ruleContent['content'], evalJs, rawContent=_content)
+            if not text.strip():
+                check_content(content)
             require(text.strip(), 'book_content_empty', 502)
+            check_content(text)
             chapterContent['content'] += text + '\n'
 
     for page, body in read_pages(urlObj, _content, evalJs, ruleContent.get('nextContentUrl'),

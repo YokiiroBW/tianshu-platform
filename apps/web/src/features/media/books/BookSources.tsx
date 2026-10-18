@@ -263,7 +263,11 @@ export function BookSources({
                 <span className="book-tag">
                   {source.enabled ? "已启用" : "已停用"}
                 </span>
-                <span>{bookCode(source.code)}</span>
+                <span>
+                  {source.code === "ready"
+                    ? "最近请求成功，正文需按书验证"
+                    : bookCode(source.code)}
+                </span>
                 {source.capabilities.javascript && <span>含脚本规则</span>}
                 {source.capabilities.webview_http_fallback && (
                   <span>尝试普通网页读取</span>

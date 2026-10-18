@@ -16,6 +16,8 @@ class BookSite:
         self.count = 2
         self.failed = set()
         self.rate_limited = set()
+        self.notices = {}
+        self.login_chapters = set()
         self.hits = Counter()
         self.received_headers = {}
         self.delay = 0
@@ -57,6 +59,12 @@ class BookSite:
     async def handle(self, request):
         self.hits[request.path] += 1
         self.received_headers[request.path] = dict(request.headers)
+        if request.path == "/login":
+            return web.Response(text='<form>请登录<input type="password"></form>')
+        if request.path == "/__fixture/notices" and request.method == "POST":
+            body = await request.json()
+            self.notices = {int(key): value for key, value in body.items()}
+            return web.json_response({"ok": True})
         if request.path == "/古籍/中文.html":
             return web.json_response({"path": request.path, "query": request.query.get("书名")})
         if request.path == "/__fixture/warehouse" and request.method == "POST":
@@ -106,13 +114,18 @@ class BookSite:
             if self.content_delay:
                 await asyncio.sleep(self.content_delay)
             index = int(request.path.rsplit("/", 1)[-1])
+            if index in self.login_chapters:
+                raise web.HTTPFound("/login")
             if index in self.rate_limited:
                 raise web.HTTPTooManyRequests()
             if index in self.failed:
                 raise web.HTTPServiceUnavailable()
             return web.json_response(
                 {
-                    "content": f"清晨的雾气从山谷升起。第 {index} 章的旅人推开木窗，看见远处的灯火。\n\n他展开一封旧信，继续向海边走去。\n这是合成正文，供隔离测试使用。"
+                    "content": self.notices.get(
+                        index,
+                        f"清晨的雾气从山谷升起。第 {index} 章的旅人推开木窗，看见远处的灯火。\n\n他展开一封旧信，继续向海边走去。\n这是合成正文，供隔离测试使用。",
+                    )
                 }
             )
         if request.path == "/rules":

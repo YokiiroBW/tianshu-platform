@@ -9,6 +9,7 @@ import sys
 from ...contracts import Fault, require
 from . import engine_http
 from .network import Network
+from .readability import check_content
 
 
 def run(request):
@@ -47,6 +48,7 @@ def run(request):
             "book_content_empty",
             502,
         )
+        check_content(result["content"])
         return result
     raise Fault("invalid_input", 400)
 

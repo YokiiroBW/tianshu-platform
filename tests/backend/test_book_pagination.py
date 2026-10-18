@@ -16,6 +16,7 @@ class PagedSite(BookSite):
         super().__init__()
         self.multiple = False
         self.empty_middle = False
+        self.login_middle = False
         self.request_times = []
 
     async def handle(self, request):
@@ -56,7 +57,11 @@ class PagedSite(BookSite):
                 following = ["part2.json", "part3.json", "../2/part1.json"]
             return web.json_response(
                 {
-                    "content": "" if self.empty_middle and number == 2 else f"正文分页{number}",
+                    "content": "请先登录后阅读本章内容。"
+                    if self.login_middle and number == 2
+                    else ""
+                    if self.empty_middle and number == 2
+                    else f"正文分页{number}",
                     "next": [*following, "part1.json#repeat", "javascript:void(0)"],
                 }
             )
@@ -160,6 +165,13 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             list(self.site.hits), ["/paging/chapter/1/part1.json", "/paging/chapter/1/info"]
         )
+
+    async def test_login_notice_on_second_page_rejects_the_whole_chapter(self):
+        self.site.login_middle = True
+        with self.assertRaises(Fault) as caught:
+            await self.chapter()
+        self.assertEqual(caught.exception.code, "book_source_auth_required")
+        self.assertEqual(self.site.hits["/paging/chapter/1/part3.json"], 0)
 
     async def test_inherited_credentials_are_not_forwarded_to_another_origin(self):
         other = await PagedSite().start()

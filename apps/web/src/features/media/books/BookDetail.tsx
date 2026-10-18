@@ -10,7 +10,7 @@ import type {
   MetadataResult,
 } from "./types";
 import { BookMetadataEditor } from "./BookMetadataEditor";
-import { bookFileUrl } from "./presentation";
+import { bookFileUrl, bookReadability } from "./presentation";
 
 export function BookDetail({
   book,
@@ -18,6 +18,7 @@ export function BookDetail({
   preview,
   alternatives,
   busy,
+  error,
   onClose,
   onOpen,
   onChapter,
@@ -32,6 +33,7 @@ export function BookDetail({
   preview: ChapterPreview | null;
   alternatives: Book[];
   busy: boolean;
+  error: string;
   onClose: () => void;
   onOpen: (book: Book) => void;
   onChapter: (chapter: BookChapter) => void;
@@ -58,6 +60,12 @@ export function BookDetail({
           {current.metadata.author || "作者未提供"} · {current.source_name}
           {current.chapter_count ? ` · ${current.chapter_count} 章` : ""}
         </p>
+        <p className="book-fineprint muted">{bookReadability(current)}</p>
+        {error && (
+          <p className="media-message media-warning" role="alert">
+            {error}
+          </p>
+        )}
         <div className="book-detail-toolbar">
           <label>
             预览来源
@@ -140,7 +148,11 @@ export function BookDetail({
                 </>
               ) : (
                 <div className="book-reader-empty" role="status">
-                  {detail ? "选择一个章节开始试读" : "正在读取书籍详情…"}
+                  {error
+                    ? "本次试读未取得正文，可以选择其他章节或切换来源。"
+                    : detail
+                      ? "选择一个章节开始试读"
+                      : "正在读取书籍详情…"}
                 </div>
               )}
             </article>

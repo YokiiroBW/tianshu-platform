@@ -220,15 +220,41 @@ export function BooksPanel({ media }: { media: MediaController }) {
       setSearch({ ...result, books: [...carry.current, ...result.books] });
   }
   async function readChapter(book: Book, chapter: BookChapter) {
+    current.current.clearError("books-preview");
     setPreview(null);
     const result = await current.current.request<ChapterPreview>(
       "books-preview",
       "books/preview",
       { book_id: book.book_id, chapter_id: chapter.chapter_id },
     );
-    if (result && selectedId.current === book.book_id) setPreview(result);
+    if (result && selectedId.current === book.book_id) {
+      setPreview(result);
+      const updated = { ...book, readability: result.readability };
+      setSelected(updated);
+      setDetail((previous) =>
+        previous
+          ? {
+              ...previous,
+              book: { ...previous.book, readability: result.readability },
+            }
+          : previous,
+      );
+      setSearch((previous) =>
+        previous
+          ? {
+              ...previous,
+              books: previous.books.map((item) =>
+                item.book_id === book.book_id
+                  ? { ...item, readability: result.readability }
+                  : item,
+              ),
+            }
+          : previous,
+      );
+    }
   }
   async function openBook(book: Book) {
+    current.current.clearError();
     selectedId.current = book.book_id;
     setSelected(book);
     setDetail(null);
@@ -618,6 +644,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
           alternatives={alternatives}
           busy={!!media.busy || mutating}
           onClose={closeBook}
+          error={media.error}
           onOpen={(book) => void openBook(book)}
           onChapter={(chapter) => void readChapter(selected, chapter)}
           onMore={() => void moreChapters()}
