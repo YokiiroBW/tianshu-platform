@@ -467,7 +467,7 @@ test("projection: concrete config preview invalidates on draft edits and externa
   expect(state.submits).toHaveLength(1);
   state.revision = "sha256:external-dockge-edit";
   await expect(
-    page.getByText("配置已在 Dockge 或其他页面改变", { exact: false }),
+    page.getByText("当前配置版本已变化，草稿仍绑定原版本", { exact: false }),
   ).toBeVisible({ timeout: 8000 });
   await expect(content).toHaveValue(
     "services:\n  app:\n    image: synthetic:v3\n",

@@ -265,7 +265,7 @@ export function DeploymentPanel({
       )}
       {changed && (
         <div className="infra-notice" role="status">
-          <p>配置已在 Dockge 或其他页面改变，当前草稿仍绑定原版本。</p>
+          <p>当前配置版本已变化，草稿仍绑定原版本。</p>
           <button
             className="button"
             disabled={preview.busy || command.busy}
