@@ -51,3 +51,16 @@ Suwayomi实机为2.3.2243、Komga为1.24.4-master；未升级。按用户明确�
 后端沿用unittest：`python -m unittest discover -s tests/backend -p test_comics.py -v`。浏览器沿用Playwright：设置已发布合同目录 `TS012_CONTRACT_DIR` 和工具解释器 `COMIC_TEST_PYTHON`，构建后运行 `node node_modules/@playwright/test/cli.js test --config apps/web/playwright.comics.config.ts`。夹具只使用合成图像和本地HTTP同行，真实平台认证、工作队列、CBZ文件和读取接口执行。
 
 跨产品隔离与正式证据见[交付记录](../handoffs/TS-197.md)。后续生产发布仍需协调共享窗口并读取当前恢复代次，保留听书、音乐、既有媒体设置和两个socket挂载。真实追更扫描已验证无新章时零新增，新增章只抓新增部分由受控回归验证；尚未观测到作者自然更新。
+
+
+## 扩展仓库与自动维护（TS-201）
+
+“下载源”页面管理 Keiyoushi、Yūzōnō 与 LittleSurvival 仓库，安装全部语言的兼容插件，并每天检查新增插件和升级。普通漫画和本子/私藏沿用 SAFE 与其他内容标记的分组；安装完成、搜索验证、下载验证分别显示。源刷新支持完整分页，聚合搜索通过四个工作协程覆盖所有选定源，不再截取前100个。
+
+复用 media documents、scan_leases、后台生命周期与 Suwayomi GraphQL。维护策略以引擎身份保存；页面控制有既有登录/CSRF/幂等回执，后台事实不递增用户控制修订号。按包名去重并固定已安装包的来源，冲突源ID不重复加载；源的本地启停、原订阅、章节身份和归档回执保留。Yūzōnō 当前索引仅包含迁移提示，作为占位项目显示并跳过，不能称新增有效插件。
+
+Suwayomi 2.3.2243 支持插件API 1.3至1.6，但其更新先卸载旧包。天枢先下载验证目标归档、保存旧JAR，再通过顶层 Upload 变量提交文件（该版本不支持嵌套multipart变量）。安装后核对包名、版本和原源ID；回执丢失先对账，升级失败通过相同API恢复原JAR，不覆盖Suwayomi数据库。原源正在搜索、读取章节或下载图片时延后更新。缺备份不卸载旧包；失败与不可安装原因逐项保留，下轮重试，不自动删除旧源。
+
+运行容器需要只读绑定 Suwayomi 的 extensions 目录到 `/media/SuwayomiExtensions`；也可用 `TIANSHU_COMIC_EXTENSIONS_DIRECTORY` 指定只读位置。只读取插件JAR，不需要Suwayomi数据库、账号配置目录或Docker控制权。暂存和恢复副本位于既有 `.comic-content/extensions` 下。部署显式启用维护；页面可暂停或立即检查，恢复时继续核对未完成操作。
+
+验证记录见 TS-201 交接。第三方索引声明兼容并不等于源站随时能搜索/下载；账号登录继续使用Suwayomi现有界面。

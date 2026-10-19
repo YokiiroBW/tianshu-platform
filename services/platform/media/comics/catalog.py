@@ -61,6 +61,7 @@ class Catalog:
                 key = engine_id + ":" + source_id
                 previous = self.repo._document(db, "comic_source", key)
                 record = {
+                    **(previous or {}),
                     "source_id": source_id,
                     "source_key": key,
                     "engine_id": engine_id,
@@ -68,10 +69,33 @@ class Catalog:
                     "language": row.get("lang", ""),
                     "content_warning": row.get("contentWarning", "UNKNOWN"),
                     "enabled": previous.get("enabled", True) if previous else True,
-                    "code": "ready",
-                    "checked_at": self.repo.clock(),
+                    "available": True,
+                    "code": previous.get("code", "comic_source_unchecked")
+                    if previous
+                    else "comic_source_unchecked",
+                    "inventory_at": self.repo.clock(),
                 }
-                result.append(self.repo.put("comic_source", key, record, db=db))
+                saved = (
+                    self.repo.fact("comic_source", key, record, previous["revision"], db=db)
+                    if previous
+                    else self.repo.put("comic_source", key, record, db=db)
+                )
+                result.append(saved)
+            present = {r["source_id"] for r in result}
+            for stored in db.execute(
+                "SELECT body FROM documents WHERE kind='comic_source'"
+            ).fetchall():
+                import json
+
+                old = json.loads(stored[0])
+                if old["engine_id"] == engine_id and old["source_id"] not in present:
+                    self.repo.fact(
+                        "comic_source",
+                        old["source_key"],
+                        {**old, "available": False},
+                        old["revision"],
+                        db=db,
+                    )
             return result
 
     def register(self, source, item):

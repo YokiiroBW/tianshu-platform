@@ -281,6 +281,32 @@ class Downloads:
             await asyncio.gather(pulse, return_exceptions=True)
 
     async def pages(self, comic, job, update, checkpoint):
+        if comic["source_type"] != "remote":
+            return await self._pages(comic, job, update, checkpoint)
+        lock = self.comics.engine.source_locks.setdefault(comic["source_id"], asyncio.Lock())
+        async with lock:
+            try:
+                result = await self._pages(comic, job, update, checkpoint)
+            except Fault as error:
+                await self.media.local(self.source_health, comic, error.code)
+                raise
+            await self.media.local(self.source_health, comic, "ready")
+            return result
+
+    def source_health(self, comic, code):
+        key = comic["engine_id"] + ":" + comic["source_id"]
+        with self.repo.transaction() as db:
+            row = self.repo._document(db, "comic_source", key)
+            if row:
+                self.repo.fact(
+                    "comic_source",
+                    key,
+                    {**row, "download_code": code, "download_checked_at": self.repo.clock()},
+                    row["revision"],
+                    db=db,
+                )
+
+    async def _pages(self, comic, job, update, checkpoint):
         chapter = job["comic_chapter"]
         cache = job.get("comic_cache") or []
         directory = safe_path(self.comics.data_root, job["job_id"] + "/" + str(job["generation"]))

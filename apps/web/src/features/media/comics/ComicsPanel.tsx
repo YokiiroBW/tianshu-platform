@@ -3,11 +3,12 @@ import { PanelsTopLeft, RefreshCw } from "lucide-react";
 import { StatePanel } from "../../../components/StatePanel";
 import { word, timestamp } from "../wording";
 import { ComicSearch } from "./ComicSearch";
+import { ComicSources } from "./ComicSources";
 import { ComicDetail } from "./ComicDetail";
 import { ComicSettings } from "./ComicSettings";
 import { ComicImports } from "./ComicImports";
 import { ComicCard } from "./ComicCard";
-import type { Comic, Kind, Media, Source, View } from "./types";
+import type { Comic, Kind, Media, View } from "./types";
 import { kinds } from "./types";
 import "./comics.css";
 
@@ -26,7 +27,6 @@ export function ComicsPanel({ media }: { media: Media }) {
   const [tab, setTab] = useState<Tab>("search");
   const [kind, setKind] = useState<Kind>("general");
   const [selected, setSelected] = useState<Comic>();
-  const [sources, setSources] = useState<Source[]>([]);
   const [library, setLibrary] = useState<Comic[]>([]);
   const [libraryOffset, setLibraryOffset] = useState<number | null>(null);
   const [query, setQuery] = useState("");
@@ -49,17 +49,6 @@ export function ComicsPanel({ media }: { media: Media }) {
     await refresh();
     return true;
   };
-  const readSources = useCallback(
-    async (reload = false) => {
-      const result = await request<{ sources: Source[] }>(
-        "comic-sources",
-        reload ? "comics/sources/refresh" : "comics/sources/list",
-        {},
-      );
-      if (result) setSources(result.sources);
-    },
-    [request],
-  );
   const readLibrary = useCallback(
     async (offset = 0) => {
       const result = await request<{
@@ -79,9 +68,6 @@ export function ComicsPanel({ media }: { media: Media }) {
     },
     [request, kind, query],
   );
-  useEffect(() => {
-    if (tab === "sources" && view?.configured) void readSources();
-  }, [tab, view?.configured, readSources]);
   useEffect(() => {
     if (tab === "library") void readLibrary();
   }, [tab, readLibrary]);
@@ -318,61 +304,11 @@ export function ComicsPanel({ media }: { media: Media }) {
           )}
           {tab === "imports" && <ComicImports media={media} mutate={mutate} />}
           {tab === "sources" && (
-            <>
-              <div className="comic-heading">
-                <p>
-                  使用 Suwayomi 已安装的源。源扩展的安装、更新和登录在 Suwayomi
-                  管理。
-                </p>
-                <div className="comic-actions">
-                  <a
-                    className="button"
-                    href={view.settings.connections.suwayomi?.url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    打开 Suwayomi
-                  </a>
-                  <button
-                    className="button"
-                    onClick={() => void readSources(true)}
-                  >
-                    刷新下载源
-                  </button>
-                </div>
-              </div>
-              <div className="comic-source-list">
-                {sources
-                  .filter(
-                    (s) =>
-                      (s.content_warning === "SAFE") === (kind === "general"),
-                  )
-                  .map((s) => (
-                    <div className="media-card" key={s.source_key}>
-                      <label className="comic-check">
-                        <input
-                          type="checkbox"
-                          checked={s.enabled}
-                          onChange={(e) => {
-                            void mutate("sources/control", {
-                              source_key: s.source_key,
-                              enabled: e.target.checked,
-                              expected_revision: s.revision,
-                            }).then((ok) => {
-                              if (ok) void readSources();
-                            });
-                          }}
-                        />
-                        {s.name}
-                      </label>
-                      <p className="muted">
-                        {s.language} · {word(s.code)}
-                        {s.content_warning === "MIXED" ? " · 内容混合" : ""}
-                      </p>
-                    </div>
-                  ))}
-              </div>
-            </>
+            <ComicSources
+              media={media}
+              kind={kind}
+              url={view.settings.connections.suwayomi?.url}
+            />
           )}
           {tab === "settings" && (
             <ComicSettings

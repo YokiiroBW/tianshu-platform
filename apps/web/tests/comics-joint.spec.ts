@@ -128,3 +128,47 @@ test("comic preview files require the live console login", async ({
   );
   expect(response.status()).toBe(401);
 });
+
+test("extension stores install asynchronously and keep ordinary and private plugins separate", async ({
+  page,
+}) => {
+  await page.goto("/#/subscriptions/9");
+  await page.getByLabel("管理员账号").fill("synthetic-admin");
+  await page
+    .getByLabel("密码", { exact: true })
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByRole("button", { name: "下载源", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "扩展仓库与自动更新" }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "安装兼容插件并启用每日更新" })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "2 / 2 个插件已安装" }),
+  ).toBeVisible({ timeout: 45000 });
+  await expect(
+    page.getByRole("heading", { name: "合成普通插件", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "合成私藏插件", exact: true }),
+  ).toHaveCount(0);
+  await page.getByLabel("收藏分类").selectOption("private");
+  await expect(
+    page.getByRole("heading", { name: "合成私藏插件", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "合成普通插件", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "暂停自动维护", exact: true }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "自动维护已暂停" }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 393, height: 852 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});

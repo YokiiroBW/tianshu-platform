@@ -53,7 +53,7 @@ class Sources:
         require(isinstance(query, str) and 0 < len(query.strip()) <= 200, "invalid_input", 400)
         ids = body.get("source_ids", [])
         require(
-            isinstance(ids, list) and len(ids) <= 100 and all(isinstance(v, str) for v in ids),
+            isinstance(ids, list) and len(ids) <= 20000 and all(isinstance(v, str) for v in ids),
             "invalid_input",
             400,
         )
@@ -70,10 +70,16 @@ class Sources:
             r
             for r in rows
             if r["enabled"]
+            and r.get("available", True)
             and (not ids or r["source_id"] in ids)
-            and (not language or r["language"] == language)
+            and (
+                not language
+                or r["language"] == language
+                or language == "zh"
+                and r["language"].startswith("zh-")
+            )
             and (kind == "all" or (r["content_warning"] == "SAFE") == (kind == "general"))
-        ][:100]
+        ]
         now = self.repo.clock()
         for key, search in list(self.searches.items()):
             if (
@@ -140,10 +146,16 @@ class Sources:
                 with self.repo.transaction() as db:
                     current = self.repo._document(db, "comic_source", source["source_key"])
                     if current:
-                        self.repo.put(
+                        self.repo.fact(
                             "comic_source",
                             source["source_key"],
-                            {**current, "code": status["code"], "checked_at": self.repo.clock()},
+                            {
+                                **current,
+                                "code": status["code"],
+                                "checked_at": self.repo.clock(),
+                                "search_checked_at": self.repo.clock(),
+                            },
+                            current["revision"],
                             db=db,
                         )
 
@@ -151,7 +163,14 @@ class Sources:
 
         async def run():
             try:
-                await asyncio.gather(*(collect(source) for source in selected))
+                # Bounded workers cover every selected source without a task per plugin.
+                remaining = iter(selected)
+
+                async def worker():
+                    for source in remaining:
+                        await collect(source)
+
+                await asyncio.gather(*(worker() for _ in range(min(4, len(selected)))))
                 result["state"] = "completed"
             except asyncio.CancelledError:
                 result["state"] = "cancelled"

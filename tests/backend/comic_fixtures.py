@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import json
 import uuid
 import zipfile
 from collections import Counter
@@ -17,6 +18,64 @@ def page_bytes(number, format="PNG"):
     return output.getvalue()
 
 
+def extension_bytes(package, warning="SAFE"):
+    record = {
+        "pkgName": package,
+        "name": "合成普通插件" if warning == "SAFE" else "合成私藏插件",
+        "versionName": "1.6.1",
+        "versionCodeLong": "1",
+        "isInstalled": True,
+        "isObsolete": False,
+        "contentWarning": warning,
+        "extensionLib": "1.6",
+        "storeIndexUrl": "fixture-store",
+        "source": {
+            "nodes": [{"id": "9007199254740993" if warning == "SAFE" else "9007199254740994"}]
+        },
+    }
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as z:
+        z.writestr("fixture-extension.json", json.dumps(record))
+    return output.getvalue()
+
+
+def configure_extensions(comics):
+    """Only the synthetic browser process replaces public store downloads."""
+    from services.platform.media.comics import extensions
+
+    async def read_store(client, store):
+        if store["id"] == "yuzono":
+            return [], "fixture-key"
+        private = store["id"] == "littlesurvival"
+        return [
+            {
+                "package": "fixture.private" if private else "fixture.general",
+                "name": "合成私藏插件" if private else "合成普通插件",
+                "version": "1.6.1",
+                "version_code": 1,
+                "lib": "1.6",
+                "store_id": store["id"],
+                "store_url": store["url"],
+                "source_ids": ["9007199254740994" if private else "9007199254740993"],
+                "languages": ["zh"],
+                "content_warning": "MIXED" if private else "SAFE",
+                "artifact_url": "https://github.com/fixture/"
+                + ("private" if private else "general")
+                + ".jar",
+                "state": "queued",
+                "code": "comic_extension_queued",
+            }
+        ], "fixture-key"
+
+    async def fetch(client, url):
+        private = "private" in url
+        return extension_bytes(
+            "fixture.private" if private else "fixture.general", "MIXED" if private else "SAFE"
+        )
+
+    extensions.read_store, extensions.fetch = read_store, fetch
+
+
 class ComicSite:
     def __init__(self, root):
         self.root = Path(root)
@@ -26,6 +85,7 @@ class ComicSite:
         self.reader_pending = False
         self.no_search = False
         self.url = ""
+        self.extensions = {}
 
     def manga(self, source="9007199254740993", number=1, title="星际邮差"):
         return {
@@ -44,6 +104,15 @@ class ComicSite:
 
     async def graphql(self, request):
         self.hits["graphql"] += 1
+        if request.content_type.startswith("multipart/"):
+            fields = await request.post()
+            operations, mapping = json.loads(fields["operations"]), json.loads(fields["map"])
+            assert operations["variables"]["file"] is None
+            assert mapping == {"0": ["variables.file"]}
+            with zipfile.ZipFile(fields["0"].file) as z:
+                row = json.loads(z.read("fixture-extension.json"))
+            self.extensions[row["pkgName"]] = row
+            return web.json_response({"data": {"installExternalExtension": {"extension": row}}})
         body = await request.json()
         query, variables = body["query"], body.get("variables", {})
         if "aboutServer" in query:
@@ -55,6 +124,23 @@ class ComicSite:
                     "downloadAsCbz": False,
                 },
             }
+        elif "extensionStores(first" in query:
+            data = {"extensionStores": {"nodes": [], "totalCount": 0}}
+        elif "addExtensionStore" in query:
+            data = {
+                "addExtensionStore": {
+                    "extensionStore": {"name": "fixture", "indexUrl": variables["url"]}
+                }
+            }
+        elif "fetchExtensions" in query:
+            data = {"fetchExtensions": {"clientMutationId": None}}
+        elif "extensions(first" in query:
+            rows = [
+                r
+                for r in self.extensions.values()
+                if not variables.get("pkg") or r["pkgName"] == variables["pkg"]
+            ]
+            data = {"extensions": {"nodes": rows, "totalCount": len(rows)}}
         elif "sources(first" in query:
             data = {
                 "sources": {

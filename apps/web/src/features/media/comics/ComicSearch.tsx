@@ -60,7 +60,10 @@ export function ComicSearch({
     setStarting(false);
   };
   const available = sources.filter(
-    (s) => s.enabled && (s.content_warning === "SAFE") === (kind === "general"),
+    (s) =>
+      s.enabled &&
+      s.available !== false &&
+      (s.content_warning === "SAFE") === (kind === "general"),
   );
   return (
     <div className="comic-stack">
@@ -98,7 +101,12 @@ export function ComicSearch({
           <select value={source} onChange={(e) => setSource(e.target.value)}>
             <option value="">聚合全部启用源</option>
             {available
-              .filter((s) => !language || s.language === language)
+              .filter(
+                (s) =>
+                  !language ||
+                  s.language === language ||
+                  (language === "zh" && s.language.startsWith("zh-")),
+              )
               .map((s) => (
                 <option key={s.source_id} value={s.source_id}>
                   {s.name}

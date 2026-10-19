@@ -13,6 +13,16 @@ class WebComics:
         comics, repo, local = self.comics, self.media.repo, self.media.local
         if operation == "view":
             return await comics.view()
+        if operation == "extensions/view":
+            return await comics.extensions.view(body)
+        if operation == "extensions/control":
+            identity = await comics.sources.engine_id()
+            return await self.web.receipt(
+                body,
+                "comics/extensions/control",
+                session,
+                lambda db: comics.extensions.control(body, identity, db),
+            )
         if operation == "settings/save":
             return await self.web.receipt(
                 body, "comics/settings/save", session, lambda db: comics.settings.save(body, db)

@@ -48,6 +48,10 @@ export type Detail = {
   scanlators: string[];
 };
 export type Source = {
+  available?: boolean;
+  search_checked_at?: number;
+  download_checked_at?: number;
+  download_code?: string;
   source_id: string;
   source_key: string;
   name: string;

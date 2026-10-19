@@ -1,6 +1,7 @@
 """Suwayomi GraphQL control and same-origin image streams; no direct site scraping."""
 
 import asyncio
+import json
 import base64
 import os
 import uuid
@@ -16,6 +17,7 @@ MANGA_FIELDS = (
     "id title author artist description genre status thumbnailUrl sourceId url realUrl inLibrary"
 )
 CHAPTER_FIELDS = "id name chapterNumber pageCount mangaId isDownloaded sourceOrder scanlator url realUrl uploadDate"
+EXTENSION_FIELDS = "pkgName name apkName isInstalled isObsolete versionName versionCodeLong extensionLib storeIndexUrl contentWarning source { nodes { id } }"
 
 
 def service_url(value):
@@ -132,14 +134,87 @@ class Suwayomi:
         }
 
     async def sources(self):
+        rows = await self.nodes("sources", "id name displayName lang contentWarning supportsLatest")
+        return [{**s, "id": str(s["id"])} for s in rows if str(s["id"]) != "0"], len(rows)
+
+    async def nodes(self, field, fields):
+        rows = []
+        while True:
+            value = await self.query(
+                "query($offset:Int!){"
+                + field
+                + "(first:500,offset:$offset){nodes{"
+                + fields
+                + "} totalCount}}",
+                {"offset": len(rows)},
+            )
+            page = value[field]
+            require(isinstance(page.get("nodes"), list), "comic_engine_invalid_response", 503)
+            rows.extend(page["nodes"])
+            require(len(rows) <= 20000, "comic_response_too_large", 503)
+            if len(rows) >= page["totalCount"]:
+                return rows
+            require(page["nodes"], "comic_engine_invalid_response", 503)
+
+    async def extensions(self):
+        return await self.nodes("extensions", EXTENSION_FIELDS)
+
+    async def extension(self, package):
         value = await self.query(
-            "query { sources(first: 500) { nodes { id name displayName lang contentWarning supportsLatest } totalCount } }"
+            "query($pkg:String!){extensions(first:2,condition:{pkgName:$pkg}){nodes{"
+            + EXTENSION_FIELDS
+            + "}}}",
+            {"pkg": package},
         )
-        result = value["sources"]
-        require(isinstance(result.get("nodes"), list), "comic_engine_invalid_response", 503)
-        return [
-            {**s, "id": str(s["id"])} for s in result["nodes"] if str(s["id"]) != "0"
-        ], result.get("totalCount", len(result["nodes"]))
+        return next(iter(value["extensions"]["nodes"]), None)
+
+    async def extension_stores(self):
+        return await self.nodes("extensionStores", "name indexUrl isLegacy")
+
+    async def add_extension_store(self, url):
+        value = await self.query(
+            "mutation($url:String!){addExtensionStore(input:{indexUrl:$url}){extensionStore{name indexUrl}}}",
+            {"url": url},
+        )
+        return value["addExtensionStore"]["extensionStore"]
+
+    async def refresh_extensions(self):
+        await self.query("mutation{fetchExtensions(input:{}){clientMutationId}}")
+
+    async def install_extension_file(self, path):
+        """Upload a staged artifact (also used to restore an exact prior JAR)."""
+        base, headers = await self.settings()
+        operations = {
+            "query": "mutation($file:Upload!){installExternalExtension(input:{extensionFile:$file}){extension{pkgName isInstalled versionName versionCodeLong}}}",
+            "variables": {"file": None},
+        }
+        try:
+            with Path(path).open("rb") as source:
+                form = aiohttp.FormData()
+                form.add_field("operations", json.dumps(operations))
+                form.add_field("map", json.dumps({"0": ["variables.file"]}))
+                form.add_field(
+                    "0", source, filename=Path(path).name, content_type="application/octet-stream"
+                )
+                async with (await self.client()).post(
+                    base + "/api/graphql",
+                    data=form,
+                    headers=headers,
+                    allow_redirects=False,
+                    timeout=aiohttp.ClientTimeout(total=180, sock_connect=10),
+                ) as response:
+                    self.status(response.status)
+                    raw = await response.content.read(1024**2 + 1)
+                    require(len(raw) <= 1024**2, "comic_engine_invalid_response", 503)
+                    result = json.loads(raw)
+                    require(
+                        not result.get("errors") and result.get("data"),
+                        "comic_extension_install_failed",
+                        503,
+                    )
+                    return result["data"]["installExternalExtension"]["extension"]
+        except (aiohttp.ClientError, TimeoutError, ValueError):
+            raise Fault("comic_extension_install_unverified", 503) from None
 
     async def search(self, source_id, query, page=1):
         # Source execution is serial, while independent sources can return progressively.

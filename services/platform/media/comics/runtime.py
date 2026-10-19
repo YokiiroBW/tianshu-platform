@@ -9,6 +9,7 @@ from ..destination import safe_path
 from ..scheduling import pump_scans
 from .catalog import Catalog, public_comic
 from .imports import Imports
+from .extensions import Extensions
 from .komga import Komga
 from .packages import copy_page, folder_pages, image_record
 from .settings import Settings
@@ -26,11 +27,13 @@ class Comics:
         self.imports = Imports(self)
         self.komga = Komga(self)
         self.data_root = Path(self.repo.database).with_suffix(".comic-content")
+        self.extensions = Extensions(self)
         from .downloads import Downloads
 
         self.downloads = Downloads(self)
 
     def start_background(self, background):
+        background.start("comic_extensions", self.extensions.pump)
         if self.media.config is None:
             background.start("comic_cleanup", self.downloads.clean_completed)
         background.start(
@@ -194,9 +197,13 @@ class Comics:
             require(
                 comic["engine_id"] == await self.sources.engine_id(), "comic_source_changed", 409
             )
-            pages = await self.engine.pages(chapter["engine_chapter_id"], comic["engine_manga_id"])
-            require(index < len(pages), "not_found", 404)
-            await self.engine.download_page(pages[index], target)
+            lock = self.engine.source_locks.setdefault(comic["source_id"], asyncio.Lock())
+            async with lock:
+                pages = await self.engine.pages(
+                    chapter["engine_chapter_id"], comic["engine_manga_id"]
+                )
+                require(index < len(pages), "not_found", 404)
+                await self.engine.download_page(pages[index], target)
         else:
             require(chapter["input_kind"] == "images", "comic_preview_after_import", 409)
             source = await self.media.local(self.imports.recheck, comic, chapter)

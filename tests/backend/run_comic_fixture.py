@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from aiohttp import web
-from comic_fixtures import ComicSite, page_bytes
+from comic_fixtures import ComicSite, page_bytes, configure_extensions
 from fixtures import ENV, ROOT
 from services.platform.server import create_app
 from services.platform.service import Platform
@@ -34,6 +34,7 @@ async def serve():
         configuration = web_settings(directory, "http://127.0.0.1:18917", ROOT / "apps/web/dist")
         platform = Platform(configuration)
         comics = platform.media.comics
+        configure_extensions(comics)
         with platform.media.repo.transaction() as db:
             comics.settings.save(site.settings(inputs), db)
         app = create_app(platform)
