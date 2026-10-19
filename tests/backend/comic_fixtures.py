@@ -166,6 +166,16 @@ class ComicSite:
                 }
             }
         elif "fetchSourceManga" in query:
+            if variables["input"].get("query") == "访问拒绝演练":
+                return web.json_response(
+                    {
+                        "errors": [
+                            {
+                                "message": "HTTP error 403 at https://fixture.invalid/?token=must-not-appear"
+                            }
+                        ]
+                    }
+                )
             if self.search_error:
                 return web.json_response({"errors": [{"message": self.search_error}]})
             if self.no_search and variables["input"]["type"] == "SEARCH":

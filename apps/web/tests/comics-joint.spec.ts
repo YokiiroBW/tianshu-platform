@@ -147,6 +147,31 @@ test("comic preview files require the live console login", async ({
   expect(response.status()).toBe(401);
 });
 
+test("source failure filter shows the actual stage and preserves enabled sources", async ({
+  page,
+}) => {
+  await page.goto("/#/subscriptions/9");
+  await page.getByLabel("管理员账号").fill("synthetic-admin");
+  await page
+    .getByLabel("密码", { exact: true })
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByLabel("作品或作者", { exact: true }).fill("访问拒绝演练");
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(page.getByText(/搜索完成/)).toBeVisible();
+  await page.getByRole("button", { name: "下载源", exact: true }).click();
+  await page.getByLabel("下载源语言").selectOption("zh");
+  await page.getByLabel("验证状态").selectOption("attention");
+  const row = page
+    .locator("article")
+    .filter({ has: page.locator(".comic-source-health") });
+  await expect(row).toHaveCount(1);
+  await expect(row.locator('[data-stage="search"]')).toContainText("HTTP 403");
+  await expect(row.getByRole("checkbox")).toBeChecked();
+  await expect(row).not.toContainText("must-not-appear");
+  await expect(row).not.toContainText("fixture.invalid");
+});
+
 test("extension stores install asynchronously and keep ordinary and private plugins separate", async ({
   page,
 }) => {
