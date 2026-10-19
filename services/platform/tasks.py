@@ -331,8 +331,10 @@ class Tasks:
                 document["node_id"], document["connection_revision"]
             )
             built = {
-                "title": document["action"] or "Dockge",
-                "target": document["stack_id"] or document["container_id"],
+                "title": document.get("title", "Dockge 操作"),
+                "target": document.get("target_label")
+                or document["stack_id"]
+                or document["container_id"],
                 "code": (document["reason_codes"] or [document["state"]])[0],
                 "settled": document["settled"],
                 "source_state": "current" if current else "source_missing",

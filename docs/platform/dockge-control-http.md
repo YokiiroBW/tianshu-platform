@@ -24,6 +24,8 @@
   "stack_id":"stack_aaaaaaaaaaaaaaaaaaaaaaaa",
   "container_id":null,
   "action":"stack.restart",
+  "title":"重启 Compose 栈",
+  "target_label":"synthetic-example",
   "state":"queued",
   "stage":"queued",
   "acceptance":"not_sent",
