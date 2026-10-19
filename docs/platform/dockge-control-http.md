@@ -103,11 +103,11 @@
 
 `Stack` 与 view 相同。`Version = {"version_id":"服务端版本ID","created_at":"UTC时间","label":"显示标签","current":false,"restorable":true,"reason_codes":[]}`。无记录为 []，读取失败须在 observation 标明原因。
 
-`compose_content` 仅为节点脱敏编辑内容或 null。节点插入的 opaque 秘密占位符必须原样保留，平台不向浏览器还原秘密；提交不带 `.env`，节点原样保留既有 `.env`、数据卷与 bind 数据。不能把星号掩码当新值写回。此处展示的恢复仅恢复配置/运行版本，不宣称恢复数据写入。
+`compose_content` 仅为节点脱敏编辑内容或 null。节点插入的 opaque 秘密占位符必须原样保留，平台不向浏览器还原秘密；普通配置编辑不接收 `.env` 正文并由节点保留现有文件。恢复按计划处理保存版本中的受管配置文件，不能把普通编辑的保留规则扩大为恢复时配置不变。数据卷与 bind 数据保留，恢复不宣称回滚已发生的数据写入。不能把星号掩码当新值写回。
 
 容器控制详情使用同一detail接口的另一请求：`{"node_id":"fixture-nas","container_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","refresh":false}`，不得同时传stack_id。返回 `{"node_id":"fixture-nas","connection_revision":1,"container":ControlDescriptor|null,"observation":Observation,"refresh":Operation|null}`。ControlDescriptor与view.containers行一致。未检查过的容器首次自动排后台读取；前端只据该确切full64 ID当前描述允许动作。view.containers返回所有已获得节点单独inspect来源的描述，与栈分页独立，不为每次页面轮询给全部容器发SSH。
 
-节点尚无“当前保存版本”权威字段，version.current暂固定false，不能用包含文件身份的revision等号猜测当前版本。节点schema/语义固定来源为根提交 `6834fd5d0b43294b604b826fceca9587d24737c4`；HTTP configure映射节点stack.plan(action=deploy)，不改变浏览器用词。
+节点尚无“当前保存版本”权威字段，version.current暂固定false，不能用包含文件身份的revision等号猜测当前版本。节点schema/语义固定来源为根提交 `89f93d41a5eccb04740c1e8710968d03af7c533a`；HTTP configure映射节点stack.plan(action=deploy)，不改变浏览器用词。
 
 ## plan：具体预览（异步）
 

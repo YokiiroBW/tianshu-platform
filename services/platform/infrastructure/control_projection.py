@@ -85,10 +85,10 @@ def container(value, stack_id=None, *, fresh=True):
 def plan(value, node_id, revision, protection=None):
     def image(row):
         policy = {"always": "始终拉取", "missing": "本地缺失时拉取", "never": "使用本地镜像"}.get(
-            row["pull_policy"], row["pull_policy"]
+            row.get("pull_policy"), row.get("pull_policy") or "未提供拉取策略"
         )
         facts = ["将拉取" if row["pull"] else "不拉取", "策略：" + policy]
-        if row["current_image_id"]:
+        if row.get("current_image_id"):
             facts.append("当前 ID：" + row["current_image_id"])
         if row.get("target_image_id"):
             facts.append("目标 ID：" + row["target_image_id"])
@@ -145,7 +145,7 @@ def plan(value, node_id, revision, protection=None):
     }
 
 
-def version(value, revision, *, can_restore):
+def version(value, *, can_restore):
     return {
         "version_id": value["version_id"],
         "created_at": value["created_at"],

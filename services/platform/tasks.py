@@ -409,6 +409,8 @@ class Tasks:
         built["attention"] = bool(built["attention"]) or built["source_state"] != "current"
         if source == "resources.download":
             built["cancel"] = {"supported": document["can_cancel"], "code": module["cancel_code"]}
+        elif source == "platform.infrastructure":
+            built["pending"] = not document["settled"]
         return built
 
     def _home_task(self, record, document, status):
@@ -510,7 +512,7 @@ class Tasks:
             if name == "platform.infrastructure":
                 control = self.p.infrastructure.control
                 records = control.history_count()
-                if not control.configured and not records:
+                if not control.configured and records == 0:
                     result.append(
                         {
                             "id": name,
@@ -529,7 +531,11 @@ class Tasks:
                     else "available"
                     if records
                     else "empty",
-                    "code": "ready" if control.configured else "infrastructure_control_removed",
+                    "code": "dependency_unavailable"
+                    if records is None
+                    else "ready"
+                    if control.configured
+                    else "infrastructure_control_removed",
                 }
             elif name == "resources.download":
                 if self.p.media.config is None:

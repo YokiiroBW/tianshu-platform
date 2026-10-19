@@ -205,7 +205,6 @@ async def detail(control, body):
             versions=[
                 projection.version(
                     row,
-                    value["revision"],
                     can_restore=projected["allowed_actions"]["restore"]["enabled"],
                 )
                 for row in data.get("versions", [])

@@ -344,7 +344,9 @@ class Control:
         else:
             response = await self._call(node_id, operation, params)
             await self._renew(row, owner)
-            document["result"] = projection.plan(response["data"]["plan"], node_id, revision)
+            document["result"] = await self.local(
+                self.plan_projection, response["data"]["plan"], node_id, revision
+            )
             document["state"] = "observed" if response["status"] == "ok" else "partial"
             document["reason_codes"] = response["reason_codes"]
             return
@@ -354,6 +356,25 @@ class Control:
             state="observed" if response["status"] == "ok" else "partial",
             reason_codes=response["reason_codes"],
         )
+
+    def plan_projection(self, plan, node_id, revision):
+        saved = self.runtime.observation(node_id, "control.stack:" + plan["stack_id"], revision)
+        stack = (saved["data"] or {}).get("stack")
+        if stack is None:
+            inventory = self.runtime.observation(node_id, "control.inventory", revision)
+            stack = next(
+                (
+                    value
+                    for value in (inventory["data"] or {}).get("stacks", [])
+                    if value["id"] == plan["stack_id"]
+                ),
+                None,
+            )
+        protection = stack["protection"] if stack else None
+        # A fresh plan's explicit refusal corroborates the cached maintenance owner.
+        if not protection or protection["reason"] not in plan["blockers"]:
+            protection = None
+        return projection.plan(plan, node_id, revision, protection)
 
     async def _work(self, row, owner):
         document, operation_id = row["document"], row["operation_id"]
