@@ -66,6 +66,7 @@ const stageWording: Record<string, string> = {
 const sourceWording: Record<string, string> = {
   "platform.home": "家庭设备控制",
   "platform.models": "模型配置发布",
+  "platform.infrastructure": "容器与 Compose 控制",
   "companion.core": "Core 对话与写作",
   "assets.remote": "资产远端任务",
   "resources.download": "订阅与下载",
