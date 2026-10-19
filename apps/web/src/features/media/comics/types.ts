@@ -75,6 +75,8 @@ export type SourceObservation = {
   code: string;
   checked_at: number;
   last_success_at?: number;
+  last_failure_at?: number;
+  last_failure_code?: string;
   count?: number;
   returned?: number;
   search_mode?: string;

@@ -198,6 +198,13 @@ class ComicTests(unittest.IsolatedAsyncioTestCase):
             (await self.comics.sources.list())[0]["health"]["search"]["code"],
             "comic_source_access_denied",
         )
+        self.comics.health.record(source, "search", "ready", observed_at=self.now + 5)
+        recovered = (await self.comics.sources.list())[0]
+        self.assertEqual(
+            recovered["health"]["search"]["last_failure_code"], "comic_source_access_denied"
+        )
+        self.assertEqual(recovered["health"]["search"]["last_failure_at"], self.now)
+        self.assertEqual(recovered["revision"], revision)
 
     async def test_reader_pending_does_not_mark_download_or_archive_failed(self):
         comic = await self.comic()
@@ -224,6 +231,11 @@ class ComicTests(unittest.IsolatedAsyncioTestCase):
             ("HTTP error 404", "comic_source_not_found"),
             ("服务器错误，无法搜索", "comic_source_server_error"),
             ("请先登录账号", "comic_source_login_required"),
+            (
+                "您需要打开R18作品显示开关并重启软件才能阅读此作品",
+                "comic_source_content_restricted",
+            ),
+            ("No chapters found", "comic_source_no_chapters"),
             ("Unexpected undocumented failure", "comic_source_unavailable"),
         )
         for message, code in evidence:

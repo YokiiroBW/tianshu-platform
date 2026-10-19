@@ -8,6 +8,8 @@ def source_error(messages):
     text = "\n".join(str(message)[:12000] for message in messages[:8]).casefold()
     patterns = (
         ("comic_source_search_unsupported", r": no search|search (?:is )?not supported|不支持搜索"),
+        ("comic_source_content_restricted", r"r18.*(?:开关|显示|開關|顯示)|content.*restricted"),
+        ("comic_source_no_chapters", r"no chapters? (?:found|available)|未找到章节|找不到章節"),
         (
             "comic_source_address_required",
             r"修改网址|更换域名|设置.*(?:网址|域名)|change.*(?:base url|domain)",
@@ -119,6 +121,13 @@ class SourceHealth:
                 record["last_success_at"] = at
             elif previous.get("last_success_at"):
                 record["last_success_at"] = previous["last_success_at"]
+            if code != "ready":
+                record.update(last_failure_at=at, last_failure_code=code)
+            elif previous.get("last_failure_at"):
+                record.update(
+                    last_failure_at=previous["last_failure_at"],
+                    last_failure_code=previous["last_failure_code"],
+                )
             health[stage] = record
             changes = {"health": health}
             if stage == "search":

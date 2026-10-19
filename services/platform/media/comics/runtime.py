@@ -94,7 +94,13 @@ class Comics:
                     self.catalog.save_directory, comic_id, result["chapters"]
                 )
             except Fault as error:
-                await self.media.local(self.health.record, comic, "directory", error.code)
+                await self.media.local(
+                    self.health.record,
+                    comic,
+                    "directory",
+                    error.code,
+                    facts={"comic_id": comic_id},
+                )
                 raise
             await self.media.local(
                 self.health.record,

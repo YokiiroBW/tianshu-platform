@@ -82,6 +82,12 @@ export function SourceHealth({ source }: { source: Source }) {
                 {record?.code !== "ready" && record?.last_success_at && (
                   <small>上次成功：{timestamp(record.last_success_at)}</small>
                 )}
+                {record?.code === "ready" && record.last_failure_at && (
+                  <small>
+                    最近失败：{word(record.last_failure_code ?? "")} ·{" "}
+                    {timestamp(record.last_failure_at)}
+                  </small>
+                )}
               </dd>
             </div>
           );

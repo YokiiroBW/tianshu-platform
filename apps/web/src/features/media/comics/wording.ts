@@ -1,4 +1,8 @@
 export const comicWords: Record<string, string> = {
+  comic_source_content_restricted:
+    "来源的内容筛选阻止读取此样本，未更改筛选设置；其他作品需单独验证。",
+  comic_source_no_chapters:
+    "插件未返回此作品的章节，可能是作品不可读或章节接口已变化。",
   comic_chapter_missing: "来源已移除此章节，已有归档仍可通过 Komga 阅读。",
   comic_source_connection_refused:
     "源连接被拒绝，请检查目标站点及 Suwayomi 的网络连接。",
