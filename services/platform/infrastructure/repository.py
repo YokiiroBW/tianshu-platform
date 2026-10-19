@@ -53,3 +53,16 @@ class Repository:
             return {"latest": json.loads(row[1]), "sample": json.loads(row[2]) if row[2] else None}
         except (sqlite3.Error, OSError, ValueError):
             raise Fault("infrastructure_store_unavailable", 503) from None
+
+    def keys(self, node_id, prefix, revision):
+        try:
+            with closing(sqlite3.connect(self.database, timeout=2)) as db:
+                return [
+                    row[0]
+                    for row in db.execute(
+                        "SELECT operation FROM observations WHERE node_id=? AND revision=? AND operation LIKE ?",
+                        (node_id, revision, prefix + "%"),
+                    )
+                ]
+        except (sqlite3.Error, OSError):
+            raise Fault("infrastructure_store_unavailable", 503) from None

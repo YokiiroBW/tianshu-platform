@@ -6,6 +6,29 @@ from ..contracts import require
 from ..external_catalog import ExternalCatalog
 
 
+def executor_configuration(value):
+    require(
+        isinstance(value, dict) and set(value) == {"command", "directory"}, "invalid_input", 400
+    )
+    command = value["command"]
+    require(
+        isinstance(command, list)
+        and 1 <= len(command) <= 32
+        and all(
+            isinstance(item, str)
+            and 0 < len(item) <= 4096
+            and not any(ch in item for ch in "\x00\r\n")
+            for item in command
+        )
+        and Path(command[0]).is_absolute()
+        and isinstance(value["directory"], str)
+        and Path(value["directory"]).is_absolute(),
+        "invalid_input",
+        400,
+    )
+    return {**value, "command": list(command)}
+
+
 def configuration(settings):
     value = settings.get("infrastructure")
     if value is None:
@@ -21,6 +44,7 @@ def configuration(settings):
             "poll_interval_seconds",
             "stale_after_seconds",
             "timeout_ms",
+            "control",
         },
         "invalid_input",
         400,
@@ -35,29 +59,7 @@ def configuration(settings):
         "invalid_input",
         400,
     )
-    executor = value["executor"]
-    require(
-        isinstance(executor, dict) and set(executor) == {"command", "directory"},
-        "invalid_input",
-        400,
-    )
-    command = executor["command"]
-    require(
-        isinstance(command, list)
-        and 1 <= len(command) <= 32
-        and all(
-            isinstance(item, str)
-            and 0 < len(item) <= 4096
-            and not any(ch in item for ch in "\x00\r\n")
-            for item in command
-        )
-        and Path(command[0]).is_absolute()
-        and isinstance(executor["directory"], str)
-        and Path(executor["directory"]).is_absolute(),
-        "invalid_input",
-        400,
-    )
-    result = {**value, "executor": {**executor, "command": list(command)}}
+    result = {**value, "executor": executor_configuration(value["executor"])}
     for name, default, minimum, maximum in (
         ("poll_interval_seconds", 30, 5, 3600),
         ("stale_after_seconds", 120, 10, 86400),
@@ -71,4 +73,21 @@ def configuration(settings):
     from .client import Contract
 
     Contract(result["contract_directory"])
+    if "control" in value:
+        control = value["control"]
+        require(
+            isinstance(control, dict)
+            and set(control) == {"contract_directory", "executor"}
+            and isinstance(control["contract_directory"], str)
+            and Path(control["contract_directory"]).is_absolute(),
+            "invalid_input",
+            400,
+        )
+        from .control_client import ControlContract
+
+        ControlContract(control["contract_directory"])
+        result["control"] = {
+            "contract_directory": control["contract_directory"],
+            "executor": executor_configuration(control["executor"]),
+        }
     return result

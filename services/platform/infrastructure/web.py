@@ -44,7 +44,11 @@ class WebInfrastructure:
         require(isinstance(body, dict), "invalid_input", 400)
         operation = path.removeprefix(HTTP_PREFIX)
         runtime = self.runtime
-        if operation == "view":
+        if operation.startswith("control/"):
+            from .control_web import route
+
+            result = await route(runtime.control, operation.removeprefix("control/"), body)
+        elif operation == "view":
             require(body == {}, "invalid_input", 400)
             if runtime is None:
                 return {

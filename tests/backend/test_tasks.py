@@ -815,6 +815,7 @@ class TaskWatermarkTests(unittest.TestCase):
         from services.platform.tasks import Tasks
 
         records = {
+            "platform.infrastructure": [],
             "resources.download": [],
             "platform.home": [
                 {"task_id": "home-control:" + str(i), "created_at": i} for i in range(10, 15)

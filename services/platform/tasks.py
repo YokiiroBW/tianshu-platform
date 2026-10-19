@@ -34,6 +34,7 @@ import uuid
 from . import home as home_module
 from . import web_models as models_module
 from .contracts import Fault, canonical, digest, loads, require, utc
+from .infrastructure.control import TASK_PREFIX as INFRASTRUCTURE_PREFIX
 from .storage import is_ledger_key
 
 # Five separate statuses, each naming exactly what is known; they are never merged.
@@ -76,6 +77,14 @@ MEDIA_STATUS = {
     "published": ("observed", "published"),
     "completed": ("observed", "completed"),
 }
+INFRASTRUCTURE_STATUS = {
+    "queued": ("accepted", "queued"),
+    "running": ("in_progress", "executing"),
+    "observed": ("observed", "observed"),
+    "partial": ("unknown", "partial"),
+    "unknown": ("unknown", "unknown"),
+    "failed": ("failed", "failed"),
+}
 
 
 def _by_status(table):
@@ -87,6 +96,13 @@ def _by_status(table):
 
 
 MODULES = {
+    "platform.infrastructure": {
+        "kind": "infrastructure_control",
+        "prefixes": (INFRASTRUCTURE_PREFIX,),
+        "states": frozenset(INFRASTRUCTURE_STATUS),
+        "by_status": _by_status(INFRASTRUCTURE_STATUS),
+        "cancel_code": "executor_does_not_cancel",
+    },
     "platform.home": {
         "kind": home_module.TASK_KIND,
         "prefixes": (home_module.TASK_PREFIX,),
@@ -137,6 +153,7 @@ SUMMARY_FIELDS = (
     "module",
 )
 MODULE_PAGES = {
+    "platform.infrastructure": "#/home/1",
     "platform.home": "#/home",
     "platform.models": "#/settings/2",
     "resources.download": "#/resources/2",
@@ -244,12 +261,17 @@ class Tasks:
             return None if found is None else (found[0], found[1])
         if name == "resources.download":
             return self.p.media.history(after=after, limit=size, states=states)
+        if name == "platform.infrastructure":
+            return self.p.infrastructure.control.history(after=after, limit=size, states=states)
         found = self.console.models.publications(after=after, limit=size, states=states)
         return None if found is None else (found[0], found[1])
 
     def _record(self, task_id):
         """One record by identifier; an unknown identifier is a real 404, not an empty record."""
         require(isinstance(task_id, str) and 0 < len(task_id) <= 128, "invalid_input", 400)
+        if task_id.startswith(INFRASTRUCTURE_PREFIX):
+            self._identifier(task_id, INFRASTRUCTURE_PREFIX)
+            return self.p.infrastructure.control.record(task_id)
         if task_id.startswith("media:"):
             return self.p.media.record(self._identifier(task_id, "media:"))
         if task_id.startswith(home_module.TASK_PREFIX):
@@ -301,6 +323,34 @@ class Tasks:
         if source == "platform.home":
             status, stage = HOME_STATUS[record["state"]]
             built = self._home_task(record, document, status)
+        elif source == "platform.infrastructure":
+            status, stage = INFRASTRUCTURE_STATUS[record["state"]]
+            stage = document["stage"]
+            control = self.p.infrastructure.control
+            current = control.configured and control.runtime.current(
+                document["node_id"], document["connection_revision"]
+            )
+            built = {
+                "title": document.get("title", "Dockge 操作"),
+                "target": document.get("target_label")
+                or document["stack_id"]
+                or document["container_id"],
+                "code": (document["reason_codes"] or [document["state"]])[0],
+                "settled": document["settled"],
+                "source_state": "current" if current else "source_missing",
+                "attention": status in {"unknown", "failed"},
+                "evidence": {"acceptance": document["acceptance"], "result": document["result"]},
+                "request": {
+                    key: document[key]
+                    for key in (
+                        "node_id",
+                        "connection_revision",
+                        "stack_id",
+                        "container_id",
+                        "action",
+                    )
+                },
+            }
         elif source == "resources.download":
             status, stage = MEDIA_STATUS[record["state"]]
             built = {
@@ -457,7 +507,31 @@ class Tasks:
         """Every responsible module's own state, including the ones with nothing to show."""
         result = []
         for name, module in MODULES.items():
-            if name == "resources.download":
+            if name == "platform.infrastructure":
+                control = self.p.infrastructure.control
+                records = control.history_count()
+                if not control.configured and not records:
+                    result.append(
+                        {
+                            "id": name,
+                            "kind": None,
+                            "connected": False,
+                            "state": "not_connected",
+                            "code": "infrastructure_control_not_configured",
+                            "records": None,
+                            "cancel_code": None,
+                        }
+                    )
+                    continue
+                state = {
+                    "state": "unreadable"
+                    if records is None
+                    else "available"
+                    if records
+                    else "empty",
+                    "code": "ready" if control.configured else "infrastructure_control_removed",
+                }
+            elif name == "resources.download":
                 if self.p.media.config is None:
                     result.append(
                         {
