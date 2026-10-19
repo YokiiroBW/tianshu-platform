@@ -93,9 +93,13 @@ class WebComics:
             )
             offset = body.get("offset", 0)
             require(type(offset) is int and 0 <= offset <= 20000, "invalid_input", 400)
+            page = chapters[offset : offset + 200]
+            jobs = await local(comics.catalog.chapter_jobs, comic, page)
             return {
                 "comic": public_comic(comic),
-                "chapters": chapters[offset : offset + 200],
+                "chapters": [
+                    {**chapter, "job": jobs.get(chapter["chapter_id"])} for chapter in page
+                ],
                 "total": len(chapters),
                 "next_offset": offset + 200 if offset + 200 < len(chapters) else None,
                 "scanlators": sorted({c["scanlator"] for c in chapters if c.get("scanlator")}),

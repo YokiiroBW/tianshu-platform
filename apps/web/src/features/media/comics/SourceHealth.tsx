@@ -39,6 +39,8 @@ export function needsAttention(source: Source) {
 }
 
 function result(stage: SourceStage, observation: SourceObservation) {
+  if (observation.code === "comic_search_partial")
+    return `${word(observation.code)} · ${observation.count ?? 0} 条匹配`;
   if (observation.code !== "ready") return word(observation.code);
   if (stage === "connectivity") return "入口响应成功，未验证内容功能";
   if (stage === "search" && observation.count !== undefined) {
@@ -79,6 +81,13 @@ export function SourceHealth({ source }: { source: Source }) {
                   <span> · HTTP {record.http_status}</span>
                 )}
                 {record && <small>{timestamp(record.checked_at)}</small>}
+                {record &&
+                  Date.now() / 1000 - record.checked_at > 7 * 86400 && (
+                    <small>记录已超过 7 天，当前情况需重新验证。</small>
+                  )}
+                {!!record?.query_errors?.length && (
+                  <small>{record.query_errors.map(word).join("；")}</small>
+                )}
                 {record?.code !== "ready" && record?.last_success_at && (
                   <small>上次成功：{timestamp(record.last_success_at)}</small>
                 )}
@@ -94,4 +103,36 @@ export function SourceHealth({ source }: { source: Source }) {
         })}
     </dl>
   );
+}
+
+export function sourceAdvice(source: Source) {
+  const last = Object.values(observations(source))
+    .filter((r) => r && r.code !== "ready")
+    .sort((a, b) => b!.checked_at - a!.checked_at)[0];
+  const code = last?.code;
+  if (!code) return "";
+  if (code === "comic_source_plugin_incompatible")
+    return "需核对插件与 Suwayomi 兼容版本；反复重试下载通常无法解决。";
+  if (
+    code === "comic_source_format_changed" ||
+    code === "comic_source_not_found"
+  )
+    return "检查插件更新和源地址，恢复后可继续原任务。";
+  if (
+    [
+      "comic_source_login_required",
+      "comic_source_verification_required",
+      "comic_source_address_required",
+    ].includes(code)
+  )
+    return "在 Suwayomi 打开对应源处理账号、验证或地址设置，再重新搜索或继续原任务。";
+  if (code === "comic_source_access_denied")
+    return "先在 Suwayomi 核对该源是否能正常访问，再决定重试；403 本身不能确认具体原因。";
+  if (
+    code.includes("timeout") ||
+    code === "comic_source_rate_limited" ||
+    code === "comic_source_server_error"
+  )
+    return "稍后重试；已取得的页面会由原任务继续使用。";
+  return "查看失败阶段和时间；处理来源或连接问题后，可从原章节继续任务。";
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Chapter, Comic, Detail, Kind, Media, Mutate } from "./types";
 import { kinds } from "./types";
+import { word } from "../wording";
 
 export function ComicDetail({
   comic,
@@ -22,26 +23,91 @@ export function ComicDetail({
   const [scanlator, setScanlator] = useState("");
   const [metadata, setMetadata] = useState(comic.metadata);
   const [editing, setEditing] = useState(false);
+  const [retrying, setRetrying] = useState<string>();
   const { request } = media;
   const read = useCallback(
-    async (offset = 0, refresh = false) => {
+    async (offset = 0, refresh = false, replace = false) => {
       const result = await request<Detail>("comic-detail", "comics/detail", {
         comic_id: comic.comic_id,
         offset,
         refresh,
       });
       if (result)
-        setDetail((old) =>
-          offset && old
+        setDetail((old) => {
+          if (replace && old) {
+            const updates = new Map(
+              result.chapters.map((chapter) => [chapter.chapter_id, chapter]),
+            );
+            return {
+              ...old,
+              comic: result.comic,
+              chapters: old.chapters.map(
+                (chapter) => updates.get(chapter.chapter_id) ?? chapter,
+              ),
+            };
+          }
+          return offset && old
             ? { ...result, chapters: [...old.chapters, ...result.chapters] }
-            : result,
-        );
+            : result;
+        });
     },
     [request, comic.comic_id],
   );
   useEffect(() => {
     void read();
   }, [read]);
+  const pending = [
+    ...new Set(
+      detail?.chapters.flatMap((c, index) =>
+        c.job &&
+        ![
+          "completed",
+          "published",
+          "cancelled",
+          "failed",
+          "auth_required",
+          "unknown",
+        ].includes(c.job.state)
+          ? [Math.floor(index / 200) * 200]
+          : [],
+      ) ?? [],
+    ),
+  ].join(",");
+  useEffect(() => {
+    if (!pending) return;
+    let reading = false;
+    const timer = window.setInterval(async () => {
+      if (document.hidden || reading) return;
+      reading = true;
+      try {
+        for (const offset of pending.split(","))
+          await read(Number(offset), false, true);
+      } finally {
+        reading = false;
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [pending, read]);
+  const retry = async (chapter: Chapter) => {
+    if (!chapter.job) return;
+    setRetrying(chapter.chapter_id);
+    try {
+      const result = await media.command("jobs/control", {
+        job_id: chapter.job.job_id,
+        action: "retry",
+      });
+      if (result) {
+        media.setNotice("已继续原任务，已完成页面和归档回执会复用。");
+        const index =
+          detail?.chapters.findIndex(
+            (item) => item.chapter_id === chapter.chapter_id,
+          ) ?? 0;
+        await read(Math.floor(Math.max(0, index) / 200) * 200, false, true);
+      }
+    } finally {
+      setRetrying(undefined);
+    }
+  };
   const selected = detail?.comic ?? comic;
   const available =
     detail?.chapters.filter((c) => !scanlator || c.scanlator === scanlator) ??
@@ -298,6 +364,32 @@ export function ComicDetail({
                 </small>
               </span>
             </label>
+            {c.job && !c.artifact && (
+              <div className="comic-job-status" role="status">
+                <p>
+                  {word(c.job.stage)} · {word(c.job.code)}
+                </p>
+                <p className="muted">
+                  已保留 {c.job.comic_pages_done ?? 0} /{" "}
+                  {c.job.comic_pages_total || "待查"} 页
+                </p>
+                {c.job.can_retry && (
+                  <button
+                    className="button"
+                    disabled={!!retrying || !!media.busy}
+                    onClick={() => void retry(c)}
+                  >
+                    {retrying === c.chapter_id
+                      ? "正在继续…"
+                      : c.job.stage === "comic_archive"
+                        ? "继续归档"
+                        : c.job.stage === "comic_reader"
+                          ? "重试阅读检查"
+                          : "继续此章任务"}
+                  </button>
+                )}
+              </div>
+            )}
             <div className="comic-actions">
               <button className="button" onClick={() => setPreview(c)}>
                 预览前 3 页

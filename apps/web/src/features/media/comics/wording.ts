@@ -1,4 +1,5 @@
 export const comicWords: Record<string, string> = {
+  comic_search_partial: "已取得部分结果，但部分写法查询失败。",
   comic_source_content_restricted:
     "来源的内容筛选阻止读取此样本，未更改筛选设置；其他作品需单独验证。",
   comic_source_no_chapters:

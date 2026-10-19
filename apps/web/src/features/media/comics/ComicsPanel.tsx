@@ -135,7 +135,7 @@ export function ComicsPanel({ media }: { media: Media }) {
           </button>
         ))}
       </nav>
-      {selected ? (
+      {selected && (
         <ComicDetail
           key={selected.comic_id}
           comic={selected}
@@ -143,183 +143,188 @@ export function ComicsPanel({ media }: { media: Media }) {
           mutate={mutate}
           onBack={() => setSelected(undefined)}
         />
-      ) : (
-        <>
-          {["search", "subscriptions", "library", "sources"].includes(tab) && (
-            <div className="comic-controls">
-              <label>
-                收藏分类
-                <select
-                  value={kind}
-                  onChange={(e) => setKind(e.target.value as Kind)}
-                >
-                  {kinds.map(([key, label]) => (
-                    <option key={key} value={key}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <span className="muted">
-                {kind === "private"
-                  ? "单独浏览和归档私有收藏。"
-                  : `${view.counts.downloaded_chapters} 章已完成归档与阅读检查`}
-              </span>
+      )}
+      <div hidden={!!selected}>
+        {["search", "subscriptions", "library", "sources"].includes(tab) && (
+          <div className="comic-controls">
+            <label>
+              收藏分类
+              <select
+                value={kind}
+                onChange={(e) => setKind(e.target.value as Kind)}
+              >
+                {kinds.map(([key, label]) => (
+                  <option key={key} value={key}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="muted">
+              {kind === "private"
+                ? "单独浏览和归档私有收藏。"
+                : `${view.counts.downloaded_chapters} 章已完成归档与阅读检查`}
+            </span>
+          </div>
+        )}
+        {tab === "search" &&
+          (view.configured ? (
+            <ComicSearch
+              key={kind}
+              media={media}
+              kind={kind}
+              onOpen={setSelected}
+            />
+          ) : (
+            <div className="media-card">
+              <h3>先连接 NAS 上的 Suwayomi</h3>
+              <p>连接已有实例后，即可使用已安装的下载源搜索漫画。</p>
+              <button className="button" onClick={() => setTab("settings")}>
+                连接服务
+              </button>
             </div>
-          )}
-          {tab === "search" &&
-            (view.configured ? (
-              <ComicSearch
-                key={kind}
-                media={media}
-                kind={kind}
-                onOpen={setSelected}
-              />
-            ) : (
-              <div className="media-card">
-                <h3>先连接 NAS 上的 Suwayomi</h3>
-                <p>连接已有实例后，即可使用已安装的下载源搜索漫画。</p>
-                <button className="button" onClick={() => setTab("settings")}>
-                  连接服务
-                </button>
-              </div>
-            ))}
-          {tab === "subscriptions" && (
-            <div className="comic-stack">
-              {view.subscriptions
-                .filter((s) => s.comic.library_kind === kind)
-                .map((s) => (
-                  <article className="media-card" key={s.comic_id}>
-                    <div className="comic-heading">
-                      <h3>
-                        <button
-                          className="comic-text-button"
-                          onClick={() => setSelected(s.comic)}
-                        >
-                          {s.comic.metadata.title}
-                        </button>
-                      </h3>
-                      <span>{s.state === "active" ? "追更中" : "已暂停"}</span>
-                    </div>
-                    <p className="muted">
-                      {s.comic.source_name} · {s.comic.downloaded} /{" "}
-                      {s.comic.chapter_count} 章 · 上次检查{" "}
-                      {timestamp(s.last_scan_at ?? null)}
-                    </p>
-                    <p>{word(s.code)}</p>
-                    <div className="comic-actions">
+          ))}
+        {tab === "subscriptions" && (
+          <div className="comic-stack">
+            {view.subscriptions
+              .filter((s) => s.comic.library_kind === kind)
+              .map((s) => (
+                <article className="media-card" key={s.comic_id}>
+                  <div className="comic-heading">
+                    <h3>
                       <button
-                        className="button"
-                        disabled={!!media.busy || s.state !== "active"}
-                        onClick={() =>
-                          void mutate(
-                            "subscriptions/scan",
-                            { comic_id: s.comic_id },
-                            "已检查目录，新章节已加入队列。",
-                          )
-                        }
+                        className="comic-text-button"
+                        onClick={() => setSelected(s.comic)}
                       >
-                        立即检查
+                        {s.comic.metadata.title}
                       </button>
-                      <button
-                        className="button"
-                        disabled={!!media.busy}
-                        onClick={() =>
+                    </h3>
+                    <span>{s.state === "active" ? "追更中" : "已暂停"}</span>
+                  </div>
+                  <p className="muted">
+                    {s.comic.source_name} · {s.comic.downloaded} /{" "}
+                    {s.comic.chapter_count} 章 · 上次检查{" "}
+                    {timestamp(s.last_scan_at ?? null)}
+                  </p>
+                  <p>{word(s.code)}</p>
+                  <p className="muted">
+                    {s.state === "active"
+                      ? `下次检查 ${timestamp(s.next_scan_at || null)}`
+                      : "已暂停，恢复后继续检查"}
+                    {s.last_scan_at && s.code === "ready"
+                      ? ` · 本次发现 ${s.last_added ?? 0} 章`
+                      : ""}
+                  </p>
+                  <div className="comic-actions">
+                    <button
+                      className="button"
+                      disabled={!!media.busy || s.state !== "active"}
+                      onClick={() =>
+                        void mutate(
+                          "subscriptions/scan",
+                          { comic_id: s.comic_id },
+                          "已检查目录，新章节已加入队列。",
+                        )
+                      }
+                    >
+                      立即检查
+                    </button>
+                    <button
+                      className="button"
+                      disabled={!!media.busy}
+                      onClick={() =>
+                        void mutate("subscriptions/control", {
+                          comic_id: s.comic_id,
+                          action: s.state === "active" ? "pause" : "resume",
+                          expected_revision: s.revision,
+                        })
+                      }
+                    >
+                      {s.state === "active" ? "暂停追更" : "继续追更"}
+                    </button>
+                    <label>
+                      检查周期
+                      <select
+                        value={s.interval_seconds}
+                        onChange={(e) =>
                           void mutate("subscriptions/control", {
                             comic_id: s.comic_id,
-                            action: s.state === "active" ? "pause" : "resume",
+                            action: "interval",
                             expected_revision: s.revision,
+                            interval_seconds: Number(e.target.value),
                           })
                         }
                       >
-                        {s.state === "active" ? "暂停追更" : "继续追更"}
-                      </button>
-                      <label>
-                        检查周期
-                        <select
-                          value={s.interval_seconds}
-                          onChange={(e) =>
-                            void mutate("subscriptions/control", {
-                              comic_id: s.comic_id,
-                              action: "interval",
-                              expected_revision: s.revision,
-                              interval_seconds: Number(e.target.value),
-                            })
-                          }
-                        >
-                          <option value={3600}>每小时</option>
-                          <option value={21600}>每 6 小时</option>
-                          <option value={86400}>每天</option>
-                          <option value={s.interval_seconds}>
-                            当前：{s.interval_seconds / 3600} 小时
-                          </option>
-                        </select>
-                      </label>
-                    </div>
-                  </article>
-                ))}
-              {!view.subscriptions.some(
-                (s) => s.comic.library_kind === kind,
-              ) && (
-                <div className="comic-empty">
-                  <h3>还没有订阅</h3>
-                  <p>在漫画详情中选择订阅范围，之后会自动检查新章节。</p>
-                </div>
-              )}
-            </div>
-          )}
-          {tab === "library" && (
-            <>
-              <label>
-                查找书库
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="作品或作者"
-                />
-              </label>
-              <div className="comic-grid">
-                {library.map((c) => (
-                  <ComicCard
-                    key={c.comic_id}
-                    comic={c}
-                    onOpen={() => setSelected(c)}
-                  />
-                ))}
+                        <option value={3600}>每小时</option>
+                        <option value={21600}>每 6 小时</option>
+                        <option value={86400}>每天</option>
+                        <option value={s.interval_seconds}>
+                          当前：{s.interval_seconds / 3600} 小时
+                        </option>
+                      </select>
+                    </label>
+                  </div>
+                </article>
+              ))}
+            {!view.subscriptions.some((s) => s.comic.library_kind === kind) && (
+              <div className="comic-empty">
+                <h3>还没有订阅</h3>
+                <p>在漫画详情中选择订阅范围，之后会自动检查新章节。</p>
               </div>
-              {!library.length && (
-                <p className="comic-empty">
-                  这里还没有归档漫画。可以搜索下载，或导入 NAS 上的图片目录。
-                </p>
-              )}
-              {libraryOffset !== null && (
-                <button
-                  className="button"
-                  onClick={() => void readLibrary(libraryOffset)}
-                >
-                  加载更多
-                </button>
-              )}
-            </>
-          )}
-          {tab === "imports" && <ComicImports media={media} mutate={mutate} />}
-          {tab === "sources" && (
-            <ComicSources
-              media={media}
-              kind={kind}
-              url={view.settings.connections.suwayomi?.url}
-            />
-          )}
-          {tab === "settings" && (
-            <ComicSettings
-              key={view.settings.revision}
-              settings={view.settings}
-              media={media}
-              mutate={mutate}
-            />
-          )}
-        </>
-      )}
+            )}
+          </div>
+        )}
+        {tab === "library" && (
+          <>
+            <label>
+              查找书库
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="作品或作者"
+              />
+            </label>
+            <div className="comic-grid">
+              {library.map((c) => (
+                <ComicCard
+                  key={c.comic_id}
+                  comic={c}
+                  onOpen={() => setSelected(c)}
+                />
+              ))}
+            </div>
+            {!library.length && (
+              <p className="comic-empty">
+                这里还没有归档漫画。可以搜索下载，或导入 NAS 上的图片目录。
+              </p>
+            )}
+            {libraryOffset !== null && (
+              <button
+                className="button"
+                onClick={() => void readLibrary(libraryOffset)}
+              >
+                加载更多
+              </button>
+            )}
+          </>
+        )}
+        {tab === "imports" && <ComicImports media={media} mutate={mutate} />}
+        {tab === "sources" && (
+          <ComicSources
+            media={media}
+            kind={kind}
+            url={view.settings.connections.suwayomi?.url}
+          />
+        )}
+        {tab === "settings" && (
+          <ComicSettings
+            key={view.settings.revision}
+            settings={view.settings}
+            media={media}
+            mutate={mutate}
+          />
+        )}
+      </div>
     </div>
   );
 }

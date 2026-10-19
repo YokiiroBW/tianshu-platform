@@ -337,8 +337,21 @@ class ComicSite:
             raise web.HTTPNotFound()
         return web.json_response({"content": rows, "last": True})
 
+    async def retry_fault(self, request):
+        """Local synthetic peer control; never installed in the production server."""
+        body = await request.json()
+        if body.get("action") == "arm":
+            self.count = 3
+            self.fail_pages.add("/image/3/2")
+        elif body.get("action") == "recover":
+            self.fail_pages.discard("/image/3/2")
+        else:
+            raise web.HTTPBadRequest()
+        return web.json_response({"state": "ready"})
+
     async def start(self):
         app = web.Application()
+        app.router.add_post("/__fixture/comic-retry", self.retry_fault)
         app.router.add_post("/api/graphql", self.graphql)
         app.router.add_get("/image/{tail:.*}", self.image)
         app.router.add_get("/api/v1/manga/{identity}/thumbnail", self.image)

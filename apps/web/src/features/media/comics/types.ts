@@ -25,6 +25,15 @@ export type Comic = {
   has_cover: boolean;
 };
 export type Chapter = {
+  job?: {
+    job_id: string;
+    state: string;
+    stage: string;
+    code: string;
+    comic_pages_done: number;
+    comic_pages_total: number;
+    can_retry: boolean;
+  } | null;
   source_missing?: boolean;
   chapter_id: string;
   title: string;
@@ -85,6 +94,8 @@ export type SourceObservation = {
   cached?: boolean;
   http_status?: number;
   scope?: string;
+  query_count?: number;
+  query_errors?: string[];
 };
 export type Connection = {
   ca_pem?: string;
@@ -137,6 +148,9 @@ export type SearchResult = {
   search_id: string;
   state: string;
   query: string;
+  queries?: string[];
+  aliases?: string[];
+  language?: string;
   page: number;
   total: number;
   comics: Comic[];
@@ -148,6 +162,8 @@ export type SearchResult = {
     filtered?: number;
     search_mode?: string;
     has_next_page?: boolean;
+    query_errors?: string[];
+    query_count?: number;
   }[];
 };
 export type Mutate = (

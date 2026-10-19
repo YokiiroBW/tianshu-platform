@@ -1,8 +1,10 @@
 """Comic identities, source editions and chapter jobs share the media repository."""
 
+import json
 import re
 
 from ...contracts import digest, require
+from ..repository import VISIBLE
 from .packages import safe_name
 
 
@@ -34,6 +36,39 @@ def public_comic(row):
 class Catalog:
     def __init__(self, comics):
         self.comics, self.media, self.repo = comics, comics.media, comics.repo
+
+    def chapter_jobs(self, comic, chapters):
+        from ..runtime import public_job
+
+        current = {c["chapter_id"]: c["version_key"] for c in chapters}
+        result = {}
+        with self.repo.transaction() as db:
+            rows = db.execute(
+                "SELECT body FROM jobs WHERE "
+                + VISIBLE
+                + " AND json_extract(body,'$.comic_id')=?"
+                + " AND json_extract(body,'$.comic_library_kind')=? ORDER BY created DESC,id DESC",
+                (comic["comic_id"], comic["library_kind"]),
+            ).fetchall()
+        fields = (
+            "job_id",
+            "state",
+            "stage",
+            "code",
+            "comic_pages_done",
+            "comic_pages_total",
+            "can_retry",
+        )
+        for stored in rows:
+            row = json.loads(stored[0])
+            chapter_id = row.get("comic_chapter_id")
+            if chapter_id in result or chapter_id not in current:
+                continue
+            if row.get("comic_chapter", {}).get("version_key") != current[chapter_id]:
+                continue
+            public = public_job(row)
+            result[chapter_id] = {key: public.get(key) for key in fields}
+        return result
 
     def comic(self, value, db=None):
         identity(value)
