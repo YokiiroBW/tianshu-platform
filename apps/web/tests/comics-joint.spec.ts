@@ -147,6 +147,49 @@ test("comic preview files require the live console login", async ({
   expect(response.status()).toBe(401);
 });
 
+test("Chinese search accepts traditional spellings and aliases and survives returning from details", async ({
+  page,
+}) => {
+  await page.goto("/#/subscriptions/9");
+  await page.getByLabel("管理员账号").fill("synthetic-admin");
+  await page
+    .getByLabel("密码", { exact: true })
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(page.getByText(/搜索范围：中文（简体与繁体）/)).toBeVisible();
+  await expect(
+    page.getByRole("option", { name: "聚合全部启用的中文源" }),
+  ).toHaveCount(1);
+  await page.getByLabel("作品或作者", { exact: true }).fill("星際");
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(page.getByText(/搜索完成/)).toBeVisible();
+  await expect(
+    page.getByLabel("下载源", { exact: true }).locator("option"),
+  ).toHaveCount(2);
+  await expect(page.locator(".comic-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "查看章节与预览" }).click();
+  await expect(page.locator(".comic-chapter")).toHaveCount(2);
+  await page.getByRole("button", { name: "返回列表" }).click();
+  await expect(page.getByLabel("作品或作者", { exact: true })).toHaveValue(
+    "星際",
+  );
+  await expect(page.locator(".comic-card")).toHaveCount(1);
+  await page.getByLabel("作品或作者", { exact: true }).fill("另一个译名");
+  await page.getByText("添加其他译名或原名", { exact: true }).click();
+  await page.getByLabel("作品别名（可选，每行一个，最多 2 个）").fill("星際");
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(page.getByText(/搜索完成/)).toBeVisible();
+  await expect(page.locator(".comic-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "下载源", exact: true }).click();
+  await expect(page.getByLabel("下载源语言")).toHaveValue("zh");
+  await expect(page.locator(".comic-extension-details")).not.toHaveAttribute(
+    "open",
+  );
+  await expect(
+    page.locator('.comic-source-health [data-stage="search"]'),
+  ).toContainText("1 条匹配");
+});
+
 test("source failure filter shows the actual stage and preserves enabled sources", async ({
   page,
 }) => {
@@ -172,6 +215,53 @@ test("source failure filter shows the actual stage and preserves enabled sources
   await expect(row).not.toContainText("fixture.invalid");
 });
 
+test("comic detail continues a failed chapter using its original task", async ({
+  page,
+  request,
+}) => {
+  const fixture = JSON.parse(
+    readFileSync(resolve(".runtime/comic-browser-input.json"), "utf8"),
+  );
+  const controlUrl = fixture.site_url + "/__fixture/comic-retry";
+  expect(
+    (await request.post(controlUrl, { data: { action: "arm" } })).ok(),
+  ).toBe(true);
+  await page.goto("/#/subscriptions/9");
+  await page.getByLabel("管理员账号").fill("synthetic-admin");
+  await page
+    .getByLabel("密码", { exact: true })
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByLabel("作品或作者", { exact: true }).fill("星际");
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(page.getByText(/搜索完成/)).toBeVisible();
+  await page.getByRole("button", { name: "查看章节与预览" }).click();
+  await page.getByRole("button", { name: "刷新章节与阅读状态" }).click();
+  const chapter = page
+    .locator(".comic-chapter")
+    .filter({ hasText: "第3章 星间来信" });
+  await chapter.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "下载所选 1 章" }).click();
+  await page.getByRole("button", { name: "刷新章节与阅读状态" }).click();
+  await expect(
+    chapter.getByRole("button", { name: "继续此章任务" }),
+  ).toBeVisible({ timeout: 15000 });
+  await expect(chapter).toContainText("已保留 1 / 3 页");
+  expect(
+    (
+      await request.post(controlUrl, {
+        data: { action: "recover" },
+      })
+    ).ok(),
+  ).toBe(true);
+  await chapter.getByRole("button", { name: "继续此章任务" }).click();
+  await expect(
+    chapter.getByRole("link", { name: "在 Komga 阅读", exact: true }),
+  ).toBeVisible({ timeout: 25000 });
+  await expect(chapter).toContainText("已归档 3 页");
+  await expect(page.locator(".comic-chapter")).toHaveCount(3);
+});
+
 test("extension stores install asynchronously and keep ordinary and private plugins separate", async ({
   page,
 }) => {
@@ -182,6 +272,7 @@ test("extension stores install asynchronously and keep ordinary and private plug
     .fill("synthetic-local-password-014");
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await page.getByRole("button", { name: "下载源", exact: true }).click();
+  await page.getByText("插件仓库与每日维护", { exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "扩展仓库与自动更新" }),
   ).toBeVisible();

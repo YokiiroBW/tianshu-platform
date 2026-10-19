@@ -1,5 +1,9 @@
 # TS-111: exact existing requirements-dev runtime pins; wheel hashes from gateway
 # fixed baseline ec20f95e3849ebee968c4f00d7a31d14eccaa40f uv.lock; no dev extra.
+# TS-204: official PyPI OpenCC 1.4.2, CPython 3.12 Linux amd64 / Windows amd64.
+OpenCC==1.4.2 \
+    --hash=sha256:d90a8b76ea5d1f425a4f2eb16114cb33abd29a73c6a4ec367361c61b1c059a10 \
+    --hash=sha256:7025dc276b2a60b30ed3aefb99f1ceb8616076fd3eb3310c0f8f2046e79e76b1
 mutagen==1.48.1 \
     --hash=sha256:4f077fe87d3fc7fba259aa63d8c026b18382ca6a42ef37c61e16f1b1b5b82fe7
 pillow==12.3.0 \

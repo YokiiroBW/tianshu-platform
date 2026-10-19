@@ -90,11 +90,26 @@
 }
 .comic-search {
   display: grid;
-  grid-template-columns:
-    minmax(200px, 2fr) minmax(100px, 0.65fr) minmax(150px, 1fr)
-    auto;
+  grid-template-columns: minmax(200px, 2fr) minmax(150px, 1fr) auto;
   gap: 14px;
   align-items: end;
+}
+.comic-search > p,
+.comic-search > details {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.comic-extension-details > summary,
+.comic-search > details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding-block: 8px;
+}
+.comic-extension-details > section {
+  margin-top: 18px;
+}
+.comic-job-status {
+  flex: 1 1 260px;
 }
 .comic-grid {
   display: grid;

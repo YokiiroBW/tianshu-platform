@@ -94,6 +94,8 @@ FACTS = {
     "cached",
     "http_status",
     "scope",
+    "query_count",
+    "query_errors",
 }
 
 

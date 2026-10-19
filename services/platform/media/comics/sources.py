@@ -1,22 +1,17 @@
 """Progressive aggregated searches and source health; sessions own transient results."""
 
 import asyncio
-import re
-import unicodedata
 import uuid
 
 from ...contracts import Fault, digest, require
 from .catalog import public_comic
-
-
-def matches(query, item):
-    def normalize(text):
-        return unicodedata.normalize("NFKC", text).casefold()
-
-    terms = normalize(query).split()
-    text = normalize(" ".join(str(item.get(key) or "") for key in ("title", "author", "artist")))
-    compact = re.sub(r"\s+", "", text)
-    return all(term in text or re.sub(r"\s+", "", term) in compact for term in terms)
+from .search_text import (
+    chinese_language,
+    match_score,
+    query_variants,
+    search_names,
+    source_priority,
+)
 
 
 class Sources:
@@ -50,15 +45,19 @@ class Sources:
 
     async def search(self, body, session):
         query = body.get("query", "")
-        require(isinstance(query, str) and 0 < len(query.strip()) <= 200, "invalid_input", 400)
+        names = search_names(query, body.get("aliases", []))
+        variants = query_variants(names)
         ids = body.get("source_ids", [])
         require(
             isinstance(ids, list) and len(ids) <= 20000 and all(isinstance(v, str) for v in ids),
             "invalid_input",
             400,
         )
-        language = body.get("language", "")
+        language = body.get("language", "zh")
+        if language in (None, ""):
+            language = "zh"
         require(isinstance(language, str) and len(language) <= 20, "invalid_input", 400)
+        language = language.lower().replace("_", "-")
         kind = body.get("library_kind", "general")
         require(kind in {"general", "private", "all"}, "invalid_input", 400)
         page = body.get("page", 1)
@@ -73,14 +72,17 @@ class Sources:
             and r.get("available", True)
             and (not ids or r["source_id"] in ids)
             and (
-                not language
-                or r["language"] == language
+                language == "all"
+                or r["language"].lower().replace("_", "-") == language
                 or language == "zh"
-                and r["language"].startswith("zh-")
+                and chinese_language(r["language"])
             )
             and (kind == "all" or (r["content_warning"] == "SAFE") == (kind == "general"))
         ]
         now = self.repo.clock()
+        selected.sort(
+            key=lambda source: (source_priority(source, now), source["name"], source["source_id"])
+        )
         for key, search in list(self.searches.items()):
             if (
                 search["created_at"] < now - 600
@@ -100,46 +102,69 @@ class Sources:
             "sources": [],
             "total": len(selected),
             "query": query.strip(),
+            "aliases": names[1:],
+            "queries": variants,
+            "language": language,
+            "ranks": {},
             "page": page,
         }
         self.searches[search_id] = result
 
         async def collect(source):
+            returned, accepted, errors = {}, {}, []
+            successful, attempted, has_next, search_mode = 0, 0, False, "search"
             try:
-                found = await self.comics.engine.search(source["source_id"], query.strip(), page)
-                count, filtered = 0, 0
-                for item in found["mangas"][:200]:
-                    if not isinstance(item, dict):
-                        continue
-                    if not matches(query.strip(), item):
-                        filtered += 1
-                        continue
-                    comic = await self.media.local(self.comics.catalog.register, source, item)
-                    result["comics"].append(public_comic(comic))
-                    count += 1
-                status = {
-                    "source_id": source["source_id"],
-                    "name": source["name"],
-                    "code": "ready",
-                    "count": count,
-                    "filtered": filtered,
-                    "search_mode": found.get("search_mode", "search"),
-                    "has_next_page": bool(found.get("hasNextPage")),
-                }
+                # One source stays bounded even when several spellings are needed.
+                async with asyncio.timeout(90):
+                    for spelling in variants:
+                        attempted += 1
+                        found = await self.comics.engine.search(source["source_id"], spelling, page)
+                        successful += 1
+                        search_mode = found.get("search_mode", "search")
+                        has_next = has_next or bool(found.get("hasNextPage"))
+                        for item in found["mangas"][:200]:
+                            if not isinstance(item, dict):
+                                continue
+                            key = str(item.get("url") or item.get("id"))
+                            returned[key] = item
+                            score = match_score(names, item)
+                            if not score or key in accepted:
+                                continue
+                            comic = await self.media.local(
+                                self.comics.catalog.register, source, item
+                            )
+                            accepted[key] = comic["comic_id"]
+                            result["comics"].append(public_comic(comic))
+                            result["ranks"][comic["comic_id"]] = (
+                                -score,
+                                source_priority(source, now),
+                                source["name"],
+                                comic["comic_id"],
+                            )
+                        # Catalogue fallback is the same page for every spelling.
+                        if search_mode == "catalogue":
+                            break
             except Fault as error:
-                status = {
-                    "source_id": source["source_id"],
-                    "name": source["name"],
-                    "code": error.code,
-                    "count": 0,
-                }
+                errors.append(error.code)
+            except TimeoutError:
+                errors.append("comic_engine_timeout")
             except (KeyError, ValueError, TypeError):
-                status = {
-                    "source_id": source["source_id"],
-                    "name": source["name"],
-                    "code": "comic_engine_invalid_response",
-                    "count": 0,
-                }
+                errors.append("comic_engine_invalid_response")
+            status = {
+                "source_id": source["source_id"],
+                "name": source["name"],
+                "code": "comic_search_partial"
+                if errors and successful
+                else errors[0]
+                if errors
+                else "ready",
+                "count": len(accepted),
+                "filtered": len(returned) - len(accepted),
+                "search_mode": search_mode,
+                "has_next_page": has_next,
+                "query_count": attempted,
+                "query_errors": errors,
+            }
             result["sources"].append(status)
 
             await self.media.local(
@@ -152,6 +177,8 @@ class Sources:
                     "returned": status["count"] + status.get("filtered", 0),
                     "filtered": status.get("filtered", 0),
                     "search_mode": status.get("search_mode", "search"),
+                    "query_count": attempted,
+                    "query_errors": errors,
                 },
             )
 
@@ -183,9 +210,12 @@ class Sources:
             **{
                 k: v
                 for k, v in search.items()
-                if k not in {"session", "task", "created_at", "comics", "sources"}
+                if k not in {"session", "task", "created_at", "comics", "sources", "ranks"}
             },
-            "comics": list({c["comic_id"]: c for c in search["comics"]}.values()),
+            "comics": sorted(
+                {c["comic_id"]: c for c in search["comics"]}.values(),
+                key=lambda comic: search["ranks"][comic["comic_id"]],
+            ),
             "sources": list(search["sources"]),
         }
 

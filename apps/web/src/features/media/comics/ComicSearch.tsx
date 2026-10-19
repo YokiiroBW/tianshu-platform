@@ -13,12 +13,16 @@ export function ComicSearch({
   onOpen: (comic: Comic) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [language, setLanguage] = useState("");
+  const [aliases, setAliases] = useState("");
   const [source, setSource] = useState("");
   const [sources, setSources] = useState<Source[]>([]);
   const [result, setResult] = useState<SearchResult>();
   const [starting, setStarting] = useState(false);
   const { request } = media;
+  const aliasNames = aliases
+    .split("\n")
+    .map((v) => v.trim())
+    .filter(Boolean);
   useEffect(() => {
     void request<{ sources: Source[] }>(
       "comic-search-sources",
@@ -28,6 +32,16 @@ export function ComicSearch({
       if (r) setSources(r.sources);
     });
   }, [request]);
+  useEffect(() => {
+    if (result?.state !== "completed") return;
+    void request<{ sources: Source[] }>(
+      "comic-search-sources",
+      "comics/sources/list",
+      {},
+    ).then((value) => {
+      if (value) setSources(value.sources);
+    });
+  }, [request, result?.state]);
   useEffect(() => {
     if (result?.state !== "running") return;
     const timer = window.setTimeout(() => {
@@ -50,7 +64,8 @@ export function ComicSearch({
       "comics/search/start",
       {
         query,
-        language,
+        language: "zh",
+        aliases: aliasNames,
         library_kind: kind,
         source_ids: source ? [source] : [],
         page,
@@ -63,6 +78,7 @@ export function ComicSearch({
     (s) =>
       s.enabled &&
       s.available !== false &&
+      /^zh(?:[-_]|$)/i.test(s.language) &&
       (s.content_warning === "SAFE") === (kind === "general"),
   );
   return (
@@ -85,38 +101,44 @@ export function ComicSearch({
           />
         </label>
         <label>
-          语言
-          <select
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-          >
-            <option value="">全部语言</option>
-            {[...new Set(available.map((s) => s.language))].sort().map((v) => (
-              <option key={v}>{v}</option>
+          下载源
+          <select value={source} onChange={(e) => setSource(e.target.value)}>
+            <option value="">聚合全部启用的中文源</option>
+            {available.map((s) => (
+              <option key={s.source_id} value={s.source_id}>
+                {s.name}
+              </option>
             ))}
           </select>
         </label>
-        <label>
-          下载源
-          <select value={source} onChange={(e) => setSource(e.target.value)}>
-            <option value="">聚合全部启用源</option>
-            {available
-              .filter(
-                (s) =>
-                  !language ||
-                  s.language === language ||
-                  (language === "zh" && s.language.startsWith("zh-")),
-              )
-              .map((s) => (
-                <option key={s.source_id} value={s.source_id}>
-                  {s.name}
-                </option>
-              ))}
-          </select>
-        </label>
-        <button className="button primary" disabled={starting || !query.trim()}>
+        <button
+          className="button primary"
+          disabled={starting || !query.trim() || aliasNames.length > 2}
+        >
           搜索
         </button>
+        <p className="muted">
+          搜索范围：中文（简体与繁体）。自动匹配繁简写法，优先查询近期成功的源。
+        </p>
+        <details>
+          <summary>添加其他译名或原名</summary>
+          <label>
+            作品别名（可选，每行一个，最多 2 个）
+            <textarea
+              value={aliases}
+              maxLength={402}
+              rows={2}
+              onChange={(e) => setAliases(e.target.value)}
+              placeholder={"例如：航海王\nOne Piece"}
+            />
+          </label>
+          {aliasNames.length > 2 && (
+            <p role="alert">每次最多添加 2 个其他译名，请分次搜索。</p>
+          )}
+        </details>
+        <p className="muted">
+          范围按源声明的语言筛选；正文语言和汉化组请在章节与预览中确认。
+        </p>
       </form>
       {result && (
         <div className="comic-heading">
@@ -125,7 +147,9 @@ export function ComicSearch({
               ? "正在搜索"
               : result.state === "cancelled"
                 ? "搜索已停止"
-                : "搜索完成"}{" "}
+                : result.state === "failed"
+                  ? "搜索未完整结束"
+                  : "搜索完成"}{" "}
             · {result.sources.length} / {result.total} 个源 ·{" "}
             {result.comics.length} 个来源版本
           </p>
@@ -150,12 +174,16 @@ export function ComicSearch({
       {result && (
         <details>
           <summary>各源结果与失败原因</summary>
+          <p>本次写法：{result.queries?.join(" / ") || result.query}</p>
           <ul>
             {result.sources.map((s) => (
               <li key={s.source_id}>
                 {s.name}：{word(s.code)} · {s.count} 个结果
                 {s.search_mode === "catalogue" ? " · 按源目录筛选" : ""}
                 {s.filtered ? `，排除 ${s.filtered} 个不相关结果` : ""}
+                {!!s.query_errors?.length && (
+                  <span> · {s.query_errors.map(word).join("；")}</span>
+                )}
               </li>
             ))}
           </ul>
@@ -174,7 +202,7 @@ export function ComicSearch({
       )}
       {result?.state === "completed" && !result.comics.length && (
         <p className="comic-empty">
-          没有匹配结果。可调整名称、语言或下载源；具体失败原因见上方源状态。
+          没有匹配结果。可补充其他译名、原名或调整中文下载源；具体失败原因见上方源状态。
         </p>
       )}
       {result?.state === "completed" &&

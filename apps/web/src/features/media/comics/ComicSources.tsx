@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Kind, Media, Source } from "./types";
 import { timestamp, word } from "../wording";
-import { needsAttention, observations, SourceHealth } from "./SourceHealth";
+import {
+  needsAttention,
+  observations,
+  SourceHealth,
+  sourceAdvice,
+} from "./SourceHealth";
 
 type Plugin = {
   package: string;
@@ -85,7 +90,7 @@ export function ComicSources({
   const [page, setPage] = useState(0);
   const [sourcePage, setSourcePage] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [language, setLanguage] = useState("all");
+  const [language, setLanguage] = useState("zh");
   const [verification, setVerification] = useState("all");
   const { request, command, setNotice } = media;
   const refresh = useCallback(async () => {
@@ -160,75 +165,6 @@ export function ComicSources({
   );
   return (
     <div className="comic-stack">
-      <section className="media-card">
-        <div className="comic-heading">
-          <h3>扩展仓库与自动更新</h3>
-          <a className="button" href={url} target="_blank" rel="noreferrer">
-            打开 Suwayomi 登录源账号
-          </a>
-        </div>
-        <p>
-          自动安装全部语言的兼容插件，每天检查新增插件与更新。重复源保留一个版本；普通漫画与私藏分别管理。
-        </p>
-        <div className="comic-actions">
-          <button
-            className="button primary"
-            disabled={busy || !!media.busy}
-            onClick={() =>
-              void control(view?.policy.enabled ? "run" : "enable")
-            }
-          >
-            {view?.policy.enabled
-              ? "立即检查并安装更新"
-              : "安装兼容插件并启用每日更新"}
-          </button>
-          {view?.policy.enabled && (
-            <button
-              className="button"
-              disabled={busy || !!media.busy}
-              onClick={() => void control("pause")}
-            >
-              暂停自动维护
-            </button>
-          )}
-          <button className="button" onClick={() => void refreshSources(true)}>
-            刷新下载源
-          </button>
-        </div>
-        {view && (
-          <>
-            <p role="status">
-              {view.policy.enabled ? "每日自动维护已启用" : "自动维护已暂停"} ·{" "}
-              {label(view.policy.state)} · {view.installed_count} /{" "}
-              {view.catalog_total} 个插件已安装
-              {view.policy.current_package
-                ? ` · 正在处理 ${view.policy.current_package}`
-                : ""}
-            </p>
-            <p className="muted">
-              上次检查：{timestamp(view.policy.last_check_at ?? null)} ·
-              下次检查：{timestamp(view.policy.next_check_at || null)}
-            </p>
-            <div className="comic-source-list">
-              {view.stores.map((store) => (
-                <article className="media-card" key={store.id}>
-                  <h4>{store.name}</h4>
-                  <p>
-                    {store.state ? label(store.state) : "等待连接"}
-                    {store.count !== undefined
-                      ? ` · ${store.count} 个目录项目`
-                      : ""}
-                  </p>
-                  {store.code && <p>{label(store.code)}</p>}
-                  <a href={store.url} target="_blank" rel="noreferrer">
-                    查看仓库索引
-                  </a>
-                </article>
-              ))}
-            </div>
-          </>
-        )}
-      </section>
       <label>
         筛选插件与下载源
         <input
@@ -237,47 +173,6 @@ export function ComicSources({
           placeholder="名称或语言"
         />
       </label>
-      <section className="media-card">
-        <h3>
-          {kind === "general" ? "普通漫画" : "本子与私藏"}插件{" "}
-          {view ? `（${view.total}）` : ""}
-        </h3>
-        <p className="muted">
-          安装完成表示插件已加载。站点的搜索、下载、登录情况在下方单独显示。
-        </p>
-        <div className="comic-source-list">
-          {view?.plugins.map((p) => (
-            <article className="media-card" key={p.package}>
-              <h4>{p.name}</h4>
-              <p>
-                {p.store_id} · {p.languages.join(" / ")}
-              </p>
-              <p>
-                {label(p.state)} · {p.installed_version || "未安装"} →{" "}
-                {p.version}
-              </p>
-              {p.code && <p className="muted">{label(p.code)}</p>}
-              {!!p.duplicates && <p>已合并 {p.duplicates} 个重复仓库项目</p>}
-            </article>
-          ))}
-        </div>
-        <div className="comic-actions">
-          <button
-            className="button"
-            disabled={page === 0}
-            onClick={() => setPage(Math.max(0, page - 100))}
-          >
-            上一页插件
-          </button>
-          <button
-            className="button"
-            disabled={view?.next_offset == null}
-            onClick={() => setPage(view?.next_offset ?? page)}
-          >
-            下一页插件
-          </button>
-        </div>
-      </section>
       <section className="media-card">
         <h3>下载源（{filtered.length}）</h3>
         <div className="comic-controls">
@@ -337,6 +232,19 @@ export function ComicSources({
                 {s.content_warning === "MIXED" ? " · 内容混合" : ""}
               </p>
               <SourceHealth source={s} />
+              {sourceAdvice(s) && (
+                <p className="media-warning">{sourceAdvice(s)}</p>
+              )}
+              {needsAttention(s) && url && (
+                <a
+                  className="button"
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  前往 Suwayomi 处理来源
+                </a>
+              )}
             </article>
           ))}
         </div>
@@ -357,6 +265,128 @@ export function ComicSources({
           </button>
         </div>
       </section>
+      <p className="muted">
+        {view?.policy.enabled
+          ? "每日自动维护已启用"
+          : "自动维护尚未启用或已暂停"}
+        {view ? ` · ${view.installed_count} 个插件已安装` : ""}
+      </p>
+      <details className="media-card comic-extension-details">
+        <summary>插件仓库与每日维护</summary>
+        <section className="media-card">
+          <div className="comic-heading">
+            <h3>扩展仓库与自动更新</h3>
+            <a className="button" href={url} target="_blank" rel="noreferrer">
+              打开 Suwayomi 登录源账号
+            </a>
+          </div>
+          <p>
+            自动安装全部语言的兼容插件，每天检查新增插件与更新。重复源保留一个版本；普通漫画与私藏分别管理。
+          </p>
+          <div className="comic-actions">
+            <button
+              className="button primary"
+              disabled={busy || !!media.busy}
+              onClick={() =>
+                void control(view?.policy.enabled ? "run" : "enable")
+              }
+            >
+              {view?.policy.enabled
+                ? "立即检查并安装更新"
+                : "安装兼容插件并启用每日更新"}
+            </button>
+            {view?.policy.enabled && (
+              <button
+                className="button"
+                disabled={busy || !!media.busy}
+                onClick={() => void control("pause")}
+              >
+                暂停自动维护
+              </button>
+            )}
+            <button
+              className="button"
+              onClick={() => void refreshSources(true)}
+            >
+              刷新下载源
+            </button>
+          </div>
+          {view && (
+            <>
+              <p role="status">
+                {view.policy.enabled ? "每日自动维护已启用" : "自动维护已暂停"}{" "}
+                · {label(view.policy.state)} · {view.installed_count} /{" "}
+                {view.catalog_total} 个插件已安装
+                {view.policy.current_package
+                  ? ` · 正在处理 ${view.policy.current_package}`
+                  : ""}
+              </p>
+              <p className="muted">
+                上次检查：{timestamp(view.policy.last_check_at ?? null)} ·
+                下次检查：{timestamp(view.policy.next_check_at || null)}
+              </p>
+              <div className="comic-source-list">
+                {view.stores.map((store) => (
+                  <article className="media-card" key={store.id}>
+                    <h4>{store.name}</h4>
+                    <p>
+                      {store.state ? label(store.state) : "等待连接"}
+                      {store.count !== undefined
+                        ? ` · ${store.count} 个目录项目`
+                        : ""}
+                    </p>
+                    {store.code && <p>{label(store.code)}</p>}
+                    <a href={store.url} target="_blank" rel="noreferrer">
+                      查看仓库索引
+                    </a>
+                  </article>
+                ))}
+              </div>
+            </>
+          )}
+        </section>
+        <section className="media-card">
+          <h3>
+            {kind === "general" ? "普通漫画" : "本子与私藏"}插件{" "}
+            {view ? `（${view.total}）` : ""}
+          </h3>
+          <p className="muted">
+            安装完成表示插件已加载。站点的搜索、下载、登录情况在上方单独显示。
+          </p>
+          <div className="comic-source-list">
+            {view?.plugins.map((p) => (
+              <article className="media-card" key={p.package}>
+                <h4>{p.name}</h4>
+                <p>
+                  {p.store_id} · {p.languages.join(" / ")}
+                </p>
+                <p>
+                  {label(p.state)} · {p.installed_version || "未安装"} →{" "}
+                  {p.version}
+                </p>
+                {p.code && <p className="muted">{label(p.code)}</p>}
+                {!!p.duplicates && <p>已合并 {p.duplicates} 个重复仓库项目</p>}
+              </article>
+            ))}
+          </div>
+          <div className="comic-actions">
+            <button
+              className="button"
+              disabled={page === 0}
+              onClick={() => setPage(Math.max(0, page - 100))}
+            >
+              上一页插件
+            </button>
+            <button
+              className="button"
+              disabled={view?.next_offset == null}
+              onClick={() => setPage(view?.next_offset ?? page)}
+            >
+              下一页插件
+            </button>
+          </div>
+        </section>
+      </details>
     </div>
   );
 }
