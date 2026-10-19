@@ -47,6 +47,8 @@ const reasons: Record<string, string> = {
   version_not_found: "所选配置版本已不可读取，请刷新版本列表",
   compose_normalized_config_invalid: "Compose 配置无法解析为可执行的部署",
   compose_project_identity_conflict: "Compose 项目身份与已登记应用不一致",
+  compose_reference_outside_stack:
+    "Compose 配置引用了栈目录外的文件，当前无法读取",
   stack_already_exists: "该应用项目已存在，请从清单选择",
   create_reference_files_not_registered: "新应用引用了尚未登记的配置文件",
   worker_interrupted: "节点执行进程中断，结果须查询原操作核对",

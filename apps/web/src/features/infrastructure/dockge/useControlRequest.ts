@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../../../app/Auth";
 import { integrationPost, IntegrationError } from "../../../app/integrationApi";
+import { requestId } from "../../../app/requestId";
 import { useInfrastructureQuery, useInfrastructureAction } from "../api";
 import { controlFailure } from "./presentation";
 import type { Operation } from "./types";
@@ -48,7 +49,9 @@ export function useControlRequest(scope: string, durable = true) {
   const recovery = useInfrastructureAction();
   const candidate = query.data?.operation ?? submitted;
   const operation =
-    candidate?.client_id === pending?.client_id ? candidate : completed;
+    pending && candidate?.client_id === pending.client_id
+      ? candidate
+      : completed;
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -89,16 +92,17 @@ export function useControlRequest(scope: string, durable = true) {
   }, [durable, operation, pending, storageKey]);
 
   const send = async (kind: "action" | "plan" | "execute", body: object) => {
-    if (latch.current || pending || !csrf) return;
+    if (latch.current || pending || !csrf) return false;
     latch.current = true;
-    const receipt = { client_id: crypto.randomUUID() };
-    if (durable) saveReceipt(storageKey, receipt);
-    setPending(receipt);
-    setSubmitted(null);
-    setCompleted(null);
-    setError("");
-    setSending(true);
+    let receipt: Receipt | null = null;
     try {
+      receipt = { client_id: requestId() };
+      if (durable) saveReceipt(storageKey, receipt);
+      setPending(receipt);
+      setSubmitted(null);
+      setCompleted(null);
+      setError("");
+      setSending(true);
       const result = await integrationPost<{ operation: Operation }>(
         `infrastructure/control/${kind}`,
         { ...body, ...receipt },
@@ -110,18 +114,22 @@ export function useControlRequest(scope: string, durable = true) {
       // A definite HTTP rejection occurred before durable acceptance. All lost
       // responses and server failures keep their key for read-only recovery.
       const rejected =
-        cause instanceof IntegrationError &&
-        cause.status < 500 &&
-        cause.executionState !== "unknown";
+        !receipt ||
+        (cause instanceof IntegrationError &&
+          cause.status < 500 &&
+          cause.executionState !== "unknown");
       if (rejected && durable) saveReceipt(storageKey, null);
       if (alive.current) {
         if (rejected) setPending(null);
-        setError(controlFailure(cause));
+        setError(
+          receipt ? controlFailure(cause) : "操作请求尚未发出，请重试。",
+        );
       }
     } finally {
       latch.current = false;
       if (alive.current) setSending(false);
     }
+    return Boolean(receipt);
   };
   const recover = async () => {
     const id = pending?.client_id ?? operation?.client_id;

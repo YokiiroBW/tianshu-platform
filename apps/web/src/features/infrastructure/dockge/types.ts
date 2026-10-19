@@ -107,12 +107,11 @@ export type ConfigVersion = {
 export type StackDetail = {
   node_id: string;
   connection_revision: number;
-  stack: ControlStack;
   compose_content: string | null;
   versions: ConfigVersion[];
   observation: ControlObservation;
   refresh: Operation | null;
-};
+} & ({ stack: ControlStack } | { stack: null });
 export type ContainerControlDetail = {
   node_id: string;
   connection_revision: number;

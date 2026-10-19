@@ -3,7 +3,7 @@ import { time } from "../presentation";
 import { OperationStatus } from "./Operations";
 import { controlReasons, MaintenanceNotice } from "./presentation";
 import { useControlRequest } from "./useControlRequest";
-import type { Plan, StackDetail } from "./types";
+import type { ControlStack, Plan, StackDetail } from "./types";
 
 type Command = ReturnType<typeof useControlRequest>;
 type Intent = "create" | "configure" | "update" | "restore";
@@ -131,7 +131,7 @@ export function DeploymentPanel({
 }: {
   nodeId: string;
   connectionRevision: number;
-  detail?: StackDetail;
+  detail?: StackDetail & { stack: ControlStack };
   intent: Intent;
   restoreVersion?: string;
   available: boolean;
@@ -320,13 +320,13 @@ export function DeploymentPanel({
           }
           busy={command.busy || preview.busy}
           used={usedPlan === plan.plan_id}
-          execute={() => {
-            setUsedPlan(plan.plan_id);
-            void command.send("execute", {
+          execute={async () => {
+            const submitted = await command.send("execute", {
               node_id: nodeId,
               expected_connection_revision: connectionRevision,
               plan_id: plan.plan_id,
             });
+            if (submitted) setUsedPlan(plan.plan_id);
           }}
         />
       )}

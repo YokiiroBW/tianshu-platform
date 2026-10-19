@@ -71,7 +71,11 @@ export function OperationStatus({
   return (
     <section className="dockge-operation" aria-label="当前操作">
       <h4>
-        {operation ? (states[operation.state] ?? "结果未知") : "正在查询原操作"}
+        {operation
+          ? (states[operation.state] ?? "结果未知")
+          : pending
+            ? "正在查询原操作"
+            : "操作尚未发出"}
       </h4>
       {operation && (
         <>
