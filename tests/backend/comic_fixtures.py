@@ -84,6 +84,7 @@ class ComicSite:
         self.lose_observe = False
         self.reader_pending = False
         self.no_search = False
+        self.unknown_page_count = False
         self.url = ""
         self.extensions = {}
 
@@ -188,7 +189,7 @@ class ComicSite:
                     "mangaId": 1,
                     "name": f"第{i}章 星间来信",
                     "chapterNumber": i,
-                    "pageCount": 3,
+                    "pageCount": -1 if self.unknown_page_count else 3,
                     "sourceOrder": i,
                     "scanlator": "测试版本",
                     "url": f"/chapter/{i}",

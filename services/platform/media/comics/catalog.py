@@ -181,7 +181,7 @@ class Catalog:
                     "scanlator": str(row.get("scanlator") or "")[:500],
                     "source_url": row["url"],
                     "upload_date": str(row.get("uploadDate") or ""),
-                    "page_count": row.get("pageCount", 0),
+                    "page_count": max(0, row.get("pageCount") or 0),
                 }
                 chapter["version_key"] = digest(
                     {key: chapter[key] for key in ("chapter_id", "upload_date")}

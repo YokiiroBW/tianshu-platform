@@ -31,6 +31,7 @@ async def serve():
         for name, number in (("1.png", 1), ("2.png", 2), ("10.png", 3)):
             (work / name).write_bytes(page_bytes(number))
         site = await ComicSite(output).start()
+        site.unknown_page_count = True
         configuration = web_settings(directory, "http://127.0.0.1:18917", ROOT / "apps/web/dist")
         platform = Platform(configuration)
         comics = platform.media.comics

@@ -32,6 +32,7 @@ test("comic search, page preview, subscription, lossless folder import and reade
   await page.getByRole("button", { name: "查看章节与预览" }).click();
   await expect(page.locator(".comic-chapter")).toHaveCount(2);
   await page.getByRole("button", { name: "预览前 3 页" }).first().click();
+  await expect(page.locator(".comic-preview img")).toHaveCount(3);
   await expect(
     page.getByRole("img", { name: "第 1 页", exact: true }),
   ).toHaveJSProperty("naturalWidth", 81);
