@@ -3,6 +3,8 @@ import { health, time } from "../presentation";
 import type { ControlObservation, Maintenance } from "./types";
 
 const reasons: Record<string, string> = {
+  infrastructure_observation_stale: "上次读回已过期，请刷新后核对当前状态",
+  not_sampled: "尚未取得控制状态读回",
   infrastructure_control_not_configured: "部署端尚未配置 Dockge 控制",
   infrastructure_executor_unavailable: "节点控制执行器不可用",
   infrastructure_store_unavailable: "操作记录暂时无法读取",
