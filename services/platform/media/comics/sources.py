@@ -142,24 +142,18 @@ class Sources:
                 }
             result["sources"].append(status)
 
-            def record():
-                with self.repo.transaction() as db:
-                    current = self.repo._document(db, "comic_source", source["source_key"])
-                    if current:
-                        self.repo.fact(
-                            "comic_source",
-                            source["source_key"],
-                            {
-                                **current,
-                                "code": status["code"],
-                                "checked_at": self.repo.clock(),
-                                "search_checked_at": self.repo.clock(),
-                            },
-                            current["revision"],
-                            db=db,
-                        )
-
-            await self.media.local(record)
+            await self.media.local(
+                self.comics.health.record,
+                source,
+                "search",
+                status["code"],
+                facts={
+                    "count": status["count"],
+                    "returned": status["count"] + status.get("filtered", 0),
+                    "filtered": status.get("filtered", 0),
+                    "search_mode": status.get("search_mode", "search"),
+                },
+            )
 
         async def run():
             try:

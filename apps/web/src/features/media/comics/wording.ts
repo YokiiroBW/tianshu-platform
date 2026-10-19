@@ -1,7 +1,32 @@
 export const comicWords: Record<string, string> = {
   comic_chapter_missing: "来源已移除此章节，已有归档仍可通过 Komga 阅读。",
   comic_source_connection_refused:
-    "源连接被拒绝，请检查 Suwayomi 的代理地址和网络服务。",
+    "源连接被拒绝，请检查目标站点及 Suwayomi 的网络连接。",
+  comic_source_address_required:
+    "插件要求修改站点地址，请在 Suwayomi 的该源设置中确认当前域名。",
+  comic_source_login_required:
+    "站点要求登录，请在 Suwayomi 中完成该源账号登录。",
+  comic_source_verification_required:
+    "站点要求人机验证，请在 Suwayomi 中完成验证后重试。",
+  comic_source_webview_required:
+    "该源依赖 WebView，但当前 Suwayomi 未能完成网页读取。",
+  comic_source_access_denied:
+    "站点返回 HTTP 403，访问被拒绝；尚不能确定是账号、地区或站点防护。",
+  comic_source_dns_failed:
+    "源站域名解析失败，请核对插件地址及 NAS 的 DNS/路由分流。",
+  comic_source_timeout: "源站连接或读取超时，稍后重试。",
+  comic_engine_timeout: "等待 Suwayomi 响应超时，尚不能确认源站状态。",
+  comic_source_tls_failed: "源站 TLS 连接或证书校验失败，未跳过证书验证。",
+  comic_source_not_found: "站点接口返回 HTTP 404/410，地址或接口可能已变化。",
+  comic_source_server_error: "源站返回服务错误，当前请求未成功。",
+  comic_source_format_changed:
+    "插件未能解析站点返回内容，可能需要更新插件适配。",
+  comic_source_plugin_incompatible: "插件调用了当前 Suwayomi 不支持的接口。",
+  comic_source_image_failed: "Suwayomi 图片代理返回错误，尚未取得有效原图。",
+  comic_source_redirected: "入口返回重定向；未跟随检查，内容功能尚未验证。",
+  comic_source_method_unsupported:
+    "入口不支持仅取响应头的探测，不能据此判断内容功能。",
+  comic_source_entry_unavailable: "入口探测未取得成功响应，内容功能尚未验证。",
   comic_archive_targets_unavailable:
     "服务已连接，但当前凭据没有可用的漫画纳管目标。",
   comic_source_search_unsupported: "此来源不提供搜索，请使用其目录浏览。",

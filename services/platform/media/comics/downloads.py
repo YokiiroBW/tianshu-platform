@@ -16,6 +16,11 @@ from .publication import file_hash, publish
 from .publisher_client import Publisher
 
 RETRYABLE = {
+    "comic_engine_timeout",
+    "comic_source_dns_failed",
+    "comic_source_timeout",
+    "comic_source_server_error",
+    "comic_source_image_failed",
     "comic_source_connection_refused",
     "comic_source_unavailable",
     "comic_engine_unavailable",
@@ -102,11 +107,14 @@ class Downloads:
                     return
 
         pulse = asyncio.create_task(heartbeat())
+        comic, health_stage = None, None
         try:
             await checkpoint()
             comic = await self.media.local(self.comics.catalog.comic, job["comic_id"])
             if not job.get("comic_artifact"):
+                health_stage = "download"
                 pages = await self.pages(comic, job, update, checkpoint)
+                health_stage = "package"
                 await update(state="validating", stage="comic_package", code="comic_packaging")
                 package_relative = identity + f"/{generation}/chapter.cbz"
                 path = safe_path(self.comics.data_root, package_relative)
@@ -142,6 +150,19 @@ class Downloads:
                     metadata_digest=digest(job["comic_metadata"]),
                 )
                 await update(comic_artifact=artifact, comic_relative_path=relative)
+                await self.media.local(
+                    self.comics.health.record,
+                    comic,
+                    "package",
+                    "ready",
+                    facts={
+                        "job_id": identity,
+                        "page_count": record["page_count"],
+                        "library_kind": job["comic_library_kind"],
+                    },
+                )
+            health_stage = "archive"
+            archive_cached = bool(job.get("asset_receipt"))
             if not job.get("asset_receipt"):
                 path = safe_path(self.comics.data_root, job["comic_artifact"]["package_relative"])
                 require(
@@ -165,11 +186,30 @@ class Downloads:
                     code="comic_archived",
                     asset_receipt=receipt,
                 )
+            await self.media.local(
+                self.comics.health.record,
+                comic,
+                "archive",
+                "ready",
+                facts={
+                    "job_id": identity,
+                    "library_kind": job["comic_library_kind"],
+                    "cached": archive_cached,
+                },
+            )
+            health_stage = "reader"
             await update(
                 state="library_verifying", stage="comic_reader", code="comic_reader_index_pending"
             )
             result = await self.comics.komga.verify(job)
             await checkpoint()
+            await self.media.local(
+                self.comics.health.record,
+                comic,
+                "reader",
+                "ready",
+                facts={"job_id": identity, "library_kind": job["comic_library_kind"]},
+            )
 
             def finish():
                 with self.repo.transaction() as db:
@@ -245,6 +285,14 @@ class Downloads:
         except Fault as error:
             if error.code == "lease_conflict":
                 return
+            if comic and health_stage and error.code != "job_cancelled":
+                await self.media.local(
+                    self.comics.health.record,
+                    comic,
+                    health_stage,
+                    error.code,
+                    facts={"job_id": identity, "library_kind": job["comic_library_kind"]},
+                )
             attempts = job.get("attempts", 0) + 1
             retry = error.code in RETRYABLE and (attempts < 6 or error.code in PENDING)
             await self.media.local(
@@ -265,6 +313,14 @@ class Downloads:
                 generation=generation,
             )
         except OSError:
+            if comic and health_stage:
+                await self.media.local(
+                    self.comics.health.record,
+                    comic,
+                    health_stage,
+                    "comic_storage_unavailable",
+                    facts={"job_id": identity, "library_kind": job["comic_library_kind"]},
+                )
             await self.media.local(
                 self.repo.update_job,
                 identity,
@@ -285,26 +341,19 @@ class Downloads:
             return await self._pages(comic, job, update, checkpoint)
         lock = self.comics.engine.source_locks.setdefault(comic["source_id"], asyncio.Lock())
         async with lock:
-            try:
-                result = await self._pages(comic, job, update, checkpoint)
-            except Fault as error:
-                await self.media.local(self.source_health, comic, error.code)
-                raise
-            await self.media.local(self.source_health, comic, "ready")
+            result = await self._pages(comic, job, update, checkpoint)
+            await self.media.local(
+                self.comics.health.record,
+                comic,
+                "download",
+                "ready",
+                facts={
+                    "job_id": job["job_id"],
+                    "page_count": len(result),
+                    "library_kind": job["comic_library_kind"],
+                },
+            )
             return result
-
-    def source_health(self, comic, code):
-        key = comic["engine_id"] + ":" + comic["source_id"]
-        with self.repo.transaction() as db:
-            row = self.repo._document(db, "comic_source", key)
-            if row:
-                self.repo.fact(
-                    "comic_source",
-                    key,
-                    {**row, "download_code": code, "download_checked_at": self.repo.clock()},
-                    row["revision"],
-                    db=db,
-                )
 
     async def _pages(self, comic, job, update, checkpoint):
         chapter = job["comic_chapter"]

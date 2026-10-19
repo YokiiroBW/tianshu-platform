@@ -10,6 +10,7 @@ from ..scheduling import pump_scans
 from .catalog import Catalog, public_comic
 from .imports import Imports
 from .extensions import Extensions
+from .health import SourceHealth
 from .komga import Komga
 from .packages import copy_page, folder_pages, image_record
 from .settings import Settings
@@ -22,6 +23,7 @@ class Comics:
         self.media, self.repo = media, media.repo
         self.settings = Settings(media)
         self.catalog = Catalog(self)
+        self.health = SourceHealth(self)
         self.engine = Suwayomi(lambda: self.settings.remote_connection("suwayomi"))
         self.sources = Sources(self)
         self.imports = Imports(self)
@@ -84,11 +86,22 @@ class Comics:
             rows = await self.sources.list()
             source = next((s for s in rows if s["source_id"] == comic["source_id"]), None)
             require(source and source["enabled"], "comic_source_disabled", 409)
-            result = await self.engine.detail(comic["engine_manga_id"], comic["source_id"])
-            registered = await self.media.local(self.catalog.register, source, result["manga"])
-            require(registered["comic_id"] == comic_id, "comic_source_changed", 409)
-            comic, chapters = await self.media.local(
-                self.catalog.save_directory, comic_id, result["chapters"]
+            try:
+                result = await self.engine.detail(comic["engine_manga_id"], comic["source_id"])
+                registered = await self.media.local(self.catalog.register, source, result["manga"])
+                require(registered["comic_id"] == comic_id, "comic_source_changed", 409)
+                comic, chapters = await self.media.local(
+                    self.catalog.save_directory, comic_id, result["chapters"]
+                )
+            except Fault as error:
+                await self.media.local(self.health.record, comic, "directory", error.code)
+                raise
+            await self.media.local(
+                self.health.record,
+                comic,
+                "directory",
+                "ready",
+                facts={"comic_id": comic_id, "count": len(chapters)},
             )
         artifacts = await self.media.local(self.repo.list, "comic_artifact")
         lookup = {
@@ -199,11 +212,24 @@ class Comics:
             )
             lock = self.engine.source_locks.setdefault(comic["source_id"], asyncio.Lock())
             async with lock:
-                pages = await self.engine.pages(
-                    chapter["engine_chapter_id"], comic["engine_manga_id"]
+                try:
+                    pages = await self.engine.pages(
+                        chapter["engine_chapter_id"], comic["engine_manga_id"]
+                    )
+                    require(index < len(pages), "not_found", 404)
+                    await self.engine.download_page(pages[index], target)
+                    record = await self.media.local(image_record, target)
+                except Fault as error:
+                    await self.media.local(self.health.record, comic, "preview", error.code)
+                    raise
+                await self.media.local(
+                    self.health.record,
+                    comic,
+                    "preview",
+                    "ready",
+                    facts={"comic_id": comic_id, "chapter_id": chapter_id, "index": index},
                 )
-                require(index < len(pages), "not_found", 404)
-                await self.engine.download_page(pages[index], target)
+                return target, record
         else:
             require(chapter["input_kind"] == "images", "comic_preview_after_import", 409)
             source = await self.media.local(self.imports.recheck, comic, chapter)

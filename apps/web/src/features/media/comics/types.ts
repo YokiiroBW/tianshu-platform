@@ -48,6 +48,7 @@ export type Detail = {
   scanlators: string[];
 };
 export type Source = {
+  health?: Partial<Record<SourceStage, SourceObservation>>;
   available?: boolean;
   search_checked_at?: number;
   download_checked_at?: number;
@@ -60,6 +61,28 @@ export type Source = {
   enabled: boolean;
   code: string;
   revision: number;
+};
+export type SourceStage =
+  | "connectivity"
+  | "search"
+  | "directory"
+  | "preview"
+  | "download"
+  | "package"
+  | "archive"
+  | "reader";
+export type SourceObservation = {
+  code: string;
+  checked_at: number;
+  last_success_at?: number;
+  count?: number;
+  returned?: number;
+  search_mode?: string;
+  page_count?: number;
+  library_kind?: Kind;
+  cached?: boolean;
+  http_status?: number;
+  scope?: string;
 };
 export type Connection = {
   ca_pem?: string;

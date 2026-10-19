@@ -71,6 +71,23 @@ test("comic search, page preview, subscription, lossless folder import and reade
   await page.getByRole("button", { name: "暂停追更" }).click();
   await expect(page.getByRole("button", { name: "继续追更" })).toBeVisible();
   await page.getByRole("button", { name: "继续追更" }).click();
+  await page.getByRole("button", { name: "下载源", exact: true }).click();
+  await page.getByLabel("下载源语言").selectOption("zh");
+  await page.getByLabel("验证状态").selectOption("reader");
+  await expect(
+    page.locator('.comic-source-health [data-stage="search"]'),
+  ).toContainText("1 条匹配");
+  await expect(
+    page.locator('.comic-source-health [data-stage="download"]'),
+  ).toContainText("3 页");
+  await expect(
+    page.locator('.comic-source-health [data-stage="archive"]'),
+  ).toContainText("已验证");
+  await expect(
+    page.locator('.comic-source-health [data-stage="reader"]'),
+  ).toContainText("已验证");
+  await page.getByLabel("验证状态").selectOption("unchecked");
+  await expect(page.locator(".comic-source-health")).toHaveCount(0);
   await page.getByRole("button", { name: "导入图片与 CBZ" }).click();
   await page.getByRole("button", { name: "检查导入", exact: true }).click();
   await expect(

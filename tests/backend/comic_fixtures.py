@@ -84,6 +84,7 @@ class ComicSite:
         self.lose_observe = False
         self.reader_pending = False
         self.no_search = False
+        self.search_error = ""
         self.unknown_page_count = False
         self.url = ""
         self.extensions = {}
@@ -165,6 +166,8 @@ class ComicSite:
                 }
             }
         elif "fetchSourceManga" in query:
+            if self.search_error:
+                return web.json_response({"errors": [{"message": self.search_error}]})
             if self.no_search and variables["input"]["type"] == "SEARCH":
                 return web.json_response(
                     {

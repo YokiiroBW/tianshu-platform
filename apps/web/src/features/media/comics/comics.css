@@ -144,6 +144,25 @@
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
 }
+.comic-source-health {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.comic-source-health > div {
+  margin-top: 9px;
+}
+.comic-source-health dt {
+  font-weight: 600;
+}
+.comic-source-health dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.comic-source-health small {
+  display: block;
+  color: var(--text-muted);
+}
 .comics-page .comic-check {
   display: flex;
   align-items: center;

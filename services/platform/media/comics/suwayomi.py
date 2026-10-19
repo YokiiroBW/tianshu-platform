@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlsplit
 import aiohttp
 
 from ...contracts import Fault, require
+from .health import source_error
 from .packages import MAX_PAGE_BYTES
 
 MANGA_FIELDS = (
@@ -103,14 +104,10 @@ class Suwayomi:
                     raise Fault("comic_engine_invalid_response", 503) from None
                 if isinstance(result, dict) and result.get("errors"):
                     messages = [
-                        str(e.get("message", ""))[:1000].casefold()
-                        for e in result["errors"]
-                        if isinstance(e, dict)
+                        str(e.get("message", "")) for e in result["errors"] if isinstance(e, dict)
                     ]
-                    if any(": no search" in message for message in messages):
-                        raise Fault("comic_source_search_unsupported", 409)
-                    if any(": connection refused" in message for message in messages):
-                        raise Fault("comic_source_connection_refused", 503)
+                    code = source_error(messages)
+                    raise Fault(code, 409 if code.endswith(("required", "unsupported")) else 503)
                 require(
                     isinstance(result, dict)
                     and not result.get("errors")
@@ -119,7 +116,9 @@ class Suwayomi:
                     503,
                 )
                 return result["data"]
-        except (aiohttp.ClientError, TimeoutError):
+        except TimeoutError:
+            raise Fault("comic_engine_timeout", 503) from None
+        except aiohttp.ClientError:
             raise Fault("comic_engine_unavailable", 503) from None
 
     async def probe(self):
@@ -318,6 +317,13 @@ class Suwayomi:
             async with (await self.client()).get(
                 url, headers=headers, allow_redirects=False
             ) as response:
+                if response.status >= 400 and response.status not in {401, 403, 429}:
+                    detail = (await response.content.read(65536)).decode("utf-8", "replace")
+                    code = source_error([detail])
+                    raise Fault(
+                        code if code != "comic_source_unavailable" else "comic_source_image_failed",
+                        503,
+                    )
                 self.status(response.status)
                 length = 0
                 with temporary.open("xb") as output:
@@ -329,7 +335,9 @@ class Suwayomi:
                     output.flush()
                     os.fsync(output.fileno())
                 temporary.replace(target)
-        except (aiohttp.ClientError, TimeoutError):
-            raise Fault("comic_source_unavailable", 503) from None
+        except TimeoutError:
+            raise Fault("comic_engine_timeout", 503) from None
+        except aiohttp.ClientError:
+            raise Fault("comic_engine_unavailable", 503) from None
         finally:
             temporary.unlink(missing_ok=True)

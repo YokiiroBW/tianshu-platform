@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Kind, Media, Source } from "./types";
 import { timestamp, word } from "../wording";
+import { needsAttention, observations, SourceHealth } from "./SourceHealth";
 
 type Plugin = {
   package: string;
@@ -84,6 +85,8 @@ export function ComicSources({
   const [page, setPage] = useState(0);
   const [sourcePage, setSourcePage] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [language, setLanguage] = useState("all");
+  const [verification, setVerification] = useState("all");
   const { request, command, setNotice } = media;
   const refresh = useCallback(async () => {
     const result = await request<ExtensionView>(
@@ -114,6 +117,7 @@ export function ComicSources({
     setPage(0);
     setSourcePage(0);
   }, [kind, query]);
+  useEffect(() => setSourcePage(0), [language, verification]);
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (!document.hidden) {
@@ -145,6 +149,13 @@ export function ComicSources({
   const filtered = sources.filter(
     (s) =>
       (s.content_warning === "SAFE") === (kind === "general") &&
+      (language !== "zh" || s.language.toLowerCase().startsWith("zh")) &&
+      (verification !== "attention" || needsAttention(s)) &&
+      (verification !== "reader" || observations(s).reader?.code === "ready") &&
+      (verification !== "unchecked" ||
+        Object.keys(observations(s)).every(
+          (stage) => stage === "connectivity",
+        )) &&
       (s.name + " " + s.language).toLowerCase().includes(query.toLowerCase()),
   );
   return (
@@ -269,6 +280,33 @@ export function ComicSources({
       </section>
       <section className="media-card">
         <h3>下载源（{filtered.length}）</h3>
+        <div className="comic-controls">
+          <label>
+            下载源语言
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+            >
+              <option value="all">全部语言</option>
+              <option value="zh">中文（简体与繁体）</option>
+            </select>
+          </label>
+          <label>
+            验证状态
+            <select
+              value={verification}
+              onChange={(e) => setVerification(e.target.value)}
+            >
+              <option value="all">全部状态</option>
+              <option value="attention">有失败或待处理项</option>
+              <option value="reader">已有样本通过阅读检查</option>
+              <option value="unchecked">内容功能尚未验证</option>
+            </select>
+          </label>
+        </div>
+        <p className="muted">
+          记录最近一次实际操作及时间。空搜索结果、入口可达和样本预览都不代表完整下载成功；归档与阅读按样本目标分别核对。
+        </p>
         <div className="comic-source-list">
           {filtered.slice(sourcePage, sourcePage + 100).map((s) => (
             <article className="media-card" key={s.source_key}>
@@ -298,12 +336,7 @@ export function ComicSources({
                 {s.available === false ? "插件当前未提供该源" : "已加载"}
                 {s.content_warning === "MIXED" ? " · 内容混合" : ""}
               </p>
-              <p className="muted">
-                搜索：{s.search_checked_at ? word(s.code) : "尚未验证"} · 下载：
-                {s.download_checked_at
-                  ? word(s.download_code ?? "")
-                  : "尚未验证"}
-              </p>
+              <SourceHealth source={s} />
             </article>
           ))}
         </div>

@@ -18,6 +18,7 @@ from services.platform.media.comics.packages import (
     package_cbz,
 )
 from services.platform.media.comics.publication import publish
+from services.platform.media.comics.health import source_error
 from services.platform.media.runtime import Media, public_job
 from services.platform.media.web import WebMedia
 
@@ -95,6 +96,10 @@ class ComicTests(unittest.IsolatedAsyncioTestCase):
         for path, content in original.items():
             self.assertEqual((self.output / path).read_bytes(), content)
         self.assertNotIn("comic_cache", public_job(third))
+        source = (await self.comics.sources.list())[0]
+        for stage in ("search", "directory", "download", "package", "archive", "reader"):
+            self.assertEqual(source["health"][stage]["code"], "ready", stage)
+        self.assertEqual(source["health"]["download"]["page_count"], 3)
 
     async def test_latest_uses_suwayomi_reading_order_and_only_catches_new_chapters(self):
         self.site.count = 3
@@ -144,6 +149,10 @@ class ComicTests(unittest.IsolatedAsyncioTestCase):
         self.repo.update_job(first["job_id"], {"state": "queued"})
         second = await self.run_job()
         self.assertEqual(second["code"], "comic_archive_unavailable")
+        health = (await self.comics.sources.list())[0]["health"]
+        self.assertEqual(health["download"]["code"], "ready")
+        self.assertEqual(health["archive"]["code"], "comic_archive_unavailable")
+        self.assertNotIn("reader", health)
         self.assertEqual(self.site.hits["/image/1/1"], 1)
         key = second["comic_artifact"]["archive_key"]
         await self.media.close()
@@ -162,6 +171,64 @@ class ComicTests(unittest.IsolatedAsyncioTestCase):
             self.site.hits["POST /assetlink/v1/service-imports/" + key + "/observe"], 1
         )
         self.assertEqual(len(list(self.output.rglob("*.cbz"))), 1)
+        self.assertEqual((await self.comics.sources.list())[0]["health"]["reader"]["code"], "ready")
+
+    async def test_source_diagnostics_keep_preferences_empty_results_and_redact_errors(self):
+        await self.comics.sources.refresh()
+        source = (await self.comics.sources.list())[0]
+        revision = source["revision"]
+        session = object()
+        result = await self.comics.sources.search({"query": "不存在的普通作品"}, session)
+        await self.comics.sources.searches[result["search_id"]]["task"]
+        empty = (await self.comics.sources.list())[0]["health"]["search"]
+        self.assertEqual((empty["code"], empty["count"], empty["returned"]), ("ready", 0, 2))
+        self.now += 5
+        self.site.search_error = "HTTP error 403 at https://fixture.invalid/?token=do-not-expose"
+        result = await self.comics.sources.search({"query": "星际"}, session)
+        await self.comics.sources.searches[result["search_id"]]["task"]
+        row = (await self.comics.sources.list())[0]
+        self.assertEqual(row["revision"], revision)
+        self.assertTrue(row["enabled"])
+        self.assertEqual(row["health"]["search"]["code"], "comic_source_access_denied")
+        self.assertEqual(row["health"]["search"]["last_success_at"], self.now - 5)
+        self.assertNotIn("do-not-expose", str(row))
+        self.assertNotIn("fixture.invalid", str(row))
+        self.comics.health.record(source, "search", "ready", observed_at=self.now - 10)
+        self.assertEqual(
+            (await self.comics.sources.list())[0]["health"]["search"]["code"],
+            "comic_source_access_denied",
+        )
+
+    async def test_reader_pending_does_not_mark_download_or_archive_failed(self):
+        comic = await self.comic()
+        chapter = self.comics.catalog.chapters(comic["comic_id"])[0]
+        await self.call(
+            "downloads/enqueue",
+            {"comic_id": comic["comic_id"], "chapter_ids": [chapter["chapter_id"]]},
+        )
+        self.site.reader_pending = True
+        job = await self.run_job()
+        health = (await self.comics.sources.list())[0]["health"]
+        self.assertEqual(job["code"], "comic_reader_index_pending")
+        self.assertEqual(health["download"]["code"], "ready")
+        self.assertEqual(health["archive"]["code"], "ready")
+        self.assertEqual(health["reader"]["code"], "comic_reader_index_pending")
+
+    def test_real_upstream_failure_classification_is_specific_without_guessing_403(self):
+        evidence = (
+            ("m.happymh.com: Name or service not known", "comic_source_dns_failed"),
+            ("请在插件设置中修改网址", "comic_source_address_required"),
+            ("Timed out waiting for WebView after 10s", "comic_source_webview_required"),
+            ("HTTP error 403", "comic_source_access_denied"),
+            ("Cloudflare challenge HTTP error 403", "comic_source_verification_required"),
+            ("HTTP error 404", "comic_source_not_found"),
+            ("服务器错误，无法搜索", "comic_source_server_error"),
+            ("请先登录账号", "comic_source_login_required"),
+            ("Unexpected undocumented failure", "comic_source_unavailable"),
+        )
+        for message, code in evidence:
+            with self.subTest(message=message):
+                self.assertEqual(source_error([message]), code)
 
     async def test_local_folder_natural_order_preserves_original_and_duplicate_enqueue(self):
         work = self.inputs / "合成图集"
