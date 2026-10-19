@@ -3,6 +3,55 @@ import { test, expect } from "@playwright/test";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
+test("automatic English and Japanese aliases select a Chinese version and keep tracking locked", async ({
+  page,
+}, info) => {
+  await page.goto("/#/subscriptions/9");
+  await page.getByLabel("管理员账号").fill("synthetic-admin");
+  await page
+    .getByLabel("密码", { exact: true })
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  for (const query of ["Star Courier", "星間郵便"]) {
+    await page.getByLabel("作品或作者", { exact: true }).fill(query);
+    await page.getByRole("button", { name: "搜索", exact: true }).click();
+    await expect(page.getByLabel("自动别名识别")).toContainText(
+      "已识别：星际邮差",
+    );
+    await expect(page.locator(".comic-card")).toHaveCount(1);
+    await expect(page.locator(".comic-card")).toContainText("中文 · 源声明");
+  }
+  await page.getByRole("button", { name: "查看章节与预览" }).click();
+  await expect(
+    page.getByRole("combobox", { name: "中文版本", exact: true }),
+  ).toContainText("中文 · 测试版本");
+  await expect(page.getByText(/追更固定 中文 · 测试版本/)).toBeVisible();
+  await page.getByLabel("首次订阅范围").selectOption("new");
+  await page
+    .getByRole("button", { name: "订阅追更", exact: true })
+    .last()
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "已保存追更设置" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "返回列表" }).click();
+  await expect(page.getByLabel("作品或作者", { exact: true })).toHaveValue(
+    "星間郵便",
+  );
+  await expect(page.locator(".comic-card")).toHaveCount(1);
+  await page
+    .getByRole("navigation", { name: "漫画订阅功能" })
+    .getByRole("button", { name: "订阅追更" })
+    .click();
+  await expect(
+    page.getByText("固定版本：中文 · 测试版本", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: info.outputPath("chinese-version-subscription.png"),
+    fullPage: true,
+  });
+});
+
 test("comic search, page preview, subscription, lossless folder import and reader receipts", async ({
   page,
 }, info) => {
@@ -158,7 +207,7 @@ test("Chinese search accepts traditional spellings and aliases and survives retu
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await expect(page.getByText(/搜索范围：中文（简体与繁体）/)).toBeVisible();
   await expect(
-    page.getByRole("option", { name: "聚合全部启用的中文源" }),
+    page.getByRole("option", { name: "聚合中文与多语言源" }),
   ).toHaveCount(1);
   await page.getByLabel("作品或作者", { exact: true }).fill("星際");
   await page.getByRole("button", { name: "搜索", exact: true }).click();

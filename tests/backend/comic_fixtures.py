@@ -104,6 +104,27 @@ class ComicSite:
             "inLibrary": False,
         }
 
+    async def alias_request(self, provider, path, body=None):
+        self.hits["alias:" + provider] += 1
+        if provider == "anilist":
+            return {"data": {"Page": {"media": []}}}
+        record = {
+            "id": 10001,
+            "type": 1,
+            "platform": "漫画",
+            "name": "Star Courier",
+            "name_cn": "星际邮差",
+            "infobox": [
+                {"key": "别名", "value": [{"v": "星間郵便"}]},
+                {"key": "作者", "value": "合成作者"},
+            ],
+        }
+        if path == "/v0/subjects/10001":
+            return record
+        return {
+            "data": [record] if body and body.get("keyword") in {"Star Courier", "星間郵便"} else []
+        }
+
     async def graphql(self, request):
         self.hits["graphql"] += 1
         if request.content_type.startswith("multipart/"):

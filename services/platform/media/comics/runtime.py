@@ -8,6 +8,8 @@ from ...contracts import Fault, require
 from ..destination import safe_path
 from ..scheduling import pump_scans
 from .catalog import Catalog, public_comic
+from .aliases import Aliases
+from .versions import eligible, chapter_evidence
 from .imports import Imports
 from .extensions import Extensions
 from .health import SourceHealth
@@ -25,6 +27,7 @@ class Comics:
         self.catalog = Catalog(self)
         self.health = SourceHealth(self)
         self.engine = Suwayomi(lambda: self.settings.remote_connection("suwayomi"))
+        self.aliases = Aliases(self)
         self.sources = Sources(self)
         self.imports = Imports(self)
         self.komga = Komga(self)
@@ -49,6 +52,7 @@ class Comics:
 
     async def close(self):
         await self.sources.close()
+        await self.aliases.close()
         await self.engine.close()
         await self.komga.close()
         await self.downloads.close()
@@ -115,7 +119,14 @@ class Comics:
             for a in artifacts
             if a["comic_id"] == comic_id and a["library_kind"] == comic["library_kind"]
         }
-        return comic, [{**c, "artifact": lookup.get(c["chapter_id"])} for c in chapters]
+        return comic, [
+            {
+                **c,
+                "language_evidence": c.get("language_evidence") or chapter_evidence(comic, c),
+                "artifact": lookup.get(c["chapter_id"]),
+            }
+            for c in chapters
+        ]
 
     async def scan(self, comic_id):
         subscription = await self.media.local(self.repo.get, "comic_subscription", comic_id)
@@ -141,14 +152,16 @@ class Comics:
                         current and current["state"] == "active", "comic_subscription_paused", 409
                     )
                     seen = set(current["seen"])
-                    added = [
-                        c
-                        for c in chapters
-                        if c["version_key"] not in seen
-                        and not c.get("source_missing")
-                        and (not current.get("scanlator") or c["scanlator"] == current["scanlator"])
-                    ]
-                    jobs = self.catalog.enqueue(comic, added, db=db)
+                    matching = eligible(comic, chapters, current)
+                    require(
+                        not current.get("version_policy") or matching,
+                        "comic_chinese_version_missing",
+                        409,
+                    )
+                    added = [c for c in matching if c["version_key"] not in seen]
+                    jobs = self.catalog.enqueue(
+                        comic, added, db=db, version_policy=current.get("version_policy")
+                    )
                     value = self.repo.fact(
                         "comic_subscription",
                         comic_id,

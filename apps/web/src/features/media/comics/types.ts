@@ -2,6 +2,12 @@ import type { useMediaController } from "../useMediaController";
 
 export type Media = ReturnType<typeof useMediaController>;
 export type Kind = "general" | "private";
+export type LanguageEvidence = { language: string; basis: string };
+export type ComicVersion = LanguageEvidence & {
+  id: string;
+  scanlator: string;
+  chapters: number;
+};
 export type Metadata = {
   title: string;
   author: string;
@@ -12,6 +18,8 @@ export type Metadata = {
   tags: string[];
 };
 export type Comic = {
+  language_evidence?: LanguageEvidence;
+  chinese_available?: boolean;
   comic_id: string;
   metadata: Metadata;
   source_id: string;
@@ -25,6 +33,7 @@ export type Comic = {
   has_cover: boolean;
 };
 export type Chapter = {
+  language_evidence?: LanguageEvidence;
   job?: {
     job_id: string;
     state: string;
@@ -50,6 +59,7 @@ export type Chapter = {
   } | null;
 };
 export type Detail = {
+  versions?: ComicVersion[];
   comic: Comic;
   chapters: Chapter[];
   total: number;
@@ -124,6 +134,7 @@ export type Settings = {
   targets: Partial<Record<Kind, Target>>;
 };
 export type Subscription = {
+  version_policy?: { language: string; scanlator: string };
   comic_id: string;
   comic: Comic;
   state: string;
@@ -145,6 +156,13 @@ export type View = {
   };
 };
 export type SearchResult = {
+  alias_resolution?: {
+    state: string;
+    names: string[];
+    selected?: { title: string; provider: string; url: string } | null;
+    candidates: { id: string; title: string; authors: string[] }[];
+    provider_unavailable?: boolean;
+  };
   search_id: string;
   state: string;
   query: string;
@@ -164,6 +182,7 @@ export type SearchResult = {
     has_next_page?: boolean;
     query_errors?: string[];
     query_count?: number;
+    language_filter?: string;
   }[];
 };
 export type Mutate = (

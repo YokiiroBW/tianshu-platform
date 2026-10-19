@@ -125,4 +125,9 @@ export const comicWords: Record<string, string> = {
     "本地目录通过导入整理，自动追更适用于在线来源。",
   comic_subscription_paused: "此订阅已暂停。",
   comic_chapter_changed: "章节选择已变化，请重新读取目录。",
+  comic_chinese_version_required: "请选择可核对的中文版本，再保存追更。",
+  comic_chinese_version_missing:
+    "来源当前未返回所选中文版本，已保留原订阅和文件，稍后重查。",
+  comic_alias_provider_unavailable: "别名资料服务暂不可用，仍可按原名搜索。",
+  comic_alias_choice_expired: "对应作品选项已变化，请重新搜索后选择。",
 };

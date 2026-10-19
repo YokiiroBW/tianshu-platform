@@ -1,5 +1,6 @@
 import { PanelsTopLeft } from "lucide-react";
 import type { Comic } from "./types";
+import { languageEvidence } from "./language";
 
 export function ComicCard({
   comic,
@@ -37,6 +38,9 @@ export function ComicCard({
         <p>{comic.metadata.author || "作者未提供"}</p>
         <p className="muted">
           {comic.source_name} · {comic.metadata.language || "语言未知"}
+        </p>
+        <p className="muted">
+          {languageEvidence(comic.language_evidence, comic.chinese_available)}
         </p>
         {comic.chapter_count > 0 && (
           <p className="muted">

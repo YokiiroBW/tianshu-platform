@@ -5,6 +5,7 @@ import json
 import base64
 import os
 import uuid
+import time
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
@@ -47,6 +48,7 @@ class Suwayomi:
         self.session = None
         self.parallel = asyncio.Semaphore(4)
         self.source_locks = {}
+        self.filter_cache = {}
 
     async def close(self):
         if self.session:
@@ -221,7 +223,29 @@ class Suwayomi:
         except (aiohttp.ClientError, TimeoutError, ValueError):
             raise Fault("comic_extension_install_unverified", 503) from None
 
-    async def search(self, source_id, query, page=1):
+    async def filters(self, source_id):
+        cached = self.filter_cache.get(source_id)
+        if cached and time.monotonic() - cached[0] < 3600:
+            return cached[1]
+        fields = "__typename ... on SelectFilter{name values} ... on CheckBoxFilter{name} ... on TriStateFilter{name}"
+        value = await self.query(
+            "query($id:LongString!){sources(first:1,filter:{id:{equalTo:$id}}){nodes{id filters{"
+            + fields
+            + " ... on GroupFilter{name filters{"
+            + fields
+            + "}}}}}}",
+            {"id": source_id},
+        )
+        rows = value["sources"]["nodes"]
+        require(
+            len(rows) == 1 and str(rows[0]["id"]) == source_id, "comic_engine_invalid_response", 503
+        )
+        result = rows[0]["filters"]
+        require(isinstance(result, list), "comic_engine_invalid_response", 503)
+        self.filter_cache[source_id] = (time.monotonic(), result)
+        return result
+
+    async def search(self, source_id, query, page=1, *, filters=None):
         # Source execution is serial, while independent sources can return progressively.
         lock = self.source_locks.setdefault(source_id, asyncio.Lock())
         async with self.parallel, lock:
@@ -231,6 +255,8 @@ class Suwayomi:
                 + " } } }"
             )
             inputs = {"source": source_id, "type": "SEARCH", "query": query, "page": page}
+            if filters:
+                inputs["filters"] = filters
             mode = "search"
             try:
                 value = await self.query(mutation, {"input": inputs})
@@ -249,7 +275,11 @@ class Suwayomi:
                 "comic_engine_invalid_response",
                 503,
             )
-            return {**result, "search_mode": mode}
+            return {
+                **result,
+                "search_mode": mode,
+                "filters_applied": bool(filters) and mode == "search",
+            }
 
     async def detail(self, manga_id, source_id):
         lock = self.source_locks.setdefault(source_id, asyncio.Lock())

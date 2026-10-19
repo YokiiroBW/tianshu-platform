@@ -35,6 +35,7 @@ async def serve():
         configuration = web_settings(directory, "http://127.0.0.1:18917", ROOT / "apps/web/dist")
         platform = Platform(configuration)
         comics = platform.media.comics
+        comics.aliases.request = site.alias_request
         configure_extensions(comics)
         with platform.media.repo.transaction() as db:
             comics.settings.save(site.settings(inputs), db)

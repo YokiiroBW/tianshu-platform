@@ -10,6 +10,7 @@ import { ComicImports } from "./ComicImports";
 import { ComicCard } from "./ComicCard";
 import type { Comic, Kind, Media, View } from "./types";
 import { kinds } from "./types";
+import { languageName } from "./language";
 import "./comics.css";
 
 const tabs = [
@@ -207,6 +208,12 @@ export function ComicsPanel({ media }: { media: Media }) {
                     {timestamp(s.last_scan_at ?? null)}
                   </p>
                   <p>{word(s.code)}</p>
+                  {s.version_policy && (
+                    <p className="muted">
+                      固定版本：{languageName(s.version_policy.language)} ·{" "}
+                      {s.version_policy.scanlator || "原来源版本"}
+                    </p>
+                  )}
                   <p className="muted">
                     {s.state === "active"
                       ? `下次检查 ${timestamp(s.next_scan_at || null)}`

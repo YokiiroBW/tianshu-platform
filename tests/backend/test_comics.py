@@ -43,6 +43,7 @@ class ComicTests(unittest.IsolatedAsyncioTestCase):
         )
         self.addAsyncCleanup(self.media.close)
         self.repo, self.comics = self.media.repo, self.media.comics
+        self.comics.aliases.request = self.site.alias_request
         self.web, self.session = WebMedia(self.media, LiveConsole()), {"live": True}
         await self.call("settings/save", self.site.settings(self.inputs))
 

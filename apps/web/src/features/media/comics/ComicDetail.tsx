@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Chapter, Comic, Detail, Kind, Media, Mutate } from "./types";
 import { kinds } from "./types";
 import { word } from "../wording";
+import { languageEvidence, languageName } from "./language";
 
 export function ComicDetail({
   comic,
@@ -21,6 +22,7 @@ export function ComicDetail({
   const [mode, setMode] = useState("all");
   const [latest, setLatest] = useState(5);
   const [scanlator, setScanlator] = useState("");
+  const [version, setVersion] = useState("");
   const [metadata, setMetadata] = useState(comic.metadata);
   const [editing, setEditing] = useState(false);
   const [retrying, setRetrying] = useState<string>();
@@ -31,6 +33,8 @@ export function ComicDetail({
         comic_id: comic.comic_id,
         offset,
         refresh,
+        chapter_version:
+          comic.source_type === "remote" ? version || "preferred" : undefined,
       });
       if (result)
         setDetail((old) => {
@@ -51,7 +55,7 @@ export function ComicDetail({
             : result;
         });
     },
-    [request, comic.comic_id],
+    [request, comic.comic_id, comic.source_type, version],
   );
   useEffect(() => {
     void read();
@@ -109,9 +113,15 @@ export function ComicDetail({
     }
   };
   const selected = detail?.comic ?? comic;
+  const versionId = version || detail?.versions?.[0]?.id || "all";
+  const selectedVersion = detail?.versions?.find((v) => v.id === versionId);
   const available =
-    detail?.chapters.filter((c) => !scanlator || c.scanlator === scanlator) ??
-    [];
+    detail?.chapters.filter((c) =>
+      selectedVersion
+        ? c.language_evidence?.language === selectedVersion.language &&
+          c.scanlator === selectedVersion.scanlator
+        : !scanlator || c.scanlator === scanlator,
+    ) ?? [];
   return (
     <div className="comic-stack">
       <div className="comic-heading">
@@ -144,6 +154,7 @@ export function ComicDetail({
         <p className="comic-description">
           {selected.metadata.description || "来源暂未提供简介。"}
         </p>
+        <p className="muted">{languageEvidence(selected.language_evidence)}</p>
         {editing && (
           <form
             className="comic-stack"
@@ -232,7 +243,27 @@ export function ComicDetail({
               ))}
             </select>
           </label>
-          {!!detail?.scanlators.length && (
+          {comic.source_type === "remote" && (
+            <label>
+              中文版本
+              <select
+                value={versionId}
+                onChange={(e) => {
+                  setVersion(e.target.value);
+                  setChosen([]);
+                }}
+              >
+                {(detail?.versions ?? []).map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {languageName(v.language)} · {v.scanlator || "原来源版本"} ·{" "}
+                    {v.chapters} 章
+                  </option>
+                ))}
+                <option value="all">查看全部章节与已有归档</option>
+              </select>
+            </label>
+          )}
+          {comic.source_type === "local" && !!detail?.scanlators.length && (
             <label>
               来源版本
               <select
@@ -274,7 +305,7 @@ export function ComicDetail({
             )}
             <button
               className="button primary"
-              disabled={!detail || !!media.busy}
+              disabled={!detail || !selectedVersion || !!media.busy}
               onClick={() =>
                 void mutate(
                   "subscriptions/save",
@@ -284,6 +315,7 @@ export function ComicDetail({
                     mode,
                     latest_count: latest,
                     scanlator,
+                    version_id: selectedVersion?.id,
                   },
                   "已保存追更设置，选定范围已加入下载队列。",
                 )
@@ -292,6 +324,13 @@ export function ComicDetail({
               订阅追更
             </button>
           </div>
+        )}
+        {comic.source_type === "remote" && (
+          <p className="muted">
+            {selectedVersion
+              ? `追更固定 ${languageName(selectedVersion.language)} · ${selectedVersion.scanlator || "原来源版本"}，只下载这个来源版本的新章节。`
+              : "尚未选定可核对的中文版本。已有归档可照常阅读；若已确认正文中文，可修正作品语言资料后刷新章节。"}
+          </p>
         )}
         <p className="muted">
           每个来源版本独立保存；原图无损封装为 CBZ。完成 AssetLibrary 归档与
@@ -326,6 +365,7 @@ export function ComicDetail({
                   comic_id: comic.comic_id,
                   chapter_ids: chosen,
                   library_kind: kind,
+                  version_id: selectedVersion?.id,
                 },
                 `已将 ${chosen.length} 章加入队列。`,
               )

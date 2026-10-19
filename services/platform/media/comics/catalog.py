@@ -6,6 +6,7 @@ import re
 from ...contracts import digest, require
 from ..repository import VISIBLE
 from .packages import safe_name
+from .versions import chapter_evidence, choose_version, comic_evidence, eligible
 
 
 def identity(value):
@@ -29,6 +30,7 @@ def public_comic(row):
             "updated_at",
             "group_key",
             "has_cover",
+            "language_evidence",
         )
     }
 
@@ -169,6 +171,7 @@ class Catalog:
                 "thumbnail_url": item.get("thumbnailUrl") or "",
                 "has_cover": bool(item.get("thumbnailUrl")),
                 "metadata": metadata,
+                "language_evidence": comic_evidence(source, item, previous),
                 "library_kind": previous.get("library_kind")
                 if previous
                 else "general"
@@ -217,6 +220,7 @@ class Catalog:
                     "source_url": row["url"],
                     "upload_date": str(row.get("uploadDate") or ""),
                     "page_count": max(0, row.get("pageCount") or 0),
+                    "language_evidence": chapter_evidence(comic, row),
                 }
                 chapter["version_key"] = digest(
                     {key: chapter[key] for key in ("chapter_id", "upload_date")}
@@ -292,17 +296,20 @@ class Catalog:
             )
             return row, chapters
 
-    def enqueue(self, comic, chapters, *, db):
+    def enqueue(self, comic, chapters, *, db, version_policy=None):
         target = self.comics.settings.target(comic["library_kind"], db)
         jobs = []
         for chapter in chapters:
+            metadata = dict(comic["metadata"])
+            if version_policy and metadata.get("language") in {"all", "", "unknown"}:
+                metadata["language"] = version_policy["language"]
             edition = safe_name(chapter.get("scanlator") or "原来源版本", 80)
             relative = (
                 safe_name(comic["metadata"]["title"])
                 + " ["
                 + comic["comic_id"][:8]
                 + "]/"
-                + safe_name(comic["metadata"].get("language") or "未知语言", 20)
+                + safe_name(metadata.get("language") or "未知语言", 20)
                 + "-"
                 + edition
             )
@@ -317,7 +324,7 @@ class Catalog:
                 {
                     "chapter": chapter["chapter_id"],
                     "version": chapter["version_key"],
-                    "metadata": comic["metadata"],
+                    "metadata": metadata,
                     "target": target,
                 }
             )
@@ -326,7 +333,7 @@ class Catalog:
                 "comic_id": comic["comic_id"],
                 "comic_chapter_id": chapter["chapter_id"],
                 "comic_chapter": chapter,
-                "comic_metadata": comic["metadata"],
+                "comic_metadata": metadata,
                 "comic_library_kind": comic["library_kind"],
                 "comic_target": target,
                 "comic_relative_path": relative + "/" + filename,
@@ -358,11 +365,10 @@ class Catalog:
         require(type(latest) is int and 1 <= latest <= 500, "invalid_input", 400)
         scanlator = body.get("scanlator", "")
         require(isinstance(scanlator, str) and len(scanlator) <= 500, "invalid_input", 400)
-        chapters = [
-            c
-            for c in self.chapters(comic_id, db)
-            if not c.get("source_missing") and (not scanlator or c["scanlator"] == scanlator)
-        ]
+        all_chapters = self.chapters(comic_id, db)
+        policy = choose_version(comic, all_chapters, body, previous)
+        selection = {"version_policy": policy, "scanlator": scanlator}
+        chapters = eligible(comic, all_chapters, selection)
         current = {
             "comic_id": comic_id,
             "state": "active",
@@ -377,8 +383,11 @@ class Catalog:
             "last_scan_at": previous.get("last_scan_at") if previous else None,
             "code": "queued",
         }
+        if policy:
+            current["version_policy"] = policy
+            current["scanlator"] = policy["scanlator"]
         selected = [] if mode == "new" else chapters[-latest:] if mode == "latest" else chapters
-        jobs = self.enqueue(comic, selected, db=db) if selected else []
+        jobs = self.enqueue(comic, selected, db=db, version_policy=policy) if selected else []
         current["seen"] = list(
             dict.fromkeys([*current["seen"], *(c["version_key"] for c in chapters)])
         )

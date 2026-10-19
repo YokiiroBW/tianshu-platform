@@ -2,6 +2,7 @@
 
 from ...contracts import Fault, require
 from .catalog import public_comic
+from .versions import version_options, choose_version, eligible
 
 
 class WebComics:
@@ -93,6 +94,19 @@ class WebComics:
             )
             offset = body.get("offset", 0)
             require(type(offset) is int and 0 <= offset <= 20000, "invalid_input", 400)
+            versions = version_options(comic, chapters)
+            selected = body.get("chapter_version")
+            if selected == "preferred":
+                selected = versions[0]["id"] if versions else "all"
+            if selected and selected != "all":
+                version = next((v for v in versions if v["id"] == selected), None)
+                require(version, "comic_chinese_version_required", 409)
+                chapters = [
+                    c
+                    for c in chapters
+                    if c.get("language_evidence", {}).get("language") == version["language"]
+                    and c.get("scanlator", "") == version["scanlator"]
+                ]
             page = chapters[offset : offset + 200]
             jobs = await local(comics.catalog.chapter_jobs, comic, page)
             return {
@@ -103,6 +117,7 @@ class WebComics:
                 "total": len(chapters),
                 "next_offset": offset + 200 if offset + 200 < len(chapters) else None,
                 "scanlators": sorted({c["scanlator"] for c in chapters if c.get("scanlator")}),
+                "versions": versions,
             }
         if operation == "metadata/save":
 
@@ -240,7 +255,18 @@ class WebComics:
                 require(
                     not any(c.get("source_missing") for c in selected), "comic_chapter_missing", 409
                 )
-                jobs = comics.catalog.enqueue(current, selected, db=db)
+                policy = choose_version(current, chapters, body) if body.get("version_id") else None
+                if policy:
+                    allowed = {
+                        c["chapter_id"]
+                        for c in eligible(current, chapters, {"version_policy": policy})
+                    }
+                    require(
+                        all(c["chapter_id"] in allowed for c in selected),
+                        "comic_chinese_version_required",
+                        409,
+                    )
+                jobs = comics.catalog.enqueue(current, selected, db=db, version_policy=policy)
                 return {"job_ids": [j["job_id"] for j in jobs]}
 
             result = await self.web.receipt(body, "comics/" + operation, session, enqueue_remote)
