@@ -35,6 +35,7 @@ const actionLabels: Record<string, string> = {
   "stack.start": "启动应用",
   "stack.stop": "停止应用",
   "stack.restart": "重启应用",
+  "stack.apply": "执行部署计划",
   create: "创建部署",
   configure: "修改部署",
   update: "更新镜像",
