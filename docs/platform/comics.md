@@ -24,7 +24,7 @@
 
 ## 部署接点与当前状态
 
-2026-10-19已部署：Platform运行50e3c0cf，漫画根为`/volume1/Documents/Cartoon`（用户共享 `\\YokiiroNAS\Documents\Cartoon`）。输出为`漫画/天枢`与`本子/天枢`；Komga对应路径`/Cartoon/漫画/天枢`、`/Cartoon/本子/天枢`。原9887文件、579目录、4704本Komga书及旧阅读记录保留核对通过。四个新样本共65页已完成真实归档与逐页读取；天枢正式网页交互仍等待用户重新登录，不能将后端验收称为网页已验收。
+2026-10-19已部署：Platform运行50e3c0cf，漫画根为`/volume1/Documents/Cartoon`（用户共享 `\\YokiiroNAS\Documents\Cartoon`）。输出为`漫画/天枢`与`本子/天枢`；Komga对应路径`/Cartoon/漫画/天枢`、`/Cartoon/本子/天枢`。原9887文件、579目录、4704本Komga书及旧阅读记录保留核对通过。四个新样本共65页已完成真实归档与逐页读取；用户登录后的正式网页搜索/预览/订阅控制/图片导入/书库及阅读链接核对也已完成。
 
 AssetLibrary preview23/schema63已通过正式主Host的`/assetlink/v1/service-imports/{key}/observe`纳管，支持GET原键和targets。comic-main/comic-adult均已真实登记；凭据复用天枢加密连接，HTTPS保留证书验证。NAS Linux原生lease要求文件owner：Platform 10001与AS 1654不同，因此使用下面的专用文件写入进程，保留旧目录权限和原生lease要求。
 
@@ -44,7 +44,7 @@ AssetLibrary preview23/schema63已通过正式主Host的`/assetlink/v1/service-i
 
 AS侧保留现有Documents库和真实原生根。其目录链需要read/search与inotify，不能仅授x权限。AS部署单写者已对Documents、Cartoon、漫画、本子四祖先各增加1654本目录只读ACE，不继承；仅两新天枢root具有自身继承写权限。原ACE与旧子树权限保留，真实native root和target均已登记。后续部署沿用现有配置，不重复添加ACL、不递归修改旧目录。
 
-Suwayomi实机为2.3.2243、Komga为1.24.4-master；未升级。按用户明确要求停用Suwayomi旧SOCKS开关，由路由器分流；两个真实普通源聚合通过，其中官方目录源返回2项，另一搜索源返回0项，不代表所有插件可用。Komga专用密钥已获动作确认并保存到现有Accounts加密设置，旧密钥和其他媒体配置保持。真实最新22页、原目录13张图片、普通样本私密目标6页已通过完整归档与阅读，原序章24页保留；重复请求不产生新任务或文件。
+Suwayomi实机为2.3.2243、Komga为1.24.4-master；未升级。按用户明确要求停用Suwayomi旧SOCKS开关，由路由器分流。正式网页17个普通源聚合返回97个来源版本，12源可用、5源暂不可用；不代表所有插件可用。Komga专用密钥已获动作确认并保存到现有Accounts加密设置，旧密钥和其他媒体配置保持。真实最新22页、原目录13张图片、普通样本私密目标6页已通过完整归档与阅读，原序章24页保留；重复请求不产生新任务或文件。
 
 ## 验证
 
