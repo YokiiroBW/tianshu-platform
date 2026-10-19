@@ -231,9 +231,34 @@ def _plan(request, state, selected):
         .isoformat()
         .replace("+00:00", "Z"),
         "config_diff": "--- current\n+++ proposed\n" + safe,
-        "ports": [{"published": "18080", "target": "8080", "protocol": "tcp"}],
-        "mounts": [{"type": "volume", "source": "fixture-data", "target": "/data"}],
-        "images": [{"service": "web", "to": "synthetic:v2", "pull": params["action"] == "update"}],
+        "ports": [
+            {
+                "service": "web",
+                "published": "18080",
+                "target": 8080,
+                "host_ip": "127.0.0.1",
+                "protocol": "tcp",
+            }
+        ],
+        "mounts": [
+            {
+                "service": "web",
+                "kind": "volume",
+                "source": "fixture-data",
+                "target": "/data",
+                "read_only": False,
+            }
+        ],
+        "images": [
+            {
+                "service": "web",
+                "from": "synthetic:v1",
+                "to": "synthetic:v2",
+                "pull": params["action"] == "update",
+                "pull_policy": "missing",
+                "current_image_id": "sha256:" + "d" * 64,
+            }
+        ],
         "warnings": ["configuration_restore_does_not_restore_data"],
         "blockers": blockers,
         "restore_version_id": params.get("restore_version_id"),

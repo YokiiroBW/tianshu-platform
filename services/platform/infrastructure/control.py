@@ -12,18 +12,6 @@ from .control_repository import ControlRepository, MUTATIONS
 
 TASK_PREFIX = "infra-control:"
 TASK_STATES = ("queued", "running", "observed", "partial", "failed", "unknown")
-ACTION_TITLES = {
-    "container.start": "启动容器",
-    "container.stop": "停止容器",
-    "container.restart": "重启容器",
-    "stack.start": "启动 Compose 栈",
-    "stack.stop": "停止 Compose 栈",
-    "stack.restart": "重启 Compose 栈",
-    "create": "创建 Compose 栈",
-    "configure": "部署 Compose 栈配置",
-    "update": "更新 Compose 栈镜像",
-    "restore": "恢复 Compose 栈版本",
-}
 
 
 class NodeRefusal(Fault):
@@ -173,7 +161,7 @@ class Control:
                 plan = self.execution_plan(node_id, revision, params["target"]["plan_id"])
                 label, display_action = plan["project_name"], plan["action"]
             document.update(
-                title=ACTION_TITLES.get(display_action, "Dockge 状态读取"),
+                title=projection.ACTION_TITLES.get(display_action, "Dockge 状态读取"),
                 target_label=label or stack_id or container_id or node_id,
             )
             return self.repo.accept(

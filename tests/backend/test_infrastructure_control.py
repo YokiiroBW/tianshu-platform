@@ -355,6 +355,10 @@ class InfrastructureControlTests(unittest.IsolatedAsyncioTestCase):
         plan = planned["result"]
         self.assertTrue(plan["executable"])
         self.assertTrue(plan["mounts"])
+        self.assertIn("127.0.0.1:18080 → 8080/tcp", plan["ports"][0])
+        self.assertIn("fixture-data → /data（数据卷，可写）", plan["mounts"][0])
+        self.assertIn("synthetic:v1 → synthetic:v2", plan["images"][0])
+        self.assertIn("部署 Compose 栈配置", plan["changes"][0])
         self.assertNotIn(raw_secret, json.dumps(planned))
         accepted = await self.execute(plan)
         executed = await self.settled(accepted["operation"]["operation_id"])

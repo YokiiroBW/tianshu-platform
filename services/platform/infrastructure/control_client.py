@@ -54,6 +54,45 @@ class ControlClient:
         )
 
     @staticmethod
+    def _preview(plan):
+        # The envelope schema bounds arrays; their producer-owned display fields are typed here.
+        for row in plan["ports"]:
+            require(
+                isinstance(row.get("service"), str)
+                and type(row.get("target")) is int
+                and 1 <= row["target"] <= 65535
+                and (row.get("published") is None or isinstance(row["published"], str))
+                and (row.get("host_ip") is None or isinstance(row["host_ip"], str))
+                and row.get("protocol") in {"tcp", "udp", "sctp"},
+                "infrastructure_response_invalid",
+                502,
+            )
+        for row in plan["mounts"]:
+            require(
+                isinstance(row.get("service"), str)
+                and row.get("kind") in {"bind", "volume", "tmpfs"}
+                and (row.get("source") is None or isinstance(row["source"], str))
+                and isinstance(row.get("target"), str)
+                and type(row.get("read_only")) is bool,
+                "infrastructure_response_invalid",
+                502,
+            )
+        for row in plan["images"]:
+            require(
+                all(
+                    isinstance(row.get(name), str)
+                    for name in ("service", "from", "to", "pull_policy")
+                )
+                and type(row.get("pull")) is bool
+                and (
+                    row.get("current_image_id") is None or isinstance(row["current_image_id"], str)
+                )
+                and (row.get("target_image_id") is None or isinstance(row["target_image_id"], str)),
+                "infrastructure_response_invalid",
+                502,
+            )
+
+    @staticmethod
     def _semantics(request, response):
         for key in ("version", "request_id", "node_id", "operation"):
             require(request[key] == response[key], "infrastructure_response_invalid", 502)
@@ -119,6 +158,7 @@ class ControlClient:
             )
         elif request["operation"] == "stack.plan":
             plan, params = data["plan"], request["params"]
+            ControlClient._preview(plan)
             require(
                 plan["action"] == params["action"]
                 and ("stack_id" not in params or plan["stack_id"] == params["stack_id"])

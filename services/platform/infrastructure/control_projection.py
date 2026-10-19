@@ -1,6 +1,17 @@
 """Small public projections; node secrets, execution payloads and raw output stay private."""
 
-from ..contracts import canonical
+ACTION_TITLES = {
+    "container.start": "启动容器",
+    "container.stop": "停止容器",
+    "container.restart": "重启容器",
+    "stack.start": "启动 Compose 栈",
+    "stack.stop": "停止 Compose 栈",
+    "stack.restart": "重启 Compose 栈",
+    "create": "创建 Compose 栈",
+    "configure": "部署 Compose 栈配置",
+    "update": "更新 Compose 栈镜像",
+    "restore": "恢复 Compose 栈版本",
+}
 
 
 def maintenance(protection=None):
@@ -35,10 +46,6 @@ def health(value):
     return {"not_configured": "none"}.get(value, value)
 
 
-def runtime(value):
-    return value
-
-
 def stack(value, *, fresh=True):
     return {
         "stack_id": value["id"],
@@ -47,7 +54,7 @@ def stack(value, *, fresh=True):
         "revision": value["revision"],
         "ownership": value["owner"],
         "exists": value["compose_file"] is not None,
-        "runtime_state": runtime(value["runtime"]["state"]),
+        "runtime_state": value["runtime"]["state"],
         "health_state": health(value["runtime"]["health"]),
         "containers": [item["id"] for item in value["runtime"]["containers"]],
         "maintenance": maintenance(value["protection"]),
@@ -76,8 +83,46 @@ def container(value, stack_id=None, *, fresh=True):
 
 
 def plan(value, node_id, revision, protection=None):
-    def display(rows):
-        return [canonical(row)[:2048] if not isinstance(row, str) else row[:2048] for row in rows]
+    def image(row):
+        policy = {"always": "始终拉取", "missing": "本地缺失时拉取", "never": "使用本地镜像"}.get(
+            row["pull_policy"], row["pull_policy"]
+        )
+        facts = ["将拉取" if row["pull"] else "不拉取", "策略：" + policy]
+        if row["current_image_id"]:
+            facts.append("当前 ID：" + row["current_image_id"])
+        if row.get("target_image_id"):
+            facts.append("目标 ID：" + row["target_image_id"])
+        before = row["from"] or "未提供当前镜像引用"
+        return row["service"] + "：" + before + " → " + row["to"] + "（" + "；".join(facts) + "）"
+
+    def port(row):
+        host = row["host_ip"] or ""
+        if ":" in host:
+            host = "[" + host + "]"
+        source = (host + ":" if host else "") + (row["published"] or "自动分配主机端口")
+        return row["service"] + "：" + source + " → " + str(row["target"]) + "/" + row["protocol"]
+
+    def mount(row):
+        kind = {"bind": "宿主目录", "volume": "数据卷", "tmpfs": "临时文件系统"}[row["kind"]]
+        source = row["source"] or ("匿名卷" if row["kind"] == "volume" else kind)
+        access = "只读" if row["read_only"] else "可写"
+        return (
+            row["service"]
+            + "："
+            + source
+            + " → "
+            + row["target"]
+            + "（"
+            + kind
+            + "，"
+            + access
+            + "）"
+        )
+
+    action = "configure" if value["action"] == "deploy" else value["action"]
+    change = ACTION_TITLES[action] + "：" + value["project_name"]
+    if action == "restore":
+        change += "（恢复配置与运行版本，不恢复数据写入）"
 
     return {
         "plan_id": value["plan_id"],
@@ -85,15 +130,15 @@ def plan(value, node_id, revision, protection=None):
         "connection_revision": revision,
         "stack_id": value["stack_id"],
         "project_name": value["project_name"],
-        "action": "configure" if value["action"] == "deploy" else value["action"],
+        "action": action,
         "expected_revision": value["base_revision"],
         "expires_at": value["expires_at"],
         "executable": value["state"] == "ready" and not value["blockers"],
-        "changes": ["stack." + value["action"]],
+        "changes": [change],
         "diff": value["config_diff"],
-        "images": display(value["images"]),
-        "ports": display(value["ports"]),
-        "mounts": display(value["mounts"]),
+        "images": [image(row) for row in value["images"]],
+        "ports": [port(row) for row in value["ports"]],
+        "mounts": [mount(row) for row in value["mounts"]],
         "warnings": value["warnings"],
         "blockers": value["blockers"],
         "maintenance": maintenance(protection),
@@ -115,7 +160,7 @@ def receipt(value):
     command, state = value["command"], value["state"]
     active = value["execution_active"]
     result = {
-        "runtime_state": runtime(value["runtime"]["state"]),
+        "runtime_state": value["runtime"]["state"],
         "health_state": health(value["runtime"]["health"]),
         "containers": [
             {"container_id": row["id"], "state": row["state"], "health": row["health"]}
@@ -150,6 +195,6 @@ def receipt(value):
         "acceptance": acceptance,
         "settled": active is False and state not in {"accepted", "running"},
         "reason_codes": sorted(set(value["reason_codes"] + command["reason_codes"]))[:100],
-        "can_refresh": active is not False or state in {"accepted", "running", "unknown"},
+        "can_refresh": active is not False or public_state in {"running", "unknown"},
         "result": result,
     }
