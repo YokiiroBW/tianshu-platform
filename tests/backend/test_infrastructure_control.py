@@ -411,6 +411,11 @@ class InfrastructureControlTests(unittest.IsolatedAsyncioTestCase):
             409,
         )
         protected = state_read(self.root)["stacks"][1]
+        protected_plan = await self.plan(
+            stack_id=PROTECTED, expected_revision=protected["revision"]
+        )
+        self.assertTrue(protected_plan["result"]["maintenance"]["required"])
+        self.assertEqual(protected_plan["result"]["maintenance"]["owner"], "resident")
         await self.post(
             "action", self.action(stack_id=PROTECTED, version=protected["revision"]), 409
         )
