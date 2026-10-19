@@ -4,7 +4,7 @@
 
 ## 配置与复用
 
-旧 `infrastructure-node.v1` 配置、schema 摘要、命令与只读入口保持。控制协议固定为根提交 `6834fd5d0b43294b604b826fceca9587d24737c4` 的 `contracts/infrastructure-control/candidate-v1`；部署时另打包该版本。可选控制段复用现有节点 ID 与 ExternalCatalog 登记，只有部署方登记执行器命令，不另设网页凭据系统。
+旧 `infrastructure-node.v1` 配置、schema 摘要、命令与只读入口保持。控制协议固定为根提交 `89f93d41a5eccb04740c1e8710968d03af7c533a` 的 `contracts/infrastructure-control/candidate-v1`；部署时另打包该版本。可选控制段复用现有节点 ID 与 ExternalCatalog 登记，只有部署方登记执行器命令，不另设网页凭据系统。
 
 ```json
 {
@@ -62,7 +62,7 @@
 ```powershell
 $env:TS012_CONTRACT_DIR='<固定合同包>/text-dialogue/v1'
 $env:TS177_NODE_CONTRACT_DIR='<固定合同包>/infrastructure-node/candidate-v1'
-$env:TS205_CONTROL_CONTRACT_DIR='<固定6834合同>/contracts/infrastructure-control/candidate-v1'
+$env:TS205_CONTROL_CONTRACT_DIR='<固定89f93d4合同>/contracts/infrastructure-control/candidate-v1'
 $env:PYTHONPATH=(Get-Location).Path
 .runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p test_infrastructure_control.py -v
 .runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p test_infrastructure.py -v

@@ -12,7 +12,7 @@ from .client import Contract, timestamp
 VERSION = "infrastructure-control.v1"
 SCHEMA_SHA256 = {
     "request": "30b0f4f785708797d9061388b1db77606c70137983eaefcea24345df00d1a830",
-    "response": "b0fae7662e5eb1ed7f02387d0dab7d6b5016bd7027242698a7c2e1a8662c6741",
+    "response": "908a2e93282b0dd283f31a2aa67fc4201de1af619b86115e9e9a8c3c42867b22",
 }
 
 
