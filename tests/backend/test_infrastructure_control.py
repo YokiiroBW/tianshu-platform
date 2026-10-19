@@ -18,7 +18,7 @@ from dockge_fixture import COMPOSE, EXTERNAL, PROTECTED, STACK, configuration, s
 from fixtures import ENV, start_http
 from test_infrastructure import eventually
 from web_fixtures import PASSWORD, web_settings
-from services.platform.contracts import Fault
+from services.platform.contracts import Fault, utc
 from services.platform.external_catalog import ExternalCatalog
 from services.platform.infrastructure.control import Control
 from services.platform.infrastructure.runtime import Infrastructure
@@ -197,6 +197,16 @@ class InfrastructureControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task["task"]["title"], "重启容器")
         self.assertEqual(task["task"]["module"]["page"], "#/home/1")
         self.assertEqual(task["task"]["request"]["container_id"], f"{1:064x}")
+        record = self.control.record(result["operation_id"])
+        self.assertEqual(
+            task["task"]["timeline"],
+            {
+                "recorded_at": utc(record["created_at"]),
+                "updated_at": utc(record["updated_at"]),
+                "settled_at": result["finished_at"],
+            },
+        )
+        self.assertEqual(task["task"]["evidence"]["result"], result["result"])
         self.assertNotIn("compose_content", json.dumps(task))
         self.assertNotIn("payload", json.dumps(task))
         await self.post("action", self.action("container.restart", container_id="abc"), 400)
@@ -525,6 +535,8 @@ class InfrastructureControlContractTests(unittest.TestCase):
         )
         self.assertTrue(task["pending"])
         self.assertFalse(task["settled"])
+        self.assertIsNone(task["timeline"]["settled_at"])
+        self.assertNotIn("observed_at", task["timeline"])
         self.assertTrue(task["evidence"]["result"]["execution_active"])
 
     def test_unknown_command_keeps_absent_runtime_mixed_health_and_unknown_worker(self):

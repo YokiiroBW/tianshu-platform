@@ -62,6 +62,7 @@ const stageWording: Record<string, string> = {
   paused: "已暂停",
   cancelled: "已取消",
   failed: "失败",
+  finished: "本轮结束",
 };
 const sourceWording: Record<string, string> = {
   "platform.home": "家庭设备控制",
@@ -170,6 +171,7 @@ const fieldWording: Record<string, string> = {
   target: "目标",
   version: "版本",
   recorded_at: "记录时间",
+  updated_at: "更新时间",
   published_at: "发布时间",
   usable_until: "可用至",
   revoked_at: "撤销时间",
@@ -191,6 +193,26 @@ const fieldWording: Record<string, string> = {
   cancel_requested: "已请求取消",
   asset_indexed: "资产已入库",
   library_verified: "媒体服务器已核对",
+  result: "执行结果",
+  node_id: "节点",
+  connection_revision: "连接修订号",
+  stack_id: "栈身份",
+  container_id: "容器身份",
+  action: "请求动作",
+  command_state: "命令结果",
+  execution_active: "命令仍在运行",
+  runtime_state: "实际运行",
+  health_state: "健康检查",
+  containers: "容器读回",
+  version_id: "配置版本",
+  node_operation_id: "节点操作标识",
+  state: "状态",
+  health: "健康",
+  media_servers: "媒体服务器结果",
+  server_id: "媒体服务器",
+  kind: "类型",
+  code: "原因",
+  item_id: "项目标识",
 };
 const valueWording: Record<string, string> = {
   not_needed: "无需解锁",
@@ -223,6 +245,22 @@ const valueWording: Record<string, string> = {
   "native_config.publish": "发布原生配置",
   "config.revoke": "撤销 Chat 配置",
   "native_config.revoke": "撤销原生配置",
+  submitted: "已受理",
+  not_sent: "尚未发送",
+  sent: "已发送",
+  succeeded: "成功",
+  running: "运行中",
+  stopped: "已停止",
+  partial: "部分结果",
+  none: "无",
+  not_configured: "未配置",
+  healthy: "检查通过",
+  unhealthy: "检查异常",
+  "stack.apply": "执行部署计划",
+  verified: "已核对",
+  unavailable: "不可用",
+  library_verified: "媒体库已核对",
+  media_server_unavailable: "媒体服务器不可用",
 };
 const dateOnly = /^\d{4}-\d{2}-\d{2}T/;
 
@@ -251,11 +289,18 @@ function reason(cause: unknown) {
   return "连接中断，请重新连接。";
 }
 
-/** One evidence value: booleans and known words are read out, timestamps are stamped. */
-function show(value: TaskEvidence[string]) {
+/** Evidence may include nested executor results or media-server observations. */
+function show(value: TaskEvidence[string]): string {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "boolean") return value ? "是" : "否";
   if (typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map(show).join("；") || "—";
+  if (typeof value === "object")
+    return (
+      Object.entries(value)
+        .map(([key, part]) => `${fieldWording[key] ?? key}：${show(part)}`)
+        .join("；") || "—"
+    );
   if (dateOnly.test(value)) return stamp(value);
   return valueWording[value] ?? value;
 }

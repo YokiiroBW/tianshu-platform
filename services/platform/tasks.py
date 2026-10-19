@@ -406,11 +406,21 @@ class Tasks:
             cancel={"supported": False, "code": module["cancel_code"]},
             module={"page": MODULE_PAGES[source]},
         )
+        # Every detail has the ledger's real timestamps. Owners with richer
+        # timelines keep those facts; an update is never invented as an outcome.
+        built.setdefault(
+            "timeline",
+            {
+                "recorded_at": utc(record["created_at"]),
+                "updated_at": utc(record["updated_at"]),
+            },
+        )
         built["attention"] = bool(built["attention"]) or built["source_state"] != "current"
         if source == "resources.download":
             built["cancel"] = {"supported": document["can_cancel"], "code": module["cancel_code"]}
         elif source == "platform.infrastructure":
             built["pending"] = not document["settled"]
+            built["timeline"]["settled_at"] = document.get("finished_at")
         return built
 
     def _home_task(self, record, document, status):

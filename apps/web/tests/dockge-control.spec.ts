@@ -927,6 +927,8 @@ test("real HTTP: container and stack actions, configure, saved version restore a
   page,
 }, testInfo) => {
   test.setTimeout(120000);
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
   await page.goto("/#/home/1");
   await page.getByLabel("管理员账号").fill("synthetic-admin");
   await page
@@ -1074,7 +1076,7 @@ test("real HTTP: container and stack actions, configure, saved version restore a
     .click();
   await clickControl("预览恢复配置版本", "plan");
   await expect(preview).toBeVisible({ timeout: 15000 });
-  await submit("执行此计划", "execute", "实际运行 · 运行中");
+  const restored = await submit("执行此计划", "execute", "实际运行 · 运行中");
   await page.getByRole("button", { name: "刷新应用详情", exact: true }).click();
   await page.getByRole("button", { name: "配置部署", exact: true }).click();
   await expect(editor).toHaveValue(original, { timeout: 15000 });
@@ -1119,4 +1121,90 @@ test("real HTTP: container and stack actions, configure, saved version restore a
     expect(calls.filter((call) => call.clientId === id)).toHaveLength(1);
     expect(queriedIds).toContain(id);
   }
+
+  // Open the actual persisted restore operation from the unified task centre.
+  // These endpoints are served by the real platform, without projection routes.
+  await page.goto("/#/settings/0");
+  const source = page.getByRole("combobox", { name: "来源", exact: true });
+  await source.selectOption("platform.infrastructure");
+  const restoredTaskId = `infra-control:${restored.client_id}`;
+  const restoredCard = page.locator("article.tasks-item").filter({
+    has: page.locator(`[data-task-toggle="${restoredTaskId}"]`),
+  });
+  await expect(restoredCard).toContainText("恢复 Compose 栈版本");
+  await expect(restoredCard).toContainText("fixture-web");
+  await expect(restoredCard).toContainText("容器与 Compose 控制");
+  const restoredResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/web/tasks/detail"),
+  );
+  await restoredCard
+    .getByRole("button", { name: "查看详情", exact: true })
+    .click();
+  const task = (await (await restoredResponse).json()).task;
+  expect(task.task_id).toBe(restoredTaskId);
+  expect(task.status).toBe("observed");
+  expect(task.timeline.recorded_at).toBeTruthy();
+  expect(task.timeline.updated_at).toBeTruthy();
+  expect(task.timeline.settled_at).toBeTruthy();
+  expect(task.evidence.result.command_state).toBe("succeeded");
+  expect(task.evidence.result.execution_active).toBe(false);
+  expect(task.evidence.result.containers[0].container_id).toBe(
+    "1".padStart(64, "0"),
+  );
+  const restoredDetail = restoredCard.getByRole("region");
+  await expect(restoredDetail).toContainText("时间线");
+  await expect(restoredDetail).toContainText("结案时间");
+  await expect(restoredDetail).toContainText("执行结果");
+  await expect(restoredDetail).toContainText("命令结果：成功");
+  await expect(restoredDetail).toContainText("命令仍在运行：否");
+  await expect(restoredDetail).toContainText("实际运行：运行中");
+  await expect(restoredDetail).toContainText("健康检查：无");
+  await expect(restoredDetail).toContainText(task.request.stack_id);
+  await expect(restoredDetail).toContainText("1".padStart(64, "0"));
+  await expect(restoredDetail).toContainText(
+    "原始责任模块 容器与 Compose 控制",
+  );
+  await expect(
+    restoredDetail.getByRole("link", { name: "到责任模块页面" }),
+  ).toHaveAttribute("href", "#/home/1");
+  await expect(restoredDetail).not.toContainText("[object Object]");
+
+  // Retained synthetic media history exercises the same producer and renderer,
+  // including arrays, unavailable results and nulls, without running a download.
+  await source.selectOption("resources.download");
+  const mediaCard = page.locator("article.tasks-item").filter({
+    has: page.getByRole("heading", {
+      name: "合成媒体任务详情（只读夹具）",
+      exact: true,
+    }),
+  });
+  const mediaResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/web/tasks/detail"),
+  );
+  await mediaCard
+    .getByRole("button", { name: "查看详情", exact: true })
+    .click();
+  const mediaTask = (await (await mediaResponse).json()).task;
+  expect(mediaTask.source).toBe("resources.download");
+  expect(mediaTask.status).toBe("unknown");
+  expect(Object.keys(mediaTask.timeline).sort()).toEqual([
+    "recorded_at",
+    "updated_at",
+  ]);
+  expect(mediaTask.evidence.media_servers[1].item_id).toBeNull();
+  const mediaDetail = mediaCard.getByRole("region");
+  await expect(mediaDetail).toContainText("时间线");
+  await expect(mediaDetail).toContainText("媒体服务器结果");
+  await expect(mediaDetail).toContainText("synthetic-jellyfin");
+  await expect(mediaDetail).toContainText("synthetic-plex");
+  await expect(mediaDetail).toContainText("状态：不可用");
+  await expect(mediaDetail).toContainText("项目标识：—");
+  await expect(mediaDetail).not.toContainText("结案时间");
+  await expect(mediaDetail).not.toContainText("[object Object]");
+  await expect(mediaDetail).toContainText("原始责任模块 订阅与下载");
+  expect(pageErrors).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("dockge-task-detail-media.png"),
+    fullPage: true,
+  });
 });

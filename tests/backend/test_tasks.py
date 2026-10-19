@@ -409,6 +409,15 @@ class TaskCentreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(item["attention"])
         self.assertEqual(set(item), SUMMARY_FIELDS)
         self.assertEqual(len(self.service_calls()), 1)
+        detail = (await self.detail(logged, item["task_id"]))["task"]
+        owner = self.console.home.control_record(CLIENT, prefix="home-control:")["document"]
+        self.assertEqual(
+            detail["timeline"],
+            {
+                "recorded_at": owner["recorded_at"],
+                "observed_at": owner["observation"]["observed_at"],
+            },
+        )
 
     async def test_a_target_already_reached_is_concluded_by_observation_only(self):
         logged = await self.unlocked_login()
@@ -514,6 +523,10 @@ class TaskCentreTests(unittest.IsolatedAsyncioTestCase):
         detail = await self.detail(logged, task_id)
         self.assertEqual(detail["task"]["request"]["version"], published["version"])
         self.assertTrue(detail["task"]["timeline"]["published_at"])
+        self.assertEqual(
+            set(detail["task"]["timeline"]),
+            {"recorded_at", "published_at", "usable_until", "revoked_at"},
+        )
         self.assertEqual(detail["task"]["timeline"]["usable_until"], published["usable_until"])
         self.assertEqual(detail["task"]["module"]["page"], "#/settings/2")
         # A revocation is evidence on the same record, not a second task.
@@ -547,6 +560,48 @@ class TaskCentreTests(unittest.IsolatedAsyncioTestCase):
         detail = await self.detail(logged, task_id)
         self.assertEqual(detail["task"]["request"]["target"], "chat")
         self.assertEqual(detail["task"]["request"]["version"], 9)
+        self.assertEqual(
+            set(detail["task"]["timeline"]), {"recorded_at", "settled_at", "usable_until"}
+        )
+        self.assertIsNone(detail["task"]["timeline"]["settled_at"])
+
+    async def test_media_details_keep_real_ledger_times_without_inventing_outcome_times(self):
+        logged = await self.login()
+        repo = self.platform.media.repo
+        for kind in ("video", "audio"):
+            with self.subTest(kind=kind):
+                payload = {
+                    "media_kind": kind,
+                    "title": "合成媒体任务 · " + kind,
+                    "target_id": "synthetic-network-video",
+                    "bvid": "BV1xx411c7mD",
+                    "selected_cids": ["111111111"],
+                    "layout": "single",
+                    "quality": {"mode": "best", "quality_id": None, "allow_fallback": False},
+                    "audio_key": "synthetic-audio-task",
+                    "source_id": "synthetic-track",
+                    "provider": "netease",
+                }
+                recorded = 1_500_000_000.125
+                with patch.object(repo, "clock", return_value=recorded):
+                    job = repo.enqueue(payload)
+                for index, state in enumerate(("queued", "completed", "unknown")):
+                    updated = recorded + index + 0.25
+                    with patch.object(repo, "clock", return_value=updated):
+                        job = repo.update_job(job["job_id"], {"state": state, "code": state})
+                    before = repo.job(job["job_id"])
+                    detail = (await self.detail(logged, "media:" + job["job_id"]))["task"]
+                    self.assertEqual(set(detail), SUMMARY_FIELDS | {"request", "timeline"})
+                    self.assertEqual(
+                        detail["timeline"],
+                        {"recorded_at": utc(recorded), "updated_at": utc(updated)},
+                    )
+                    self.assertNotIn("settled_at", detail["timeline"])
+                    self.assertNotIn("observed_at", detail["timeline"])
+                    self.assertEqual(detail["source"], "resources.download")
+                    self.assertEqual(detail["source_state"], "source_missing")
+                    self.assertEqual(detail["request"]["job_id"], job["job_id"])
+                    self.assertEqual(repo.job(job["job_id"]), before)
 
     # ---------------------------------------------------------------- paging
 

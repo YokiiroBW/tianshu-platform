@@ -80,7 +80,9 @@ export type TaskSource = {
   cancel_code: string | null;
 };
 
-export type TaskEvidence = Record<string, string | number | boolean | null>;
+export type TaskValue =
+  string | number | boolean | null | TaskValue[] | { [key: string]: TaskValue };
+export type TaskEvidence = Record<string, TaskValue>;
 
 /** A platform operation record: the status always carries the evidence it was read from. */
 export type TaskItem = {

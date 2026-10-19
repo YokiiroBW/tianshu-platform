@@ -541,6 +541,45 @@ def execute(arguments):
     sys.stdout.buffer.write((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
+def seed_media_task_history(platform):
+    """A retained synthetic ledger entry, without downloading or configuring an engine."""
+    repo = platform.media.repo
+    job = repo.enqueue(
+        {
+            "media_kind": "video",
+            "title": "合成媒体任务详情（只读夹具）",
+            "target_id": "synthetic-network-video",
+            "bvid": "BV1xx411c7mD",
+            "selected_cids": ["111111111"],
+            "layout": "single",
+            "quality": {"mode": "best", "quality_id": None, "allow_fallback": False},
+        }
+    )
+    repo.update_job(
+        job["job_id"],
+        {
+            "state": "unknown",
+            "code": "media_server_unavailable",
+            "library_results": [
+                {
+                    "server_id": "synthetic-jellyfin",
+                    "kind": "jellyfin",
+                    "state": "verified",
+                    "code": "library_verified",
+                    "item_id": "synthetic-item-1",
+                },
+                {
+                    "server_id": "synthetic-plex",
+                    "kind": "plex",
+                    "state": "unavailable",
+                    "code": "media_server_unavailable",
+                    "item_id": None,
+                },
+            ],
+        },
+    )
+
+
 async def serve(arguments):
     import asyncio
     import tempfile
@@ -580,6 +619,7 @@ async def serve(arguments):
                 str(uuid.uuid4()),
             )
         platform = Platform(settings)
+        seed_media_task_history(platform)
         runner = web.AppRunner(create_app(platform), access_log=None)
         await runner.setup()
         await web.TCPSite(runner, "127.0.0.1", arguments.port).start()
