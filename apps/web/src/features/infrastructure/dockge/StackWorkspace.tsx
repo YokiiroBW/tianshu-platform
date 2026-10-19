@@ -267,6 +267,11 @@ function NodeStacks({ nodeId }: { nodeId: string }) {
           key={`${nodeId}/${selected}`}
           nodeId={nodeId}
           stackId={selected}
+          listedStack={
+            view?.node_id === nodeId
+              ? view.stacks.find((stack) => stack.stack_id === selected)
+              : undefined
+          }
         />
       ) : (
         <aside className="panel infra-pane infra-container-detail infra-empty">

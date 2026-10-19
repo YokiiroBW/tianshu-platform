@@ -13,16 +13,18 @@ import {
   MaintenanceNotice,
   runtimeLabel,
 } from "./presentation";
-import type { StackDetail } from "./types";
+import type { ControlStack, StackDetail } from "./types";
 import { useControlRequest } from "./useControlRequest";
 
 type Tab = "runtime" | "configure" | "versions" | "history";
 export function StackInspector({
   nodeId,
   stackId,
+  listedStack,
 }: {
   nodeId: string;
   stackId: string;
+  listedStack?: ControlStack;
 }) {
   const query = useInfrastructureQuery<StackDetail>("control/detail", {
     node_id: nodeId,
@@ -33,12 +35,31 @@ export function StackInspector({
   const [tab, setTab] = useState<Tab>("runtime");
   const [intent, setIntent] = useState<"configure" | "update">("configure");
   const [restoreVersion, setRestoreVersion] = useState("");
-  const detail = query.data?.stack?.stack_id === stackId ? query.data : null;
+  const view = query.data;
+  const detail =
+    view?.node_id === nodeId &&
+    (!view.stack || view.stack.stack_id === stackId) &&
+    (!view.refresh ||
+      (view.refresh.node_id === nodeId && view.refresh.stack_id === stackId))
+      ? view
+      : null;
   const stack = detail?.stack;
+  const listed = listedStack?.stack_id === stackId ? listedStack : null;
+  const reading =
+    !query.error &&
+    (detail
+      ? Boolean(
+          detail.refresh &&
+          !detail.refresh.settled &&
+          ["queued", "running"].includes(detail.refresh.state),
+        )
+      : query.loading);
+  const displayName = stack?.display_name ?? listed?.display_name;
   const available = Boolean(
     detail &&
+    stack &&
     currentControl(detail.observation) &&
-    !stack?.maintenance.required,
+    !stack.maintenance.required,
   );
   const canConfigure = Boolean(
     available && stack?.allowed_actions.configure?.enabled,
@@ -52,8 +73,8 @@ export function StackInspector({
         <div className="infra-heading">
           <div>
             <p className="infra-eyebrow">Compose / Dockge</p>
-            <h3 title={stack?.display_name}>
-              {stack?.display_name ?? "正在读取应用"}
+            <h3 title={displayName}>
+              {displayName ?? (reading ? "正在读取应用" : "应用详情不可用")}
             </h3>
           </div>
           <button
@@ -123,15 +144,35 @@ export function StackInspector({
             {query.error || refresh.error}
           </p>
         )}
-        {!detail ? (
-          <p role="status">
-            {query.error
-              ? "应用详情无法读取，请刷新清单核对目标。"
-              : "等待后台读取配置与运行状态…"}
-          </p>
+        {detail && (
+          <ControlSource
+            value={{
+              ...detail.observation,
+              reason_codes: [
+                ...new Set([
+                  ...detail.observation.reason_codes,
+                  ...(detail.refresh?.reason_codes ?? []),
+                ]),
+              ],
+            }}
+          />
+        )}
+        {!detail || !detail.stack ? (
+          <>
+            {listed && <MaintenanceNotice value={listed.maintenance} />}
+            <p
+              role={reading ? "status" : "alert"}
+              className={reading ? "dockge-source" : "infra-error"}
+            >
+              {reading
+                ? "等待后台读取配置与运行状态…"
+                : view && !detail
+                  ? "应用详情与当前目标不一致，请刷新核对。"
+                  : "应用详情无法读取，请刷新重试。"}
+            </p>
+          </>
         ) : (
           <>
-            <ControlSource value={detail.observation} />
             <OperationStatus
               {...command}
               recover={() => {

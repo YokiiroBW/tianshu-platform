@@ -22,6 +22,32 @@ const allowed = Object.fromEntries(
   ]),
 );
 
+// LAN HTTP exposes getRandomValues but does not expose randomUUID.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(crypto, "randomUUID", {
+      configurable: true,
+      value: undefined,
+    });
+  });
+});
+
+async function failNextRequestId(page: Page) {
+  await page.evaluate(() => {
+    const original = crypto.getRandomValues.bind(crypto);
+    Object.defineProperty(crypto, "getRandomValues", {
+      configurable: true,
+      value: () => {
+        Object.defineProperty(crypto, "getRandomValues", {
+          configurable: true,
+          value: original,
+        });
+        throw new Error("synthetic request preparation failure");
+      },
+    });
+  });
+}
+
 // These projections test browser race/unknown/layout paths. The real HTTP test
 // below separately exercises the platform ledger, session and synthetic executor.
 async function installProjection(
@@ -34,6 +60,7 @@ async function installProjection(
     dense?: boolean;
     executionActive?: boolean | null;
     expiresIn?: number;
+    unreadableStack?: boolean;
   } = {},
 ) {
   const node = {
@@ -113,6 +140,9 @@ async function installProjection(
     recovered: false,
     submits: [] as Record<string, unknown>[],
     recoveries: 0,
+    recoveredIds: [] as string[],
+    detailState: "failed" as "queued" | "running" | "failed",
+    detailRefreshes: 0,
   };
   const protection = options.protected
     ? {
@@ -217,6 +247,18 @@ async function installProjection(
             display_name: `synthetic-app-${index}-${"long-name-".repeat(10)}`,
           }))
         : [stack()];
+      if (options.unreadableStack)
+        stacks.push({
+          ...stack(),
+          stack_id: "stack:unreadable",
+          display_name: "synthetic-protected",
+          project_name: "synthetic-protected",
+          maintenance: {
+            required: true,
+            owner: "resident-maintenance",
+            reason_codes: ["infrastructure_maintenance_required"],
+          },
+        });
       const filtered = stacks.filter(
         (item) => !body.query || item.display_name.includes(body.query),
       );
@@ -262,6 +304,28 @@ async function installProjection(
           observation,
           refresh: null,
         });
+      if (body.stack_id === "stack:unreadable") {
+        if (body.refresh) state.detailRefreshes++;
+        const failed = state.detailState === "failed";
+        return reply({
+          node_id: node.id,
+          connection_revision: 1,
+          stack: null,
+          compose_content: null,
+          versions: [],
+          observation: {
+            ...observation,
+            status: failed ? "unavailable" : "unknown",
+            freshness: "missing",
+          },
+          refresh: {
+            ...operation({ ...body, client_id: "detail-read" }, "detail", null),
+            state: state.detailState,
+            settled: failed,
+            reason_codes: failed ? ["compose_reference_outside_stack"] : [],
+          },
+        });
+      }
       return reply({
         node_id: node.id,
         connection_revision: 1,
@@ -372,6 +436,7 @@ async function installProjection(
         return reply({ code: "infrastructure_operation_not_found" }, 404);
       if (body.refresh && (item.state === "unknown" || item.can_refresh)) {
         state.recoveries++;
+        state.recoveredIds.push(item.client_id);
         state.recovered = true;
         Object.assign(item, {
           state: "observed",
@@ -441,8 +506,146 @@ test("projection: full container identity, double click, unknown response and re
   );
   await expect(restart).toBeEnabled();
   expect(state.recoveries).toBe(1);
+  expect(state.recoveredIds).toEqual([original]);
   expect(state.submits).toHaveLength(1);
   expect(state.submits[0].client_id).toBe(original);
+});
+
+test("projection: request preparation failures leave action, plan and execute available to retry", async ({
+  page,
+}) => {
+  const errors: Error[] = [];
+  page.on("pageerror", (error) => errors.push(error));
+  const state = await installProjection(page);
+  await page.goto("/#/home/1");
+  const restart = page.getByRole("button", { name: "重启容器", exact: true });
+  await expect(restart).toBeEnabled();
+  await failNextRequestId(page);
+  await restart.click();
+  await expect(page.getByRole("alert")).toContainText(
+    "操作请求尚未发出，请重试。",
+  );
+  await expect(restart).toBeEnabled();
+  expect(state.submits).toHaveLength(0);
+  await restart.click();
+  await expect(page.getByLabel("操作实际结果")).toContainText(
+    "实际运行 · 运行中",
+  );
+
+  await page.getByRole("button", { name: "Compose 栈", exact: true }).click();
+  await page.getByRole("button", { name: "配置部署", exact: true }).click();
+  const preview = page.getByRole("button", {
+    name: "预览修改部署",
+    exact: true,
+  });
+  await failNextRequestId(page);
+  await preview.click();
+  await expect(page.getByRole("alert")).toContainText(
+    "操作请求尚未发出，请重试。",
+  );
+  await expect(preview).toBeEnabled();
+  expect(state.submits).toHaveLength(1);
+  await preview.click();
+  const execute = page.getByRole("button", { name: "执行此计划", exact: true });
+  await expect(execute).toBeEnabled();
+  await failNextRequestId(page);
+  await execute.click();
+  await expect(page.getByRole("alert")).toContainText(
+    "操作请求尚未发出，请重试。",
+  );
+  await expect(execute).toBeEnabled();
+  expect(state.submits).toHaveLength(2);
+  await execute.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect(page.getByLabel("操作实际结果")).toContainText(
+    "实际运行 · 运行中",
+  );
+  await expect(
+    page.getByRole("button", { name: "此计划已提交", exact: true }),
+  ).toBeDisabled();
+  expect(state.submits).toHaveLength(3);
+  expect(errors).toEqual([]);
+});
+
+test("projection: null stack readbacks show pending and failed states without leaking another target", async ({
+  page,
+}) => {
+  const state = await installProjection(page, { unreadableStack: true });
+  await openStacks(page);
+  const inspector = page.getByRole("complementary", {
+    name: "Compose 栈详情",
+    exact: true,
+  });
+  await expect(
+    inspector.getByRole("button", { name: "启动应用", exact: true }),
+  ).toBeEnabled();
+  state.detailState = "queued";
+  await page
+    .getByRole("button", { name: "查看应用 synthetic-protected", exact: true })
+    .click();
+  await expect(inspector).toContainText("等待后台读取配置与运行状态");
+  await expect(inspector).toContainText("专用维护 · resident-maintenance");
+  await expect(
+    inspector.getByRole("heading", { name: "synthetic-example", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    inspector.getByRole("button", { name: "启动应用", exact: true }),
+  ).toHaveCount(0);
+  state.detailState = "running";
+  await inspector.getByRole("button", { name: "刷新应用详情" }).click();
+  await expect.poll(() => state.detailRefreshes).toBe(1);
+  await expect(inspector).toContainText("等待后台读取配置与运行状态");
+  state.detailState = "failed";
+  await inspector.getByRole("button", { name: "刷新应用详情" }).click();
+  await expect(inspector.getByRole("alert")).toContainText(
+    "应用详情无法读取，请刷新重试。",
+  );
+  await expect(inspector).toContainText("Compose 配置引用了栈目录外的文件");
+  await expect(inspector).not.toContainText("等待后台读取配置与运行状态");
+  await expect(
+    inspector.getByRole("heading", {
+      name: "synthetic-protected",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await inspector
+    .getByRole("button", { name: "配置部署", exact: true })
+    .click();
+  await expect(
+    inspector.getByRole("button", { name: "预览修改部署", exact: true }),
+  ).toHaveCount(0);
+  expect(state.submits).toHaveLength(0);
+
+  let release: () => void = () => {};
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(
+    "**/api/web/infrastructure/control/detail",
+    async (route) => {
+      if (route.request().postDataJSON().stack_id === "stack:synthetic-example")
+        await waiting;
+      await route.fallback();
+    },
+  );
+  await page
+    .getByRole("button", { name: "查看应用 synthetic-example", exact: true })
+    .click();
+  await expect(inspector).toContainText("等待后台读取配置与运行状态");
+  await expect(inspector).not.toContainText("resident-maintenance");
+  await expect(inspector).not.toContainText("synthetic-protected");
+  await expect(inspector).not.toContainText("栈目录外的文件");
+  await expect(
+    inspector.getByRole("button", { name: "启动应用", exact: true }),
+  ).toHaveCount(0);
+  release();
+  await expect(
+    inspector.getByRole("button", { name: "启动应用", exact: true }),
+  ).toBeEnabled();
+  await expect(inspector).not.toContainText("resident-maintenance");
+  await expect(inspector.getByRole("alert")).toHaveCount(0);
 });
 
 test("projection: concrete config preview invalidates on draft edits and external version changes", async ({
@@ -733,21 +936,72 @@ test("real HTTP: container and stack actions, configure, saved version restore a
   await expect(
     page.getByRole("heading", { name: "Docker 容器", exact: true }),
   ).toBeVisible();
+  expect(
+    await page.evaluate(() => ({
+      randomUUID: typeof crypto.randomUUID,
+      getRandomValues: typeof crypto.getRandomValues,
+    })),
+  ).toEqual({ randomUUID: "undefined", getRandomValues: "function" });
   await page.getByLabel("搜索容器", { exact: true }).fill("fixture-web");
   await page
     .getByRole("button", { name: "查看容器 fixture-web", exact: true })
     .click();
 
+  const calls: { endpoint: string; clientId: string }[] = [];
+  const queriedIds: string[] = [];
+  const droppedIds: string[] = [];
+  page.on("request", (request) => {
+    const endpoint = request
+      .url()
+      .match(/\/infrastructure\/control\/(\w+)$/)?.[1];
+    if (!endpoint || request.method() !== "POST") return;
+    const body = request.postDataJSON();
+    if (endpoint === "operation" && body.client_id)
+      queriedIds.push(body.client_id);
+    if (["action", "plan", "execute"].includes(endpoint))
+      calls.push({ endpoint, clientId: body.client_id });
+  });
+  async function clickControl(
+    button: string,
+    endpoint: "action" | "plan" | "execute",
+    loseResponse = false,
+  ) {
+    if (loseResponse) {
+      // Forward the unchanged request to the real platform, then lose only its
+      // response. Recovery must read the durable ledger using the original ID.
+      await page.route(
+        `**/api/web/infrastructure/control/${endpoint}`,
+        async (route) => {
+          const response = await route.fetch();
+          expect(response.ok()).toBe(true);
+          droppedIds.push(route.request().postDataJSON().client_id);
+          await route.abort("connectionreset");
+        },
+        { times: 1 },
+      );
+    }
+    const request = page.waitForRequest((value) =>
+      value.url().endsWith(`/infrastructure/control/${endpoint}`),
+    );
+    await page
+      .getByRole("button", { name: button, exact: true })
+      .evaluate((element: HTMLButtonElement) => {
+        element.click();
+        element.click();
+      });
+    const sent = (await request).postDataJSON();
+    expect(sent.client_id).toMatch(
+      /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/,
+    );
+    return sent;
+  }
   async function submit(
     button: string,
     endpoint: "action" | "execute",
     expected: string,
+    loseResponse = false,
   ) {
-    const request = page.waitForRequest((value) =>
-      value.url().endsWith(`/infrastructure/control/${endpoint}`),
-    );
-    await page.getByRole("button", { name: button, exact: true }).click();
-    const sent = (await request).postDataJSON();
+    const sent = await clickControl(button, endpoint, loseResponse);
     const receipt = page
       .getByRole("region", { name: "当前操作", exact: true })
       .filter({ hasText: sent.client_id });
@@ -755,7 +1009,12 @@ test("real HTTP: container and stack actions, configure, saved version restore a
     await expect(receipt).toContainText("命令结果 · 命令已结束");
     return sent;
   }
-  const restarted = await submit("重启容器", "action", "实际运行 · 运行中");
+  const restarted = await submit(
+    "重启容器",
+    "action",
+    "实际运行 · 运行中",
+    true,
+  );
   expect(restarted.container_id).toBe("1".padStart(64, "0"));
   await page.getByRole("button", { name: "Compose 栈", exact: true }).click();
   await page
@@ -774,14 +1033,19 @@ test("real HTTP: container and stack actions, configure, saved version restore a
   await editor.fill(
     `${original.replace("synthetic:v1", "synthetic:v2")}\n# browser-${testInfo.project.name}\n`,
   );
-  await page.getByRole("button", { name: "预览修改部署", exact: true }).click();
+  await clickControl("预览修改部署", "plan", true);
   const preview = page.getByRole("region", {
     name: "部署计划预览",
     exact: true,
   });
   await expect(preview).toContainText("fixture-data", { timeout: 15000 });
   await expect(preview).toContainText("18080");
-  const executed = await submit("执行此计划", "execute", "实际运行 · 运行中");
+  const executed = await submit(
+    "执行此计划",
+    "execute",
+    "实际运行 · 运行中",
+    true,
+  );
   const session = await (await page.request.get("/api/web/session")).json();
   const read = await page.request.post(
     "/api/web/infrastructure/control/operation",
@@ -808,9 +1072,7 @@ test("real HTTP: container and stack actions, configure, saved version restore a
   await version
     .getByRole("button", { name: "选择此版本预览恢复", exact: true })
     .click();
-  await page
-    .getByRole("button", { name: "预览恢复配置版本", exact: true })
-    .click();
+  await clickControl("预览恢复配置版本", "plan");
   await expect(preview).toBeVisible({ timeout: 15000 });
   await submit("执行此计划", "execute", "实际运行 · 运行中");
   await page.getByRole("button", { name: "刷新应用详情", exact: true }).click();
@@ -841,4 +1103,20 @@ test("real HTTP: container and stack actions, configure, saved version restore a
     (await new AxeBuilder({ page }).include(".infra-workspace").analyze())
       .violations,
   ).toEqual([]);
+  expect(calls.map((call) => call.endpoint).sort()).toEqual([
+    "action",
+    "action",
+    "action",
+    "action",
+    "execute",
+    "execute",
+    "plan",
+    "plan",
+  ]);
+  expect(new Set(calls.map((call) => call.clientId)).size).toBe(calls.length);
+  expect(droppedIds).toHaveLength(3);
+  for (const id of droppedIds) {
+    expect(calls.filter((call) => call.clientId === id)).toHaveLength(1);
+    expect(queriedIds).toContain(id);
+  }
 });
