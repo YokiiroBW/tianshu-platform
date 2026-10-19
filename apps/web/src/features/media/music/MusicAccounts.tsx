@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useEffect, useMemo, useRef, useState } from "react";
 import qrcode from "qrcode-generator";
 import { QrCode } from "lucide-react";
@@ -112,80 +113,92 @@ export function MusicAccounts({
           扫码连接歌单。下载时自动检查已连接账号的权限，无需设置渠道优先级。
         </p>
       </div>
-      <label>
-        音乐平台
-        <select
-          value={provider}
-          disabled={starting}
-          onChange={(event) => {
-            setQr(null);
-            setProvider(event.target.value as MusicProvider);
-          }}
-        >
-          {(
-            providers ?? [
-              {
-                provider: "netease" as const,
-                label: "网易云音乐",
-                available: true,
-              },
-            ]
-          ).map((item) => (
-            <option
-              key={item.provider}
-              value={item.provider}
-              disabled={!item.available}
-            >
-              {item.label}
-              {item.available ? "" : "（工具不可用）"}
-            </option>
-          ))}
-        </select>
-      </label>
-      {provider === "qq" && (
+      <DetailCard title="连接音乐账号">
+        {media.error && (
+          <p className="media-message media-warning" role="alert">
+            {media.error}
+          </p>
+        )}
+        {media.notice && (
+          <p className="media-message" role="status">
+            {media.notice}
+          </p>
+        )}{" "}
         <label>
-          登录方式
+          音乐平台
           <select
-            value={loginType}
+            value={provider}
             disabled={starting}
             onChange={(event) => {
               setQr(null);
-              setLoginType(event.target.value);
+              setProvider(event.target.value as MusicProvider);
             }}
           >
-            <option value="qq">QQ 扫码</option>
-            <option value="wx">微信扫码</option>
+            {(
+              providers ?? [
+                {
+                  provider: "netease" as const,
+                  label: "网易云音乐",
+                  available: true,
+                },
+              ]
+            ).map((item) => (
+              <option
+                key={item.provider}
+                value={item.provider}
+                disabled={!item.available}
+              >
+                {item.label}
+                {item.available ? "" : "（工具不可用）"}
+              </option>
+            ))}
           </select>
         </label>
-      )}
-      <button
-        className="button primary"
-        disabled={starting || !!media.busy}
-        onClick={() => void start()}
-      >
-        <QrCode aria-hidden="true" />
-        {starting
-          ? "正在生成…"
-          : qr
-            ? "重新生成二维码"
-            : `${providerNames[provider]}扫码登录`}
-      </button>
-      {qr && (
-        <div className="media-qr">
-          <p role="status">
-            {{
-              waiting: "等待扫码",
-              scanned: "已扫码，请在手机确认",
-              expired: "二维码已过期",
-              ready: "已连接",
-            }[state] ?? "正在读取登录状态"}
-          </p>
-          {state !== "expired" && image && (
-            <img src={image} alt={`${providerNames[provider]}登录二维码`} />
-          )}
-          <p className="muted">有效至 {timestamp(qr.expires_at)}</p>
-        </div>
-      )}
+        {provider === "qq" && (
+          <label>
+            登录方式
+            <select
+              value={loginType}
+              disabled={starting}
+              onChange={(event) => {
+                setQr(null);
+                setLoginType(event.target.value);
+              }}
+            >
+              <option value="qq">QQ 扫码</option>
+              <option value="wx">微信扫码</option>
+            </select>
+          </label>
+        )}
+        <button
+          className="button primary"
+          disabled={starting || !!media.busy}
+          onClick={() => void start()}
+        >
+          <QrCode aria-hidden="true" />
+          {starting
+            ? "正在生成…"
+            : qr
+              ? "重新生成二维码"
+              : `${providerNames[provider]}扫码登录`}
+        </button>
+        {qr && (
+          <div className="media-qr">
+            <p role="status">
+              {{
+                waiting: "等待扫码",
+                scanned: "已扫码，请在手机确认",
+                expired: "二维码已过期",
+                ready: "已连接",
+              }[state] ?? "正在读取登录状态"}
+            </p>
+            {state !== "expired" && image && (
+              <img src={image} alt={`${providerNames[provider]}登录二维码`} />
+            )}
+            <p className="muted">有效至 {timestamp(qr.expires_at)}</p>
+          </div>
+        )}
+      </DetailCard>{" "}
       {accounts.length === 0 && <p className="muted">尚未连接音乐账号。</p>}
       {accounts.map((account) => (
         <div className="music-account" key={account.account_id}>

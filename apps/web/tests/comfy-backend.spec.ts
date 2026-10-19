@@ -326,6 +326,9 @@ async function fixture(page: Page) {
   });
   await page.goto("/#/companion/1");
   await page.getByRole("tab", { name: "衣柜与相册", exact: true }).click();
+  await page
+    .getByRole("button", { name: "图像供应商与工作流设置", exact: true })
+    .click();
   const panel = page.getByRole("region", { name: "ComfyUI 图像管理" });
   await expect(panel.getByLabel("选择工作流")).toContainText(
     "澄汐-分类测试版.json",
@@ -424,6 +427,8 @@ test("model adaptation, structured generation and offline states remain visible"
   await expect(
     panel.getByText("此工作流与节点绑定已保存到当前角色。"),
   ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "生成图像设置", exact: true }).click();
   const studio = page
     .getByRole("heading", { name: "图像创作", exact: true })
     .locator("..");
@@ -446,6 +451,10 @@ test("model adaptation, structured generation and offline states remain visible"
     width: 768,
     height: 1344,
   });
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", { name: "图像供应商与工作流设置", exact: true })
+    .click();
   await panel.getByLabel("选图与适配需求").fill("未配置模型");
   await panel.getByRole("button", { name: "模型辅助适配所选工作流" }).click();
   await expect(panel.getByRole("alert")).toContainText(
@@ -465,8 +474,12 @@ test("changing actors clears credentials, workflow and pending preview", async (
     .getByLabel("访问凭据", { exact: true })
     .fill("synthetic-unsaved-token");
   await state.panel.getByLabel("固定角色形象").fill("澄汐固定形象");
+  await page.keyboard.press("Escape");
   await page.getByLabel("选择角色").selectOption("actor:b");
   await page.getByRole("tab", { name: "衣柜与相册", exact: true }).click();
+  await page
+    .getByRole("button", { name: "图像供应商与工作流设置", exact: true })
+    .click();
   const panel = page.getByRole("region", { name: "ComfyUI 图像管理" });
   await expect(panel.getByLabel("固定角色形象")).toHaveValue("");
   await expect(panel.getByLabel("访问凭据", { exact: true })).toHaveValue("");

@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { requestId } from "../../app/requestId";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -50,6 +51,7 @@ export function ProactivePanel({
     [error, setError] = useState(""),
     [receipt, setReceipt] = useState<manage_response | null>(null),
     [epoch, setEpoch] = useState(0);
+  const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<Subscription | null>(null),
     [timezone, setTimezone] = useState("Asia/Shanghai"),
     [quietStart, setQuietStart] = useState("22:00"),
@@ -195,7 +197,13 @@ export function ProactivePanel({
                   {row.cooldown_seconds / 60} 分钟
                 </p>
                 <div className="life-action-row">
-                  <button className="button" onClick={() => edit(row)}>
+                  <button
+                    className="button"
+                    onClick={() => {
+                      edit(row);
+                      setEditorOpen(true);
+                    }}
+                  >
                     修改偏好
                   </button>
                   <button
@@ -230,104 +238,111 @@ export function ProactivePanel({
                 </div>
               </article>
             ))}
-            <form
-              className="life-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void mutate(
-                  "subscription",
-                  {
-                    timezone_name: timezone,
-                    quiet_start: quietStart,
-                    quiet_end: quietEnd,
-                    cooldown_seconds: cooldown,
-                    daily_quota: quota,
-                    unanswered_limit: unanswered,
-                    expiry_seconds: expiry,
-                  },
-                  editing?.version ?? 0,
-                );
-              }}
+            <DetailCard
+              title={editing ? "修改主动偏好" : "登记主动偏好"}
+              open={editorOpen}
+              onOpenChange={setEditorOpen}
             >
-              <h4>{editing ? "修改主动偏好" : "登记主动偏好"}</h4>
-              <label>
-                时区
-                <input
-                  required
-                  value={timezone}
-                  onChange={(e) => setTimezone(e.target.value)}
-                />
-              </label>
-              <div className="life-form-row">
+              {error && <p role="alert">{error}</p>}
+              <form
+                className="life-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void mutate(
+                    "subscription",
+                    {
+                      timezone_name: timezone,
+                      quiet_start: quietStart,
+                      quiet_end: quietEnd,
+                      cooldown_seconds: cooldown,
+                      daily_quota: quota,
+                      unanswered_limit: unanswered,
+                      expiry_seconds: expiry,
+                    },
+                    editing?.version ?? 0,
+                  );
+                }}
+              >
+                <h4>{editing ? "修改主动偏好" : "登记主动偏好"}</h4>
                 <label>
-                  安静时段开始
+                  时区
                   <input
                     required
-                    type="time"
-                    value={quietStart}
-                    onChange={(e) => setQuietStart(e.target.value)}
+                    value={timezone}
+                    onChange={(e) => setTimezone(e.target.value)}
                   />
                 </label>
-                <label>
-                  结束
-                  <input
-                    required
-                    type="time"
-                    value={quietEnd}
-                    onChange={(e) => setQuietEnd(e.target.value)}
-                  />
-                </label>
-              </div>
-              <div className="life-form-row">
-                <label>
-                  最少间隔（秒）
-                  <input
-                    required
-                    type="number"
-                    min={0}
-                    value={cooldown}
-                    onChange={(e) => setCooldown(Number(e.target.value))}
-                  />
-                </label>
-                <label>
-                  每天次数
-                  <input
-                    required
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={quota}
-                    onChange={(e) => setQuota(Number(e.target.value))}
-                  />
-                </label>
-              </div>
-              <div className="life-form-row">
-                <label>
-                  连续未回复上限
-                  <input
-                    required
-                    type="number"
-                    min={1}
-                    max={100}
-                    value={unanswered}
-                    onChange={(e) => setUnanswered(Number(e.target.value))}
-                  />
-                </label>
-                <label>
-                  待发送内容有效期（秒）
-                  <input
-                    required
-                    type="number"
-                    min={1}
-                    value={expiry}
-                    onChange={(e) => setExpiry(Number(e.target.value))}
-                  />
-                </label>
-              </div>
-              <button className="button primary" disabled={busy}>
-                保存主动偏好
-              </button>
-            </form>
+                <div className="life-form-row">
+                  <label>
+                    安静时段开始
+                    <input
+                      required
+                      type="time"
+                      value={quietStart}
+                      onChange={(e) => setQuietStart(e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    结束
+                    <input
+                      required
+                      type="time"
+                      value={quietEnd}
+                      onChange={(e) => setQuietEnd(e.target.value)}
+                    />
+                  </label>
+                </div>
+                <div className="life-form-row">
+                  <label>
+                    最少间隔（秒）
+                    <input
+                      required
+                      type="number"
+                      min={0}
+                      value={cooldown}
+                      onChange={(e) => setCooldown(Number(e.target.value))}
+                    />
+                  </label>
+                  <label>
+                    每天次数
+                    <input
+                      required
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={quota}
+                      onChange={(e) => setQuota(Number(e.target.value))}
+                    />
+                  </label>
+                </div>
+                <div className="life-form-row">
+                  <label>
+                    连续未回复上限
+                    <input
+                      required
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={unanswered}
+                      onChange={(e) => setUnanswered(Number(e.target.value))}
+                    />
+                  </label>
+                  <label>
+                    待发送内容有效期（秒）
+                    <input
+                      required
+                      type="number"
+                      min={1}
+                      value={expiry}
+                      onChange={(e) => setExpiry(Number(e.target.value))}
+                    />
+                  </label>
+                </div>
+                <button className="button primary" disabled={busy}>
+                  保存主动偏好
+                </button>
+              </form>
+            </DetailCard>
           </>
         )}
         <RuntimeFeedback busy={busy} error={error} receipt={receipt} />

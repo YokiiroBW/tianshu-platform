@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import {
   integrationPost,
@@ -310,118 +311,478 @@ export function ComfyBackendPanel({
   }
 
   return (
-    <section
-      className="panel comfy-backend life-span"
-      aria-label="ComfyUI 图像管理"
-    >
-      <h3>图像供应商与工作流</h3>
-      <p className="muted">
-        当前角色：{access.actor}。每位角色独立绑定工作流与形象。
-      </p>
-      <div className="comfy-sections">
-        <form
-          className="life-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void perform(async (signal) => {
-              const body = {
-                actor_id: access.actor,
-                value: { base_url: url, enabled },
-                credential: clearCredential
-                  ? { action: "clear" }
-                  : token
-                    ? { action: "replace", value: token }
-                    : { action: "keep" },
-                catalog_revision: credentials?.revision ?? 0,
-                expected_version: status?.version ?? 0,
-              };
-              await integrationPost<ComfyResponse<unknown>>(
-                "life/image-backend/save",
-                { ...body, client_id: operationId(body) },
-                access.csrf,
-                signal,
-              );
-              if (signal.aborted) return;
-              pending.current = null;
-              setToken("");
-              setClearCredential(false);
-              await reload(signal);
-              if (!signal.aborted) {
-                setWorkflows(
-                  await readComfy<ComfyWorkflowList>(
+    <DetailCard title={"图像供应商与工作流设置"}>
+      {error && <p role="alert">{error}</p>}
+      {message && <p role="status">{message}</p>}
+      <section
+        className="panel comfy-backend life-span"
+        aria-label="ComfyUI 图像管理"
+      >
+        <h3>图像供应商与工作流</h3>
+        <p className="muted">
+          当前角色：{access.actor}。每位角色独立绑定工作流与形象。
+        </p>
+        <div className="comfy-sections">
+          <form
+            className="life-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void perform(async (signal) => {
+                const body = {
+                  actor_id: access.actor,
+                  value: { base_url: url, enabled },
+                  credential: clearCredential
+                    ? { action: "clear" }
+                    : token
+                      ? { action: "replace", value: token }
+                      : { action: "keep" },
+                  catalog_revision: credentials?.revision ?? 0,
+                  expected_version: status?.version ?? 0,
+                };
+                await integrationPost<ComfyResponse<unknown>>(
+                  "life/image-backend/save",
+                  { ...body, client_id: operationId(body) },
+                  access.csrf,
+                  signal,
+                );
+                if (signal.aborted) return;
+                pending.current = null;
+                setToken("");
+                setClearCredential(false);
+                await reload(signal);
+                if (!signal.aborted) {
+                  setWorkflows(
+                    await readComfy<ComfyWorkflowList>(
+                      access,
+                      "workflows",
+                      signal,
+                    ),
+                  );
+                  setMessage("连接配置已保存，已读取实际工作流目录。");
+                  refreshed();
+                }
+              }, true);
+            }}
+          >
+            <h4>服务连接</h4>
+            <label>
+              图像供应商
+              <select value="comfyui" onChange={() => {}}>
+                <option value="comfyui">ComfyUI</option>
+              </select>
+            </label>
+            <p className="muted">NAI 与在线图像 API 尚未接入。</p>
+            <p>连接状态：{showState(status?.state ?? "not_configured")}</p>
+            {status?.checked_at && (
+              <p className="muted">
+                最近检查：
+                {new Date(status.checked_at * 1000).toLocaleString("zh-CN")}
+              </p>
+            )}
+            {status?.error_code && (
+              <p className="error-text">{status.error_code}</p>
+            )}
+            <label>
+              ComfyUI 地址
+              <input
+                type="url"
+                required
+                value={url}
+                onChange={(event) => setUrl(event.target.value)}
+                placeholder="http://服务器:8188"
+              />
+            </label>
+            <label>
+              访问凭据
+              <input
+                type="password"
+                autoComplete="new-password"
+                disabled={clearCredential}
+                value={token}
+                onChange={(event) => setToken(event.target.value)}
+                placeholder={
+                  credentials?.credential_configured
+                    ? "已保存，留空保留"
+                    : "无认证的后端可留空"
+                }
+              />
+            </label>
+            <label className="life-check">
+              <input
+                type="checkbox"
+                checked={clearCredential}
+                onChange={(event) => setClearCredential(event.target.checked)}
+              />
+              清除连接访问凭据
+            </label>
+            <label className="life-check">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(event) => setEnabled(event.target.checked)}
+              />
+              启用此连接
+            </label>
+            <div className="life-action-row">
+              <button className="button primary" disabled={busy}>
+                保存连接并读取工作流
+              </button>
+              <button
+                type="button"
+                className="button"
+                disabled={busy}
+                onClick={() =>
+                  void perform(async (signal) => {
+                    await reload(signal);
+                    refreshed();
+                  })
+                }
+              >
+                检查实际连接
+              </button>
+            </div>
+          </form>
+
+          <div className="life-form">
+            <h4>工作流发现与适配</h4>
+            <button
+              className="button"
+              disabled={busy}
+              onClick={() =>
+                void perform(async (signal) => {
+                  const result = await readComfy<ComfyWorkflowList>(
                     access,
                     "workflows",
                     signal,
-                  ),
-                );
-                setMessage("连接配置已保存，已读取实际工作流目录。");
-                refreshed();
+                  );
+                  if (!signal.aborted) setWorkflows(result);
+                })
               }
+            >
+              读取工作流目录
+            </button>
+            {workflows && (
+              <p className="muted">
+                ComfyUI 工作流目录 · {workflows.items.length} 个模板
+              </p>
+            )}
+            {workflows?.items.length === 0 && (
+              <p>目录为空；在 ComfyUI 保存工作流后重新读取。</p>
+            )}
+            <label>
+              选择工作流
+              <select
+                value={selection}
+                disabled={busy}
+                onChange={(event) => {
+                  const id = event.target.value;
+                  setSelection(id);
+                  setWorkflow(null);
+                  setBindings({});
+                  setPreview(null);
+                  if (id)
+                    void perform(async (signal) => {
+                      const result = await readComfy<ComfyWorkflow>(
+                        access,
+                        "workflow",
+                        signal,
+                        id,
+                      );
+                      if (!signal.aborted) applyWorkflow(result);
+                    });
+                }}
+              >
+                <option value="">选择已发现模板</option>
+                {actor?.workflow_id &&
+                  !workflows?.items.some(
+                    (item) => item.id === actor.workflow_id,
+                  ) && (
+                    <option value={actor.workflow_id}>
+                      {actor.workflow_id} · 已绑定
+                    </option>
+                  )}
+                {workflows?.items.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {actor?.workflow_id && <p>当前角色已绑定：{actor.workflow_id}</p>}
+            <label>
+              选图与适配需求
+              <textarea
+                value={goal}
+                onChange={(event) => setGoal(event.target.value)}
+                maxLength={2000}
+                placeholder="例如：用于角色竖幅生活照，保持原画风，分别调整穿搭、动作和背景。"
+              />
+            </label>
+            <div className="life-action-row">
+              <button
+                className="button"
+                disabled={busy || !goal.trim()}
+                onClick={() =>
+                  void perform(async (signal) => {
+                    const result = await manageComfy<Analysis>(
+                      access,
+                      "workflow.analyze",
+                      { workflow_id: null, goal, assist_model: true },
+                      actor?.version ?? 1,
+                      requestId(),
+                      signal,
+                    );
+                    if (!signal.aborted) applyWorkflow(result);
+                  })
+                }
+              >
+                按需求帮我选工作流
+              </button>
+              <button
+                className="button"
+                disabled={busy || !selection || !goal.trim()}
+                onClick={() =>
+                  void perform(async (signal) => {
+                    const result = await manageComfy<Analysis>(
+                      access,
+                      "workflow.analyze",
+                      { workflow_id: selection, goal, assist_model: true },
+                      actor?.version ?? 1,
+                      requestId(),
+                      signal,
+                    );
+                    if (!signal.aborted) applyWorkflow(result);
+                  })
+                }
+              >
+                模型辅助适配所选工作流
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {workflow && (
+          <div className="life-record">
+            <h4>节点识别与绑定 · {workflow.workflow_id}</h4>
+            <p>
+              {workflow.format === "ui" ? "ComfyUI 界面工作流" : "API 工作流"} ·{" "}
+              {workflow.nodes.length} 个节点 ·{" "}
+              {workflow.state === "ready" ? "可以适配" : "需要调整工作流"}
+            </p>
+            {workflow.selection_reason && <p>{workflow.selection_reason}</p>}
+            {workflow.model_receipt && (
+              <p>模型辅助分析已完成，请核对下方字段。</p>
+            )}
+            {workflow.unresolved.length > 0 && (
+              <ul className="error-text">
+                {workflow.unresolved.map((item, index) => (
+                  <li key={index}>
+                    {item.node_id ? `节点 ${item.node_id}：` : ""}
+                    {item.detail}（{item.code}）
+                  </li>
+                ))}
+              </ul>
+            )}
+            <BindingEditor
+              workflow={workflow}
+              bindings={bindings}
+              onChange={(value) => {
+                setBindings(value);
+                setPreview(null);
+              }}
+            />
+            <p className="muted">
+              受保护节点：
+              {workflow.protected_nodes
+                .map((item) => `${item.class_type} · ${item.node_id}`)
+                .join("、") || "无"}
+            </p>
+            <div className="life-action-row">
+              <button
+                className="button primary"
+                disabled={busy || workflow.state !== "ready"}
+                onClick={() =>
+                  void perform(async (signal) => {
+                    await manage(
+                      "workflow.select",
+                      { workflow_id: workflow.workflow_id, bindings },
+                      signal,
+                    );
+                    if (!signal.aborted)
+                      setMessage("此工作流与节点绑定已保存到当前角色。");
+                  }, true)
+                }
+              >
+                将工作流绑定到当前角色
+              </button>
+              {actor?.workflow_id === workflow.workflow_id && (
+                <button
+                  className="button"
+                  disabled={busy || workflow.state !== "ready"}
+                  onClick={() =>
+                    void perform(async (signal) => {
+                      await manage("bindings.update", { bindings }, signal);
+                      if (!signal.aborted)
+                        setMessage("当前角色的节点修正已保存。");
+                    }, true)
+                  }
+                >
+                  保存节点修正
+                </button>
+              )}
+            </div>
+            <DetailCard title="查看节点与转换依据">
+              <p>{workflow.conversion.strategy}</p>
+              <pre>
+                {JSON.stringify(
+                  {
+                    nodes: workflow.nodes,
+                    evidence: workflow.conversion.evidence,
+                  },
+                  null,
+                  2,
+                )}
+              </pre>
+            </DetailCard>
+          </div>
+        )}
+
+        <form
+          className="life-form comfy-character"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void perform(async (signal) => {
+              await manage(
+                "actor.configure",
+                {
+                  workflow_id: actor?.workflow_id ?? null,
+                  character_prompt: character,
+                  defaults: {
+                    outfit,
+                    pose,
+                    background,
+                    camera,
+                    positive,
+                    negative,
+                    width,
+                    height,
+                  },
+                },
+                signal,
+              );
+              if (!signal.aborted)
+                setMessage("当前角色的形象与拍摄默认值已保存。");
             }, true);
           }}
         >
-          <h4>服务连接</h4>
+          <h4>角色形象与拍摄默认值</h4>
+          <p className="muted">
+            形象与拍摄字段留空时，沿用所选工作流原有内容。
+          </p>
           <label>
-            图像供应商
-            <select value="comfyui" onChange={() => {}}>
-              <option value="comfyui">ComfyUI</option>
-            </select>
-          </label>
-          <p className="muted">NAI 与在线图像 API 尚未接入。</p>
-          <p>连接状态：{showState(status?.state ?? "not_configured")}</p>
-          {status?.checked_at && (
-            <p className="muted">
-              最近检查：
-              {new Date(status.checked_at * 1000).toLocaleString("zh-CN")}
-            </p>
-          )}
-          {status?.error_code && (
-            <p className="error-text">{status.error_code}</p>
-          )}
-          <label>
-            ComfyUI 地址
-            <input
-              type="url"
-              required
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder="http://服务器:8188"
+            固定角色形象
+            <textarea
+              value={character}
+              onChange={(event) => {
+                setCharacter(event.target.value);
+                setPreview(null);
+              }}
+              maxLength={2000}
+              placeholder="外貌、发色、眼睛等固定特征"
             />
           </label>
-          <label>
-            访问凭据
-            <input
-              type="password"
-              autoComplete="new-password"
-              disabled={clearCredential}
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              placeholder={
-                credentials?.credential_configured
-                  ? "已保存，留空保留"
-                  : "无认证的后端可留空"
-              }
-            />
-          </label>
+          <div className="comfy-sections">
+            <label>
+              默认穿搭
+              <input
+                value={outfit}
+                onChange={(event) => {
+                  setOutfit(event.target.value);
+                  setPreview(null);
+                }}
+                maxLength={2000}
+              />
+            </label>
+            <label>
+              默认姿态与动作
+              <input
+                value={pose}
+                onChange={(event) => {
+                  setPose(event.target.value);
+                  setPreview(null);
+                }}
+                maxLength={2000}
+              />
+            </label>
+            <label>
+              默认背景与场景
+              <input
+                value={background}
+                onChange={(event) => {
+                  setBackground(event.target.value);
+                  setPreview(null);
+                }}
+                maxLength={2000}
+              />
+            </label>
+            <label>
+              默认镜头与构图
+              <input
+                value={camera}
+                onChange={(event) => {
+                  setCamera(event.target.value);
+                  setPreview(null);
+                }}
+                maxLength={2000}
+                placeholder="半身、全身、远景等"
+              />
+            </label>
+            <label>
+              默认补充细节
+              <input
+                value={positive}
+                onChange={(event) => {
+                  setPositive(event.target.value);
+                  setPreview(null);
+                }}
+                maxLength={2000}
+              />
+            </label>
+            <label>
+              默认排除细节
+              <input
+                value={negative}
+                onChange={(event) => {
+                  setNegative(event.target.value);
+                  setPreview(null);
+                }}
+                maxLength={2000}
+              />
+            </label>
+          </div>
+          <ImageDimensions
+            width={width}
+            height={height}
+            onChange={(w, h) => {
+              setWidth(w);
+              setHeight(h);
+              setPreview(null);
+            }}
+          />
           <label className="life-check">
             <input
               type="checkbox"
-              checked={clearCredential}
-              onChange={(event) => setClearCredential(event.target.checked)}
+              checked={assist}
+              onChange={(event) => {
+                setAssist(event.target.checked);
+                setPreview(null);
+              }}
             />
-            清除连接访问凭据
-          </label>
-          <label className="life-check">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(event) => setEnabled(event.target.checked)}
-            />
-            启用此连接
+            预览时使用角色模型转译提示词
           </label>
           <div className="life-action-row">
             <button className="button primary" disabled={busy}>
-              保存连接并读取工作流
+              保存角色默认值
             </button>
             <button
               type="button"
@@ -429,397 +790,42 @@ export function ComfyBackendPanel({
               disabled={busy}
               onClick={() =>
                 void perform(async (signal) => {
-                  await reload(signal);
-                  refreshed();
+                  const result = await compileComfy(
+                    access,
+                    {
+                      character,
+                      outfit,
+                      pose,
+                      background,
+                      camera,
+                      positive,
+                      negative,
+                    },
+                    { width, height },
+                    assist,
+                    signal,
+                  );
+                  if (
+                    !signal.aborted &&
+                    latestPreviewIdentity.current === previewIdentity
+                  )
+                    setPreview(result);
                 })
               }
             >
-              检查实际连接
+              编译预览角色拍摄
             </button>
           </div>
         </form>
-
-        <div className="life-form">
-          <h4>工作流发现与适配</h4>
-          <button
-            className="button"
-            disabled={busy}
-            onClick={() =>
-              void perform(async (signal) => {
-                const result = await readComfy<ComfyWorkflowList>(
-                  access,
-                  "workflows",
-                  signal,
-                );
-                if (!signal.aborted) setWorkflows(result);
-              })
-            }
-          >
-            读取工作流目录
-          </button>
-          {workflows && (
-            <p className="muted">
-              ComfyUI 工作流目录 · {workflows.items.length} 个模板
-            </p>
-          )}
-          {workflows?.items.length === 0 && (
-            <p>目录为空；在 ComfyUI 保存工作流后重新读取。</p>
-          )}
-          <label>
-            选择工作流
-            <select
-              value={selection}
-              disabled={busy}
-              onChange={(event) => {
-                const id = event.target.value;
-                setSelection(id);
-                setWorkflow(null);
-                setBindings({});
-                setPreview(null);
-                if (id)
-                  void perform(async (signal) => {
-                    const result = await readComfy<ComfyWorkflow>(
-                      access,
-                      "workflow",
-                      signal,
-                      id,
-                    );
-                    if (!signal.aborted) applyWorkflow(result);
-                  });
-              }}
-            >
-              <option value="">选择已发现模板</option>
-              {actor?.workflow_id &&
-                !workflows?.items.some(
-                  (item) => item.id === actor.workflow_id,
-                ) && (
-                  <option value={actor.workflow_id}>
-                    {actor.workflow_id} · 已绑定
-                  </option>
-                )}
-              {workflows?.items.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {actor?.workflow_id && <p>当前角色已绑定：{actor.workflow_id}</p>}
-          <label>
-            选图与适配需求
-            <textarea
-              value={goal}
-              onChange={(event) => setGoal(event.target.value)}
-              maxLength={2000}
-              placeholder="例如：用于角色竖幅生活照，保持原画风，分别调整穿搭、动作和背景。"
-            />
-          </label>
-          <div className="life-action-row">
-            <button
-              className="button"
-              disabled={busy || !goal.trim()}
-              onClick={() =>
-                void perform(async (signal) => {
-                  const result = await manageComfy<Analysis>(
-                    access,
-                    "workflow.analyze",
-                    { workflow_id: null, goal, assist_model: true },
-                    actor?.version ?? 1,
-                    requestId(),
-                    signal,
-                  );
-                  if (!signal.aborted) applyWorkflow(result);
-                })
-              }
-            >
-              按需求帮我选工作流
-            </button>
-            <button
-              className="button"
-              disabled={busy || !selection || !goal.trim()}
-              onClick={() =>
-                void perform(async (signal) => {
-                  const result = await manageComfy<Analysis>(
-                    access,
-                    "workflow.analyze",
-                    { workflow_id: selection, goal, assist_model: true },
-                    actor?.version ?? 1,
-                    requestId(),
-                    signal,
-                  );
-                  if (!signal.aborted) applyWorkflow(result);
-                })
-              }
-            >
-              模型辅助适配所选工作流
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {workflow && (
-        <div className="life-record">
-          <h4>节点识别与绑定 · {workflow.workflow_id}</h4>
-          <p>
-            {workflow.format === "ui" ? "ComfyUI 界面工作流" : "API 工作流"} ·{" "}
-            {workflow.nodes.length} 个节点 ·{" "}
-            {workflow.state === "ready" ? "可以适配" : "需要调整工作流"}
+        {busy && <p role="status">正在核对 ComfyUI 与当前角色配置…</p>}
+        {message && <p role="status">{message}</p>}
+        {error && (
+          <p role="alert" className="error-text">
+            {error}
           </p>
-          {workflow.selection_reason && <p>{workflow.selection_reason}</p>}
-          {workflow.model_receipt && (
-            <p>模型辅助分析已完成，请核对下方字段。</p>
-          )}
-          {workflow.unresolved.length > 0 && (
-            <ul className="error-text">
-              {workflow.unresolved.map((item, index) => (
-                <li key={index}>
-                  {item.node_id ? `节点 ${item.node_id}：` : ""}
-                  {item.detail}（{item.code}）
-                </li>
-              ))}
-            </ul>
-          )}
-          <BindingEditor
-            workflow={workflow}
-            bindings={bindings}
-            onChange={(value) => {
-              setBindings(value);
-              setPreview(null);
-            }}
-          />
-          <p className="muted">
-            受保护节点：
-            {workflow.protected_nodes
-              .map((item) => `${item.class_type} · ${item.node_id}`)
-              .join("、") || "无"}
-          </p>
-          <div className="life-action-row">
-            <button
-              className="button primary"
-              disabled={busy || workflow.state !== "ready"}
-              onClick={() =>
-                void perform(async (signal) => {
-                  await manage(
-                    "workflow.select",
-                    { workflow_id: workflow.workflow_id, bindings },
-                    signal,
-                  );
-                  if (!signal.aborted)
-                    setMessage("此工作流与节点绑定已保存到当前角色。");
-                }, true)
-              }
-            >
-              将工作流绑定到当前角色
-            </button>
-            {actor?.workflow_id === workflow.workflow_id && (
-              <button
-                className="button"
-                disabled={busy || workflow.state !== "ready"}
-                onClick={() =>
-                  void perform(async (signal) => {
-                    await manage("bindings.update", { bindings }, signal);
-                    if (!signal.aborted)
-                      setMessage("当前角色的节点修正已保存。");
-                  }, true)
-                }
-              >
-                保存节点修正
-              </button>
-            )}
-          </div>
-          <details>
-            <summary>查看节点与转换依据</summary>
-            <p>{workflow.conversion.strategy}</p>
-            <pre>
-              {JSON.stringify(
-                {
-                  nodes: workflow.nodes,
-                  evidence: workflow.conversion.evidence,
-                },
-                null,
-                2,
-              )}
-            </pre>
-          </details>
-        </div>
-      )}
-
-      <form
-        className="life-form comfy-character"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void perform(async (signal) => {
-            await manage(
-              "actor.configure",
-              {
-                workflow_id: actor?.workflow_id ?? null,
-                character_prompt: character,
-                defaults: {
-                  outfit,
-                  pose,
-                  background,
-                  camera,
-                  positive,
-                  negative,
-                  width,
-                  height,
-                },
-              },
-              signal,
-            );
-            if (!signal.aborted)
-              setMessage("当前角色的形象与拍摄默认值已保存。");
-          }, true);
-        }}
-      >
-        <h4>角色形象与拍摄默认值</h4>
-        <p className="muted">形象与拍摄字段留空时，沿用所选工作流原有内容。</p>
-        <label>
-          固定角色形象
-          <textarea
-            value={character}
-            onChange={(event) => {
-              setCharacter(event.target.value);
-              setPreview(null);
-            }}
-            maxLength={2000}
-            placeholder="外貌、发色、眼睛等固定特征"
-          />
-        </label>
-        <div className="comfy-sections">
-          <label>
-            默认穿搭
-            <input
-              value={outfit}
-              onChange={(event) => {
-                setOutfit(event.target.value);
-                setPreview(null);
-              }}
-              maxLength={2000}
-            />
-          </label>
-          <label>
-            默认姿态与动作
-            <input
-              value={pose}
-              onChange={(event) => {
-                setPose(event.target.value);
-                setPreview(null);
-              }}
-              maxLength={2000}
-            />
-          </label>
-          <label>
-            默认背景与场景
-            <input
-              value={background}
-              onChange={(event) => {
-                setBackground(event.target.value);
-                setPreview(null);
-              }}
-              maxLength={2000}
-            />
-          </label>
-          <label>
-            默认镜头与构图
-            <input
-              value={camera}
-              onChange={(event) => {
-                setCamera(event.target.value);
-                setPreview(null);
-              }}
-              maxLength={2000}
-              placeholder="半身、全身、远景等"
-            />
-          </label>
-          <label>
-            默认补充细节
-            <input
-              value={positive}
-              onChange={(event) => {
-                setPositive(event.target.value);
-                setPreview(null);
-              }}
-              maxLength={2000}
-            />
-          </label>
-          <label>
-            默认排除细节
-            <input
-              value={negative}
-              onChange={(event) => {
-                setNegative(event.target.value);
-                setPreview(null);
-              }}
-              maxLength={2000}
-            />
-          </label>
-        </div>
-        <ImageDimensions
-          width={width}
-          height={height}
-          onChange={(w, h) => {
-            setWidth(w);
-            setHeight(h);
-            setPreview(null);
-          }}
-        />
-        <label className="life-check">
-          <input
-            type="checkbox"
-            checked={assist}
-            onChange={(event) => {
-              setAssist(event.target.checked);
-              setPreview(null);
-            }}
-          />
-          预览时使用角色模型转译提示词
-        </label>
-        <div className="life-action-row">
-          <button className="button primary" disabled={busy}>
-            保存角色默认值
-          </button>
-          <button
-            type="button"
-            className="button"
-            disabled={busy}
-            onClick={() =>
-              void perform(async (signal) => {
-                const result = await compileComfy(
-                  access,
-                  {
-                    character,
-                    outfit,
-                    pose,
-                    background,
-                    camera,
-                    positive,
-                    negative,
-                  },
-                  { width, height },
-                  assist,
-                  signal,
-                );
-                if (
-                  !signal.aborted &&
-                  latestPreviewIdentity.current === previewIdentity
-                )
-                  setPreview(result);
-              })
-            }
-          >
-            编译预览角色拍摄
-          </button>
-        </div>
-      </form>
-      {busy && <p role="status">正在核对 ComfyUI 与当前角色配置…</p>}
-      {message && <p role="status">{message}</p>}
-      {error && (
-        <p role="alert" className="error-text">
-          {error}
-        </p>
-      )}
-      {preview && <ComfyCompilePreview result={preview} />}
-    </section>
+        )}
+        {preview && <ComfyCompilePreview result={preview} />}
+      </section>
+    </DetailCard>
   );
 }

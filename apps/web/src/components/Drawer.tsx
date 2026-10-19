@@ -7,11 +7,13 @@ export function Drawer({
   open,
   onClose,
   children,
+  variant = "drawer",
 }: {
-  title: string;
+  title: ReactNode;
   open: boolean;
   onClose: () => void;
   children: ReactNode;
+  variant?: "drawer" | "card";
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -25,22 +27,40 @@ export function Drawer({
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    const overflow = document.body.style.overflow;
     element.showModal();
-    document.body.style.overflow = "hidden";
     return () => {
       element.close();
-      document.body.style.overflow = overflow;
       if (trigger?.isConnected) trigger.focus();
     };
   }, [open]);
   return (
     <dialog
-      className="drawer"
+      className={`drawer${variant === "card" ? " drawer-card" : ""}`}
       ref={dialog}
       aria-labelledby={titleId}
-      onCancel={onClose}
+      onCancel={(event) => {
+        if (event.target !== event.currentTarget) return;
+        event.preventDefault();
+        onClose();
+      }}
+      onClick={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const bounds = event.currentTarget.getBoundingClientRect();
+        if (
+          event.clientX < bounds.left ||
+          event.clientX > bounds.right ||
+          event.clientY < bounds.top ||
+          event.clientY > bounds.bottom
+        )
+          onClose();
+      }}
       onKeyDown={(event) => {
+        if ((event.target as Element).closest("dialog") !== event.currentTarget)
+          return;
+        if (event.key === "Escape") {
+          event.stopPropagation();
+          return;
+        }
         if (event.key !== "Tab") return;
         const controls = Array.from(
           event.currentTarget.querySelectorAll<HTMLElement>(
@@ -61,17 +81,24 @@ export function Drawer({
         }
       }}
     >
-      <header className="drawer-heading">
-        <h2 id={titleId}>{title}</h2>
-        <button
-          className="icon-button"
-          aria-label={`关闭${title}`}
-          onClick={onClose}
-        >
-          <X aria-hidden="true" />
-        </button>
-      </header>
-      {children}
+      {open && (
+        <>
+          <header className="drawer-heading">
+            <h2 id={titleId}>{title}</h2>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={
+                typeof title === "string" ? `关闭${title}` : "关闭卡片"
+              }
+              onClick={onClose}
+            >
+              <X aria-hidden="true" />
+            </button>
+          </header>
+          <div className="drawer-content">{children}</div>
+        </>
+      )}
     </dialog>
   );
 }

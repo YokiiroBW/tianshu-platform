@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useState } from "react";
 import type { MediaController } from "../useMediaController";
 import { timestamp, word } from "../wording";
@@ -37,58 +38,80 @@ export function MusicMaintenance({
         天分批检查已归档的订阅歌曲，比较全部可用渠道，只升级验证后更高音质的版本。同一首歌只检查一次；新歌下载优先，限流或预算耗尽时顺延。
         暂不可查询的渠道单独等待，其他渠道继续比较；恢复后自动补查并复用同等或更好的本地文件。
       </p>
-      <div className="music-select-row">
-        <label>
-          歌单自动同步周期
-          <select
-            value={interval}
-            onChange={(event) => setInterval(event.target.value)}
+      <DetailCard title={"音乐自动维护设置"}>
+        {media.error && (
+          <p className="media-message media-warning" role="alert">
+            {media.error}
+          </p>
+        )}
+        {media.notice && (
+          <p className="media-message" role="status">
+            {media.notice}
+          </p>
+        )}
+        <div className="music-select-row">
+          <label>
+            歌单自动同步周期
+            <select
+              value={interval}
+              onChange={(event) => setInterval(event.target.value)}
+            >
+              <option value="21600">每 6 小时</option>
+              <option value="43200">每 12 小时</option>
+              <option value="86400">每天</option>
+              {![21600, 43200, 86400].includes(
+                view.settings.playlist_interval_seconds,
+              ) && (
+                <option value={view.settings.playlist_interval_seconds}>
+                  当前周期
+                </option>
+              )}
+            </select>
+          </label>
+          <label className="media-check">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(event) => setEnabled(event.target.checked)}
+            />
+            每周检查音质升级
+          </label>
+          <button
+            className="button"
+            disabled={!!media.busy}
+            onClick={async () => {
+              if (
+                await media.command("music/maintenance/save", {
+                  enabled,
+                  playlist_interval_seconds: Number(interval),
+                  expected_revision: view.settings.revision,
+                })
+              ) {
+                media.setNotice("自动维护设置已保存，歌单将错开同步。");
+                await refresh();
+              }
+            }}
           >
-            <option value="21600">每 6 小时</option>
-            <option value="43200">每 12 小时</option>
-            <option value="86400">每天</option>
-            {![21600, 43200, 86400].includes(
-              view.settings.playlist_interval_seconds,
-            ) && (
-              <option value={view.settings.playlist_interval_seconds}>
-                当前周期
-              </option>
-            )}
-          </select>
-        </label>
-        <label className="media-check">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(event) => setEnabled(event.target.checked)}
-          />
-          每周检查音质升级
-        </label>
-        <button
-          className="button"
-          disabled={!!media.busy}
-          onClick={async () => {
-            if (
-              await media.command("music/maintenance/save", {
-                enabled,
-                playlist_interval_seconds: Number(interval),
-                expected_revision: view.settings.revision,
-              })
-            ) {
-              media.setNotice("自动维护设置已保存，歌单将错开同步。");
-              await refresh();
-            }
-          }}
-        >
-          保存维护设置
-        </button>
-      </div>
+            保存维护设置
+          </button>
+        </div>
+      </DetailCard>
       <p className="muted">
         已记录 {view.counts.tracked} 首 · 已检查 {view.counts.checked} 首 · 到期{" "}
         {view.counts.due} 首 · 累计升级 {view.counts.upgrades} 次
       </p>
-      <details>
-        <summary>请求节流与最近检查</summary>
+      <DetailCard title="请求节流与最近检查">
+        {media.error && (
+          <p className="media-message media-warning" role="alert">
+            {media.error}
+          </p>
+        )}
+        {media.notice && (
+          <p className="media-message" role="status">
+            {media.notice}
+          </p>
+        )}
+
         <div className="media-stack">
           <p className="muted">
             同步、搜索、音质查询和下载共享请求控制：间隔至少{" "}
@@ -118,7 +141,7 @@ export function MusicMaintenance({
             </div>
           ))}
         </div>
-      </details>
+      </DetailCard>
     </section>
   );
 }

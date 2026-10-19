@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useState } from "react";
 import { useDraftId, useLifeAction, useLifeResource } from "./useLifeRuntime";
 import { ResourceFeedback, RuntimeFeedback } from "./RuntimeFeedback";
@@ -74,6 +75,7 @@ function ActivityPanel({ access }: { access: LifeAccess }) {
   const records = useLifeResource(access, "activities"),
     action = useLifeAction(access, records.refresh);
   const draft = useDraftId("activity");
+  const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<activities_record | null>(null),
     [title, setTitle] = useState(""),
     [note, setNote] = useState("");
@@ -90,6 +92,7 @@ function ActivityPanel({ access }: { access: LifeAccess }) {
   }
   function clearDraft() {
     setEditing(null);
+    setEditorOpen(false);
     setTitle("");
     setNote("");
     setDue("");
@@ -206,69 +209,79 @@ function ActivityPanel({ access }: { access: LifeAccess }) {
           继续读取活动
         </button>
       )}
-      <form className="life-form" onSubmit={save}>
-        <h4>{editing ? "编辑活动" : "安排活动"}</h4>
-        <label>
-          活动名称
-          <input
-            required
-            maxLength={4000}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-        </label>
-        <label>
-          当前进度
-          <textarea
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            maxLength={4000}
-          />
-        </label>
-        <div className="life-form-row">
+      <DetailCard
+        title={editing ? "编辑活动" : "新增活动"}
+        open={editorOpen || !!editing}
+        onOpenChange={(open) => {
+          setEditorOpen(open);
+          if (!open) clearDraft();
+        }}
+      >
+        <RuntimeFeedback {...action} />
+        <form className="life-form" onSubmit={save}>
+          <h4>{editing ? "编辑活动" : "安排活动"}</h4>
           <label>
-            状态
-            <select
-              value={state}
-              onChange={(e) =>
-                setState(e.target.value as activities_record["state"])
-              }
-            >
-              {["planned", "running", "paused", "completed"].map((x) => (
-                <option key={x} value={x}>
-                  {showState(x)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            下一步时间
+            活动名称
             <input
-              type="datetime-local"
-              value={due}
-              onChange={(e) => setDue(e.target.value)}
+              required
+              maxLength={4000}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
             />
           </label>
-        </div>
-        <label>
-          恢复条件
-          <input
-            maxLength={1000}
-            value={resume}
-            onChange={(e) => setResume(e.target.value)}
-          />
-        </label>
-        <div className="life-action-row">
-          <button className="button primary" disabled={action.busy}>
-            保存活动
-          </button>
-          {editing && (
-            <button type="button" className="button" onClick={clearDraft}>
-              取消编辑
+          <label>
+            当前进度
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              maxLength={4000}
+            />
+          </label>
+          <div className="life-form-row">
+            <label>
+              状态
+              <select
+                value={state}
+                onChange={(e) =>
+                  setState(e.target.value as activities_record["state"])
+                }
+              >
+                {["planned", "running", "paused", "completed"].map((x) => (
+                  <option key={x} value={x}>
+                    {showState(x)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              下一步时间
+              <input
+                type="datetime-local"
+                value={due}
+                onChange={(e) => setDue(e.target.value)}
+              />
+            </label>
+          </div>
+          <label>
+            恢复条件
+            <input
+              maxLength={1000}
+              value={resume}
+              onChange={(e) => setResume(e.target.value)}
+            />
+          </label>
+          <div className="life-action-row">
+            <button className="button primary" disabled={action.busy}>
+              保存活动
             </button>
-          )}
-        </div>
-      </form>
+            {editing && (
+              <button type="button" className="button" onClick={clearDraft}>
+                取消编辑
+              </button>
+            )}
+          </div>
+        </form>
+      </DetailCard>
       <RuntimeFeedback {...action} />
     </section>
   );
@@ -279,10 +292,19 @@ function ConcernsPanel({ access }: { access: LifeAccess }) {
     action = useLifeAction(access, records.refresh);
   const draft = useDraftId("concern"),
     fragmentDraft = useDraftId("fragment");
+  const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<open_work_record | null>(null),
     [title, setTitle] = useState(""),
     [goal, setGoal] = useState(""),
     [fragment, setFragment] = useState("");
+  function clearDraft() {
+    setEditing(null);
+    setEditorOpen(false);
+    setTitle("");
+    setGoal("");
+    setFragment("");
+  }
+
   async function save(event: React.FormEvent) {
     event.preventDefault();
     const fragments =
@@ -318,10 +340,7 @@ function ConcernsPanel({ access }: { access: LifeAccess }) {
     if (result && result.result.state !== "unknown") {
       draft.reset();
       fragmentDraft.reset();
-      setEditing(null);
-      setTitle("");
-      setGoal("");
-      setFragment("");
+      clearDraft();
     }
   }
   return (
@@ -381,52 +400,59 @@ function ConcernsPanel({ access }: { access: LifeAccess }) {
           继续读取事项
         </button>
       )}
-      <form className="life-form" onSubmit={save}>
-        <h4>{editing ? "继续记录关注" : "增加关注"}</h4>
-        <label>
-          事项
-          <input
-            required
-            maxLength={4000}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-        </label>
-        <label>
-          目标或约定
-          <textarea
-            required
-            maxLength={4000}
-            value={goal}
-            onChange={(e) => setGoal(e.target.value)}
-          />
-        </label>
-        <label>
-          本次进展
-          <textarea
-            maxLength={4000}
-            value={fragment}
-            onChange={(e) => setFragment(e.target.value)}
-          />
-        </label>
-        <button className="button primary" disabled={action.busy}>
-          保存关注
-        </button>
-        {editing && (
-          <button
-            type="button"
-            className="button"
-            onClick={() => {
-              setEditing(null);
-              setTitle("");
-              setGoal("");
-              setFragment("");
-            }}
-          >
-            取消编辑
+      <DetailCard
+        title={editing ? "编辑关注" : "新增关注"}
+        open={editorOpen || !!editing}
+        onOpenChange={(open) => {
+          setEditorOpen(open);
+          if (!open) clearDraft();
+        }}
+      >
+        <RuntimeFeedback {...action} />
+        <form className="life-form" onSubmit={save}>
+          <h4>{editing ? "继续记录关注" : "增加关注"}</h4>
+          <label>
+            事项
+            <input
+              required
+              maxLength={4000}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </label>
+          <label>
+            目标或约定
+            <textarea
+              required
+              maxLength={4000}
+              value={goal}
+              onChange={(e) => setGoal(e.target.value)}
+            />
+          </label>
+          <label>
+            本次进展
+            <textarea
+              maxLength={4000}
+              value={fragment}
+              onChange={(e) => setFragment(e.target.value)}
+            />
+          </label>
+          <button className="button primary" disabled={action.busy}>
+            保存关注
           </button>
-        )}
-      </form>
+          {editing && (
+            <button
+              type="button"
+              className="button"
+              onClick={() => {
+                clearDraft();
+              }}
+            >
+              取消编辑
+            </button>
+          )}
+        </form>
+      </DetailCard>
       <RuntimeFeedback {...action} />
     </section>
   );

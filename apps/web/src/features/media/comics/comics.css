@@ -95,17 +95,17 @@
   align-items: end;
 }
 .comic-search > p,
-.comic-search > details {
+.comic-search > .detail-card {
   grid-column: 1 / -1;
   margin: 0;
 }
-.comic-extension-details > summary,
-.comic-search > details > summary {
+.comic-extension-details > .detail-card-trigger,
+.comic-search > .detail-card > .detail-card-trigger {
   cursor: pointer;
   font-weight: 600;
   padding-block: 8px;
 }
-.comic-extension-details > section {
+.comic-extension-details .detail-card-content > section {
   margin-top: 18px;
 }
 .comic-job-status {

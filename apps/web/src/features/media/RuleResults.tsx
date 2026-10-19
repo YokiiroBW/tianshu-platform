@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import type { Rule, RuleContext, RuleResult } from "./types";
 import { reasonWords, sourceWords } from "./wording";
 import { ruleFields, ruleOperations } from "./ruleFields";
@@ -96,8 +97,7 @@ export function RuleResults({
           >
             {reasonWords[result.reason] ?? result.reason}
           </p>
-          <details>
-            <summary>查看逐条规则解释</summary>
+          <DetailCard title="查看逐条规则解释">
             {groups(result.trace).length ? (
               groups(result.trace).map((group, index) => (
                 <div className="media-rule-trace" key={group.group_id}>
@@ -128,11 +128,10 @@ export function RuleResults({
             ) : (
               <p className="muted">没有需要逐条执行的规则。</p>
             )}
-            <details>
-              <summary>诊断数据</summary>
+            <DetailCard title="诊断数据">
               <pre>{JSON.stringify(result.trace, null, 2)}</pre>
-            </details>
-          </details>
+            </DetailCard>
+          </DetailCard>
         </article>
       ))}
     </section>

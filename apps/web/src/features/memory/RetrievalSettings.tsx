@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../../app/Auth";
 import { integrationPost, readFailure } from "../../app/integrationApi";
@@ -168,56 +169,60 @@ export function RetrievalSettings() {
         {!view ? (
           <p>{error ? "请刷新页面重试。" : "正在读取设置…"}</p>
         ) : (
-          <fieldset disabled={busy || !view.can_manage}>
-            <label>
-              检索模式{" "}
-              <select
-                aria-label="检索模式"
-                value={policy.mode}
-                onChange={(e) =>
-                  setPolicy({
-                    ...policy,
-                    mode: e.target.value as Policy["mode"],
-                  })
-                }
-              >
-                <option value="keyword">关键词</option>
-                <option value="vector">向量语义</option>
-                <option value="hybrid">混合：关键词＋向量</option>
-              </select>
-            </label>
-            <p className="muted">
-              关键词适合准确名称；向量适合理解不同说法；混合同时使用两种方式。
-            </p>
-            <label>
-              <input
-                type="checkbox"
-                checked={policy.rerank}
-                onChange={(e) =>
-                  setPolicy({ ...policy, rerank: e.target.checked })
-                }
-              />
-              启用重排序
-            </label>
-            <p className="muted">
-              重排序对已找到的候选再次筛选，可搭配任一检索模式。
-            </p>
-            <label>
-              候选记忆数量{" "}
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={policy.candidates}
-                onChange={(e) =>
-                  setPolicy({ ...policy, candidates: Number(e.target.value) })
-                }
-              />
-            </label>
-            <button className="button" onClick={() => void run("policy")}>
-              保存检索模式
-            </button>
-          </fieldset>
+          <DetailCard title={"检索模式设置"}>
+            {error && <p role="alert">{error}</p>}
+            {message && <p role="status">{message}</p>}
+            <fieldset disabled={busy || !view.can_manage}>
+              <label>
+                检索模式{" "}
+                <select
+                  aria-label="检索模式"
+                  value={policy.mode}
+                  onChange={(e) =>
+                    setPolicy({
+                      ...policy,
+                      mode: e.target.value as Policy["mode"],
+                    })
+                  }
+                >
+                  <option value="keyword">关键词</option>
+                  <option value="vector">向量语义</option>
+                  <option value="hybrid">混合：关键词＋向量</option>
+                </select>
+              </label>
+              <p className="muted">
+                关键词适合准确名称；向量适合理解不同说法；混合同时使用两种方式。
+              </p>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={policy.rerank}
+                  onChange={(e) =>
+                    setPolicy({ ...policy, rerank: e.target.checked })
+                  }
+                />
+                启用重排序
+              </label>
+              <p className="muted">
+                重排序对已找到的候选再次筛选，可搭配任一检索模式。
+              </p>
+              <label>
+                候选记忆数量{" "}
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={policy.candidates}
+                  onChange={(e) =>
+                    setPolicy({ ...policy, candidates: Number(e.target.value) })
+                  }
+                />
+              </label>
+              <button className="button" onClick={() => void run("policy")}>
+                保存检索模式
+              </button>
+            </fieldset>
+          </DetailCard>
         )}
       </section>
       {view &&
@@ -228,77 +233,82 @@ export function RetrievalSettings() {
             aria-label={`${names[kind]}模型连接`}
           >
             <h3>{names[kind]}模型</h3>
-            <fieldset disabled={busy || !view.can_manage}>
-              <p className="muted">
-                从 <a href="#/settings/2">模型供应商</a> 已添加的{names[kind]}
-                模型中选择，共用供应商的地址和密钥。
-              </p>
-              <label>
-                {names[kind]}模型选择
-                <select
-                  aria-label={`${names[kind]}模型选择`}
-                  value={selected[kind]}
-                  onChange={(e) =>
-                    setSelected({ ...selected, [kind]: e.target.value })
-                  }
-                >
-                  <option value="">请选择模型</option>
-                  {selected[kind] &&
-                    !(view.models ?? []).some(
-                      (m) => m.provider_id === selected[kind],
-                    ) && (
-                      <option value={selected[kind]} disabled>
-                        原模型已不可用
-                      </option>
-                    )}
-                  {(view.models ?? [])
-                    .filter((m) => m.kind === kind)
-                    .map((m) => (
-                      <option
-                        key={m.provider_id}
-                        value={m.provider_id}
-                        disabled={!m.available}
-                      >
-                        {m.name}
-                        {m.available ? "" : "（不可用）"}
-                      </option>
-                    ))}
-                </select>
-              </label>
-              <p className="muted">
-                当前：
-                {view.connections[kind].provider_id
-                  ? ((view.models ?? []).find(
-                      (m) =>
-                        m.provider_id === view.connections[kind].provider_id,
-                    )?.name ?? "原模型已不可用")
-                  : view.connections[kind].model_id
-                    ? `${view.connections[kind].model_id}（原独立连接）`
-                    : "尚未配置"}
-              </p>
-              <div className="models-actions">
-                <button
-                  className="button"
-                  disabled={!selected[kind]}
-                  onClick={() => void run(kind, false, false, true)}
-                >
-                  保存{names[kind]}模型
-                </button>
-                <button
-                  className="button"
-                  disabled={!view.connections[kind].has_key}
-                  onClick={() => void run(kind, true)}
-                >
-                  测试已保存模型
-                </button>
-              </div>
-              <p className="muted">
-                测试使用短样本，可能产生费用。更换嵌入模型后，记忆向量会按新模型重新计算。
-              </p>
-            </fieldset>
+            <DetailCard title={`${names[kind]}模型设置`}>
+              {error && <p role="alert">{error}</p>}
+              {message && <p role="status">{message}</p>}
+              <fieldset disabled={busy || !view.can_manage}>
+                <p className="muted">
+                  从 <a href="#/settings/2">模型供应商</a> 已添加的{names[kind]}
+                  模型中选择，共用供应商的地址和密钥。
+                </p>
+                <label>
+                  {names[kind]}模型选择
+                  <select
+                    aria-label={`${names[kind]}模型选择`}
+                    value={selected[kind]}
+                    onChange={(e) =>
+                      setSelected({ ...selected, [kind]: e.target.value })
+                    }
+                  >
+                    <option value="">请选择模型</option>
+                    {selected[kind] &&
+                      !(view.models ?? []).some(
+                        (m) => m.provider_id === selected[kind],
+                      ) && (
+                        <option value={selected[kind]} disabled>
+                          原模型已不可用
+                        </option>
+                      )}
+                    {(view.models ?? [])
+                      .filter((m) => m.kind === kind)
+                      .map((m) => (
+                        <option
+                          key={m.provider_id}
+                          value={m.provider_id}
+                          disabled={!m.available}
+                        >
+                          {m.name}
+                          {m.available ? "" : "（不可用）"}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <p className="muted">
+                  当前：
+                  {view.connections[kind].provider_id
+                    ? ((view.models ?? []).find(
+                        (m) =>
+                          m.provider_id === view.connections[kind].provider_id,
+                      )?.name ?? "原模型已不可用")
+                    : view.connections[kind].model_id
+                      ? `${view.connections[kind].model_id}（原独立连接）`
+                      : "尚未配置"}
+                </p>
+                <div className="models-actions">
+                  <button
+                    className="button"
+                    disabled={!selected[kind]}
+                    onClick={() => void run(kind, false, false, true)}
+                  >
+                    保存{names[kind]}模型
+                  </button>
+                  <button
+                    className="button"
+                    disabled={!view.connections[kind].has_key}
+                    onClick={() => void run(kind, true)}
+                  >
+                    测试已保存模型
+                  </button>
+                </div>
+                <p className="muted">
+                  测试使用短样本，可能产生费用。更换嵌入模型后，记忆向量会按新模型重新计算。
+                </p>
+              </fieldset>
+            </DetailCard>
             {!view.connections[kind].provider_id && (
-              <details open={!!view.connections[kind].model_id}>
-                <summary>原独立连接设置</summary>
+              <DetailCard title="原独立连接设置">
+                {error && <p role="alert">{error}</p>}
+                {message && <p role="status">{message}</p>}
                 <fieldset disabled={busy || !view.can_manage}>
                   <label>
                     API 基础地址{" "}
@@ -377,7 +387,7 @@ export function RetrievalSettings() {
                     </button>
                   </div>
                 </fieldset>
-              </details>
+              </DetailCard>
             )}
           </section>
         ))}

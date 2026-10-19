@@ -1,3 +1,5 @@
+import { DetailCard } from "../../components/DetailCard";
+import { Drawer } from "../../components/Drawer";
 import { useEffect, useRef, useState } from "react";
 import { StatusRail } from "../../components/StatusRail";
 import { compatibleModels } from "./providerPresets";
@@ -38,6 +40,7 @@ export function ProviderManager({
   const [kind, setKind] = useState<ModelKind>("text");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
   const [confirm, setConfirm] = useState("");
   const active = useRef<AbortController | null>(null);
   useEffect(() => () => active.current?.abort(), []);
@@ -78,6 +81,7 @@ export function ProviderManager({
     const controller = new AbortController();
     active.current = controller;
     setBusy(true);
+    setError("");
     setMessage("");
     try {
       await task(controller.signal);
@@ -86,7 +90,12 @@ export function ProviderManager({
         setConfirm("");
       }
     } catch (cause) {
-      if (!controller.signal.aborted) onError(cause);
+      if (!controller.signal.aborted) {
+        setError(
+          cause instanceof Error ? cause.message : "操作未完成，请重试。",
+        );
+        onError(cause);
+      }
     } finally {
       if (!controller.signal.aborted) setBusy(false);
       if (active.current === controller) active.current = null;
@@ -134,25 +143,33 @@ export function ProviderManager({
         </p>
       )}
       {editor && (
-        <SourceEditor
-          key={editor === "new" ? "new" : source?.sourceId}
-          source={editor === "edit" ? (source ?? null) : null}
-          busy={busy}
-          cancel={() => setEditor(null)}
-          save={(draft) =>
-            void run(async (signal) => {
-              const id = await actions.saveSource(
-                draft,
-                editor === "edit" ? (source ?? null) : null,
-                signal,
-              );
-              if (!signal.aborted) {
-                setSelected(id);
-                setEditor(null);
-              }
-            }, "供应商已保存，请添加需要的模型。")
-          }
-        />
+        <Drawer
+          title={editor === "new" ? "添加供应商" : "编辑供应商"}
+          variant="card"
+          open={true}
+          onClose={() => setEditor(null)}
+        >
+          {error && <p role="alert">{error}</p>}
+          <SourceEditor
+            key={editor === "new" ? "new" : source?.sourceId}
+            source={editor === "edit" ? (source ?? null) : null}
+            busy={busy}
+            cancel={() => setEditor(null)}
+            save={(draft) =>
+              void run(async (signal) => {
+                const id = await actions.saveSource(
+                  draft,
+                  editor === "edit" ? (source ?? null) : null,
+                  signal,
+                );
+                if (!signal.aborted) {
+                  setSelected(id);
+                  setEditor(null);
+                }
+              }, "供应商已保存，请添加需要的模型。")
+            }
+          />
+        </Drawer>
       )}
       {!sources.length && !editor && (
         <p className="muted">
@@ -477,17 +494,25 @@ export function ProviderManager({
                       </div>
                     )}
                     {modelEditor === model.providerId && (
-                      <ModelEditor
-                        model={model}
-                        busy={busy}
-                        cancel={() => setModelEditor("")}
-                        save={(draft) =>
-                          void run(async (signal) => {
-                            await actions.saveModel(model, draft, signal);
-                            if (!signal.aborted) setModelEditor("");
-                          }, "模型设置已保存。")
-                        }
-                      />
+                      <Drawer
+                        title={`模型设置 · ${model.name}`}
+                        variant="card"
+                        open={true}
+                        onClose={() => setModelEditor("")}
+                      >
+                        {error && <p role="alert">{error}</p>}
+                        <ModelEditor
+                          model={model}
+                          busy={busy}
+                          cancel={() => setModelEditor("")}
+                          save={(draft) =>
+                            void run(async (signal) => {
+                              await actions.saveModel(model, draft, signal);
+                              if (!signal.aborted) setModelEditor("");
+                            }, "模型设置已保存。")
+                          }
+                        />
+                      </Drawer>
                     )}
                   </article>
                 );
@@ -500,107 +525,111 @@ export function ProviderManager({
                 </p>
               )}
             </div>
-            <fieldset
-              className="provider-model-add"
-              disabled={busy || !editable}
-            >
-              <legend>添加模型</legend>
-              <label>
-                添加模型类型
-                <select
-                  value={kind}
-                  onChange={(e) => {
-                    setKind(e.target.value as ModelKind);
-                    setPicked([]);
+            <DetailCard title={"添加模型"}>
+              {error && <p role="alert">{error}</p>}
+              {message && <p role="status">{message}</p>}
+              <fieldset
+                className="provider-model-add"
+                disabled={busy || !editable}
+              >
+                <legend>添加模型</legend>
+                <label>
+                  添加模型类型
+                  <select
+                    value={kind}
+                    onChange={(e) => {
+                      setKind(e.target.value as ModelKind);
+                      setPicked([]);
+                    }}
+                  >
+                    {Object.entries(modelKindNames).map(([id, name]) => (
+                      <option key={id} value={id}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="muted">
+                  类型决定可分配的功能与测试接口。目录不会自动验证模型能力。
+                </p>
+                {directory && (
+                  <>
+                    <div className="models-actions">
+                      <h4>可用模型（{available.length}）</h4>
+                      <button
+                        type="button"
+                        className="button"
+                        disabled={!available.length}
+                        onClick={() => setPicked(available.slice(0, 256))}
+                      >
+                        选择当前结果
+                      </button>
+                      <button
+                        type="button"
+                        className="button"
+                        disabled={!picked.length}
+                        onClick={() => add(picked)}
+                      >
+                        添加所选模型（{picked.length}）
+                      </button>
+                    </div>
+                    <ul className="provider-available-models">
+                      {available.map((id) => (
+                        <li key={id}>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={picked.includes(id)}
+                              onChange={(e) =>
+                                setPicked((items) =>
+                                  e.target.checked
+                                    ? [...items, id].slice(0, 256)
+                                    : items.filter((i) => i !== id),
+                                )
+                              }
+                            />
+                            <span>{id}</span>
+                          </label>
+                          <button
+                            type="button"
+                            className="button"
+                            aria-label={`添加 ${id}`}
+                            onClick={() => add([id])}
+                          >
+                            ＋
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                <form
+                  className="models-toolbar"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    add([manual.trim()]);
                   }}
                 >
-                  {Object.entries(modelKindNames).map(([id, name]) => (
-                    <option key={id} value={id}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <p className="muted">
-                类型决定可分配的功能与测试接口。目录不会自动验证模型能力。
-              </p>
-              {directory && (
-                <>
-                  <div className="models-actions">
-                    <h4>可用模型（{available.length}）</h4>
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={!available.length}
-                      onClick={() => setPicked(available.slice(0, 256))}
-                    >
-                      选择当前结果
-                    </button>
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={!picked.length}
-                      onClick={() => add(picked)}
-                    >
-                      添加所选模型（{picked.length}）
-                    </button>
-                  </div>
-                  <ul className="provider-available-models">
-                    {available.map((id) => (
-                      <li key={id}>
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={picked.includes(id)}
-                            onChange={(e) =>
-                              setPicked((items) =>
-                                e.target.checked
-                                  ? [...items, id].slice(0, 256)
-                                  : items.filter((i) => i !== id),
-                              )
-                            }
-                          />
-                          <span>{id}</span>
-                        </label>
-                        <button
-                          type="button"
-                          className="button"
-                          aria-label={`添加 ${id}`}
-                          onClick={() => add([id])}
-                        >
-                          ＋
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              <form
-                className="models-toolbar"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  add([manual.trim()]);
-                }}
-              >
-                <label>
-                  手动填写模型 ID
-                  <input
-                    required
-                    maxLength={256}
-                    value={manual}
-                    onChange={(e) => setManual(e.target.value)}
-                    placeholder="填写供应商提供的准确模型 ID"
-                  />
-                </label>
-                <button
-                  className="button"
-                  type="submit"
-                  disabled={!manual.trim()}
-                >
-                  添加模型
-                </button>
-              </form>
-            </fieldset>
+                  <label>
+                    手动填写模型 ID
+                    <input
+                      required
+                      maxLength={256}
+                      value={manual}
+                      onChange={(e) => setManual(e.target.value)}
+                      placeholder="填写供应商提供的准确模型 ID"
+                    />
+                  </label>
+                  <button
+                    className="button"
+                    type="submit"
+                    disabled={!manual.trim()}
+                  >
+                    添加模型
+                  </button>
+                </form>
+              </fieldset>
+            </DetailCard>
             <p className="models-test-disclosure muted">
               测试使用短样本，可能产生费用；不会发送聊天历史。每个模型分别测试，不会自动批量调用。
             </p>

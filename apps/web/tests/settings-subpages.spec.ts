@@ -119,13 +119,15 @@ test("旧入口和新子页面各自只显示当前设置", async ({ page }) => 
   );
 
   await page.goto("/#/settings/4");
+  await page.getByRole("button", { name: /编辑.*设置/ }).click();
   await expect(
-    page.getByRole("heading", { name: "AssetLink 资产连接" }),
+    page.getByRole("heading", { name: "AssetLink 资产连接", exact: true }),
   ).toBeVisible();
   await expect(page.getByLabel("Home Assistant 基础地址")).toHaveCount(0);
   await page.goto("/#/settings/5");
+  await page.getByRole("button", { name: /编辑.*设置/ }).click();
   await expect(
-    page.getByRole("heading", { name: "Home Assistant 家庭连接" }),
+    page.getByRole("heading", { name: "Home Assistant 家庭连接", exact: true }),
   ).toBeVisible();
   await expect(page.getByLabel("AssetLink HTTPS 端点")).toHaveCount(0);
   await page.goto("/#/settings/6");
@@ -161,16 +163,20 @@ test("切换资产与家庭页面时草稿隔离，保存只提交当前连接",
     throw new Error(`Unexpected request: ${path}`);
   });
   await page.goto("/#/settings/4");
+  await page.getByRole("button", { name: /编辑.*设置/ }).click();
   await page
     .getByLabel("AssetLink HTTPS 端点")
     .fill("https://unsaved.example.test/assetlink/v1/control");
   await page.goto("/#/settings/5");
+  await page.getByRole("button", { name: /编辑.*设置/ }).click();
   await expect(page.getByLabel("Home Assistant 基础地址")).toHaveValue(
     "http://192.0.2.10:8123",
   );
   await page.getByRole("button", { name: "保存设置" }).click();
   await expect(
-    page.getByText("连接设置已保存并生效", { exact: false }),
+    page
+      .getByRole("dialog")
+      .getByText("连接设置已保存并生效", { exact: false }),
   ).toBeVisible();
   expect(saves).toHaveLength(1);
   expect(saves[0]).toMatchObject({
@@ -188,6 +194,7 @@ test("切换资产与家庭页面时草稿隔离，保存只提交当前连接",
   expect(JSON.stringify(saves[0])).not.toContain("assetlink/v1/control");
 
   await page.goto("/#/settings/4");
+  await page.getByRole("button", { name: /编辑.*设置/ }).click();
   await expect(page.getByLabel("AssetLink HTTPS 端点")).toHaveValue(
     "https://assets.example.test/assetlink/v1/control",
   );

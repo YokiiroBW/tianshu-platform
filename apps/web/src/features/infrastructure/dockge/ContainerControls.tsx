@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useInfrastructureAction, useInfrastructureQuery } from "../api";
 import { ActionButtons } from "./ActionButtons";
 import { OperationHistory, OperationStatus } from "./Operations";
@@ -85,14 +86,13 @@ export function ContainerControls({
         }}
       />
       {target && (
-        <details className="infra-section">
-          <summary>操作记录</summary>
+        <DetailCard title="操作记录" className="infra-section">
           <OperationHistory
             nodeId={nodeId}
             stackId={target?.stack_id ?? undefined}
             containerId={containerId}
           />
-        </details>
+        </DetailCard>
       )}
     </section>
   );

@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import type { MediaController } from "../useMediaController";
 import type { AudioEstimate, AudioView, AudioJob } from "./audioTypes";
@@ -58,18 +59,31 @@ export function BookAudioPanel({
       : {}),
   };
   return (
-    <details
+    <DetailCard
+      title={
+        <>
+          提前生成听书音频 ·{" "}
+          {view?.jobs.filter((j) => j.state === "ready").length ?? 0} 章已就绪
+          {active.some((job) => ["unknown", "failed"].includes(job.state))
+            ? " · 有任务需要处理"
+            : ""}
+        </>
+      }
       className="book-audio-panel"
       open={expanded}
-      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      onOpenChange={setExpanded}
     >
-      <summary>
-        提前生成听书音频 ·{" "}
-        {view?.jobs.filter((j) => j.state === "ready").length ?? 0} 章已就绪
-        {active.some((job) => ["unknown", "failed"].includes(job.state))
-          ? " · 有任务需要处理"
-          : ""}
-      </summary>
+      {media.error && (
+        <p className="media-message media-warning" role="alert">
+          {media.error}
+        </p>
+      )}
+      {media.notice && (
+        <p className="media-message" role="status">
+          {media.notice}
+        </p>
+      )}
+
       <div className="book-audio-controls">
         <label>
           生成服务
@@ -185,8 +199,7 @@ export function BookAudioPanel({
         </div>
       )}
       {active.length > 0 && (
-        <details>
-          <summary>生成队列（{active.length} 章）</summary>
+        <DetailCard title={<>生成队列（{active.length} 章）</>}>
           <ul className="book-audio-queue">
             {active.map((job) => (
               <li key={job.id}>
@@ -204,7 +217,7 @@ export function BookAudioPanel({
               </li>
             ))}
           </ul>
-        </details>
+        </DetailCard>
       )}
       {retry && (
         <div className="media-message">
@@ -231,6 +244,6 @@ export function BookAudioPanel({
           </button>
         </div>
       )}
-    </details>
+    </DetailCard>
   );
 }

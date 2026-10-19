@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { requestId } from "../../app/requestId";
 import { useEffect, useRef, useState } from "react";
 import { MessageCircle } from "lucide-react";
@@ -339,8 +340,7 @@ export function DialoguePanel({
                     {replies.filter((reply) => reply.state === "sent").length}{" "}
                     段
                   </span>
-                  <details className="muted">
-                    <summary>状态详情</summary>
+                  <DetailCard title="状态详情" className="muted">
                     <p>
                       版本 {turn.version} · {turn.phase} / {turn.delivery_state}
                     </p>
@@ -350,7 +350,7 @@ export function DialoguePanel({
                         {reply.content_state}
                       </p>
                     ))}
-                  </details>
+                  </DetailCard>
                   {snapshot?.active_turns.some(
                     (t) => t.turn.turn_id === turn.turn_id,
                   ) && (
@@ -384,20 +384,21 @@ export function DialoguePanel({
                     )}
                     {reply.content_state === "available" &&
                       reply.content_refs?.map((ref) => (
-                        <details
-                          key={`${ref.owner}:${ref.object_id}:${ref.version}`}
+                        <DetailCard
+                          title={
+                            <>
+                              打开引用原件 · {contentLabel(ref.kind)} · 版本{" "}
+                              {ref.version}
+                            </>
+                          }
                           className="chat-content-reference"
                         >
-                          <summary>
-                            打开引用原件 · {contentLabel(ref.kind)} · 版本{" "}
-                            {ref.version}
-                          </summary>
                           <ContentViewer
                             key={`${ref.object_id}:${ref.version}`}
                             access={{ actor, csrf: session.csrf }}
                             contentRef={ref}
                           />
-                        </details>
+                        </DetailCard>
                       ))}
                   </div>
                 ))}
@@ -417,10 +418,9 @@ export function DialoguePanel({
                     "zh-CN",
                   )}{" "}
                 </p>
-                <details className="muted">
-                  <summary>合并状态详情</summary>
+                <DetailCard title="合并状态详情" className="muted">
                   <p>版本 {collector.revision}</p>
-                </details>
+                </DetailCard>
                 <Messages messages={collector.messages} />
               </article>
             ))}

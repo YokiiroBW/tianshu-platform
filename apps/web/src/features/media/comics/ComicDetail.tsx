@@ -1,3 +1,4 @@
+import { Drawer } from "../../../components/Drawer";
 import { useCallback, useEffect, useState } from "react";
 import type { Chapter, Comic, Detail, Kind, Media, Mutate } from "./types";
 import { kinds } from "./types";
@@ -156,76 +157,95 @@ export function ComicDetail({
         </p>
         <p className="muted">{languageEvidence(selected.language_evidence)}</p>
         {editing && (
-          <form
-            className="comic-stack"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void mutate(
-                "metadata/save",
-                {
-                  comic_id: comic.comic_id,
-                  metadata: Object.fromEntries(
-                    Object.entries(metadata).filter(([key]) => key !== "tags"),
-                  ),
-                  expected_revision: selected.revision,
-                },
-                "漫画资料已保存，下次下载采用这份资料。",
-              ).then((ok) => {
-                if (ok) {
-                  setEditing(false);
-                  void read();
-                }
-              });
-            }}
+          <Drawer
+            title={"编辑漫画资料"}
+            variant="card"
+            open={true}
+            onClose={() => setEditing(false)}
           >
-            <div className="comic-field-grid">
-              {(["title", "author", "artist", "language"] as const).map(
-                (key, index) => (
-                  <label key={key}>
-                    {["作品名", "作者", "画师", "语言"][index]}
-                    <input
-                      required={key === "title"}
-                      value={metadata[key]}
-                      maxLength={key === "language" ? 20 : 500}
-                      onChange={(e) =>
-                        setMetadata({ ...metadata, [key]: e.target.value })
-                      }
-                    />
-                  </label>
-                ),
-              )}
-              <label>
-                阅读方向
-                <select
-                  value={metadata.direction}
-                  onChange={(e) =>
-                    setMetadata({
-                      ...metadata,
-                      direction: e.target.value as typeof metadata.direction,
-                    })
+            {media.error && (
+              <p className="media-message media-warning" role="alert">
+                {media.error}
+              </p>
+            )}
+            {media.notice && (
+              <p className="media-message" role="status">
+                {media.notice}
+              </p>
+            )}
+            <form
+              className="comic-stack"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void mutate(
+                  "metadata/save",
+                  {
+                    comic_id: comic.comic_id,
+                    metadata: Object.fromEntries(
+                      Object.entries(metadata).filter(
+                        ([key]) => key !== "tags",
+                      ),
+                    ),
+                    expected_revision: selected.revision,
+                  },
+                  "漫画资料已保存，下次下载采用这份资料。",
+                ).then((ok) => {
+                  if (ok) {
+                    setEditing(false);
+                    void read();
                   }
-                >
-                  <option value="rtl">从右向左</option>
-                  <option value="ltr">从左向右</option>
-                  <option value="vertical">纵向条漫</option>
-                </select>
+                });
+              }}
+            >
+              <div className="comic-field-grid">
+                {(["title", "author", "artist", "language"] as const).map(
+                  (key, index) => (
+                    <label key={key}>
+                      {["作品名", "作者", "画师", "语言"][index]}
+                      <input
+                        required={key === "title"}
+                        value={metadata[key]}
+                        maxLength={key === "language" ? 20 : 500}
+                        onChange={(e) =>
+                          setMetadata({ ...metadata, [key]: e.target.value })
+                        }
+                      />
+                    </label>
+                  ),
+                )}
+                <label>
+                  阅读方向
+                  <select
+                    value={metadata.direction}
+                    onChange={(e) =>
+                      setMetadata({
+                        ...metadata,
+                        direction: e.target.value as typeof metadata.direction,
+                      })
+                    }
+                  >
+                    <option value="rtl">从右向左</option>
+                    <option value="ltr">从左向右</option>
+                    <option value="vertical">纵向条漫</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                简介
+                <textarea
+                  rows={4}
+                  value={metadata.description}
+                  maxLength={20000}
+                  onChange={(e) =>
+                    setMetadata({ ...metadata, description: e.target.value })
+                  }
+                />
               </label>
-            </div>
-            <label>
-              简介
-              <textarea
-                rows={4}
-                value={metadata.description}
-                maxLength={20000}
-                onChange={(e) =>
-                  setMetadata({ ...metadata, description: e.target.value })
-                }
-              />
-            </label>
-            <button className="button" disabled={!!media.busy}>
-              保存资料
-            </button>
-          </form>
+              <button className="button" disabled={!!media.busy}>
+                保存资料
+              </button>
+            </form>
+          </Drawer>
         )}
       </article>
       <div className="media-card comic-stack">

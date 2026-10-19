@@ -203,7 +203,7 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
           close={close}
         />
       )}
-      {!subscriptions.length && !editing && (
+      {!subscriptions.length && (
         <StatePanel kind="empty" title="还没有订阅">
           <p>
             添加 UP 主投稿、收藏夹、合集、系列或稍后再看，即可持续发现新增视频。

@@ -1,3 +1,4 @@
+import { Drawer } from "../../../components/Drawer";
 import { useEffect, useState, type FormEvent } from "react";
 import { requestId } from "../../../app/requestId";
 import { readFailure } from "../../../app/integrationApi";
@@ -91,18 +92,25 @@ export function SkillSources({
         ))}
       </ul>
       {editing !== undefined && (
-        <SourceForm
-          key={`${access.actor}:${editing?.source_id ?? "new"}`}
-          access={access}
-          source={editing}
-          busy={busy}
-          cancel={() => setEditing(undefined)}
-          save={async (value, credential, revision) => {
-            const success = await save(value, credential, revision);
-            if (success) setEditing(undefined);
-            return success;
-          }}
-        />
+        <Drawer
+          title={editing ? "编辑技能目录" : "添加技能目录"}
+          variant="card"
+          open={true}
+          onClose={() => setEditing(undefined)}
+        >
+          <SourceForm
+            key={`${access.actor}:${editing?.source_id ?? "new"}`}
+            access={access}
+            source={editing}
+            busy={busy}
+            cancel={() => setEditing(undefined)}
+            save={async (value, credential, revision) => {
+              const success = await save(value, credential, revision);
+              if (success) setEditing(undefined);
+              return success;
+            }}
+          />
+        </Drawer>
       )}
     </section>
   );

@@ -1,3 +1,5 @@
+import { Drawer } from "../../../components/Drawer";
+import { DetailCard } from "../../../components/DetailCard";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Music2, RefreshCw, Trash2 } from "lucide-react";
 import type { MediaController } from "../useMediaController";
@@ -185,106 +187,118 @@ export function MusicPanel({ media }: { media: MediaController }) {
         connection={view.navidrome?.connection}
         refresh={refresh}
       />
-      <section className="media-card media-stack" aria-label="选择音乐歌单">
-        <div>
-          <h3>选择歌单</h3>
-          <p className="muted">
-            读取本人创建、收藏的歌单和“我喜欢”。首次订阅会保存完整成员及歌曲资料。
+      <DetailCard title={"添加音乐订阅"}>
+        {media.error && (
+          <p className="media-message media-warning" role="alert">
+            {media.error}
           </p>
-        </div>
-        <div className="music-select-row">
-          <label>
-            音乐账号
-            <select
-              value={accountId}
-              disabled={!!reading || !!media.busy}
-              onChange={(event) => {
-                setAccountId(event.target.value);
-                setCatalog(null);
-              }}
-            >
-              <option value="">请选择已登录账号</option>
-              {view.accounts
-                .filter((account) => account.state === "ready")
-                .map((account) => (
-                  <option key={account.account_id} value={account.account_id}>
-                    {providerNames[account.provider]} · {account.label}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <label>
-            同步周期
-            <select
-              value={interval}
-              onChange={(event) => setInterval(event.target.value)}
-            >
-              <option value="900">每 15 分钟</option>
-              <option value="3600">每小时</option>
-              <option value="21600">每 6 小时</option>
-              <option value="43200">每 12 小时</option>
-              <option value="86400">每天</option>
-            </select>
-          </label>
-          <button
-            className="button"
-            disabled={!accountId || !!reading || !!media.busy}
-            onClick={() => void readCatalog()}
-          >
-            {reading === "catalog" ? "正在读取…" : "读取账号歌单"}
-          </button>
-        </div>
-        {catalog?.length === 0 && (
-          <p className="muted">此账号暂未返回可访问的歌单。</p>
         )}
-        {catalog && (
-          <div className="music-playlists">
-            {catalog.map((item) => {
-              const existing = view.playlists.find(
-                (row) =>
-                  row.account_id === accountId &&
-                  row.source_id === item.source_id,
-              );
-              return (
-                <article className="music-playlist" key={item.source_id}>
-                  <div>
-                    <strong>{item.name}</strong>
-                    <p className="muted">
-                      {
-                        {
-                          created: "我创建的",
-                          collected: "我收藏的",
-                          liked: "我喜欢",
-                        }[item.kind]
-                      }{" "}
-                      · {item.track_count ?? "未知"} 首
-                    </p>
-                  </div>
-                  <button
-                    className="button"
-                    disabled={!!existing || !!media.busy || !!reading}
-                    onClick={async () => {
-                      if (
-                        await media.command("music/playlists/subscribe", {
-                          account_id: accountId,
-                          source_id: item.source_id,
-                          interval_seconds: Number(interval),
-                          expected_revision: 0,
-                        })
-                      ) {
-                        media.setNotice("歌单及歌曲资料已保存到天枢。");
-                        await refresh();
-                      }
-                    }}
-                  >
-                    {existing ? "已订阅" : "订阅歌单"}
-                  </button>
-                </article>
-              );
-            })}
+        {media.notice && (
+          <p className="media-message" role="status">
+            {media.notice}
+          </p>
+        )}
+        <section className="media-card media-stack" aria-label="选择音乐歌单">
+          <div>
+            <h3>选择歌单</h3>
+            <p className="muted">
+              读取本人创建、收藏的歌单和“我喜欢”。首次订阅会保存完整成员及歌曲资料。
+            </p>
           </div>
-        )}
-      </section>
+          <div className="music-select-row">
+            <label>
+              音乐账号
+              <select
+                value={accountId}
+                disabled={!!reading || !!media.busy}
+                onChange={(event) => {
+                  setAccountId(event.target.value);
+                  setCatalog(null);
+                }}
+              >
+                <option value="">请选择已登录账号</option>
+                {view.accounts
+                  .filter((account) => account.state === "ready")
+                  .map((account) => (
+                    <option key={account.account_id} value={account.account_id}>
+                      {providerNames[account.provider]} · {account.label}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              同步周期
+              <select
+                value={interval}
+                onChange={(event) => setInterval(event.target.value)}
+              >
+                <option value="900">每 15 分钟</option>
+                <option value="3600">每小时</option>
+                <option value="21600">每 6 小时</option>
+                <option value="43200">每 12 小时</option>
+                <option value="86400">每天</option>
+              </select>
+            </label>
+            <button
+              className="button"
+              disabled={!accountId || !!reading || !!media.busy}
+              onClick={() => void readCatalog()}
+            >
+              {reading === "catalog" ? "正在读取…" : "读取账号歌单"}
+            </button>
+          </div>
+          {catalog?.length === 0 && (
+            <p className="muted">此账号暂未返回可访问的歌单。</p>
+          )}
+          {catalog && (
+            <div className="music-playlists">
+              {catalog.map((item) => {
+                const existing = view.playlists.find(
+                  (row) =>
+                    row.account_id === accountId &&
+                    row.source_id === item.source_id,
+                );
+                return (
+                  <article className="music-playlist" key={item.source_id}>
+                    <div>
+                      <strong>{item.name}</strong>
+                      <p className="muted">
+                        {
+                          {
+                            created: "我创建的",
+                            collected: "我收藏的",
+                            liked: "我喜欢",
+                          }[item.kind]
+                        }{" "}
+                        · {item.track_count ?? "未知"} 首
+                      </p>
+                    </div>
+                    <button
+                      className="button"
+                      disabled={!!existing || !!media.busy || !!reading}
+                      onClick={async () => {
+                        if (
+                          await media.command("music/playlists/subscribe", {
+                            account_id: accountId,
+                            source_id: item.source_id,
+                            interval_seconds: Number(interval),
+                            expected_revision: 0,
+                          })
+                        ) {
+                          media.setNotice("歌单及歌曲资料已保存到天枢。");
+                          await refresh();
+                        }
+                      }}
+                    >
+                      {existing ? "已订阅" : "订阅歌单"}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      </DetailCard>
       <section className="media-card media-stack" aria-label="本地歌单">
         <div>
           <h3>天枢中的歌单</h3>
@@ -413,103 +427,128 @@ export function MusicPanel({ media }: { media: MediaController }) {
         ))}
       </section>
       {detail && (
-        <section className="media-card media-stack" aria-label="歌单歌曲">
-          <div className="media-section-head">
-            <div>
-              <h3>{detail.playlist.name}</h3>
-              <p className="muted">
-                按远端歌单顺序显示，共 {detail.playlist.member_count} 首。
-              </p>
+        <Drawer
+          title={detail.playlist.name}
+          variant="card"
+          open={true}
+          onClose={() => {
+            detailCursor.current = null;
+            media.cancel("music-detail");
+            setDetail(null);
+          }}
+        >
+          {media.error && (
+            <p className="media-message media-warning" role="alert">
+              {media.error}
+            </p>
+          )}
+          {media.notice && (
+            <p className="media-message" role="status">
+              {media.notice}
+            </p>
+          )}
+          <section className="media-card media-stack" aria-label="歌单歌曲">
+            <div className="media-section-head">
+              <div>
+                <h3>{detail.playlist.name}</h3>
+                <p className="muted">
+                  按远端歌单顺序显示，共 {detail.playlist.member_count} 首。
+                </p>
+              </div>
+              <button
+                className="button"
+                onClick={() => {
+                  detailCursor.current = null;
+                  media.cancel("music-detail");
+                  setDetail(null);
+                }}
+              >
+                收起歌曲
+              </button>
             </div>
-            <button
-              className="button"
-              onClick={() => {
-                detailCursor.current = null;
-                media.cancel("music-detail");
-                setDetail(null);
-              }}
-            >
-              收起歌曲
-            </button>
-          </div>
-          <div className="music-track-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>顺序</th>
-                  <th>歌曲</th>
-                  <th>艺术家</th>
-                  <th>专辑</th>
-                  <th>本地音频</th>
-                </tr>
-              </thead>
-              <tbody>
-                {detail.tracks.map((track) => (
-                  <tr key={track.position}>
-                    <td>{track.position}</td>
-                    <td>
-                      {track.title || `暂不可用的歌曲 (${track.source_id})`}
-                    </td>
-                    <td>{track.artists.join("、") || "未知"}</td>
-                    <td>{track.album || "未知"}</td>
-                    <td>
-                      <span>
-                        {track.audio_state === "not_downloaded"
-                          ? "未下载"
-                          : track.audio_state === "completed"
-                            ? "已归档"
-                            : word(track.audio_state)}
-                      </span>
-                      {track.audio_quality && (
-                        <p className="muted">
-                          {audioQualityText(track.audio_quality)}
-                        </p>
-                      )}
-                      {track.file && <p className="music-file">{track.file}</p>}
-                      {track.audio_unlock && (
-                        <p className="muted">
-                          {unlockText(track.audio_unlock)}
-                        </p>
-                      )}
-                      {track.download_provider && (
-                        <p className="muted">
-                          文件来源：{providerNames[track.download_provider]}
-                        </p>
-                      )}
-                      {track.audio_code &&
-                        !["queued", "music_archived"].includes(
-                          track.audio_code,
-                        ) && <p className="muted">{word(track.audio_code)}</p>}
-                    </td>
+            <div className="music-track-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>顺序</th>
+                    <th>歌曲</th>
+                    <th>艺术家</th>
+                    <th>专辑</th>
+                    <th>本地音频</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="music-actions">
-            <button
-              className="button"
-              disabled={detail.offset === 0 || !!reading}
-              onClick={() =>
-                void readDetail(
-                  detail.playlist,
-                  Math.max(0, detail.offset - 100),
-                )
-              }
-            >
-              上一页
-            </button>
-            <button
-              className="button"
-              disabled={!detail.more || !!reading}
-              onClick={() =>
-                void readDetail(detail.playlist, detail.offset + 100)
-              }
-            >
-              下一页
-            </button>
-          </div>
-        </section>
+                </thead>
+                <tbody>
+                  {detail.tracks.map((track) => (
+                    <tr key={track.position}>
+                      <td>{track.position}</td>
+                      <td>
+                        {track.title || `暂不可用的歌曲 (${track.source_id})`}
+                      </td>
+                      <td>{track.artists.join("、") || "未知"}</td>
+                      <td>{track.album || "未知"}</td>
+                      <td>
+                        <span>
+                          {track.audio_state === "not_downloaded"
+                            ? "未下载"
+                            : track.audio_state === "completed"
+                              ? "已归档"
+                              : word(track.audio_state)}
+                        </span>
+                        {track.audio_quality && (
+                          <p className="muted">
+                            {audioQualityText(track.audio_quality)}
+                          </p>
+                        )}
+                        {track.file && (
+                          <p className="music-file">{track.file}</p>
+                        )}
+                        {track.audio_unlock && (
+                          <p className="muted">
+                            {unlockText(track.audio_unlock)}
+                          </p>
+                        )}
+                        {track.download_provider && (
+                          <p className="muted">
+                            文件来源：{providerNames[track.download_provider]}
+                          </p>
+                        )}
+                        {track.audio_code &&
+                          !["queued", "music_archived"].includes(
+                            track.audio_code,
+                          ) && (
+                            <p className="muted">{word(track.audio_code)}</p>
+                          )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="music-actions">
+              <button
+                className="button"
+                disabled={detail.offset === 0 || !!reading}
+                onClick={() =>
+                  void readDetail(
+                    detail.playlist,
+                    Math.max(0, detail.offset - 100),
+                  )
+                }
+              >
+                上一页
+              </button>
+              <button
+                className="button"
+                disabled={!detail.more || !!reading}
+                onClick={() =>
+                  void readDetail(detail.playlist, detail.offset + 100)
+                }
+              >
+                下一页
+              </button>
+            </div>
+          </section>
+        </Drawer>
       )}
     </section>
   );

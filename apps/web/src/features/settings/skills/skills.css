@@ -21,7 +21,7 @@
 .skills-source-list h3 {
   margin: 0;
 }
-.skill-card details {
+.skill-card .detail-card {
   overflow-wrap: anywhere;
 }
 .skill-metadata {

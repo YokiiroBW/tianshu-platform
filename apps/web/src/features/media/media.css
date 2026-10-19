@@ -317,7 +317,7 @@
   border-left: var(--rail-width) solid var(--color-line);
   padding: var(--space-3) var(--space-4);
 }
-.media-page details summary {
+.media-page .detail-card-trigger {
   cursor: pointer;
   font-size: var(--text-small);
   color: var(--color-accent-text);

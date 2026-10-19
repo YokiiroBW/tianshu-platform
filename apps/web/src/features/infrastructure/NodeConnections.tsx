@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useState, type FormEvent } from "react";
 import { RefreshCw, Server } from "lucide-react";
 import { requestId } from "../../app/requestId";
@@ -152,97 +153,101 @@ export function NodeConnections() {
             </p>
           </div>
         ) : (
-          <form className="infra-form" onSubmit={(event) => void save(event)}>
-            {draftRevision !== null && draftRevision !== view.revision && (
-              <p className="infra-warning">
-                连接设置已在其他页面改变，请重新读取后核对再保存。
+          <DetailCard title={"节点连接设置"}>
+            {action.error && <p role="alert">{action.error}</p>}
+            {notice && <p role="status">{notice}</p>}
+            <form className="infra-form" onSubmit={(event) => void save(event)}>
+              {draftRevision !== null && draftRevision !== view.revision && (
+                <p className="infra-warning">
+                  连接设置已在其他页面改变，请重新读取后核对再保存。
+                </p>
+              )}
+              <label>
+                已配置的 SSH 节点
+                <select
+                  value={selected}
+                  onChange={(event) => choose(event.target.value)}
+                >
+                  {options.map((node) => (
+                    <option value={node.id} key={node.id}>
+                      {node.label} · {kinds[node.kind] ?? node.kind}
+                      {" · "}
+                      {describeCapabilities(node.capabilities)}
+                      {view.nodes.some((item) => item.id === node.id)
+                        ? " · 已添加"
+                        : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="infra-muted">
+                {source
+                  ? `可用能力：${describeCapabilities(source.capabilities)}`
+                  : "此节点已不在当前目录中，可暂停采集；重新启用需由部署端恢复登记。"}
               </p>
-            )}
-            <label>
-              已配置的 SSH 节点
-              <select
-                value={selected}
-                onChange={(event) => choose(event.target.value)}
-              >
-                {options.map((node) => (
-                  <option value={node.id} key={node.id}>
-                    {node.label} · {kinds[node.kind] ?? node.kind}
-                    {" · "}
-                    {describeCapabilities(node.capabilities)}
-                    {view.nodes.some((item) => item.id === node.id)
-                      ? " · 已添加"
-                      : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <p className="infra-muted">
-              {source
-                ? `可用能力：${describeCapabilities(source.capabilities)}`
-                : "此节点已不在当前目录中，可暂停采集；重新启用需由部署端恢复登记。"}
-            </p>
-            <label>
-              显示名称
-              <input
-                value={label}
-                maxLength={128}
-                required
-                onChange={(event) => setLabel(event.target.value)}
-              />
-            </label>
-            <label className="infra-checkbox">
-              <input
-                type="checkbox"
-                checked={enabled}
-                onChange={(event) => setEnabled(event.target.checked)}
-              />
-              启用后台采集
-            </label>
-            <div className="infra-toolbar">
-              <button
-                className="button primary"
-                type="submit"
-                disabled={
-                  action.pending ||
-                  !label.trim() ||
-                  !selected ||
-                  (enabled && !source)
-                }
-              >
-                保存节点
-              </button>
-              <button
-                className="button"
-                type="button"
-                disabled={action.pending}
-                onClick={async () => {
-                  const next = await query.reload();
-                  if (!next) return;
-                  const row = next.nodes.find((node) => node.id === selected);
-                  const source = next.catalog?.data?.nodes.find(
-                    (node) => node.id === selected,
-                  );
-                  setLabel(row?.label ?? source?.label ?? "");
-                  setEnabled(row?.enabled ?? true);
-                  setDraftRevision(next.revision);
-                  setNotice("已重新读取节点设置，请核对后保存。");
-                }}
-              >
-                重新读取设置
-              </button>
-              <button
-                className="button"
-                type="button"
-                disabled={action.pending || !registered?.enabled}
-                onClick={() => void test()}
-              >
-                测试连接
-              </button>
-              <a className="button" href="#/home/2">
-                查看节点
-              </a>
-            </div>
-          </form>
+              <label>
+                显示名称
+                <input
+                  value={label}
+                  maxLength={128}
+                  required
+                  onChange={(event) => setLabel(event.target.value)}
+                />
+              </label>
+              <label className="infra-checkbox">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(event) => setEnabled(event.target.checked)}
+                />
+                启用后台采集
+              </label>
+              <div className="infra-toolbar">
+                <button
+                  className="button primary"
+                  type="submit"
+                  disabled={
+                    action.pending ||
+                    !label.trim() ||
+                    !selected ||
+                    (enabled && !source)
+                  }
+                >
+                  保存节点
+                </button>
+                <button
+                  className="button"
+                  type="button"
+                  disabled={action.pending}
+                  onClick={async () => {
+                    const next = await query.reload();
+                    if (!next) return;
+                    const row = next.nodes.find((node) => node.id === selected);
+                    const source = next.catalog?.data?.nodes.find(
+                      (node) => node.id === selected,
+                    );
+                    setLabel(row?.label ?? source?.label ?? "");
+                    setEnabled(row?.enabled ?? true);
+                    setDraftRevision(next.revision);
+                    setNotice("已重新读取节点设置，请核对后保存。");
+                  }}
+                >
+                  重新读取设置
+                </button>
+                <button
+                  className="button"
+                  type="button"
+                  disabled={action.pending || !registered?.enabled}
+                  onClick={() => void test()}
+                >
+                  测试连接
+                </button>
+                <a className="button" href="#/home/2">
+                  查看节点
+                </a>
+              </div>
+            </form>
+          </DetailCard>
         )}
         {registered && (
           <section className="infra-receipt" aria-label="节点连接测试结果">

@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useState } from "react";
 import { Search, Plus, Square, BookOpen } from "lucide-react";
 import type { Book, BooksView, BookSearchResult } from "./types";
@@ -86,16 +87,16 @@ export function BookSearch({
             )}
           </div>
           {failed.length > 0 && (
-            <details className="book-source-failures">
-              <summary>
-                {failed.length} 个来源暂未返回结果，其他来源仍可使用
-              </summary>
+            <DetailCard
+              title={<>{failed.length} 个来源暂未返回结果，其他来源仍可使用</>}
+              className="book-source-failures"
+            >
               {failed.map((source) => (
                 <p key={source.source_id}>
                   {source.name}：{bookCode(source.code)}
                 </p>
               ))}
-            </details>
+            </DetailCard>
           )}
           <div className="book-card-list">
             {groups.map((candidates) => (

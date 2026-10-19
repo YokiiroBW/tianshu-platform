@@ -308,7 +308,9 @@ test("media subdirectory errors keep the editor input for correction", async ({
   }
   await page.getByLabel("整理子目录（可选）").fill("CON");
   await page.getByRole("button", { name: "保存订阅", exact: true }).click();
-  await expect(page.getByText(/请检查整理子目录：使用相对目录/)).toBeVisible();
+  await expect(
+    page.getByRole("dialog").getByText(/请检查整理子目录：使用相对目录/),
+  ).toBeVisible();
   await expect(page.getByLabel("整理子目录（可选）")).toHaveValue("CON");
   await page.getByLabel("整理子目录（可选）").fill("收藏夹/已修正");
   await page.getByRole("button", { name: "保存订阅", exact: true }).click();
@@ -356,10 +358,12 @@ test("media AssetLibrary targets explain managed directories and retain input wh
   await page.getByLabel("整理子目录（可选）").fill("收藏夹/学习");
   await page.getByRole("button", { name: "保存订阅", exact: true }).click();
   await expect(
-    page.getByText(
-      "这个目标的目录由资产库管理，整理子目录请留空，或选择媒体服务器目标。（destination_not_supported）",
-      { exact: true },
-    ),
+    page
+      .getByRole("dialog")
+      .getByText(
+        "这个目标的目录由资产库管理，整理子目录请留空，或选择媒体服务器目标。（destination_not_supported）",
+        { exact: true },
+      ),
   ).toBeVisible();
   await expect(page.getByLabel("整理子目录（可选）")).toHaveValue(
     "收藏夹/学习",
@@ -460,6 +464,9 @@ test("media QR is generated locally and imported cookie leaves the editor", asyn
   const state = await installMediaFixture(page);
   await page.goto("/#/subscriptions/1");
   await selectMediaSection(page, "账号与媒体库");
+  await page
+    .getByRole("button", { name: "添加 B 站账号", exact: true })
+    .click();
   await page.getByRole("button", { name: "生成登录二维码" }).click();
   await expect(page.getByAltText("B 站登录二维码")).toHaveAttribute(
     "src",
@@ -510,6 +517,9 @@ test("media scanned QR state keeps its minimum polling interval", async ({
   await page.goto("/#/subscriptions/1");
   await selectMediaSection(page, "账号与媒体库");
   await page
+    .getByRole("button", { name: "添加 B 站账号", exact: true })
+    .click();
+  await page
     .getByRole("button", { name: "生成登录二维码", exact: true })
     .click();
   await expect(page.getByText("等待扫码", { exact: true })).toBeVisible();
@@ -542,6 +552,7 @@ test("media job details preserve metadata revision and separate server results",
     state.calls.find((call) => call.operation === "jobs/refresh_metadata")!.body
       .expected_revision,
   ).toBe(3);
+  await page.getByRole("button", { name: "编辑下载资料", exact: true }).click();
   await page.getByLabel("展示标题").fill("人工展示标题");
   await page.getByLabel("展示简介").fill("人工补充的简介");
   await page.getByRole("button", { name: "保存元数据" }).click();
@@ -577,6 +588,7 @@ test("media job details preserve metadata revision and separate server results",
       item_id: null,
     },
   ];
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "重新读取详情" }).click();
   await expect(page.getByText("已核对", { exact: true })).toBeVisible();
   await expect(page.getByText("暂不可用", { exact: true })).toBeVisible();
@@ -726,10 +738,13 @@ test("media metadata conflict keeps unsaved text and refuses an old revision", a
   await page.goto("/#/subscriptions/1");
   await selectMediaSection(page, "下载中心");
   await page.getByRole("button", { name: "查看任务详情" }).click();
+  await page.getByRole("button", { name: "编辑下载资料", exact: true }).click();
   await page.getByLabel("展示标题").fill("本页尚未保存的标题");
   state.view.jobs[0].revision += 1;
   await page.getByRole("button", { name: "保存元数据" }).click();
-  await expect(page.getByText(/记录版本已改变/)).toBeVisible();
+  await expect(
+    page.getByRole("dialog").getByText(/记录版本已改变/),
+  ).toBeVisible();
   await expect(page.getByLabel("展示标题")).toHaveValue("本页尚未保存的标题");
   expect(state.view.jobs[0].title).toBe("隔离样例 · 城市与山海");
 });

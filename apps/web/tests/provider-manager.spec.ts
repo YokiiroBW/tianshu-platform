@@ -22,6 +22,7 @@ test("shared provider models survive reload, route by function and supply retrie
   await page.getByRole("button", { name: "保存供应商", exact: true }).click();
   const detail = page.getByRole("region", { name: `${name}供应商详情` });
   await expect(detail).toContainText("尚未添加模型");
+  await detail.getByRole("button", { name: "添加模型", exact: true }).click();
   await detail.getByRole("button", { name: "获取模型列表" }).click();
   await detail.getByLabel("fixture-chat", { exact: true }).check();
   await detail.getByLabel("fixture-writing", { exact: true }).check();
@@ -29,6 +30,7 @@ test("shared provider models survive reload, route by function and supply retrie
     .getByRole("button", { name: "添加所选模型（2）", exact: true })
     .click();
   await expect(detail.locator(".provider-model-row")).toHaveCount(2);
+  await page.keyboard.press("Escape");
   const chat = detail.getByRole("article", {
     name: "fixture-chat模型",
     exact: true,
@@ -44,6 +46,9 @@ test("shared provider models survive reload, route by function and supply retrie
   await chat.getByRole("button", { name: "设为默认" }).click();
   await writing.getByRole("button", { name: "测试连接" }).click();
   await page
+    .getByRole("button", { name: "日常与日记模型设置", exact: true })
+    .click();
+  await page
     .getByLabel("日常与日记模型", { exact: true })
     .selectOption({ label: `${name} / fixture-writing` });
   await page.getByRole("button", { name: "保存日常与日记模型" }).click();
@@ -51,6 +56,7 @@ test("shared provider models survive reload, route by function and supply retrie
     page.getByRole("region", { name: "模型功能分工" }),
   ).toContainText(`当前：${name} / fixture-writing`);
   await expect(chat).toContainText("默认对话模型");
+  await page.keyboard.press("Escape");
   await page.reload();
   await page
     .getByRole("navigation", { name: "供应商列表" })
@@ -62,6 +68,7 @@ test("shared provider models survive reload, route by function and supply retrie
     ["embed", "fixture-embed"],
     ["rerank", "fixture-rerank"],
   ]) {
+    await detail.getByRole("button", { name: "添加模型", exact: true }).click();
     await detail.getByLabel("添加模型类型").selectOption(kind);
     await detail.getByLabel("手动填写模型 ID").fill(model);
     await detail.getByRole("button", { name: "添加模型", exact: true }).click();
@@ -69,6 +76,8 @@ test("shared provider models survive reload, route by function and supply retrie
       name: `${model}模型`,
       exact: true,
     });
+    await expect(row).toBeVisible();
+    await page.keyboard.press("Escape");
     await row.getByRole("button", { name: "测试连接" }).click();
     await expect(row).toContainText("测试通过");
     await expect(row.getByRole("button", { name: "设为默认" })).toHaveCount(0);
@@ -106,6 +115,9 @@ test("shared provider models survive reload, route by function and supply retrie
     ["重排序", "fixture-rerank"],
   ]) {
     await page
+      .getByRole("button", { name: `${label}模型设置`, exact: true })
+      .click();
+    await page
       .getByLabel(`${label}模型选择`)
       .selectOption({ label: `${name} / ${model}` });
     await page
@@ -114,13 +126,18 @@ test("shared provider models survive reload, route by function and supply retrie
     const section = page.getByRole("region", { name: `${label}模型连接` });
     await expect(section).toContainText(`当前：${name} / ${model}`);
     await section.getByRole("button", { name: "测试已保存模型" }).click();
-    await expect(page.getByRole("status")).toContainText("测试通过");
+    await expect(page.getByRole("dialog").getByRole("status")).toContainText(
+      "测试通过",
+    );
+    await page.keyboard.press("Escape");
     await expect(section.getByLabel(`${label} API Key`)).toHaveCount(0);
   }
+  await page.getByRole("button", { name: "检索模式设置", exact: true }).click();
   await page.getByLabel("检索模式", { exact: true }).selectOption("hybrid");
   await page.getByLabel("启用重排序").check();
   await page.getByRole("button", { name: "保存检索模式", exact: true }).click();
   await page.reload();
+  await page.getByRole("button", { name: "检索模式设置", exact: true }).click();
   await expect(page.getByLabel("检索模式", { exact: true })).toHaveValue(
     "hybrid",
   );

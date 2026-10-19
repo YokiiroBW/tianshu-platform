@@ -1,3 +1,5 @@
+import { Drawer } from "../../../components/Drawer";
+import { DetailCard } from "../../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useAuth } from "../../../app/Auth";
@@ -319,8 +321,7 @@ export function SkillsPanel() {
                       <dd>{skill.domain}</dd>
                     </div>
                   </dl>
-                  <details>
-                    <summary>查看能力与状态</summary>
+                  <DetailCard title="查看能力与状态">
                     <ul>
                       {skill.operations.map((operation) => (
                         <li key={operation}>{operation}</li>
@@ -329,7 +330,7 @@ export function SkillsPanel() {
                     {skill.availability.reason_code && (
                       <small>状态码：{skill.availability.reason_code}</small>
                     )}
-                  </details>
+                  </DetailCard>
                   {skill.installed ? (
                     <div className="skills-actions">
                       <button
@@ -377,15 +378,24 @@ export function SkillsPanel() {
                   )}
                   {editing === skill.id &&
                     skill.definition.handler_id === "gscore.query" && (
-                      <SkillConnection
-                        key={`${actor}:${skill.id}`}
-                        access={{ actor, csrf }}
-                        skill={skill}
-                        busy={busy}
-                        save={(value, credential, revision) =>
-                          mutate("skill.update", value, credential, revision)
-                        }
-                      />
+                      <Drawer
+                        title={"GSCore 连接设置"}
+                        variant="card"
+                        open={true}
+                        onClose={() => setEditing("")}
+                      >
+                        {error && <p role="alert">{error}</p>}
+                        {notice && <p role="status">{notice}</p>}
+                        <SkillConnection
+                          key={`${actor}:${skill.id}`}
+                          access={{ actor, csrf }}
+                          skill={skill}
+                          busy={busy}
+                          save={(value, credential, revision) =>
+                            mutate("skill.update", value, credential, revision)
+                          }
+                        />
+                      </Drawer>
                     )}
                 </article>
               );

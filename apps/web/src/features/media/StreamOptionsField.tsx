@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useId } from "react";
 import type { Quality, StreamOptions } from "./types";
 import {
@@ -32,13 +33,18 @@ export function StreamOptionsField({
     patch({ codecs });
   };
   return (
-    <details className="media-stream-options">
-      <summary>
-        高级音视频策略
-        <span className="media-policy-summary">
-          {streamPolicySummary(value)}
-        </span>
-      </summary>
+    <DetailCard
+      title="高级音视频策略"
+      label={
+        <>
+          高级音视频策略
+          <span className="media-policy-summary">
+            {streamPolicySummary(value)}
+          </span>
+        </>
+      }
+      className="media-stream-options"
+    >
       <p className="muted">
         在允许范围内选择最高画质，同画质再按编码顺序选择；音频选择允许的最高档位。这些限制不会增加账号可取得的画质。
       </p>
@@ -180,6 +186,6 @@ export function StreamOptionsField({
       >
         恢复高级策略默认值
       </button>
-    </details>
+    </DetailCard>
   );
 }

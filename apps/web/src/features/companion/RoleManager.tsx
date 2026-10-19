@@ -1,3 +1,5 @@
+import { Drawer } from "../../components/Drawer";
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useMemo, useState } from "react";
 import { Plus, RefreshCw } from "lucide-react";
 import { LoginLink, useAuth } from "../../app/Auth";
@@ -353,9 +355,7 @@ export default function RoleManager() {
           )}
           {!view && !error && <p role="status">正在读取角色…</p>}
           {view && (
-            <div
-              className={`role-layout${mobileDetail ? " role-detail-open" : ""}`}
-            >
+            <div className="role-layout">
               <aside className="role-list" aria-label="角色列表">
                 <div className="role-list-top">
                   <input
@@ -391,251 +391,259 @@ export default function RoleManager() {
                   </button>
                 ))}
               </aside>
-              <div className="role-detail">
-                <button
-                  className="role-back"
-                  onClick={() => setMobileDetail(false)}
-                >
-                  返回角色列表
-                </button>
-                <div className="role-detail-heading">
-                  <h3>
-                    {role?.name ?? (legacy ? existingName(legacy) : "新角色")}
-                  </h3>
-                  {(role || legacy) && (
-                    <span>{role ? status[role.state] : "待配置"}</span>
-                  )}
-                </div>
-                {legacy && (
-                  <p className="role-notice">
-                    现有角色可在此选择自己的模型。保留原角色身份、人格和历史；应用设置后才由角色管理接管。
-                  </p>
-                )}
-                {role?.state === "disabled" && (
-                  <p className="role-notice">
-                    此角色已停用，历史记录保留。重新启用后才会接收新消息。
-                  </p>
-                )}
-                {role?.state === "pending" && (
-                  <div className="role-pending">
-                    <p>
-                      {role.stage.startsWith("cancel_")
-                        ? `正在停用角色。${failure(role.error_code)}`
-                        : `此设置尚未生效。${failure(role.error_code)}`}
+              <Drawer
+                title={role ? `角色设置 · ${role.name}` : "新建角色"}
+                variant="card"
+                open={mobileDetail}
+                onClose={() => setMobileDetail(false)}
+              >
+                {error && <p role="alert">{error}</p>}
+                {notice && <p role="status">{notice}</p>}
+                <div className="role-detail">
+                  <button
+                    className="role-back"
+                    onClick={() => setMobileDetail(false)}
+                  >
+                    返回角色列表
+                  </button>
+                  <div className="role-detail-heading">
+                    <h3>
+                      {role?.name ?? (legacy ? existingName(legacy) : "新角色")}
+                    </h3>
+                    {(role || legacy) && (
+                      <span>{role ? status[role.state] : "待配置"}</span>
+                    )}
+                  </div>
+                  {legacy && (
+                    <p className="role-notice">
+                      现有角色可在此选择自己的模型。保留原角色身份、人格和历史；应用设置后才由角色管理接管。
                     </p>
-                    <button
-                      className="button"
-                      disabled={busy}
-                      onClick={() => void retry()}
-                    >
-                      {role.stage.startsWith("cancel_")
-                        ? "继续停用"
-                        : "继续配置"}
-                    </button>
-                    {!role.stage.startsWith("cancel_") && (
+                  )}
+                  {role?.state === "disabled" && (
+                    <p className="role-notice">
+                      此角色已停用，历史记录保留。重新启用后才会接收新消息。
+                    </p>
+                  )}
+                  {role?.state === "pending" && (
+                    <div className="role-pending">
+                      <p>
+                        {role.stage.startsWith("cancel_")
+                          ? `正在停用角色。${failure(role.error_code)}`
+                          : `此设置尚未生效。${failure(role.error_code)}`}
+                      </p>
                       <button
                         className="button"
                         disabled={busy}
-                        onClick={() => void cancelPending()}
+                        onClick={() => void retry()}
                       >
-                        取消配置并停用
+                        {role.stage.startsWith("cancel_")
+                          ? "继续停用"
+                          : "继续配置"}
                       </button>
-                    )}
-                  </div>
-                )}
-                {role?.state === "failed" && (
-                  <p className="role-pending">
-                    此设置未生效。{failure(role.error_code)}
-                    更新设置后可重新应用。
-                  </p>
-                )}
-                <div className="role-form">
-                  <label>
-                    名称
-                    <input
-                      value={form.name}
-                      maxLength={80}
-                      onChange={(e) =>
-                        setForm({ ...form, name: e.target.value })
-                      }
-                    />
-                  </label>
-                  <label>
-                    人格档案
-                    <select
-                      value={form.profile_id}
-                      onChange={(e) =>
-                        setForm({ ...form, profile_id: e.target.value })
-                      }
-                    >
-                      <option value="">
-                        {legacy || role?.legacy
-                          ? "保留原角色人格"
-                          : "无（基础默认行为）"}
-                      </option>
-                      {profiles.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {role?.state === "active" && (
-                    <p className="muted">
-                      当前生效人格：
-                      {role.profile_id
-                        ? `${profiles.find((item) => item.id === role.profile_id)?.name ?? "所选档案"} · 第 ${role.profile_version} 版`
-                        : role.legacy
-                          ? "原角色人格 · 保留现有版本"
-                          : "无档案 · 基础默认行为"}
-                    </p>
-                  )}
-                  <label>
-                    模型
-                    <select
-                      value={form.provider_key}
-                      onChange={(e) =>
-                        setForm({ ...form, provider_key: e.target.value })
-                      }
-                    >
-                      <option value="">
-                        继承全局默认{view.default_available ? "" : " · 不可用"}
-                      </option>
-                      {providers.map((item) => (
-                        <option
-                          key={`${item.id}@${item.revision}`}
-                          value={`${item.id}@${item.revision}`}
-                          disabled={!item.available}
+                      {!role.stage.startsWith("cancel_") && (
+                        <button
+                          className="button"
+                          disabled={busy}
+                          onClick={() => void cancelPending()}
                         >
-                          {item.name} · {item.model}
-                          {item.available ? "" : " · 不可用"}
+                          取消配置并停用
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {role?.state === "failed" && (
+                    <p className="role-pending">
+                      此设置未生效。{failure(role.error_code)}
+                      更新设置后可重新应用。
+                    </p>
+                  )}
+                  <div className="role-form">
+                    <label>
+                      名称
+                      <input
+                        value={form.name}
+                        maxLength={80}
+                        onChange={(e) =>
+                          setForm({ ...form, name: e.target.value })
+                        }
+                      />
+                    </label>
+                    <label>
+                      人格档案
+                      <select
+                        value={form.profile_id}
+                        onChange={(e) =>
+                          setForm({ ...form, profile_id: e.target.value })
+                        }
+                      >
+                        <option value="">
+                          {legacy || role?.legacy
+                            ? "保留原角色人格"
+                            : "无（基础默认行为）"}
                         </option>
-                      ))}
-                    </select>
-                  </label>
-                  <fieldset>
-                    <legend>记忆</legend>
-                    {selectedProvider?.model_capabilities && (
-                      <div className="role-model-capabilities">
-                        <h4>所选模型能力</h4>
-                        <ul>
-                          {Object.entries(
-                            selectedProvider.model_capabilities.capabilities,
-                          ).map(([name, capability]) => (
-                            <li key={name}>
-                              {(
-                                {
-                                  text: "文字",
-                                  dialogue: "对话",
-                                  vision: "图片理解",
-                                  tools: "工具调用",
-                                  reasoning: "推理",
-                                  streaming: "增量输出",
-                                  cancellation: "取消",
-                                  audio: "音频",
-                                } as Record<string, string>
-                              )[name] ?? name}{" "}
-                              ·{" "}
-                              {capability.verification === "verified"
-                                ? "已核验"
-                                : "尚未核验，可尝试"}
-                            </li>
-                          ))}
-                        </ul>
-                        <p className="muted">
-                          一次文字测试只核验文字通道，其他能力按实际运行结果显示。
-                        </p>
-                      </div>
+                        {profiles.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {role?.state === "active" && (
+                      <p className="muted">
+                        当前生效人格：
+                        {role.profile_id
+                          ? `${profiles.find((item) => item.id === role.profile_id)?.name ?? "所选档案"} · 第 ${role.profile_version} 版`
+                          : role.legacy
+                            ? "原角色人格 · 保留现有版本"
+                            : "无档案 · 基础默认行为"}
+                      </p>
                     )}
+                    <label>
+                      模型
+                      <select
+                        value={form.provider_key}
+                        onChange={(e) =>
+                          setForm({ ...form, provider_key: e.target.value })
+                        }
+                      >
+                        <option value="">
+                          继承全局默认
+                          {view.default_available ? "" : " · 不可用"}
+                        </option>
+                        {providers.map((item) => (
+                          <option
+                            key={`${item.id}@${item.revision}`}
+                            value={`${item.id}@${item.revision}`}
+                            disabled={!item.available}
+                          >
+                            {item.name} · {item.model}
+                            {item.available ? "" : " · 不可用"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <fieldset>
+                      <legend>记忆</legend>
+                      {selectedProvider?.model_capabilities && (
+                        <div className="role-model-capabilities">
+                          <h4>所选模型能力</h4>
+                          <ul>
+                            {Object.entries(
+                              selectedProvider.model_capabilities.capabilities,
+                            ).map(([name, capability]) => (
+                              <li key={name}>
+                                {(
+                                  {
+                                    text: "文字",
+                                    dialogue: "对话",
+                                    vision: "图片理解",
+                                    tools: "工具调用",
+                                    reasoning: "推理",
+                                    streaming: "增量输出",
+                                    cancellation: "取消",
+                                    audio: "音频",
+                                  } as Record<string, string>
+                                )[name] ?? name}{" "}
+                                ·{" "}
+                                {capability.verification === "verified"
+                                  ? "已核验"
+                                  : "尚未核验，可尝试"}
+                              </li>
+                            ))}
+                          </ul>
+                          <p className="muted">
+                            一次文字测试只核验文字通道，其他能力按实际运行结果显示。
+                          </p>
+                        </div>
+                      )}
+                      <label className="role-check">
+                        <input
+                          type="checkbox"
+                          checked={form.memory_read}
+                          onChange={(e) =>
+                            setForm({ ...form, memory_read: e.target.checked })
+                          }
+                        />
+                        使用本角色记忆
+                      </label>
+                      <label className="role-check">
+                        <input
+                          type="checkbox"
+                          checked={form.memory_write}
+                          onChange={(e) =>
+                            setForm({ ...form, memory_write: e.target.checked })
+                          }
+                        />
+                        记住新的经历
+                      </label>
+                      <p className="muted">
+                        仅使用此角色的记忆。新的经历会先成为候选，按原有审核规则处理。
+                      </p>
+                    </fieldset>
                     <label className="role-check">
                       <input
                         type="checkbox"
-                        checked={form.memory_read}
+                        checked={form.enabled}
                         onChange={(e) =>
-                          setForm({ ...form, memory_read: e.target.checked })
+                          setForm({ ...form, enabled: e.target.checked })
                         }
                       />
-                      使用本角色记忆
+                      启用角色
                     </label>
                     <label className="role-check">
                       <input
                         type="checkbox"
-                        checked={form.memory_write}
+                        checked={form.dialogue}
                         onChange={(e) =>
-                          setForm({ ...form, memory_write: e.target.checked })
+                          setForm({ ...form, dialogue: e.target.checked })
                         }
                       />
-                      记住新的经历
+                      允许对话
                     </label>
                     <p className="muted">
-                      仅使用此角色的记忆。新的经历会先成为候选，按原有审核规则处理。
+                      启用后，角色会独立安排日常。关闭对话仍保留生活推进；停用角色会暂停日常。
                     </p>
-                  </fieldset>
-                  <label className="role-check">
-                    <input
-                      type="checkbox"
-                      checked={form.enabled}
-                      onChange={(e) =>
-                        setForm({ ...form, enabled: e.target.checked })
-                      }
-                    />
-                    启用角色
-                  </label>
-                  <label className="role-check">
-                    <input
-                      type="checkbox"
-                      checked={form.dialogue}
-                      onChange={(e) =>
-                        setForm({ ...form, dialogue: e.target.checked })
-                      }
-                    />
-                    允许对话
-                  </label>
-                  <p className="muted">
-                    启用后，角色会独立安排日常。关闭对话仍保留生活推进；停用角色会暂停日常。
-                  </p>
-                  <details>
-                    <summary>可用能力</summary>
-                    <p>
-                      对话、记忆读取、记忆候选写入。机器人发言仍受各连接的观察与回复策略限制。
-                    </p>
-                  </details>
-                  {(role || legacy) && (
-                    <details>
-                      <summary>诊断信息</summary>
-                      <p>角色标识：{role?.actor_id ?? legacy?.id}</p>
-                      {role?.profile_revision && (
-                        <p>人格修订：{role.profile_revision}</p>
-                      )}
-                      {role?.error_code && (
-                        <p>
-                          错误代码：{role.error_code}；阶段：{role.stage}
-                        </p>
-                      )}
-                    </details>
-                  )}
-                  <div className="role-form-actions">
-                    <button
-                      className="button primary"
-                      disabled={
-                        busy || !form.name.trim() || role?.state === "pending"
-                      }
-                      onClick={() => void save()}
-                    >
-                      {busy ? "正在应用…" : "应用设置"}
-                    </button>
-                    {role?.enabled && role.state === "active" && (
-                      <button
-                        className="button"
-                        disabled={busy}
-                        onClick={() => void save(false)}
-                      >
-                        停用角色
-                      </button>
+                    <DetailCard title="可用能力">
+                      <p>
+                        对话、记忆读取、记忆候选写入。机器人发言仍受各连接的观察与回复策略限制。
+                      </p>
+                    </DetailCard>
+                    {(role || legacy) && (
+                      <DetailCard title="诊断信息">
+                        <p>角色标识：{role?.actor_id ?? legacy?.id}</p>
+                        {role?.profile_revision && (
+                          <p>人格修订：{role.profile_revision}</p>
+                        )}
+                        {role?.error_code && (
+                          <p>
+                            错误代码：{role.error_code}；阶段：{role.stage}
+                          </p>
+                        )}
+                      </DetailCard>
                     )}
+                    <div className="role-form-actions">
+                      <button
+                        className="button primary"
+                        disabled={
+                          busy || !form.name.trim() || role?.state === "pending"
+                        }
+                        onClick={() => void save()}
+                      >
+                        {busy ? "正在应用…" : "应用设置"}
+                      </button>
+                      {role?.enabled && role.state === "active" && (
+                        <button
+                          className="button"
+                          disabled={busy}
+                          onClick={() => void save(false)}
+                        >
+                          停用角色
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
+              </Drawer>
             </div>
           )}
         </>

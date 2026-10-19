@@ -16,6 +16,8 @@ async function create(page: Page) {
   await page.getByRole("button", { name: "新建订阅", exact: true }).click();
   await page.getByLabel("订阅名称").fill("高级策略样例");
   await page.getByLabel("来源链接或 ID", { exact: true }).fill("123456");
+  if ((await page.locator("dialog:modal").count()) > 1)
+    await page.keyboard.press("Escape");
   await next(page).click();
 }
 async function field(row: Locator, name: string, op?: string) {
@@ -28,9 +30,11 @@ async function field(row: Locator, name: string, op?: string) {
       .selectOption(op);
 }
 async function advanced(page: Page) {
-  await page.locator(".media-stream-options > summary").click();
+  await page.locator(".media-stream-options > .detail-card-trigger").click();
 }
 async function save(page: Page) {
+  if ((await page.locator("dialog:modal").count()) > 1)
+    await page.keyboard.press("Escape");
   await next(page).click();
   await page.getByLabel("目标媒体库").selectOption("test-library");
   await expect(page.locator("#media-subdirectory-preview")).toContainText(
@@ -147,6 +151,8 @@ test("advanced rules submit typed dates ranges zero and false with readable unkn
   )!;
   expect(previewCall.body.source).toEqual({ kind: "favorite", id: "123456" });
   expect(previewCall.body).not.toHaveProperty("favorited_at");
+  if ((await page.locator("dialog:modal").count()) > 1)
+    await page.keyboard.press("Escape");
   await save(page);
   const saved = state.calls.find(
     (call) => call.operation === "subscriptions/save",
@@ -183,12 +189,16 @@ test("legacy editing keeps timestamps rules and quality unchanged when advanced 
   const state = await installMediaFixture(page, view);
   await page.goto("/#/subscriptions/0");
   await page.getByRole("button", { name: "编辑", exact: true }).click();
+  if ((await page.locator("dialog:modal").count()) > 1)
+    await page.keyboard.press("Escape");
   await next(page).click();
   await advanced(page);
   await expect(page.getByLabel("允许 HDR 视频")).toBeChecked();
   await expect(page.getByLabel("允许杜比视界视频")).toBeChecked();
   await expect(page.getByLabel("允许杜比音频")).toBeChecked();
   await expect(page.getByLabel("允许 Hi-Res 音频")).toBeChecked();
+  if ((await page.locator("dialog:modal").count()) > 1)
+    await page.keyboard.press("Escape");
   await next(page).click();
   await page.getByRole("button", { name: "保存订阅", exact: true }).click();
   await expect(
@@ -246,6 +256,7 @@ async function setPolicy(page: Page) {
   await page.getByLabel("允许 HDR 视频").uncheck();
   await page.getByLabel("允许杜比视界视频").uncheck();
   await page.getByLabel("允许杜比音频").uncheck();
+  await page.keyboard.press("Escape");
 }
 
 test("subscriptions and links share the same policy payload and changing parts retains advanced constraints", async ({
@@ -254,6 +265,8 @@ test("subscriptions and links share the same policy payload and changing parts r
   const state = await installMediaFixture(page);
   await create(page);
   await setPolicy(page);
+  if ((await page.locator("dialog:modal").count()) > 1)
+    await page.keyboard.press("Escape");
   await save(page);
   const subscriptionQuality = state.calls.find(
     (call) => call.operation === "subscriptions/save",
@@ -276,7 +289,9 @@ test("subscriptions and links share the same policy payload and changing parts r
   await page.getByLabel("目标媒体库").selectOption("test-library");
   await setPolicy(page);
   await page.getByText("P2 · 山海", { exact: true }).click();
+  await advanced(page);
   await expect(page.getByLabel("最高视频质量")).toHaveValue("80");
+  await page.keyboard.press("Escape");
   await page
     .getByRole("button", { name: "创建下载任务（1 个分 P）", exact: true })
     .click();
@@ -324,7 +339,7 @@ test("advanced controls remain reachable by keyboard without overflow and pass a
   await field(rows(page).first(), "favorited_at", "between");
   await rows(page).first().getByLabel("范围起点").fill("2026-10-01T00:00");
   await rows(page).first().getByLabel("范围终点").fill("2026-10-15T00:00");
-  const summary = page.locator(".media-stream-options > summary");
+  const summary = page.locator(".media-stream-options > .detail-card-trigger");
   await summary.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByLabel("最低视频质量")).toBeVisible();

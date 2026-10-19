@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import { Brain, RefreshCw, LockKeyhole } from "lucide-react";
 import { useMemoryReadScope } from "./useMemoryReadScope";
@@ -177,8 +178,7 @@ export function SharedPortrait({
                     JSON.stringify(value) !== "{}" &&
                     JSON.stringify(value) !== "[]",
                 ) && (
-                  <details>
-                    <summary>查看事实的适用条件</summary>
+                  <DetailCard title="查看事实的适用条件">
                     <dl>
                       {[
                         ["条件", unit.conditions],
@@ -199,7 +199,7 @@ export function SharedPortrait({
                           </div>
                         ))}
                     </dl>
-                  </details>
+                  </DetailCard>
                 )}
               </div>
             ))}

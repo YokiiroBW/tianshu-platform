@@ -140,8 +140,8 @@
 .bot-form input:focus-visible,
 .bot-form select:focus-visible,
 .bot-form textarea:focus-visible,
-.bot-legacy summary:focus-visible,
-.bot-advanced summary:focus-visible {
+.bot-legacy > .detail-card-trigger:focus-visible,
+.bot-advanced > .detail-card-trigger:focus-visible {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);
 }
@@ -155,8 +155,8 @@
   border: 1px solid var(--color-line);
   border-radius: var(--radius-control);
 }
-.bot-advanced summary,
-.bot-legacy > summary {
+.bot-advanced > .detail-card-trigger,
+.bot-legacy > .detail-card-trigger {
   cursor: pointer;
   font-weight: 600;
 }

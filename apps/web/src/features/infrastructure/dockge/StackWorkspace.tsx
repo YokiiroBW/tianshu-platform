@@ -1,3 +1,4 @@
+import { Drawer } from "../../../components/Drawer";
 import { useEffect, useState } from "react";
 import { StatusRail } from "../../../components/StatusRail";
 import { useInfrastructureAction, useInfrastructureQuery } from "../api";
@@ -244,7 +245,14 @@ function NodeStacks({ nodeId }: { nodeId: string }) {
         )}
       </section>
       {creating && view ? (
-        <CreateStack key={nodeId} nodeId={nodeId} view={view} />
+        <Drawer
+          title={"新建应用"}
+          variant="card"
+          open={true}
+          onClose={() => setCreating(false)}
+        >
+          <CreateStack key={nodeId} nodeId={nodeId} view={view} />
+        </Drawer>
       ) : history ? (
         <aside
           className="panel infra-pane infra-container-detail"

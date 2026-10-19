@@ -146,9 +146,16 @@ test("activity editing clears dates, uncertain retries reuse identity, and revok
   await expect(page.getByLabel("下一步时间", { exact: true })).not.toHaveValue(
     "",
   );
+  await page.keyboard.press("Escape");
   await second.getByRole("button", { name: "编辑进度", exact: true }).click();
   await expect(page.getByLabel("下一步时间", { exact: true })).toHaveValue("");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "新增活动", exact: true }).click();
+  await expect(page.getByLabel("活动名称", { exact: true })).toHaveValue("");
+  await page.keyboard.press("Escape");
+  await second.getByRole("button", { name: "编辑进度", exact: true }).click();
   await page.getByRole("button", { name: "取消编辑", exact: true }).click();
+  await page.getByRole("button", { name: "新增活动", exact: true }).click();
   await expect(page.getByLabel("活动名称", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("当前进度", { exact: true })).toHaveValue("");
   await page.getByLabel("活动名称", { exact: true }).fill("晚上继续");
@@ -157,10 +164,16 @@ test("activity editing clears dates, uncertain retries reuse identity, and revok
     .fill("保留原操作，查询后继续。");
   await page.getByRole("button", { name: "保存活动", exact: true }).click();
   await expect(
-    page.getByRole("alert").filter({ hasText: "写入结果尚未确认" }),
+    page
+      .getByRole("dialog")
+      .getByRole("alert")
+      .filter({ hasText: "写入结果尚未确认" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "保存活动", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "新增活动", exact: true }).click();
   await expect(page.getByLabel("活动名称", { exact: true })).toHaveValue("");
+  await page.keyboard.press("Escape");
   expect(fixture.writes).toHaveLength(2);
   expect(fixture.writes[1]).toEqual(fixture.writes[0]);
   expect(fixture.writes[1].value.next_due_at).toBeNull();

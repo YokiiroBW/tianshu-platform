@@ -127,7 +127,7 @@ export function BookWarehouse({
   const candidates =
     page?.entries.filter((entry) => !registered.has(entry.key)) ?? [];
   return (
-    <Drawer title="内置源仓库" open onClose={onClose}>
+    <Drawer variant="card" title="内置源仓库" open onClose={onClose}>
       <div className="book-warehouse media-stack">
         <div className="warehouse-address">
           <Globe aria-hidden="true" />

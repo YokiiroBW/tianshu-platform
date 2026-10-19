@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useAuth } from "../../app/Auth";
 import { requestId } from "../../app/requestId";
@@ -642,8 +643,10 @@ export function BotAdapterPanel() {
           unlocked={Boolean(view?.unlocked)}
           actors={view?.actors ?? []}
         />
-        <details className="panel bot-legacy">
-          <summary>高级兼容：精确范围适配器</summary>
+        <DetailCard
+          title="高级兼容：精确范围适配器"
+          className="panel bot-legacy"
+        >
           <p className="muted">
             仅在需要按会话、作者和角色逐项绑定时使用。新增观察账号请使用上方主入口。
           </p>
@@ -745,8 +748,7 @@ export function BotAdapterPanel() {
                       />
                       允许局域网 HTTP（仅私有或本机地址）
                     </label>
-                    <details className="bot-advanced">
-                      <summary>高级连接选项</summary>
+                    <DetailCard title="高级连接选项" className="bot-advanced">
                       <p>
                         协议路径由天枢自动处理。HTTPS
                         始终验证证书；仅自签发证书需要填写可信 CA。
@@ -763,7 +765,7 @@ export function BotAdapterPanel() {
                           }}
                         />
                       </label>
-                    </details>
+                    </DetailCard>
                     <button className="button" disabled={Boolean(busy)}>
                       检测连接并读取账号
                     </button>
@@ -991,15 +993,17 @@ export function BotAdapterPanel() {
               )}
             </>
           )}
-        </details>
+        </DetailCard>
       </section>
-      <details className="panel bot-legacy">
-        <summary>旧连接管理（已配置的连接）</summary>
+      <DetailCard
+        title="旧连接管理（已配置的连接）"
+        className="panel bot-legacy"
+      >
         <p className="muted">
           仅管理此前由部署方登记的连接。新适配器连接不会重复出现在这里。
         </p>
         <LegacyBotConnectionsPanel />
-      </details>
+      </DetailCard>
     </div>
   );
 }

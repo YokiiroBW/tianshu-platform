@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MediaController } from "../useMediaController";
 import type { ChapterPreview, BookChapter } from "./types";
@@ -326,12 +327,11 @@ function ReaderContent({
               )}
             </select>
           </label>
-          <details className="book-fineprint muted">
-            <summary>陪读共享范围</summary>
+          <DetailCard title="陪读共享范围" className="book-fineprint muted">
             <p>
               角色平时可了解书库目录。开启后分享当前章节、位置和已读片段；离开阅读器或切到后台会停止陪读。
             </p>
-          </details>
+          </DetailCard>
           <p role="status" className="book-fineprint">
             {!reading.synced
               ? "阅读位置尚未同步，陪读状态未确认。"

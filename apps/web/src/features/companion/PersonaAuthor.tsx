@@ -1,3 +1,5 @@
+import { Drawer } from "../../components/Drawer";
+import { DetailCard } from "../../components/DetailCard";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Copy, MoreHorizontal, Plus } from "lucide-react";
 import { author, PersonaError, reason, type SessionState } from "./personaApi";
@@ -425,155 +427,172 @@ export default function PersonaAuthor({ session }: { session: SessionState }) {
               </div>
             </div>
             {editing ? (
-              <div className="persona-fields">
-                <label className="persona-author-field">
-                  名称
-                  <input
-                    value={
-                      selected?.kind === "role" && form.name === selected.id
-                        ? ""
-                        : form.name
-                    }
-                    placeholder={
-                      selected?.kind === "role" && form.name === selected.id
-                        ? "为角色起个名字"
-                        : "人格名称"
-                    }
-                    maxLength={80}
-                    onChange={(event) =>
-                      setForm({ ...form, name: event.target.value })
-                    }
-                  />
-                </label>
-                <label className="persona-author-field">
-                  人设正文
-                  <textarea
-                    className="persona-main-text"
-                    value={form.content.persona}
-                    maxLength={20000}
-                    rows={12}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        content: {
-                          ...form.content,
-                          persona: event.target.value,
-                        },
-                      })
-                    }
-                  />
-                </label>
-                <details className="persona-extra-settings">
-                  <summary>更多设置</summary>
+              <Drawer
+                title={`编辑人格 · ${selectedName}`}
+                variant="card"
+                open={true}
+                onClose={() => {
+                  if (mayLeave()) {
+                    setForm(baseline);
+                    setEditing(false);
+                    setChoosingTarget(false);
+                  }
+                }}
+              >
+                {error && <p role="alert">{error}</p>}
+                {notice && <p role="status">{notice}</p>}
+                <div className="persona-fields">
                   <label className="persona-author-field">
-                    简介
-                    <textarea
-                      value={form.description}
-                      maxLength={400}
-                      rows={2}
+                    名称
+                    <input
+                      value={
+                        selected?.kind === "role" && form.name === selected.id
+                          ? ""
+                          : form.name
+                      }
+                      placeholder={
+                        selected?.kind === "role" && form.name === selected.id
+                          ? "为角色起个名字"
+                          : "人格名称"
+                      }
+                      maxLength={80}
                       onChange={(event) =>
-                        setForm({ ...form, description: event.target.value })
+                        setForm({ ...form, name: event.target.value })
                       }
                     />
                   </label>
-                  {extras.map(({ key, label: fieldLabel, max }) => (
-                    <label key={key} className="persona-author-field">
-                      {fieldLabel}
+                  <label className="persona-author-field">
+                    人设正文
+                    <textarea
+                      className="persona-main-text"
+                      value={form.content.persona}
+                      maxLength={20000}
+                      rows={12}
+                      onChange={(event) =>
+                        setForm({
+                          ...form,
+                          content: {
+                            ...form.content,
+                            persona: event.target.value,
+                          },
+                        })
+                      }
+                    />
+                  </label>
+                  <DetailCard
+                    title="更多设置"
+                    className="persona-extra-settings"
+                  >
+                    <label className="persona-author-field">
+                      简介
                       <textarea
-                        value={form.content[key]}
-                        maxLength={max}
-                        rows={3}
+                        value={form.description}
+                        maxLength={400}
+                        rows={2}
                         onChange={(event) =>
-                          setForm({
-                            ...form,
-                            content: {
-                              ...form.content,
-                              [key]: event.target.value,
-                            },
-                          })
+                          setForm({ ...form, description: event.target.value })
                         }
                       />
                     </label>
-                  ))}
-                </details>
-                {choosingTarget && selected?.kind === "profile" && (
-                  <div className="persona-apply-target">
-                    <label htmlFor="persona-target">应用到</label>
-                    <select
-                      id="persona-target"
-                      value={target}
-                      disabled={busy}
-                      onChange={(event) =>
-                        void chooseTarget(event.target.value)
-                      }
-                    >
-                      <option value="">选择角色</option>
-                      {targets.map((item, index) => (
-                        <option key={item.id} value={item.id}>
-                          {label(item, index)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-                {dirty && (
-                  <p className="muted" role="status">
-                    有未保存的修改
-                  </p>
-                )}
-                <div className="persona-author-actions">
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={
-                      busy ||
-                      !canEdit ||
-                      !form.name.trim() ||
-                      !form.content.persona.trim()
-                    }
-                    onClick={() => void submit(false)}
-                  >
-                    {busy ? "保存中…" : "保存草稿"}
-                  </button>
-                  <button
-                    type="button"
-                    className="button primary"
-                    disabled={
-                      busy ||
-                      !selected ||
-                      !permissions.edit ||
-                      !permissions.apply ||
-                      !form.name.trim() ||
-                      !form.content.persona.trim()
-                    }
-                    onClick={() => {
-                      if (selected?.kind === "profile" && !target)
-                        setChoosingTarget(true);
-                      else void submit(true);
-                    }}
-                  >
-                    保存并应用
-                  </button>
-                  {selected && (
+                    {extras.map(({ key, label: fieldLabel, max }) => (
+                      <label key={key} className="persona-author-field">
+                        {fieldLabel}
+                        <textarea
+                          value={form.content[key]}
+                          maxLength={max}
+                          rows={3}
+                          onChange={(event) =>
+                            setForm({
+                              ...form,
+                              content: {
+                                ...form.content,
+                                [key]: event.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                    ))}
+                  </DetailCard>
+                  {choosingTarget && selected?.kind === "profile" && (
+                    <div className="persona-apply-target">
+                      <label htmlFor="persona-target">应用到</label>
+                      <select
+                        id="persona-target"
+                        value={target}
+                        disabled={busy}
+                        onChange={(event) =>
+                          void chooseTarget(event.target.value)
+                        }
+                      >
+                        <option value="">选择角色</option>
+                        {targets.map((item, index) => (
+                          <option key={item.id} value={item.id}>
+                            {label(item, index)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {dirty && (
+                    <p className="muted" role="status">
+                      有未保存的修改
+                    </p>
+                  )}
+                  <div className="persona-author-actions">
                     <button
                       type="button"
-                      className="button persona-cancel"
+                      className="button"
+                      disabled={
+                        busy ||
+                        !canEdit ||
+                        !form.name.trim() ||
+                        !form.content.persona.trim()
+                      }
+                      onClick={() => void submit(false)}
+                    >
+                      {busy ? "保存中…" : "保存草稿"}
+                    </button>
+                    <button
+                      type="button"
+                      className="button primary"
+                      disabled={
+                        busy ||
+                        !selected ||
+                        !permissions.edit ||
+                        !permissions.apply ||
+                        !form.name.trim() ||
+                        !form.content.persona.trim()
+                      }
                       onClick={() => {
-                        if (mayLeave()) {
-                          setForm(baseline);
-                          setEditing(false);
-                          setChoosingTarget(false);
-                        }
+                        if (selected?.kind === "profile" && !target)
+                          setChoosingTarget(true);
+                        else void submit(true);
                       }}
                     >
-                      取消
+                      保存并应用
                     </button>
+                    {selected && (
+                      <button
+                        type="button"
+                        className="button persona-cancel"
+                        onClick={() => {
+                          if (mayLeave()) {
+                            setForm(baseline);
+                            setEditing(false);
+                            setChoosingTarget(false);
+                          }
+                        }}
+                      >
+                        取消
+                      </button>
+                    )}
+                  </div>
+                  {!selected && (
+                    <p className="muted">保存草稿后可选择角色应用。</p>
                   )}
                 </div>
-                {!selected && (
-                  <p className="muted">保存草稿后可选择角色应用。</p>
-                )}
-              </div>
+              </Drawer>
             ) : (
               <div className="persona-view">
                 <h4>人设正文</h4>
@@ -582,8 +601,10 @@ export default function PersonaAuthor({ session }: { session: SessionState }) {
                 </p>
                 {(form.description ||
                   extras.some(({ key }) => form.content[key])) && (
-                  <details className="persona-extra-settings">
-                    <summary>更多设置</summary>
+                  <DetailCard
+                    title="更多设置"
+                    className="persona-extra-settings"
+                  >
                     {form.description && (
                       <p>
                         <strong>简介</strong>
@@ -601,7 +622,7 @@ export default function PersonaAuthor({ session }: { session: SessionState }) {
                           </p>
                         ),
                     )}
-                  </details>
+                  </DetailCard>
                 )}
               </div>
             )}

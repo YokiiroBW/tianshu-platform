@@ -192,11 +192,11 @@
   padding-top: var(--space-3);
   color: var(--color-muted);
 }
-.persona-extra-settings summary {
+.persona-extra-settings > .detail-card-trigger {
   cursor: pointer;
   font-weight: 600;
 }
-.persona-extra-settings[open] {
+.persona-extra-settings:has(> dialog[open]) {
   display: grid;
   gap: var(--space-4);
 }

@@ -244,7 +244,7 @@
   font-size: 13px;
   line-height: 1.8;
 }
-.book-source-failures summary {
+.book-source-failures > .detail-card-trigger {
   cursor: pointer;
 }
 .book-settings {
@@ -719,7 +719,7 @@
   overflow-wrap: anywhere;
 }
 
-.book-source-status summary {
+.book-source-status > .detail-card-trigger {
   cursor: pointer;
 }
 
@@ -733,7 +733,7 @@
   padding: 14px;
   margin: 16px 0;
 }
-.book-audio-panel summary {
+.book-audio-panel > .detail-card-trigger {
   cursor: pointer;
   font-weight: 600;
 }

@@ -1,3 +1,4 @@
+import { Drawer } from "../../components/Drawer";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { StatusRail } from "../../components/StatusRail";
 import type { MediaController } from "./useMediaController";
@@ -121,134 +122,151 @@ export function TargetsPanel({ media }: { media: MediaController }) {
         </button>
       </div>
       {editing && (
-        <form
-          className="media-card media-stack"
-          onSubmit={(event) => void save(event)}
+        <Drawer
+          title={form.target_id ? "编辑媒体服务器" : "添加媒体服务器"}
+          variant="card"
+          open={true}
+          onClose={reset}
         >
-          <h3>{form.target_id ? "编辑媒体服务器" : "添加媒体服务器"}</h3>
-          <label>
-            显示名称
-            <input
-              required
-              maxLength={128}
-              value={form.label}
-              onChange={(e) => update("label", e.target.value)}
-            />
-          </label>
-          <label>
-            服务器类型
-            <select
-              value={form.kind}
-              onChange={(e) => update("kind", e.target.value)}
-            >
-              <option value="emby">Emby</option>
-              <option value="jellyfin">Jellyfin</option>
-              <option value="plex">Plex</option>
-            </select>
-          </label>
-          <label>
-            服务器地址
-            <input
-              required
-              type="url"
-              placeholder="http://192.168.1.10:8096"
-              value={form.base_url}
-              onChange={(e) => update("base_url", e.target.value)}
-            />
-          </label>
-          <label>
-            API Key / Plex Token
-            <input
-              type="password"
-              autoComplete="new-password"
-              required={!form.target_id}
-              placeholder={
-                form.target_id ? "留空保留已保存的密钥" : "输入服务器密钥"
-              }
-              value={form.token}
-              onChange={(e) => update("token", e.target.value)}
-            />
-          </label>
-          <button
-            type="button"
-            className="button"
-            disabled={
-              testing ||
-              !!media.busy ||
-              !form.base_url ||
-              (!form.token && !form.target_id)
-            }
-            onClick={() => void test()}
+          {media.error && (
+            <p className="media-message media-warning" role="alert">
+              {media.error}
+            </p>
+          )}
+          {media.notice && (
+            <p className="media-message" role="status">
+              {media.notice}
+            </p>
+          )}
+          <form
+            className="media-card media-stack"
+            onSubmit={(event) => void save(event)}
           >
-            {testing ? "正在连接…" : "测试连接并读取媒体库"}
-          </button>
-          {libraries.length > 0 ? (
+            <h3>{form.target_id ? "编辑媒体服务器" : "添加媒体服务器"}</h3>
             <label>
-              服务器媒体库
-              <select
-                required
-                value={form.library_id}
-                onChange={(e) => {
-                  const item = libraries.find(
-                    (item) => item.library_id === e.target.value,
-                  );
-                  update("library_id", e.target.value);
-                  if (item?.paths.length === 1)
-                    update("media_root", item.paths[0]);
-                }}
-              >
-                <option value="">选择媒体库</option>
-                {libraries.map((item) => (
-                  <option key={item.library_id} value={item.library_id}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : (
-            <label>
-              服务器媒体库 ID
+              显示名称
               <input
                 required
-                value={form.library_id}
-                onChange={(e) => update("library_id", e.target.value)}
+                maxLength={128}
+                value={form.label}
+                onChange={(e) => update("label", e.target.value)}
               />
-              <small className="muted">
-                测试连接可读取并选择已有媒体库，也可直接填写 ID。
-              </small>
             </label>
-          )}
-          <label>
-            整理目录（天枢可见）
-            <input
-              required
-              placeholder="/media/bilibili"
-              value={form.directory}
-              onChange={(e) => update("directory", e.target.value)}
-            />
-          </label>
-          <label>
-            对应目录（媒体服务器可见）
-            <input
-              required
-              placeholder="/library/bilibili"
-              value={form.media_root}
-              onChange={(e) => update("media_root", e.target.value)}
-            />
-          </label>
-          <p className="muted">
-            两个路径必须映射到同一份实际文件。整理目录需挂载到天枢容器；服务器负责索引和播放。Plex
-            核对文件是否入库，NFO 展示取决于其元数据代理。
-          </p>
-          <div className="media-actions">
-            <button className="button primary" disabled={!!media.busy}>
-              保存媒体服务器
+            <label>
+              服务器类型
+              <select
+                value={form.kind}
+                onChange={(e) => update("kind", e.target.value)}
+              >
+                <option value="emby">Emby</option>
+                <option value="jellyfin">Jellyfin</option>
+                <option value="plex">Plex</option>
+              </select>
+            </label>
+            <label>
+              服务器地址
+              <input
+                required
+                type="url"
+                placeholder="http://192.168.1.10:8096"
+                value={form.base_url}
+                onChange={(e) => update("base_url", e.target.value)}
+              />
+            </label>
+            <label>
+              API Key / Plex Token
+              <input
+                type="password"
+                autoComplete="new-password"
+                required={!form.target_id}
+                placeholder={
+                  form.target_id ? "留空保留已保存的密钥" : "输入服务器密钥"
+                }
+                value={form.token}
+                onChange={(e) => update("token", e.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              className="button"
+              disabled={
+                testing ||
+                !!media.busy ||
+                !form.base_url ||
+                (!form.token && !form.target_id)
+              }
+              onClick={() => void test()}
+            >
+              {testing ? "正在连接…" : "测试连接并读取媒体库"}
             </button>
-            <button type="button" className="button" onClick={reset}>
-              取消编辑
-            </button>
-          </div>
-        </form>
+            {libraries.length > 0 ? (
+              <label>
+                服务器媒体库
+                <select
+                  required
+                  value={form.library_id}
+                  onChange={(e) => {
+                    const item = libraries.find(
+                      (item) => item.library_id === e.target.value,
+                    );
+                    update("library_id", e.target.value);
+                    if (item?.paths.length === 1)
+                      update("media_root", item.paths[0]);
+                  }}
+                >
+                  <option value="">选择媒体库</option>
+                  {libraries.map((item) => (
+                    <option key={item.library_id} value={item.library_id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label>
+                服务器媒体库 ID
+                <input
+                  required
+                  value={form.library_id}
+                  onChange={(e) => update("library_id", e.target.value)}
+                />
+                <small className="muted">
+                  测试连接可读取并选择已有媒体库，也可直接填写 ID。
+                </small>
+              </label>
+            )}
+            <label>
+              整理目录（天枢可见）
+              <input
+                required
+                placeholder="/media/bilibili"
+                value={form.directory}
+                onChange={(e) => update("directory", e.target.value)}
+              />
+            </label>
+            <label>
+              对应目录（媒体服务器可见）
+              <input
+                required
+                placeholder="/library/bilibili"
+                value={form.media_root}
+                onChange={(e) => update("media_root", e.target.value)}
+              />
+            </label>
+            <p className="muted">
+              两个路径必须映射到同一份实际文件。整理目录需挂载到天枢容器；服务器负责索引和播放。Plex
+              核对文件是否入库，NFO 展示取决于其元数据代理。
+            </p>
+            <div className="media-actions">
+              <button className="button primary" disabled={!!media.busy}>
+                保存媒体服务器
+              </button>
+              <button type="button" className="button" onClick={reset}>
+                取消编辑
+              </button>
+            </div>
+          </form>
+        </Drawer>
       )}
       {!media.view?.targets.length && (
         <p className="muted">

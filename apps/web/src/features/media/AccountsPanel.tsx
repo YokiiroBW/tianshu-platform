@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import qrcode from "qrcode-generator";
 import { QrCode, RefreshCw } from "lucide-react";
@@ -160,77 +161,99 @@ export function AccountsPanel({ media }: { media: MediaController }) {
         </div>
       </div>
       <div className="media-account-layout">
-        <div className="media-card media-stack">
-          <label>
-            账号显示名称
-            <input
-              value={label}
-              required
-              maxLength={120}
-              onChange={(event) => setLabel(event.target.value)}
-            />
-          </label>
-          <div>
-            <h3>扫码登录</h3>
-            <p className="muted">用 B 站手机端扫码并确认登录。</p>
-          </div>
-          <button
-            className="button primary"
-            disabled={!label.trim() || !!reading || !!media.busy}
-            onClick={() => void startQr()}
-          >
-            <QrCode aria-hidden="true" />
-            {reading === "qr-start"
-              ? "正在生成…"
-              : qr
-                ? "重新生成二维码"
-                : "生成登录二维码"}
-          </button>
-          {qr && (
-            <div className="media-qr">
-              <StatusRail
-                tone={qrState === "expired" ? "gray" : "yellow"}
-                label={word(qrState)}
-              />
-              {qrState !== "expired" && qrImage ? (
-                <img src={qrImage} alt="B 站登录二维码" />
-              ) : qrState !== "expired" ? (
-                <p role="alert">二维码无法生成，请重新获取。</p>
-              ) : null}
-              <p className="muted">有效至 {timestamp(qr.expires_at)}</p>
-              {qrState === "expired" && <p>请重新生成二维码后扫码。</p>}
-            </div>
+        <DetailCard title={"添加 B 站账号"}>
+          {media.error && (
+            <p className="media-message media-warning" role="alert">
+              {media.error}
+            </p>
           )}
-          <details className="media-cookie">
-            <summary>使用本人会话恢复登录</summary>
-            <form
-              className="media-stack"
-              onSubmit={(event) => void importAccount(event)}
+          {media.notice && (
+            <p className="media-message" role="status">
+              {media.notice}
+            </p>
+          )}
+          <div className="media-card media-stack">
+            <label>
+              账号显示名称
+              <input
+                value={label}
+                required
+                maxLength={120}
+                onChange={(event) => setLabel(event.target.value)}
+              />
+            </label>
+            <div>
+              <h3>扫码登录</h3>
+              <p className="muted">用 B 站手机端扫码并确认登录。</p>
+            </div>
+            <button
+              className="button primary"
+              disabled={!label.trim() || !!reading || !!media.busy}
+              onClick={() => void startQr()}
             >
-              <p className="muted">
-                在自己的 B 站已登录浏览器中取得 Cookie
-                后导入。内容只用于这次提交，保存后不在页面显示。
-              </p>
-              <label>
-                本人 B 站 Cookie
-                <textarea
-                  value={cookie}
-                  rows={4}
-                  required
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(event) => setCookie(event.target.value)}
+              <QrCode aria-hidden="true" />
+              {reading === "qr-start"
+                ? "正在生成…"
+                : qr
+                  ? "重新生成二维码"
+                  : "生成登录二维码"}
+            </button>
+            {qr && (
+              <div className="media-qr">
+                <StatusRail
+                  tone={qrState === "expired" ? "gray" : "yellow"}
+                  label={word(qrState)}
                 />
-              </label>
-              <button
-                className="button"
-                disabled={!cookie.trim() || !label.trim() || !!media.busy}
+                {qrState !== "expired" && qrImage ? (
+                  <img src={qrImage} alt="B 站登录二维码" />
+                ) : qrState !== "expired" ? (
+                  <p role="alert">二维码无法生成，请重新获取。</p>
+                ) : null}
+                <p className="muted">有效至 {timestamp(qr.expires_at)}</p>
+                {qrState === "expired" && <p>请重新生成二维码后扫码。</p>}
+              </div>
+            )}
+            <DetailCard title="使用本人会话恢复登录" className="media-cookie">
+              {media.error && (
+                <p className="media-message media-warning" role="alert">
+                  {media.error}
+                </p>
+              )}
+              {media.notice && (
+                <p className="media-message" role="status">
+                  {media.notice}
+                </p>
+              )}
+
+              <form
+                className="media-stack"
+                onSubmit={(event) => void importAccount(event)}
               >
-                校验并导入会话
-              </button>
-            </form>
-          </details>
-        </div>
+                <p className="muted">
+                  在自己的 B 站已登录浏览器中取得 Cookie
+                  后导入。内容只用于这次提交，保存后不在页面显示。
+                </p>
+                <label>
+                  本人 B 站 Cookie
+                  <textarea
+                    value={cookie}
+                    rows={4}
+                    required
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => setCookie(event.target.value)}
+                  />
+                </label>
+                <button
+                  className="button"
+                  disabled={!cookie.trim() || !label.trim() || !!media.busy}
+                >
+                  校验并导入会话
+                </button>
+              </form>
+            </DetailCard>
+          </div>
+        </DetailCard>
         <div className="media-stack">
           {!accounts.length ? (
             <StatePanel kind="empty" title="尚未连接 B 站账号">

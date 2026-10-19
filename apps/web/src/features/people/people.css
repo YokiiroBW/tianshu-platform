@@ -587,12 +587,12 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.people-memory-unit details {
+.people-memory-unit .detail-card {
   font-size: 11px;
   color: var(--color-muted);
   margin-top: 8px;
 }
-.people-memory-unit details summary {
+.people-memory-unit .detail-card-trigger {
   cursor: pointer;
 }
 .people-private-note {

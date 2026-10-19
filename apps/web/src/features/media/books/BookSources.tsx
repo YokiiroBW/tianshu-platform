@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import { Download, Globe, Plus, RefreshCw, Search } from "lucide-react";
 import { Drawer } from "../../../components/Drawer";
@@ -103,33 +104,35 @@ export function BookSources({
           </button>
         </div>
       </div>
-      <form
-        className="media-card book-feed-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void onFeed(url).then((saved) => {
-            if (saved) setUrl("");
-          });
-        }}
-      >
-        <label>
-          订阅规则集合
-          <input
-            type="text"
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-            placeholder="粘贴书源 JSON 直链"
-            required
-          />
-        </label>
-        <button className="button" disabled={busy}>
-          添加规则订阅
-        </button>
-        <p className="muted">
-          可填写 JSON
-          直链、源仓库详情页或阅读一键导入链接。也可打开内置源仓库直接选择。远端失联时继续保留本地规则。
-        </p>
-      </form>
+      <DetailCard title={"添加书源集合订阅"}>
+        <form
+          className="media-card book-feed-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void onFeed(url).then((saved) => {
+              if (saved) setUrl("");
+            });
+          }}
+        >
+          <label>
+            订阅规则集合
+            <input
+              type="text"
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+              placeholder="粘贴书源 JSON 直链"
+              required
+            />
+          </label>
+          <button className="button" disabled={busy}>
+            添加规则订阅
+          </button>
+          <p className="muted">
+            可填写 JSON
+            直链、源仓库详情页或阅读一键导入链接。也可打开内置源仓库直接选择。远端失联时继续保留本地规则。
+          </p>
+        </form>
+      </DetailCard>
       {view.feeds.length > 0 && (
         <div className="media-stack book-feeds">
           {view.feeds.map((feed) => (
@@ -156,8 +159,7 @@ export function BookSources({
                   </p>
                 )}
                 {feed.result?.invalid ? (
-                  <details>
-                    <summary>查看跳过原因</summary>
+                  <DetailCard title="查看跳过原因">
                     {Object.entries(feed.result.reasons ?? {}).map(
                       ([code, count]) => (
                         <p key={code}>
@@ -165,36 +167,42 @@ export function BookSources({
                         </p>
                       ),
                     )}
-                  </details>
+                  </DetailCard>
                 ) : null}
                 {feed.state === "active" && (
                   <p className="muted">
                     下次检查：{timestamp(feed.next_scan_at)}
                   </p>
                 )}
-                <label className="book-feed-interval">
-                  更新频率
-                  <select
-                    aria-label={`${feed.title || feed.url} 更新频率`}
-                    value={feed.interval_seconds}
-                    disabled={busy}
-                    onChange={(event) =>
-                      onFeedAction(feed, "interval", Number(event.target.value))
-                    }
-                  >
-                    <option value={3600}>每小时</option>
-                    <option value={21600}>每 6 小时</option>
-                    <option value={86400}>每天</option>
-                    <option value={604800}>每周</option>
-                    {![3600, 21600, 86400, 604800].includes(
-                      feed.interval_seconds,
-                    ) && (
-                      <option value={feed.interval_seconds}>
-                        每 {feed.interval_seconds / 3600} 小时
-                      </option>
-                    )}
-                  </select>
-                </label>
+                <DetailCard title={"集合更新频率设置"}>
+                  <label className="book-feed-interval">
+                    更新频率
+                    <select
+                      aria-label={`${feed.title || feed.url} 更新频率`}
+                      value={feed.interval_seconds}
+                      disabled={busy}
+                      onChange={(event) =>
+                        onFeedAction(
+                          feed,
+                          "interval",
+                          Number(event.target.value),
+                        )
+                      }
+                    >
+                      <option value={3600}>每小时</option>
+                      <option value={21600}>每 6 小时</option>
+                      <option value={86400}>每天</option>
+                      <option value={604800}>每周</option>
+                      {![3600, 21600, 86400, 604800].includes(
+                        feed.interval_seconds,
+                      ) && (
+                        <option value={feed.interval_seconds}>
+                          每 {feed.interval_seconds / 3600} 小时
+                        </option>
+                      )}
+                    </select>
+                  </label>
+                </DetailCard>
               </div>
               <div className="book-controls">
                 <button
@@ -315,7 +323,12 @@ export function BookSources({
           加载更多书源
         </button>
       )}
-      <Drawer title="导入阅读书源" open={open} onClose={() => setOpen(false)}>
+      <Drawer
+        variant="card"
+        title="导入阅读书源"
+        open={open}
+        onClose={() => setOpen(false)}
+      >
         <div className="book-source-import media-stack">
           <p className="muted">
             支持阅读 3
@@ -358,8 +371,7 @@ export function BookSources({
             </p>
           )}
           {report && report.invalid > 0 && (
-            <details>
-              <summary>查看未导入条目</summary>
+            <DetailCard title="查看未导入条目">
               {report.results
                 .filter((item) => item.state === "invalid")
                 .slice(0, 50)
@@ -369,7 +381,7 @@ export function BookSources({
                     {bookCode(item.code ?? "book_source_input_invalid")}
                   </p>
                 ))}
-            </details>
+            </DetailCard>
           )}
           <button
             className="button primary"

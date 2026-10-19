@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import { call, session, WebError } from "./api";
 import "./access.css";
@@ -142,104 +143,110 @@ export function AccessPanel() {
               待重启：{view.saved.origin}。请在部署管理中重启平台。
             </p>
           )}
-          <form onSubmit={(event) => void save(event)}>
-            <fieldset disabled={busy}>
-              <legend>访问方式</legend>
-              <label htmlFor="access-mode">连接方式</label>
-              <select
-                id="access-mode"
-                value={draft.mode}
-                onChange={(event) => {
-                  const mode = event.target.value as Access["mode"];
-                  setDraft({
-                    ...draft,
-                    mode,
-                    certificate:
-                      mode === "https" ? (view.certificates[0] ?? null) : null,
-                    origin:
-                      mode === "proxy"
-                        ? draft.origin
-                        : draft.origin.replace(/^https?:/, `${mode}:`),
-                  });
-                }}
-              >
-                <option value="http">直接 HTTP（默认）</option>
-                <option value="https">直接 HTTPS</option>
-                <option value="proxy">反向代理</option>
-              </select>
-              <label htmlFor="access-origin">完整访问地址（IP 或域名）</label>
-              <input
-                id="access-origin"
-                type="url"
-                value={draft.origin}
-                required
-                maxLength={300}
-                placeholder="http://192.168.31.210:19443"
-                onChange={(event) =>
-                  setDraft({ ...draft, origin: event.target.value })
-                }
-              />
-              <p>
-                只填写协议、地址和端口，不含路径。修改域名不会自动创建 DNS
-                记录。
-              </p>
-              {draft.mode === "https" && (
-                <>
-                  <label htmlFor="access-certificate">已安装证书</label>
-                  <select
-                    id="access-certificate"
-                    value={draft.certificate ?? ""}
-                    onChange={(event) =>
-                      setDraft({
-                        ...draft,
-                        certificate: event.target.value || null,
-                      })
-                    }
-                    required
-                  >
-                    <option value="" disabled>
-                      请选择证书
-                    </option>
-                    {view.certificates.map((id) => (
-                      <option key={id} value={id}>
-                        {id}
-                      </option>
-                    ))}
-                  </select>
-                  {!view.certificates.length && (
-                    <p>
-                      尚未安装证书，请先由部署管理员添加证书后再启用 HTTPS。
-                    </p>
-                  )}
-                </>
-              )}
-              {draft.mode === "proxy" && (
+          <DetailCard title={"修改访问地址与 HTTPS"}>
+            {error && <p role="alert">{error}</p>}
+            {notice && <p role="status">{notice}</p>}
+            <form onSubmit={(event) => void save(event)}>
+              <fieldset disabled={busy}>
+                <legend>访问方式</legend>
+                <label htmlFor="access-mode">连接方式</label>
+                <select
+                  id="access-mode"
+                  value={draft.mode}
+                  onChange={(event) => {
+                    const mode = event.target.value as Access["mode"];
+                    setDraft({
+                      ...draft,
+                      mode,
+                      certificate:
+                        mode === "https"
+                          ? (view.certificates[0] ?? null)
+                          : null,
+                      origin:
+                        mode === "proxy"
+                          ? draft.origin
+                          : draft.origin.replace(/^https?:/, `${mode}:`),
+                    });
+                  }}
+                >
+                  <option value="http">直接 HTTP（默认）</option>
+                  <option value="https">直接 HTTPS</option>
+                  <option value="proxy">反向代理</option>
+                </select>
+                <label htmlFor="access-origin">完整访问地址（IP 或域名）</label>
+                <input
+                  id="access-origin"
+                  type="url"
+                  value={draft.origin}
+                  required
+                  maxLength={300}
+                  placeholder="http://192.168.31.210:19443"
+                  onChange={(event) =>
+                    setDraft({ ...draft, origin: event.target.value })
+                  }
+                />
                 <p>
-                  反代上游填写部署时发布的 HTTP 地址，并保留原始 Host。
-                  上方访问地址填写用户实际打开的域名地址；HTTPS
-                  证书由反向代理管理。
+                  只填写协议、地址和端口，不含路径。修改域名不会自动创建 DNS
+                  记录。
                 </p>
-              )}
-              <label htmlFor="access-password">管理员密码</label>
-              <input
-                id="access-password"
-                type="password"
-                autoComplete="current-password"
-                required
-                minLength={12}
-                maxLength={256}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-              <button
-                className="button"
-                type="submit"
-                disabled={draft.mode === "https" && !draft.certificate}
-              >
-                {busy ? "正在保存…" : "保存，重启后生效"}
-              </button>
-            </fieldset>
-          </form>
+                {draft.mode === "https" && (
+                  <>
+                    <label htmlFor="access-certificate">已安装证书</label>
+                    <select
+                      id="access-certificate"
+                      value={draft.certificate ?? ""}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          certificate: event.target.value || null,
+                        })
+                      }
+                      required
+                    >
+                      <option value="" disabled>
+                        请选择证书
+                      </option>
+                      {view.certificates.map((id) => (
+                        <option key={id} value={id}>
+                          {id}
+                        </option>
+                      ))}
+                    </select>
+                    {!view.certificates.length && (
+                      <p>
+                        尚未安装证书，请先由部署管理员添加证书后再启用 HTTPS。
+                      </p>
+                    )}
+                  </>
+                )}
+                {draft.mode === "proxy" && (
+                  <p>
+                    反代上游填写部署时发布的 HTTP 地址，并保留原始 Host。
+                    上方访问地址填写用户实际打开的域名地址；HTTPS
+                    证书由反向代理管理。
+                  </p>
+                )}
+                <label htmlFor="access-password">管理员密码</label>
+                <input
+                  id="access-password"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  minLength={12}
+                  maxLength={256}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+                <button
+                  className="button"
+                  type="submit"
+                  disabled={draft.mode === "https" && !draft.certificate}
+                >
+                  {busy ? "正在保存…" : "保存，重启后生效"}
+                </button>
+              </fieldset>
+            </form>
+          </DetailCard>
         </>
       )}
     </section>

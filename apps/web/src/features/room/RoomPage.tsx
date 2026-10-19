@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import { Sun, LampDesk, Lamp, Wind, SlidersHorizontal } from "lucide-react";
 import {
@@ -321,13 +322,17 @@ export default function RoomPage() {
           </button>
         </div>
       </div>
-      <details className="room-controls">
-        <summary>
-          环境控制{" "}
-          <span className="muted">
-            {illustrated ? "微风、纱帘与床头灯" : "窗、双层帘与两盏灯"}
-          </span>
-        </summary>
+      <DetailCard
+        title={
+          <>
+            环境控制{" "}
+            <span className="muted">
+              {illustrated ? "微风、纱帘与床头灯" : "窗、双层帘与两盏灯"}
+            </span>
+          </>
+        }
+        className="room-controls"
+      >
         <p className="room-control-note">
           调整后该物件保持手动；点击“恢复自动”才重新跟随本地昼夜示意规则。开度
           100% 表示完全拉开。
@@ -464,9 +469,8 @@ export default function RoomPage() {
             </label>
           </div>
         )}
-      </details>
-      <details className="room-notes">
-        <summary>关于此预览与素材</summary>
+      </DetailCard>
+      <DetailCard title="关于此预览与素材" className="room-notes">
         {illustrated ? (
           <p>
             分层插画呈现昼夜与纱帘；读取角色活动后投影阅读、待机、休息或外出。穿搭参考来自当前服装的授权原件，画面使用有限姿态，不是连续走动动画。床头灯仅在夜间显示，天气请以生活页实际天气卡为准。
@@ -486,7 +490,7 @@ export default function RoomPage() {
             </p>
           </>
         )}
-      </details>
+      </DetailCard>
       <a className="text-link room-companion" href="#/companion/1">
         查看日程与日记
       </a>

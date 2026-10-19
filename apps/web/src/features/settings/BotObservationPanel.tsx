@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useState, type FormEvent } from "react";
 import { Archive, RefreshCw, UsersRound, UserRound } from "lucide-react";
 import { StatusRail } from "../../components/StatusRail";
@@ -487,101 +488,105 @@ export function BotObservationPanel({
         </p>
       )}
       {unlocked && (
-        <form
-          className="bot-form bot-observation-card"
-          onSubmit={(event) => void detect(event)}
-        >
-          <h3>连接与账号</h3>
-          <label>
-            宿主
-            <select
-              value={adapter}
-              onChange={(event) =>
-                setAdapter(event.target.value as AdapterKind)
-              }
+        <DetailCard title={"添加机器人账号"}>
+          {error && <p role="alert">{error}</p>}
+          {notice && <p role="status">{notice}</p>}
+          <form
+            className="bot-form bot-observation-card"
+            onSubmit={(event) => void detect(event)}
+          >
+            <h3>连接与账号</h3>
+            <label>
+              宿主
+              <select
+                value={adapter}
+                onChange={(event) =>
+                  setAdapter(event.target.value as AdapterKind)
+                }
+              >
+                <option value="astrbot">AstrBot</option>
+                <option value="nonebot">NoneBot</option>
+                <option value="onebot">OneBot / NapCat</option>
+              </select>
+            </label>
+            <label>
+              观察服务 URL
+              <input
+                type="url"
+                required
+                value={address}
+                onChange={(event) => setAddress(event.target.value)}
+              />
+              {adapter === "onebot" && (
+                <span className="muted">
+                  填写天枢 OneBot 接入服务的 HTTP 地址；QQ 账号由该服务连接的
+                  NapCat 等 OneBot 实现提供。
+                </span>
+              )}
+            </label>
+            <label>
+              观察服务密钥
+              <input
+                type="password"
+                required
+                autoComplete="off"
+                value={key}
+                onChange={(event) => setKey(event.target.value)}
+              />
+            </label>
+            <label className="bot-check">
+              <input
+                type="checkbox"
+                checked={privateHttp}
+                onChange={(event) => setPrivateHttp(event.target.checked)}
+              />
+              允许已审查的局域网 HTTP
+            </label>
+            <label>
+              插件 TLS CA（如需）
+              <textarea
+                rows={3}
+                value={caPem}
+                onChange={(event) => setCaPem(event.target.value)}
+              />
+            </label>
+            <button className="button" disabled={busy}>
+              检测在线账号
+            </button>
+          </form>
+          {probe && (
+            <form
+              className="bot-form bot-observation-card"
+              onSubmit={(event) => void create(event)}
             >
-              <option value="astrbot">AstrBot</option>
-              <option value="nonebot">NoneBot</option>
-              <option value="onebot">OneBot / NapCat</option>
-            </select>
-          </label>
-          <label>
-            观察服务 URL
-            <input
-              type="url"
-              required
-              value={address}
-              onChange={(event) => setAddress(event.target.value)}
-            />
-            {adapter === "onebot" && (
-              <span className="muted">
-                填写天枢 OneBot 接入服务的 HTTP 地址；QQ 账号由该服务连接的
-                NapCat 等 OneBot 实现提供。
-              </span>
-            )}
-          </label>
-          <label>
-            观察服务密钥
-            <input
-              type="password"
-              required
-              autoComplete="off"
-              value={key}
-              onChange={(event) => setKey(event.target.value)}
-            />
-          </label>
-          <label className="bot-check">
-            <input
-              type="checkbox"
-              checked={privateHttp}
-              onChange={(event) => setPrivateHttp(event.target.checked)}
-            />
-            允许已审查的局域网 HTTP
-          </label>
-          <label>
-            插件 TLS CA（如需）
-            <textarea
-              rows={3}
-              value={caPem}
-              onChange={(event) => setCaPem(event.target.value)}
-            />
-          </label>
-          <button className="button" disabled={busy}>
-            检测在线账号
-          </button>
-        </form>
-      )}
-      {unlocked && probe && (
-        <form
-          className="bot-form bot-observation-card"
-          onSubmit={(event) => void create(event)}
-        >
-          <h3>确认在线账号</h3>
-          <label>
-            账号观察名称
-            <input
-              required
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </label>
-          <label>
-            真实在线机器人账号
-            <select
-              value={account}
-              onChange={(event) => setAccount(event.target.value)}
-            >
-              {probe.accounts.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label}（{item.id}）
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className="button" disabled={busy || !account}>
-            保存并默认仅观察
-          </button>
-        </form>
+              <h3>确认在线账号</h3>
+              <label>
+                账号观察名称
+                <input
+                  required
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </label>
+              <label>
+                真实在线机器人账号
+                <select
+                  value={account}
+                  onChange={(event) => setAccount(event.target.value)}
+                >
+                  {probe.accounts.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}（{item.id}）
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button className="button" disabled={busy || !account}>
+                保存并默认仅观察
+              </button>
+            </form>
+          )}
+        </DetailCard>
       )}
       {view.connections.length > 0 && (
         <label className="bot-observation-account">
@@ -660,34 +665,38 @@ export function BotObservationPanel({
                 : "恢复历史读取与新增观察"}
             </button>
           </div>
-          <div className="bot-observation-policies">
-            <PolicyEditor
-              title="群聊"
-              kind="group"
-              value={group}
-              actors={actors}
-              disabled={!unlocked || busy}
-              onChange={setGroup}
-            />
-            <PolicyEditor
-              title="私聊"
-              kind="private"
-              value={privatePolicy}
-              actors={actors}
-              disabled={!unlocked || busy}
-              onChange={setPrivate}
-            />
-          </div>
-          <div className="bot-observation-save">
-            <button
-              className="button primary"
-              type="button"
-              disabled={!unlocked || busy || current.state === "unknown"}
-              onClick={() => void savePolicy()}
-            >
-              保存群聊与私聊策略
-            </button>
-          </div>
+          <DetailCard title="群聊与私聊策略">
+            {error && <p role="alert">{error}</p>}
+            {notice && <p role="status">{notice}</p>}
+            <div className="bot-observation-policies">
+              <PolicyEditor
+                title="群聊"
+                kind="group"
+                value={group}
+                actors={actors}
+                disabled={!unlocked || busy}
+                onChange={setGroup}
+              />
+              <PolicyEditor
+                title="私聊"
+                kind="private"
+                value={privatePolicy}
+                actors={actors}
+                disabled={!unlocked || busy}
+                onChange={setPrivate}
+              />
+            </div>
+            <div className="bot-observation-save">
+              <button
+                className="button primary"
+                type="button"
+                disabled={!unlocked || busy || current.state === "unknown"}
+                onClick={() => void savePolicy()}
+              >
+                保存群聊与私聊策略
+              </button>
+            </div>
+          </DetailCard>
           <div className="bot-observation-discovered-heading">
             <div>
               <h3>已发现会话</h3>

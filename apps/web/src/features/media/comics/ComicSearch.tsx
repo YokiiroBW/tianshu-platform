@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useEffect, useState } from "react";
 import type { Comic, Kind, Media, SearchResult, Source } from "./types";
 import { ComicCard } from "./ComicCard";
@@ -131,8 +132,7 @@ export function ComicSearch({
         <p className="muted">
           搜索范围：中文（简体与繁体）。自动查找中日英别名，覆盖中文源及多语言源中的中文版本。
         </p>
-        <details>
-          <summary>添加其他译名或原名</summary>
+        <DetailCard title="添加其他译名或原名">
           <label>
             作品别名（可选，每行一个，最多 2 个）
             <textarea
@@ -146,7 +146,7 @@ export function ComicSearch({
           {aliasNames.length > 2 && (
             <p role="alert">每次最多添加 2 个其他译名，请分次搜索。</p>
           )}
-        </details>
+        </DetailCard>
         <p className="muted">
           中文判断参考来源、作品和章节资料；语言待确认的结果单独查看，正文可先预览。
         </p>
@@ -178,8 +178,7 @@ export function ComicSearch({
           )}
           {!result.alias_resolution.selected &&
             !!result.alias_resolution.candidates.length && (
-              <details>
-                <summary>查看可能对应的作品</summary>
+              <DetailCard title="查看可能对应的作品">
                 {result.alias_resolution.candidates.map((candidate) => (
                   <p key={candidate.id}>
                     {candidate.title} ·{" "}
@@ -196,7 +195,7 @@ export function ComicSearch({
                     </button>
                   </p>
                 ))}
-              </details>
+              </DetailCard>
             )}
         </div>
       )}
@@ -232,8 +231,7 @@ export function ComicSearch({
         </div>
       )}
       {result && (
-        <details>
-          <summary>各源结果与失败原因</summary>
+        <DetailCard title="各源结果与失败原因">
           <p>本次写法：{result.queries?.join(" / ") || result.query}</p>
           <ul>
             {result.sources.map((s) => (
@@ -253,7 +251,7 @@ export function ComicSearch({
               </li>
             ))}
           </ul>
-        </details>
+        </DetailCard>
       )}
       {unknownCount > 0 && (
         <label>

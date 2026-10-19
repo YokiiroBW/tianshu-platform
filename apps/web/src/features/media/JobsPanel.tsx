@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowLeft, RefreshCw, Trash2, X } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
@@ -94,8 +95,7 @@ function MetadataEditor({
       <p className="muted">
         只调整成品展示标题和简介。封面从来源批准的原图获取。
       </p>
-      <details>
-        <summary>查看来源与当前覆盖值</summary>
+      <DetailCard title="查看来源与当前覆盖值">
         <p>来源标题：{detail.metadata.original_title ?? detail.job.title}</p>
         <p className="media-description">
           来源简介：{detail.metadata.original_description || "来源未提供简介"}
@@ -107,7 +107,7 @@ function MetadataEditor({
           {detail.metadata.description_overridden ? "使用人工覆盖" : "沿用来源"}
           。
         </p>
-      </details>
+      </DetailCard>
       <label>
         展示标题
         <input
@@ -698,12 +698,27 @@ export function JobsPanel({ media }: { media: MediaController }) {
                       detail.job.state,
                     ) &&
                     detail.metadata && (
-                      <MetadataEditor
-                        key={editorKey}
-                        detail={detail}
-                        media={media}
-                        updated={() => void read(selected, false)}
-                      />
+                      <DetailCard title={"编辑下载资料"}>
+                        {media.error && (
+                          <p
+                            className="media-message media-warning"
+                            role="alert"
+                          >
+                            {media.error}
+                          </p>
+                        )}
+                        {media.notice && (
+                          <p className="media-message" role="status">
+                            {media.notice}
+                          </p>
+                        )}
+                        <MetadataEditor
+                          key={editorKey}
+                          detail={detail}
+                          media={media}
+                          updated={() => void read(selected, false)}
+                        />
+                      </DetailCard>
                     )}
                   {detail.job.media_kind !== "audio" &&
                     detail.job.media_kind !== "comic" &&

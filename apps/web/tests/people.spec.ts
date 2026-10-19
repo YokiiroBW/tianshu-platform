@@ -282,6 +282,7 @@ test("people observation unlock reveals contacts and targets only selected priva
   const directory = page.getByRole("complementary", { name: "用户目录" });
   await directory.getByRole("button").filter({ hasText: "QQ 10002" }).click();
   await page.getByRole("tab", { name: "回复权限", exact: true }).click();
+  await page.getByRole("button", { name: "回复权限设置", exact: true }).click();
   await page
     .getByRole("combobox", { name: "家里的机器人默认回复角色", exact: true })
     .selectOption("role:a");
@@ -418,6 +419,7 @@ test("account link resumes only through current status and retries revoke with i
     .filter({ hasText: "QQ 10002" })
     .click();
   await page.getByRole("tab", { name: "账号关联", exact: true }).click();
+  await page.getByRole("button", { name: "账号关联设置", exact: true }).click();
   await page.getByRole("button", { name: "开始账号关联", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "完成账号关联", exact: true }),
@@ -431,14 +433,19 @@ test("account link resumes only through current status and retries revoke with i
   await expect(
     page.getByText("关联已由记忆服务确认", { exact: false }),
   ).toBeVisible();
+  await page.keyboard.press("Escape");
   await page.getByRole("tab", { name: "概览", exact: true }).click();
   await page.getByRole("tab", { name: "账号关联", exact: true }).click();
+  await page.getByRole("button", { name: "账号关联设置", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "撤销关联读取", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "撤销关联读取", exact: true }).click();
   await expect(
-    page.getByRole("alert").filter({ hasText: "写入结果尚未确认" }),
+    page
+      .getByRole("dialog")
+      .getByRole("alert")
+      .filter({ hasText: "写入结果尚未确认" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "撤销关联读取", exact: true }).click();
   await expect(
@@ -542,10 +549,14 @@ test("proactive preferences preserve failed operation identity and show partial 
     page.getByText("结果未确认，不能视作失败或再次发送。", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText(/已送 1\/2 段/)).toBeVisible();
+  await page.getByRole("button", { name: "登记主动偏好", exact: true }).click();
   await page.getByLabel("每天次数", { exact: true }).fill("5");
   await page.getByRole("button", { name: "保存主动偏好", exact: true }).click();
   await expect(
-    page.getByRole("alert").filter({ hasText: "写入结果尚未确认" }),
+    page
+      .getByRole("dialog")
+      .getByRole("alert")
+      .filter({ hasText: "写入结果尚未确认" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "保存主动偏好", exact: true }).click();
   await expect(
@@ -561,6 +572,7 @@ test("proactive preferences preserve failed operation identity and show partial 
   });
   expect(writes[0].value).not.toHaveProperty("person_id");
   expect(writes[0].value).not.toHaveProperty("scope");
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "暂停主动联系", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "恢复主动联系", exact: true }),

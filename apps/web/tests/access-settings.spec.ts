@@ -36,6 +36,9 @@ test("access settings distinguish active and pending and require certificates", 
   await expect(
     page.getByRole("heading", { name: "访问地址与 HTTPS" }),
   ).toBeVisible();
+  await page
+    .getByRole("button", { name: "修改访问地址与 HTTPS", exact: true })
+    .click();
   await page.getByLabel("连接方式", { exact: true }).selectOption("https");
   await expect(
     page.getByRole("button", { name: "保存，重启后生效" }),
@@ -50,9 +53,11 @@ test("access settings distinguish active and pending and require certificates", 
     .fill("synthetic-password-only");
   await page.getByRole("button", { name: "保存，重启后生效" }).click();
   await expect(
-    page.getByText("已保存。重启平台后生效；当前入口继续可用。", {
-      exact: true,
-    }),
+    page
+      .getByRole("dialog")
+      .getByText("已保存。重启平台后生效；当前入口继续可用。", {
+        exact: true,
+      }),
   ).toBeVisible();
   await expect(page.getByText("当前生效：", { exact: false })).toContainText(
     active.origin,

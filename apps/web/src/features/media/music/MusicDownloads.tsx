@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useEffect, useState } from "react";
 import type { MediaController } from "../useMediaController";
 import {
@@ -111,8 +112,18 @@ export function MusicDownloads({
         </button>
       </div>
       {!configured && <p className="muted">保存音乐目录后即可下载。</p>}
-      <details>
-        <summary>下载设置</summary>
+      <DetailCard title="下载设置">
+        {media.error && (
+          <p className="media-message media-warning" role="alert">
+            {media.error}
+          </p>
+        )}
+        {media.notice && (
+          <p className="media-message" role="status">
+            {media.notice}
+          </p>
+        )}
+
         <form
           className="media-stack"
           onSubmit={async (event) => {
@@ -181,7 +192,7 @@ export function MusicDownloads({
             保存下载设置
           </button>
         </form>
-      </details>
+      </DetailCard>
     </div>
   );
 }
@@ -233,8 +244,7 @@ export function MusicAudioReceipt({
               · {audioQualityText(routing.selected.quality)}
             </p>
           )}
-          <details>
-            <summary>各平台查询结果</summary>
+          <DetailCard title="各平台查询结果">
             {routing.providers.map((provider, index) => (
               <p key={index}>
                 {providerNames[provider.provider]}：
@@ -253,21 +263,20 @@ export function MusicAudioReceipt({
                   .join("")}
               </p>
             ))}
-          </details>
+          </DetailCard>
         </div>
       )}
       {(unlock || receipt?.unlock) && (
         <p>{unlockText(unlock || receipt?.unlock)}</p>
       )}
       {!!attempts?.length && (
-        <details>
-          <summary>其他来源的处理结果</summary>
+        <DetailCard title="其他来源的处理结果">
           {attempts.map((attempt, index) => (
             <p key={index}>
               {providerNames[attempt.provider]}：{word(attempt.code)}
             </p>
           ))}
-        </details>
+        </DetailCard>
       )}
       {receipt ? (
         <>

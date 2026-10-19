@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useState } from "react";
 import type { MediaController } from "../useMediaController";
 import { timestamp, word } from "../wording";
@@ -91,8 +92,18 @@ export function NavidromePlaylist({
             )}
           </div>
           {link.problem_count > 0 && (
-            <details>
-              <summary>查看待补齐歌曲（{link.problem_count} 首）</summary>
+            <DetailCard title={<>查看待补齐歌曲（{link.problem_count} 首）</>}>
+              {media.error && (
+                <p className="media-message media-warning" role="alert">
+                  {media.error}
+                </p>
+              )}
+              {media.notice && (
+                <p className="media-message" role="status">
+                  {media.notice}
+                </p>
+              )}
+
               <ul>
                 {link.problems.map((row) => (
                   <li key={row.position}>
@@ -104,12 +115,13 @@ export function NavidromePlaylist({
               {link.problem_count > link.problems.length && (
                 <p className="muted">此处显示前 {link.problems.length} 首。</p>
               )}
-            </details>
+            </DetailCard>
           )}
         </>
       )}
-      <details>
-        <summary>{link ? "Navidrome 歌单设置" : "创建 Navidrome 歌单"}</summary>
+      <DetailCard
+        title={<>{link ? "Navidrome 歌单设置" : "创建 Navidrome 歌单"}</>}
+      >
         <form
           className="media-stack navidrome-form"
           onSubmit={async (e) => {
@@ -179,7 +191,7 @@ export function NavidromePlaylist({
             </p>
           )}
         </form>
-      </details>
+      </DetailCard>
     </section>
   );
 }

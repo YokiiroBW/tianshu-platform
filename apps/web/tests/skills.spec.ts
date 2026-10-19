@@ -209,6 +209,7 @@ test("skills first configuration, role isolation and enablement", async ({
     .fill("synthetic-browser-token-0001");
   await game.getByRole("button", { name: "保存 GSCore 连接" }).click();
   await expect(page.getByRole("status")).toContainText("已保存");
+  await page.keyboard.press("Escape");
   await game.getByRole("button", { name: "启用技能" }).click();
   await expect(game.getByRole("button", { name: "停用技能" })).toBeVisible();
   await expect(game).toContainText("暂时不可用");
@@ -221,6 +222,7 @@ test("skills first configuration, role isolation and enablement", async ({
   await expect(game.getByLabel("GSCore WS_TOKEN", { exact: true })).toHaveValue(
     "",
   );
+  await page.keyboard.press("Escape");
   await page.getByLabel("选择角色").selectOption("actor:a");
   await game.getByRole("button", { name: "配置 GSCore" }).click();
   await expect(
@@ -236,6 +238,7 @@ test("skills first configuration, role isolation and enablement", async ({
     state.calls.filter((row) => row.path === "skills/configure"),
   ).toHaveLength(1);
   expect(state.errors).toEqual([]);
+  await page.keyboard.press("Escape");
   await page.getByRole("heading", { name: "角色技能", exact: true }).click();
   await page.screenshot({
     path: info.outputPath("skills-management.png"),
@@ -256,7 +259,9 @@ test("failed source refresh keeps metadata and credentials; unsupported has no a
     .locator("article")
     .filter({ has: page.getByRole("heading", { name: "视频图片漫画聚合" }) });
   await expect(media).toContainText("待接入");
-  await expect(media.getByRole("button")).toHaveCount(0);
+  await expect(
+    media.getByRole("button", { name: /启用|停用|配置/ }),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "刷新目录", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("目录刷新未完成");
   await expect(page.getByText("状态码：connection_failed")).toBeVisible();

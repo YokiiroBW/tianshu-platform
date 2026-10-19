@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { RefreshCw } from "lucide-react";
 import { useAuth } from "../../app/Auth";
@@ -403,157 +404,165 @@ export function ExternalConnectionsPanel({ kind }: { kind: Kind }) {
                   锁定管理
                 </button>
               </div>
-              <form
-                className="external-form"
-                onSubmit={(event) => void save(event)}
-              >
-                <label className="external-check">
-                  <input
-                    type="checkbox"
-                    checked={draft.enabled}
-                    onChange={(event) =>
-                      update({ enabled: event.target.checked })
-                    }
-                  />
-                  启用此连接
-                </label>
-                <label>
-                  {kind === "assets"
-                    ? "AssetLink HTTPS 端点"
-                    : "Home Assistant 基础地址"}
-                  <input
-                    type="url"
-                    value={draft.url}
-                    required
-                    maxLength={2048}
-                    placeholder={
-                      kind === "assets"
-                        ? "https://资产服务:端口/assetlink/v1/control"
-                        : "http://局域网设备:8123"
-                    }
-                    onChange={(event) => update({ url: event.target.value })}
-                  />
-                </label>
-                {kind === "assets" ? (
-                  <p className="muted">
-                    只接受 HTTPS 的固定 AssetLink
-                    控制端点；资产库可见范围仍由对端授权决定。
-                  </p>
-                ) : (
-                  <>
-                    <label className="external-check">
-                      <input
-                        type="checkbox"
-                        checked={draft.allowPrivateHttp}
-                        onChange={(event) =>
-                          update({ allowPrivateHttp: event.target.checked })
-                        }
-                      />
-                      明确允许经部署审查的局域网 HTTP
-                    </label>
-                    <p className="muted">
-                      只读取下方登记的实体；保存读数配置不会生成设备控制动作。控制仍需独立授权与解锁。
-                    </p>
-                    <Entities
-                      value={draft.entities}
-                      onChange={(entities) => update({ entities })}
+              <DetailCard title={`编辑${title(kind)}设置`}>
+                {error && <p role="alert">{error}</p>}
+                {notice && <p role="status">{notice}</p>}
+                <form
+                  className="external-form"
+                  onSubmit={(event) => void save(event)}
+                >
+                  <label className="external-check">
+                    <input
+                      type="checkbox"
+                      checked={draft.enabled}
+                      onChange={(event) =>
+                        update({ enabled: event.target.checked })
+                      }
                     />
-                  </>
-                )}
-                <fieldset className="external-credential">
-                  <legend>服务凭据</legend>
-                  <p className="muted">
-                    当前：
-                    {connection.credential_configured
-                      ? "已保存（不会回显）"
-                      : "尚未保存"}
-                  </p>
-                  {(["keep", "replace", "clear"] as const).map((action) => (
-                    <label key={action}>
-                      <input
-                        type="radio"
-                        name={`credential-${kind}`}
-                        checked={draft.keyAction === action}
-                        onChange={() => update({ keyAction: action, key: "" })}
+                    启用此连接
+                  </label>
+                  <label>
+                    {kind === "assets"
+                      ? "AssetLink HTTPS 端点"
+                      : "Home Assistant 基础地址"}
+                    <input
+                      type="url"
+                      value={draft.url}
+                      required
+                      maxLength={2048}
+                      placeholder={
+                        kind === "assets"
+                          ? "https://资产服务:端口/assetlink/v1/control"
+                          : "http://局域网设备:8123"
+                      }
+                      onChange={(event) => update({ url: event.target.value })}
+                    />
+                  </label>
+                  {kind === "assets" ? (
+                    <p className="muted">
+                      只接受 HTTPS 的固定 AssetLink
+                      控制端点；资产库可见范围仍由对端授权决定。
+                    </p>
+                  ) : (
+                    <>
+                      <label className="external-check">
+                        <input
+                          type="checkbox"
+                          checked={draft.allowPrivateHttp}
+                          onChange={(event) =>
+                            update({ allowPrivateHttp: event.target.checked })
+                          }
+                        />
+                        明确允许经部署审查的局域网 HTTP
+                      </label>
+                      <p className="muted">
+                        只读取下方登记的实体；保存读数配置不会生成设备控制动作。控制仍需独立授权与解锁。
+                      </p>
+                      <Entities
+                        value={draft.entities}
+                        onChange={(entities) => update({ entities })}
                       />
-                      {action === "keep"
-                        ? "保留现有"
-                        : action === "replace"
-                          ? "替换凭据"
-                          : "明确清除"}
-                    </label>
-                  ))}
-                  {draft.keyAction === "replace" && (
-                    <label>
-                      新凭据
-                      <input
-                        type="password"
-                        autoComplete="off"
-                        minLength={24}
-                        maxLength={4096}
-                        value={draft.key}
-                        onChange={(event) =>
-                          update({ key: event.target.value })
-                        }
-                      />
-                    </label>
+                    </>
                   )}
-                </fieldset>
-                <fieldset className="external-credential">
-                  <legend>自签证书 CA</legend>
-                  <p className="muted">
-                    当前：
-                    {connection.ca_configured
-                      ? "已保存（不会回显）"
-                      : "使用系统信任"}
-                  </p>
-                  {(["keep", "replace", "clear"] as const).map((action) => (
-                    <label key={action}>
-                      <input
-                        type="radio"
-                        name={`ca-${kind}`}
-                        checked={draft.caAction === action}
-                        onChange={() => update({ caAction: action, caPem: "" })}
-                      />
-                      {action === "keep"
-                        ? "保留现有"
-                        : action === "replace"
-                          ? "替换 CA"
-                          : "明确清除"}
-                    </label>
-                  ))}
-                  {draft.caAction === "replace" && (
-                    <label>
-                      CA PEM
-                      <textarea
-                        value={draft.caPem}
-                        rows={4}
-                        maxLength={16384}
-                        onChange={(event) =>
-                          update({ caPem: event.target.value })
-                        }
-                      />
-                    </label>
-                  )}
-                </fieldset>
-                <div className="external-actions">
-                  <button
-                    className="button primary"
-                    type="submit"
-                    disabled={busy}
-                  >
-                    保存设置
-                  </button>
-                  <button
-                    className="button"
-                    type="button"
-                    disabled={busy || !connection.configured}
-                    onClick={() => void testConnection()}
-                  >
-                    检测连接（只读一次）
-                  </button>
-                </div>
-              </form>
+                  <fieldset className="external-credential">
+                    <legend>服务凭据</legend>
+                    <p className="muted">
+                      当前：
+                      {connection.credential_configured
+                        ? "已保存（不会回显）"
+                        : "尚未保存"}
+                    </p>
+                    {(["keep", "replace", "clear"] as const).map((action) => (
+                      <label key={action}>
+                        <input
+                          type="radio"
+                          name={`credential-${kind}`}
+                          checked={draft.keyAction === action}
+                          onChange={() =>
+                            update({ keyAction: action, key: "" })
+                          }
+                        />
+                        {action === "keep"
+                          ? "保留现有"
+                          : action === "replace"
+                            ? "替换凭据"
+                            : "明确清除"}
+                      </label>
+                    ))}
+                    {draft.keyAction === "replace" && (
+                      <label>
+                        新凭据
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          minLength={24}
+                          maxLength={4096}
+                          value={draft.key}
+                          onChange={(event) =>
+                            update({ key: event.target.value })
+                          }
+                        />
+                      </label>
+                    )}
+                  </fieldset>
+                  <fieldset className="external-credential">
+                    <legend>自签证书 CA</legend>
+                    <p className="muted">
+                      当前：
+                      {connection.ca_configured
+                        ? "已保存（不会回显）"
+                        : "使用系统信任"}
+                    </p>
+                    {(["keep", "replace", "clear"] as const).map((action) => (
+                      <label key={action}>
+                        <input
+                          type="radio"
+                          name={`ca-${kind}`}
+                          checked={draft.caAction === action}
+                          onChange={() =>
+                            update({ caAction: action, caPem: "" })
+                          }
+                        />
+                        {action === "keep"
+                          ? "保留现有"
+                          : action === "replace"
+                            ? "替换 CA"
+                            : "明确清除"}
+                      </label>
+                    ))}
+                    {draft.caAction === "replace" && (
+                      <label>
+                        CA PEM
+                        <textarea
+                          value={draft.caPem}
+                          rows={4}
+                          maxLength={16384}
+                          onChange={(event) =>
+                            update({ caPem: event.target.value })
+                          }
+                        />
+                      </label>
+                    )}
+                  </fieldset>
+                  <div className="external-actions">
+                    <button
+                      className="button primary"
+                      type="submit"
+                      disabled={busy}
+                    >
+                      保存设置
+                    </button>
+                    <button
+                      className="button"
+                      type="button"
+                      disabled={busy || !connection.configured}
+                      onClick={() => void testConnection()}
+                    >
+                      检测连接（只读一次）
+                    </button>
+                  </div>
+                </form>
+              </DetailCard>
             </>
           )}
         </>

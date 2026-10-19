@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { History } from "./History";
 import { RelationshipForm, types } from "./RelationshipForm";
 import { useRelationships, type RelationshipTarget } from "./useRelationships";
@@ -125,12 +126,16 @@ function RelationshipContent({ csrf, selection }: Props) {
               {projection.frozen ? "已冻结" : "自动变化开启"}
             </p>
           </div>
-          <RelationshipForm
-            key={`${state.roleId}:${state.personId}`}
-            projection={projection}
-            disabled={state.busy || state.saving || state.uncertain}
-            onSave={state.save}
-          />
+          <DetailCard title={"修改关系与好感"}>
+            {state.error && <p role="alert">{state.error}</p>}
+            {state.notice && <p role="status">{state.notice}</p>}
+            <RelationshipForm
+              key={`${state.roleId}:${state.personId}`}
+              projection={projection}
+              disabled={state.busy || state.saving || state.uncertain}
+              onSave={state.save}
+            />
+          </DetailCard>
           <History
             items={state.view?.items ?? []}
             more={state.view?.has_more ?? false}

@@ -194,7 +194,7 @@ test("account observation is the default entry without conversation, author or a
     throw new Error(`Unexpected observation request: ${operation}`);
   });
   await page.goto("/#/settings/3");
-  const legacy = page.locator("details.bot-legacy").first();
+  const legacy = page.locator(".bot-legacy").first();
   await expect(legacy).not.toHaveAttribute("open", "");
   await expect(
     page.getByRole("region", { name: "账号级观察与回复策略" }),
@@ -207,6 +207,9 @@ test("account observation is the default entry without conversation, author or a
     name: "账号级观察与回复策略",
   });
   await observation
+    .getByRole("button", { name: "添加机器人账号", exact: true })
+    .click();
+  await observation
     .getByLabel("观察服务 URL")
     .fill("https://bot.example.test:8443");
   await observation
@@ -216,7 +219,9 @@ test("account observation is the default entry without conversation, author or a
   await observation.getByLabel("账号观察名称").fill("默认观察");
   await observation.getByRole("button", { name: "保存并默认仅观察" }).click();
   await expect(
-    observation.getByText("账号观察已启用", { exact: false }),
+    observation
+      .getByRole("dialog")
+      .getByText("账号观察已启用", { exact: false }),
   ).toBeVisible();
   expect(createBody).toMatchObject({
     account_id: account.id,
@@ -339,6 +344,9 @@ test("observation cards render connected, archive, error and locked states", asy
     observation.getByText("运行正常", { exact: true }),
   ).toBeVisible();
   await expect(observation.getByText("Memory 可读取")).toBeVisible();
+  await observation
+    .getByRole("button", { name: "群聊与私聊策略", exact: true })
+    .click();
   await expect(
     observation.getByRole("group", { name: "群聊策略" }),
   ).toBeVisible();
@@ -367,6 +375,9 @@ test("observation cards render connected, archive, error and locked states", asy
   await expect(
     observation.getByRole("alert").filter({ hasText: "adapter_unreachable" }),
   ).toBeVisible();
+  await observation
+    .getByRole("button", { name: "群聊与私聊策略", exact: true })
+    .click();
   await expect(
     observation.getByRole("button", { name: "保存群聊与私聊策略" }),
   ).toBeDisabled();

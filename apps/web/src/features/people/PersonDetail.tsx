@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useState } from "react";
 import {
   UserRound,
@@ -230,23 +231,27 @@ export function PersonDetail({
           ))}
         {tab === "accounts" &&
           (role ? (
-            <AccountLinkPanel
-              key={`${csrf}:${role.id}:${person.qqId}`}
-              actor={role.id}
-              qqId={person.qqId}
-              csrf={csrf}
-            />
+            <DetailCard title={"账号关联设置"}>
+              <AccountLinkPanel
+                key={`${csrf}:${role.id}:${person.qqId}`}
+                actor={role.id}
+                qqId={person.qqId}
+                csrf={csrf}
+              />
+            </DetailCard>
           ) : (
             <p>请选择要关联的角色。</p>
           ))}
         {tab === "permissions" && (
-          <ReplyPermissions
-            person={person}
-            roles={roles}
-            csrf={csrf}
-            observations={observations}
-            onLocked={onObservationLocked}
-          />
+          <DetailCard title={"回复权限设置"}>
+            <ReplyPermissions
+              person={person}
+              roles={roles}
+              csrf={csrf}
+              observations={observations}
+              onLocked={onObservationLocked}
+            />
+          </DetailCard>
         )}
         {tab === "relationship" &&
           (person.profile?.person_id && role ? (

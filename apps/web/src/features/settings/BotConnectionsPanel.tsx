@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useAuth } from "../../app/Auth";
 import { integrationPost, readFailure } from "../../app/integrationApi";
@@ -254,64 +255,67 @@ export function BotConnectionsPanel() {
             )}
             {view.management.unlocked &&
               view.slots.some((item) => !item.created) && (
-                <form
-                  className="bot-form"
-                  onSubmit={(event) => void create(event)}
-                >
-                  <label>
-                    连接槽位
-                    <select
-                      value={selected}
-                      onChange={(event) => {
-                        const next = view.slots.find(
-                          (item) => item.slot_id === event.target.value,
-                        );
-                        setSelected(event.target.value);
-                        setActors(next?.actor_ids.slice(0, 1) ?? []);
-                      }}
-                    >
-                      {view.slots
-                        .filter((item) => !item.created)
-                        .map((item) => (
-                          <option key={item.slot_id} value={item.slot_id}>
-                            {item.label} · {adapterLabel(item.adapter)}
-                          </option>
-                        ))}
-                    </select>
-                  </label>
-                  {slot && (
-                    <p>
-                      渠道 {slot.namespace} · 会话 {slot.conversation_id} ·
-                      已登记作者 {slot.registered_authors} 人。宿主 ID{" "}
-                      {slot.platform_id}，机器人 ID {slot.self_id}。
-                    </p>
-                  )}
-                  <fieldset>
-                    <legend>允许回复的角色</legend>
-                    {slot?.actor_ids.map((id) => (
-                      <label key={id}>
-                        <input
-                          type="checkbox"
-                          checked={actors.includes(id)}
-                          onChange={(event) =>
-                            setActors(
-                              event.target.checked
-                                ? [...actors, id]
-                                : actors.filter((value) => value !== id),
-                            )
-                          }
-                        />
-                        {id}
-                      </label>
-                    ))}
-                  </fieldset>
-                  <button
-                    className="button"
-                    disabled={busy || !selected || actors.length === 0}
+                <DetailCard title={"创建机器人连接"}>
+                  {error && <p role="alert">{error}</p>}
+                  <form
+                    className="bot-form"
+                    onSubmit={(event) => void create(event)}
                   >
-                    创建连接
-                  </button>
-                </form>
+                    <label>
+                      连接槽位
+                      <select
+                        value={selected}
+                        onChange={(event) => {
+                          const next = view.slots.find(
+                            (item) => item.slot_id === event.target.value,
+                          );
+                          setSelected(event.target.value);
+                          setActors(next?.actor_ids.slice(0, 1) ?? []);
+                        }}
+                      >
+                        {view.slots
+                          .filter((item) => !item.created)
+                          .map((item) => (
+                            <option key={item.slot_id} value={item.slot_id}>
+                              {item.label} · {adapterLabel(item.adapter)}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    {slot && (
+                      <p>
+                        渠道 {slot.namespace} · 会话 {slot.conversation_id} ·
+                        已登记作者 {slot.registered_authors} 人。宿主 ID{" "}
+                        {slot.platform_id}，机器人 ID {slot.self_id}。
+                      </p>
+                    )}
+                    <fieldset>
+                      <legend>允许回复的角色</legend>
+                      {slot?.actor_ids.map((id) => (
+                        <label key={id}>
+                          <input
+                            type="checkbox"
+                            checked={actors.includes(id)}
+                            onChange={(event) =>
+                              setActors(
+                                event.target.checked
+                                  ? [...actors, id]
+                                  : actors.filter((value) => value !== id),
+                              )
+                            }
+                          />
+                          {id}
+                        </label>
+                      ))}
+                    </fieldset>
+                    <button
+                      className="button"
+                      disabled={busy || !selected || actors.length === 0}
+                    >
+                      创建连接
+                    </button>
+                  </form>
+                </DetailCard>
               )}
             <ul className="bot-list">
               {view.connections.map((connection) => {

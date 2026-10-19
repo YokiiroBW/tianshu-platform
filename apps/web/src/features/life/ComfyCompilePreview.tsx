@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { comfySemanticLabels, type ComfyCompile } from "./comfyTypes";
 
 export function ComfyCompilePreview({ result }: { result: ComfyCompile }) {
@@ -17,8 +18,7 @@ export function ComfyCompilePreview({ result }: { result: ComfyCompile }) {
           {text || "未填写"}
         </p>
       ))}
-      <details>
-        <summary>查看节点写入结果 · {result.changes.length} 处</summary>
+      <DetailCard title={<>查看节点写入结果 · {result.changes.length} 处</>}>
         <ul className="comfy-change-list">
           {result.changes.map((change, index) => (
             <li key={index}>
@@ -29,7 +29,7 @@ export function ComfyCompilePreview({ result }: { result: ComfyCompile }) {
           ))}
         </ul>
         <p>保留节点：{result.preserved_nodes.join("、") || "无额外节点"}</p>
-      </details>
+      </DetailCard>
       {result.warnings.length > 0 && (
         <ul>
           {result.warnings.map((warning, index) => (
@@ -38,11 +38,10 @@ export function ComfyCompilePreview({ result }: { result: ComfyCompile }) {
         </ul>
       )}
       {result.model_receipt && <p>模型辅助已完成，结果通过工作流校验。</p>}
-      <details>
-        <summary>查看完整 API 工作流</summary>
+      <DetailCard title="查看完整 API 工作流">
         <pre>{JSON.stringify(result.graph, null, 2)}</pre>
         <p>内容摘要：{result.graph_sha256}</p>
-      </details>
+      </DetailCard>
     </div>
   );
 }

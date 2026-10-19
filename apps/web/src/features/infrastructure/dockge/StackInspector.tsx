@@ -1,3 +1,5 @@
+import { Drawer } from "../../../components/Drawer";
+import { DetailCard } from "../../../components/DetailCard";
 import { useState } from "react";
 import { StatusRail } from "../../../components/StatusRail";
 import { useInfrastructureAction, useInfrastructureQuery } from "../api";
@@ -254,20 +256,24 @@ export function StackInspector({
               </>
             )}
             {tab === "configure" && (
-              <DeploymentPanel
-                key={`${stackId}/${intent}`}
-                nodeId={nodeId}
-                connectionRevision={detail.connection_revision}
-                detail={detail}
-                intent={intent}
-                command={command}
-                available={
-                  intent === "update"
-                    ? available &&
-                      Boolean(stack!.allowed_actions.update?.enabled)
-                    : canConfigure
-                }
-              />
+              <DetailCard
+                title={intent === "update" ? "更新应用设置" : "修改应用配置"}
+              >
+                <DeploymentPanel
+                  key={`${stackId}/${intent}`}
+                  nodeId={nodeId}
+                  connectionRevision={detail.connection_revision}
+                  detail={detail}
+                  intent={intent}
+                  command={command}
+                  available={
+                    intent === "update"
+                      ? available &&
+                        Boolean(stack!.allowed_actions.update?.enabled)
+                      : canConfigure
+                  }
+                />
+              </DetailCard>
             )}
             {tab === "versions" && (
               <>
@@ -304,25 +310,32 @@ export function StackInspector({
                   </article>
                 ))}
                 {restoreVersion && (
-                  <DeploymentPanel
-                    key={`${stackId}/restore/${restoreVersion}`}
-                    nodeId={nodeId}
-                    connectionRevision={detail.connection_revision}
-                    detail={detail}
-                    intent="restore"
-                    restoreVersion={restoreVersion}
-                    command={command}
-                    available={
-                      available &&
-                      Boolean(stack!.allowed_actions.restore?.enabled) &&
-                      detail.versions.some(
-                        (version) =>
-                          version.version_id === restoreVersion &&
-                          version.restorable &&
-                          !version.current,
-                      )
-                    }
-                  />
+                  <Drawer
+                    title={"恢复应用版本"}
+                    variant="card"
+                    open={true}
+                    onClose={() => setRestoreVersion("")}
+                  >
+                    <DeploymentPanel
+                      key={`${stackId}/restore/${restoreVersion}`}
+                      nodeId={nodeId}
+                      connectionRevision={detail.connection_revision}
+                      detail={detail}
+                      intent="restore"
+                      restoreVersion={restoreVersion}
+                      command={command}
+                      available={
+                        available &&
+                        Boolean(stack!.allowed_actions.restore?.enabled) &&
+                        detail.versions.some(
+                          (version) =>
+                            version.version_id === restoreVersion &&
+                            version.restorable &&
+                            !version.current,
+                        )
+                      }
+                    />
+                  </Drawer>
                 )}
               </>
             )}

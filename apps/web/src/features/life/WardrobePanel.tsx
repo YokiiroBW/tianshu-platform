@@ -1,3 +1,4 @@
+import { DetailCard } from "../../components/DetailCard";
 import { requestId } from "../../app/requestId";
 import { useEffect, useRef, useState } from "react";
 import { readFailure } from "../../app/integrationApi";
@@ -93,10 +94,19 @@ export function WardrobePanel({ access }: { access: LifeAccess }) {
     state.refresh();
   });
   const draft = useDraftId("outfit");
+  const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<outfits_record | null>(null),
     [description, setDescription] = useState(""),
     [prompt, setPrompt] = useState("");
   const [reference, setReference] = useState<outfits_record["reference"]>(null);
+  function clearDraft() {
+    setEditing(null);
+    setEditorOpen(false);
+    setDescription("");
+    setPrompt("");
+    setReference(null);
+  }
+
   async function save(event: React.FormEvent) {
     event.preventDefault();
     const receipt = await action.run(
@@ -115,10 +125,7 @@ export function WardrobePanel({ access }: { access: LifeAccess }) {
     );
     if (receipt && receipt.result.state !== "unknown") {
       draft.reset();
-      setEditing(null);
-      setDescription("");
-      setPrompt("");
-      setReference(null);
+      clearDraft();
     }
   }
   const current = state.items[0]?.outfit_ref;
@@ -171,64 +178,71 @@ export function WardrobePanel({ access }: { access: LifeAccess }) {
             继续读取衣柜
           </button>
         )}
-        <h4>{editing ? "编辑服装" : "添加服装"}</h4>
-        <ContentAcquire
-          key={editing?.id ?? draft.id}
-          access={access}
-          imagesOnly
-          onAcquired={(ref) => {
-            if (ref.kind === "image") setReference({ ...ref, kind: "image" });
+        <DetailCard
+          title={editing ? "编辑穿搭" : "新增穿搭"}
+          open={editorOpen || !!editing}
+          onOpenChange={(open) => {
+            setEditorOpen(open);
+            if (!open) clearDraft();
           }}
-        />
-        {reference && typeof reference === "object" && (
-          <ContentViewer
-            key={reference.object_id + reference.version}
+        >
+          <h4>{editing ? "编辑服装" : "添加服装"}</h4>
+          <ContentAcquire
+            key={editing?.id ?? draft.id}
             access={access}
-            contentRef={reference}
+            imagesOnly
+            onAcquired={(ref) => {
+              if (ref.kind === "image") setReference({ ...ref, kind: "image" });
+            }}
           />
-        )}
-        {reference && (
-          <button className="button" onClick={() => setReference(null)}>
-            移除此服装参考
-          </button>
-        )}
-        <form className="life-form" onSubmit={save}>
-          <label>
-            服装描述
-            <input
-              required
-              maxLength={1000}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
+          {reference && typeof reference === "object" && (
+            <ContentViewer
+              key={reference.object_id + reference.version}
+              access={access}
+              contentRef={reference}
             />
-          </label>
-          <label>
-            外观细节
-            <textarea
-              required
-              maxLength={4000}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-            />
-          </label>
-          <button className="button primary" disabled={action.busy}>
-            保存服装
-          </button>
-          {editing && (
-            <button
-              className="button"
-              type="button"
-              onClick={() => {
-                setEditing(null);
-                setDescription("");
-                setPrompt("");
-                setReference(null);
-              }}
-            >
-              取消编辑
+          )}
+          {reference && (
+            <button className="button" onClick={() => setReference(null)}>
+              移除此服装参考
             </button>
           )}
-        </form>
+          <RuntimeFeedback {...action} />
+          <form className="life-form" onSubmit={save}>
+            <label>
+              服装描述
+              <input
+                required
+                maxLength={1000}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+            </label>
+            <label>
+              外观细节
+              <textarea
+                required
+                maxLength={4000}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+              />
+            </label>
+            <button className="button primary" disabled={action.busy}>
+              保存服装
+            </button>
+            {editing && (
+              <button
+                className="button"
+                type="button"
+                onClick={() => {
+                  clearDraft();
+                }}
+              >
+                取消编辑
+              </button>
+            )}
+          </form>
+        </DetailCard>
         <RuntimeFeedback {...action} />
       </section>
       <IdentityReference access={access} />
@@ -392,155 +406,161 @@ function ImageStudio({
         <p>
           图像后端：{showState(backend.items[0]?.state ?? "not_configured")}
         </p>
-        <form className="life-form" onSubmit={generate}>
-          <label>
-            场景
-            <textarea
-              value={scene}
-              onChange={(e) => setScene(e.target.value)}
-              maxLength={2000}
-            />
-          </label>
-          <label>
-            关联日程或活动
-            <select
-              value={activity}
-              onChange={(e) => setActivity(e.target.value)}
-            >
-              <option value="">自由拍照</option>
-              {activities.items
-                .filter((item) => item.state !== "cancelled")
-                .map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.title}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <label>
-            此次服装
-            <select value={outfit} onChange={(e) => setOutfit(e.target.value)}>
-              <option value="">沿用当前穿搭</option>
-              {outfits.map((row) => (
-                <option key={row.id} value={row.id}>
-                  {row.description}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            形象参考或原图续作
-            <select
-              value={reference}
-              onChange={(e) => setReference(e.target.value)}
-            >
-              <option value="">新图创作</option>
-              {album.items
-                .filter((row) => row.state === "available")
-                .map((row) => (
-                  <option key={row.id} value={row.id}>
-                    {row.caption}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <label>
-            姿态与动作
-            <input
-              value={pose}
-              onChange={(e) => setPose(e.target.value)}
-              maxLength={2000}
-              placeholder="自然站立、坐在窗边阅读等"
-            />
-          </label>
-          <label>
-            镜头与构图
-            <input
-              value={camera}
-              onChange={(e) => setCamera(e.target.value)}
-              maxLength={2000}
-              placeholder="全身、半身、特写等"
-            />
-          </label>
-          <label>
-            补充细节
-            <input
-              value={positive}
-              onChange={(e) => setPositive(e.target.value)}
-              maxLength={2000}
-            />
-          </label>
-          <ImageDimensions
-            width={width}
-            height={height}
-            onChange={(w, h) => {
-              setWidth(w);
-              setHeight(h);
-            }}
-          />
-          <div className="life-form-row">
+        <DetailCard title={"生成图像设置"}>
+          <RuntimeFeedback {...action} />
+          <form className="life-form" onSubmit={generate}>
             <label>
-              步数
-              <input
-                type="number"
-                min={1}
-                max={150}
-                value={steps}
-                onChange={(e) => setSteps(Number(e.target.value))}
+              场景
+              <textarea
+                value={scene}
+                onChange={(e) => setScene(e.target.value)}
+                maxLength={2000}
               />
             </label>
-          </div>
-          <label>
-            排除细节
-            <input
-              value={negative}
-              onChange={(e) => setNegative(e.target.value)}
-              maxLength={4000}
+            <label>
+              关联日程或活动
+              <select
+                value={activity}
+                onChange={(e) => setActivity(e.target.value)}
+              >
+                <option value="">自由拍照</option>
+                {activities.items
+                  .filter((item) => item.state !== "cancelled")
+                  .map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.title}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              此次服装
+              <select
+                value={outfit}
+                onChange={(e) => setOutfit(e.target.value)}
+              >
+                <option value="">沿用当前穿搭</option>
+                {outfits.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.description}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              形象参考或原图续作
+              <select
+                value={reference}
+                onChange={(e) => setReference(e.target.value)}
+              >
+                <option value="">新图创作</option>
+                {album.items
+                  .filter((row) => row.state === "available")
+                  .map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.caption}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              姿态与动作
+              <input
+                value={pose}
+                onChange={(e) => setPose(e.target.value)}
+                maxLength={2000}
+                placeholder="自然站立、坐在窗边阅读等"
+              />
+            </label>
+            <label>
+              镜头与构图
+              <input
+                value={camera}
+                onChange={(e) => setCamera(e.target.value)}
+                maxLength={2000}
+                placeholder="全身、半身、特写等"
+              />
+            </label>
+            <label>
+              补充细节
+              <input
+                value={positive}
+                onChange={(e) => setPositive(e.target.value)}
+                maxLength={2000}
+              />
+            </label>
+            <ImageDimensions
+              width={width}
+              height={height}
+              onChange={(w, h) => {
+                setWidth(w);
+                setHeight(h);
+              }}
             />
-          </label>
-          <label className="life-check">
-            <input
-              type="checkbox"
-              checked={assist}
-              onChange={(e) => setAssist(e.target.checked)}
-            />
-            使用角色模型转译拍摄提示词
-          </label>
-          <button
-            type="button"
-            className="button"
-            disabled={previewBusy}
-            onClick={() => {
-              const control = new AbortController();
-              previewRequest.current?.abort();
-              previewRequest.current = control;
-              setPreviewBusy(true);
-              setPreviewError("");
-              void compileComfy(
-                access,
-                intent,
-                { width, height, steps },
-                assist,
-                control.signal,
-              )
-                .then((result) => {
-                  if (!control.signal.aborted) setPreview(result);
-                })
-                .catch((cause) => {
-                  if (!control.signal.aborted)
-                    setPreviewError(readFailure(cause));
-                })
-                .finally(() => {
-                  if (!control.signal.aborted) setPreviewBusy(false);
-                });
-            }}
-          >
-            {previewBusy ? "正在编译…" : "预览本次提示词与节点"}
-          </button>
-          <button className="button primary" disabled={action.busy}>
-            提交{reference ? "原图续作" : "创作"}
-          </button>
-        </form>
+            <div className="life-form-row">
+              <label>
+                步数
+                <input
+                  type="number"
+                  min={1}
+                  max={150}
+                  value={steps}
+                  onChange={(e) => setSteps(Number(e.target.value))}
+                />
+              </label>
+            </div>
+            <label>
+              排除细节
+              <input
+                value={negative}
+                onChange={(e) => setNegative(e.target.value)}
+                maxLength={4000}
+              />
+            </label>
+            <label className="life-check">
+              <input
+                type="checkbox"
+                checked={assist}
+                onChange={(e) => setAssist(e.target.checked)}
+              />
+              使用角色模型转译拍摄提示词
+            </label>
+            <button
+              type="button"
+              className="button"
+              disabled={previewBusy}
+              onClick={() => {
+                const control = new AbortController();
+                previewRequest.current?.abort();
+                previewRequest.current = control;
+                setPreviewBusy(true);
+                setPreviewError("");
+                void compileComfy(
+                  access,
+                  intent,
+                  { width, height, steps },
+                  assist,
+                  control.signal,
+                )
+                  .then((result) => {
+                    if (!control.signal.aborted) setPreview(result);
+                  })
+                  .catch((cause) => {
+                    if (!control.signal.aborted)
+                      setPreviewError(readFailure(cause));
+                  })
+                  .finally(() => {
+                    if (!control.signal.aborted) setPreviewBusy(false);
+                  });
+              }}
+            >
+              {previewBusy ? "正在编译…" : "预览本次提示词与节点"}
+            </button>
+            <button className="button primary" disabled={action.busy}>
+              提交{reference ? "原图续作" : "创作"}
+            </button>
+          </form>
+        </DetailCard>
         {previewError && (
           <p role="alert" className="error-text">
             {previewError}

@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useEffect, useState, type FormEvent } from "react";
 import { credentialStatus } from "./api";
 import type {
@@ -81,12 +82,11 @@ export function SkillConnection({
       <p className="muted">
         连接支持插件调用的 GSCore HTTP 服务，查询游戏攻略与配队资料。
       </p>
-      <details>
-        <summary>GSCore 服务要求</summary>
+      <DetailCard title="GSCore 服务要求">
         <p>
           当前已检查的实例接口未启用，仍需服务端兼容性验证。服务必须能完成插件调用；保存地址不代表已连接。
         </p>
-      </details>
+      </DetailCard>
       <label>
         服务地址
         <input

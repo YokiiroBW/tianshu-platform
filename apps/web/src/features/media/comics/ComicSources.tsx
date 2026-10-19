@@ -1,3 +1,4 @@
+import { DetailCard } from "../../../components/DetailCard";
 import { useCallback, useEffect, useState } from "react";
 import type { Kind, Media, Source } from "./types";
 import { timestamp, word } from "../wording";
@@ -271,8 +272,10 @@ export function ComicSources({
           : "自动维护尚未启用或已暂停"}
         {view ? ` · ${view.installed_count} 个插件已安装` : ""}
       </p>
-      <details className="media-card comic-extension-details">
-        <summary>插件仓库与每日维护</summary>
+      <DetailCard
+        title="插件仓库与每日维护"
+        className="media-card comic-extension-details"
+      >
         <section className="media-card">
           <div className="comic-heading">
             <h3>扩展仓库与自动更新</h3>
@@ -386,7 +389,7 @@ export function ComicSources({
             </button>
           </div>
         </section>
-      </details>
+      </DetailCard>
     </div>
   );
 }

@@ -68,7 +68,12 @@ export function BookDetail({
     ? alternatives
     : [current, ...alternatives];
   return (
-    <Drawer title={current.metadata.title} open onClose={onClose}>
+    <Drawer
+      variant="card"
+      title={current.metadata.title}
+      open
+      onClose={onClose}
+    >
       <div className="book-detail">
         <p className="muted">
           {current.metadata.author || "作者未提供"} · {current.source_name}

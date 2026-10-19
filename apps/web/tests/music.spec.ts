@@ -325,9 +325,19 @@ async function musicFixture(page: Page, connected = true) {
   return state;
 }
 
+async function openCard(page: Page, name: string) {
+  if (!(await page.getByRole("dialog", { name, exact: true }).isVisible()))
+    await page.getByRole("button", { name, exact: true }).click();
+}
+
 async function subscribe(page: Page) {
+  await openCard(page, "添加音乐订阅");
   await page.getByRole("button", { name: "读取账号歌单", exact: true }).click();
   await page.getByRole("button", { name: "订阅歌单", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "已订阅", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
   await expect(
     page
       .getByRole("region", { name: "本地歌单", exact: true })
@@ -345,6 +355,7 @@ test("delete music subscription closes its detail and permits resubscription", a
   await expect(
     page.getByRole("region", { name: "歌单歌曲", exact: true }),
   ).toBeVisible();
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "删除订阅", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "删除订阅", exact: true }),
@@ -365,6 +376,7 @@ test("Navidrome connection creates and controls one shared-file playlist", async
 }, info) => {
   const state = await musicFixture(page);
   await page.goto("/#/subscriptions/5");
+  await openCard(page, "连接 Navidrome");
   await page
     .getByLabel("Navidrome 地址", { exact: true })
     .fill("http://127.0.0.1:4533");
@@ -393,6 +405,7 @@ test("Navidrome connection creates and controls one shared-file playlist", async
   await expect(page.getByLabel("Navidrome 密码", { exact: true })).toHaveValue(
     "",
   );
+  await page.keyboard.press("Escape");
   await subscribe(page);
   const playlist = page.getByRole("region", {
     name: "夜晚的收藏的 Navidrome 歌单",
@@ -409,9 +422,14 @@ test("Navidrome connection creates and controls one shared-file playlist", async
   await playlist.getByText("查看待补齐歌曲（1 首）", { exact: true }).click();
   await expect(playlist).toContainText("等待 Navidrome 入库");
   state.view.navidrome!.playlists[0].problems[0].code = "verification_pending";
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "刷新音乐状态", exact: true }).click();
+  await playlist
+    .getByRole("button", { name: "查看待补齐歌曲（1 首）", exact: true })
+    .click();
   await expect(playlist).toContainText("暂时无法复核，保留上次确认的歌曲");
   expect(state.view.navidrome!.playlists[0].public).toBe(false);
+  await page.keyboard.press("Escape");
   await playlist
     .getByRole("button", { name: "暂停 Navidrome 自动同步", exact: true })
     .click();
@@ -457,6 +475,7 @@ test("music entry offers account login and audio archiving", async ({
     page.getByText("尚未连接音乐账号。", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText(/整理标签、封面和歌词/)).toBeVisible();
+  await openCard(page, "添加音乐订阅");
   await expect(
     page.getByRole("button", { name: "读取账号歌单", exact: true }),
   ).toBeDisabled();
@@ -488,6 +507,7 @@ test("music unified providers and library use automatic routing without priority
 }, info) => {
   const state = await musicFixture(page, false);
   await page.goto("/#/subscriptions/5");
+  await openCard(page, "连接音乐账号");
   await page
     .getByRole("combobox", { name: "音乐平台", exact: true })
     .selectOption("qq");
@@ -501,6 +521,7 @@ test("music unified providers and library use automatic routing without priority
   expect(
     state.calls.find((call) => call.operation === "accounts/qr/start")?.body,
   ).toEqual({ provider: "qq", login_type: "wx" });
+  await openCard(page, "连接音乐账号");
   await page
     .getByRole("combobox", { name: "音乐平台", exact: true })
     .selectOption("kugou");
@@ -508,6 +529,7 @@ test("music unified providers and library use automatic routing without priority
   await expect(
     page.getByRole("button", { name: "酷狗音乐扫码登录", exact: true }),
   ).toBeVisible();
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "查看统一曲库", exact: true }).click();
   await expect(
     page.getByText("1 首歌曲 · 3 个来源 · 1 份已登记音频", { exact: true }),
@@ -545,12 +567,15 @@ test("music download policy, manual queue and ordered exports", async ({
   await page.getByLabel("同步后自动下载新增歌曲", { exact: true }).check();
   await page.getByRole("button", { name: "保存下载设置", exact: true }).click();
   await expect(
-    page.getByText("下载设置已保存，歌单已加入队列。", { exact: true }),
+    page
+      .getByRole("dialog")
+      .getByText("下载设置已保存，歌单已加入队列。", { exact: true }),
   ).toBeVisible();
   expect(state.view.playlists[0].quality).toEqual({
     level: "hires",
     allow_fallback: false,
   });
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "下载歌单", exact: true }).click();
   await expect(page.getByText(/已加入下载队列 3 首/)).toBeVisible();
   await page
@@ -690,6 +715,7 @@ test("mixed download list renders audio evidence without video editing controls"
   await expect(
     detail.getByText("QQ 音乐：标准", { exact: true }),
   ).toBeVisible();
+  await page.keyboard.press("Escape");
   await detail.getByText("其他来源的处理结果", { exact: true }).click();
   await expect(
     detail.getByText(/酷狗音乐：此加密版本需要官方客户端的文件密钥/),
@@ -752,6 +778,7 @@ test("NetEase QR shows waiting then connected and survives reload", async ({
 }) => {
   const state = await musicFixture(page, false);
   await page.goto("/#/subscriptions/5");
+  await openCard(page, "连接音乐账号");
   await page
     .getByRole("button", { name: "网易云音乐扫码登录", exact: true })
     .click();
@@ -775,6 +802,7 @@ test("expired NetEase QR can be regenerated", async ({ page }) => {
   const state = await musicFixture(page, false);
   state.qrState = "expired";
   await page.goto("/#/subscriptions/5");
+  await openCard(page, "连接音乐账号");
   await page
     .getByRole("button", { name: "网易云音乐扫码登录", exact: true })
     .click();
@@ -792,6 +820,7 @@ test("playlist selection keeps source order and supports pause and resume", asyn
 }, info) => {
   const state = await musicFixture(page);
   await page.goto("/#/subscriptions/5");
+  await openCard(page, "添加音乐订阅");
   await page
     .getByRole("combobox", { name: "同步周期", exact: true })
     .selectOption("21600");
@@ -811,6 +840,7 @@ test("playlist selection keeps source order and supports pause and resume", asyn
   await expect(
     table.getByRole("cell", { name: "未下载", exact: true }),
   ).toHaveCount(4);
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "暂停同步", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "立即同步", exact: true }),
@@ -835,6 +865,7 @@ test("music directory settings inspect a sample and preserve configured layout",
 }) => {
   const state = await musicFixture(page);
   await page.goto("/#/subscriptions/5");
+  await openCard(page, "音乐存档设置");
   await page.getByLabel("音乐目录", { exact: true }).fill("/synthetic/music");
   await page.getByRole("button", { name: "查看目录结构", exact: true }).click();
   await expect(
@@ -842,10 +873,13 @@ test("music directory settings inspect a sample and preserve configured layout",
   ).toBeVisible();
   await page.getByRole("button", { name: "保存存储设置", exact: true }).click();
   await expect(
-    page.getByText("音乐目录和整理方式已保存。", { exact: true }),
+    page
+      .getByRole("dialog")
+      .getByText("音乐目录和整理方式已保存。", { exact: true }),
   ).toBeVisible();
   expect(state.view.settings.directory).toBe("/synthetic/music");
   await page.reload();
+  await openCard(page, "音乐存档设置");
   await expect(page.getByLabel("音乐目录", { exact: true })).toHaveValue(
     "/synthetic/music",
   );
@@ -909,13 +943,19 @@ test("music maintenance keeps 12 hour sync separate from weekly checks and expos
   await page.goto("/#/subscriptions/5");
   const panel = page.getByRole("region", { name: "音乐自动维护" });
   await expect(panel).toContainText("每 7 天");
+  await openCard(page, "音乐自动维护设置");
   await expect(page.getByLabel("歌单自动同步周期")).toHaveValue("43200");
+  await page.keyboard.press("Escape");
+  await openCard(page, "添加音乐订阅");
   await expect(
     page.getByRole("combobox", { name: "同步周期", exact: true }),
   ).toHaveValue("43200");
+  await page.keyboard.press("Escape");
   await panel.getByText("请求节流与最近检查", { exact: true }).click();
   await expect(panel).toContainText("冷却至");
   await expect(panel).toContainText("合成升级歌曲");
+  await page.keyboard.press("Escape");
+  await openCard(page, "音乐自动维护设置");
   await panel.getByRole("checkbox").uncheck();
   await panel.getByRole("button", { name: "保存维护设置" }).click();
   await expect(panel).toContainText("已暂停");
@@ -929,6 +969,7 @@ test("music maintenance keeps 12 hour sync separate from weekly checks and expos
   });
   expect(saved.body.client_id).toMatch(/^[0-9a-f-]{36}$/);
   await page.reload();
+  await openCard(page, "音乐自动维护设置");
   await expect(panel.getByRole("checkbox")).not.toBeChecked();
   expect(
     await page.evaluate(

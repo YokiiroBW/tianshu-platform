@@ -1,3 +1,4 @@
+import { Drawer } from "../../../components/Drawer";
 import { useCallback, useEffect, useState } from "react";
 import { PanelsTopLeft, RefreshCw, Trash2 } from "lucide-react";
 import { StatePanel } from "../../../components/StatePanel";
@@ -137,15 +138,32 @@ export function ComicsPanel({ media }: { media: Media }) {
         ))}
       </nav>
       {selected && (
-        <ComicDetail
-          key={selected.comic_id}
-          comic={selected}
-          media={media}
-          mutate={mutate}
-          onBack={() => setSelected(undefined)}
-        />
+        <Drawer
+          title={selected.metadata.title}
+          variant="card"
+          open={true}
+          onClose={() => setSelected(undefined)}
+        >
+          {media.error && (
+            <p className="media-message media-warning" role="alert">
+              {media.error}
+            </p>
+          )}
+          {media.notice && (
+            <p className="media-message" role="status">
+              {media.notice}
+            </p>
+          )}
+          <ComicDetail
+            key={selected.comic_id}
+            comic={selected}
+            media={media}
+            mutate={mutate}
+            onBack={() => setSelected(undefined)}
+          />
+        </Drawer>
       )}
-      <div hidden={!!selected}>
+      <div>
         {["search", "subscriptions", "library", "sources"].includes(tab) && (
           <div className="comic-controls">
             <label>
