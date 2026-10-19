@@ -22,6 +22,12 @@ async function login(page: Page) {
 async function register(page: Page, id: string, label: string) {
   await page.goto("/#/settings/11");
   await page.getByLabel("已配置的 SSH 节点").selectOption(id);
+  // The fixture is shared by this serial suite. Bind setup to a fresh read;
+  // a prior save's notice can arrive before its background view reload.
+  await page.getByRole("button", { name: "重新读取设置", exact: true }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "已重新读取节点设置" }),
+  ).toBeVisible();
   await page.getByLabel("显示名称").fill(label);
   await page.getByLabel("启用后台采集").check();
   await page.getByRole("button", { name: "保存节点", exact: true }).click();
