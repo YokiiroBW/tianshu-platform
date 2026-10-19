@@ -488,6 +488,61 @@ class InfrastructureControlTests(unittest.IsolatedAsyncioTestCase):
 
 
 class InfrastructureControlContractTests(unittest.TestCase):
+    def test_observed_command_does_not_hide_a_worker_still_owning_the_target(self):
+        from types import SimpleNamespace
+        from services.platform.tasks import Tasks
+
+        control = SimpleNamespace(configured=True, runtime=SimpleNamespace(current=lambda *_: True))
+        tasks = Tasks(SimpleNamespace(infrastructure=SimpleNamespace(control=control)), None)
+        document = {
+            "node_id": "fixture-nas",
+            "connection_revision": 1,
+            "action": "stack.restart",
+            "stack_id": STACK,
+            "container_id": None,
+            "title": "重启 Compose 栈",
+            "target_label": "fixture-web",
+            "state": "observed",
+            "settled": False,
+            "stage": "complete",
+            "acceptance": "submitted",
+            "reason_codes": [],
+            "result": {"command_state": "succeeded", "execution_active": True},
+        }
+        task = tasks._task(
+            {
+                "task_id": "infra-control:" + str(uuid.uuid4()),
+                "state": "observed",
+                "created_at": time.time(),
+                "updated_at": time.time(),
+                "document": document,
+            }
+        )
+        self.assertTrue(task["pending"])
+        self.assertFalse(task["settled"])
+        self.assertTrue(task["evidence"]["result"]["execution_active"])
+
+    def test_unknown_command_keeps_absent_runtime_mixed_health_and_unknown_worker(self):
+        from services.platform.infrastructure.control_projection import receipt
+
+        projected = receipt(
+            {
+                "operation_id": "infra-control:" + str(uuid.uuid4()),
+                "state": "unknown",
+                "phase": "unknown",
+                "execution_active": None,
+                "version_id": None,
+                "reason_codes": [],
+                "command": {"state": "unknown", "reason_codes": []},
+                "runtime": {"state": "absent", "health": "mixed", "containers": []},
+            }
+        )
+        self.assertEqual(projected["state"], "unknown")
+        self.assertFalse(projected["settled"])
+        self.assertEqual(projected["result"]["runtime_state"], "absent")
+        self.assertEqual(projected["result"]["health_state"], "mixed")
+        self.assertIsNone(projected["result"]["execution_active"])
+
     def test_configuration_is_optional_and_schema_is_pinned(self):
         from services.platform.infrastructure.config import configuration as validate
 

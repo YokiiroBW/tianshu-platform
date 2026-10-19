@@ -79,10 +79,8 @@ class ControlClient:
             )
         for row in plan["images"]:
             require(
-                all(
-                    isinstance(row.get(name), str)
-                    for name in ("service", "from", "to", "pull_policy")
-                )
+                all(isinstance(row.get(name), str) for name in ("service", "from", "to"))
+                and (row.get("pull_policy") is None or isinstance(row["pull_policy"], str))
                 and type(row.get("pull")) is bool
                 and (
                     row.get("current_image_id") is None or isinstance(row["current_image_id"], str)
