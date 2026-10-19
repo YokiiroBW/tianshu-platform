@@ -224,6 +224,14 @@ class ExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[-1]["id"], "500")
         self.assertEqual(engine.query.await_args_list[1].args[1], {"offset": 500})
 
+    async def test_package_lookup_never_accepts_another_extension(self):
+        engine = Suwayomi(AsyncMock())
+        engine.query = AsyncMock(return_value={"extensions": {"nodes": [{"pkgName": "wrong"}]}})
+        with self.assertRaises(Fault) as raised:
+            await engine.extension("wanted")
+        self.assertEqual(raised.exception.code, "comic_engine_invalid_response")
+        self.assertIn("filter:{pkgName:{equalTo:$pkg}}", engine.query.await_args.args[0])
+
     async def test_aggregate_search_does_not_silently_drop_sources_after_100(self):
         self.comics.sources.list = AsyncMock(
             return_value=[

@@ -161,12 +161,18 @@ class Suwayomi:
 
     async def extension(self, package):
         value = await self.query(
-            "query($pkg:String!){extensions(first:2,condition:{pkgName:$pkg}){nodes{"
+            "query($pkg:String!){extensions(first:2,filter:{pkgName:{equalTo:$pkg}}){nodes{"
             + EXTENSION_FIELDS
             + "}}}",
             {"pkg": package},
         )
-        return next(iter(value["extensions"]["nodes"]), None)
+        rows = value["extensions"]["nodes"]
+        require(
+            all(row["pkgName"] == package for row in rows),
+            "comic_engine_invalid_response",
+            503,
+        )
+        return next(iter(rows), None)
 
     async def extension_stores(self):
         return await self.nodes("extensionStores", "name indexUrl isLegacy")

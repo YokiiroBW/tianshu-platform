@@ -138,7 +138,9 @@ class ComicSite:
             rows = [
                 r
                 for r in self.extensions.values()
-                if not variables.get("pkg") or r["pkgName"] == variables["pkg"]
+                if not variables.get("pkg")
+                or "filter:{pkgName:{equalTo:$pkg}}" not in query
+                or r["pkgName"] == variables["pkg"]
             ]
             data = {"extensions": {"nodes": rows, "totalCount": len(rows)}}
         elif "sources(first" in query:
