@@ -645,6 +645,7 @@ class WebConsole:
                             if request.path.startswith(
                                 (LIFE_PREFIX + "runtime/", "/api/web/content/")
                             )
+                            or request.path == INFRASTRUCTURE_PREFIX + "control/plan"
                             else 262144
                             if request.path.startswith(PERSONAS_PREFIX)
                             else 16384

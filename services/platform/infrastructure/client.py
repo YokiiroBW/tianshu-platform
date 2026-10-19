@@ -84,7 +84,12 @@ class Executor:
             "params": params or {},
             "timeout_ms": self.timeout_ms,
         }
-        self.contract.check("request", request)
+        return await self.exchange(request, self.contract, self._semantics)
+
+    async def exchange(self, request, contract, semantics, *, executor=None):
+        """Share bounded transport and process ownership across the two versioned protocols."""
+        contract.check("request", request)
+        executor = executor or {"command": self.command, "directory": self.directory}
         environment = {
             key: value
             for key, value in os.environ.items()
@@ -92,7 +97,7 @@ class Executor:
             in {"PATH", "SYSTEMROOT", "WINDIR", "PROGRAMDATA", "TEMP", "TMP", "LANG", "LC_ALL"}
         }
         process = tree = None
-        command = self.command
+        command = executor["command"]
         if sys.platform == "linux":
             command = [
                 sys.executable,
@@ -107,7 +112,7 @@ class Executor:
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
-                cwd=self.directory,
+                cwd=executor["directory"],
                 env=environment,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -154,15 +159,15 @@ class Executor:
             asyncio.create_task(process.wait()),
         ]
         try:
-            async with asyncio.timeout(self.timeout_ms / 1000 + 1):
+            async with asyncio.timeout(request["timeout_ms"] / 1000 + 1):
                 raw, _, _, exit_code = await asyncio.gather(*readers)
             require(exit_code == 0, "infrastructure_executor_failed", 502)
             try:
                 response = loads(raw)
             except Fault:
                 raise Fault("infrastructure_response_invalid", 502) from None
-            self.contract.check("response", response)
-            self._semantics(request, response)
+            contract.check("response", response)
+            semantics(request, response)
             return response
         except TimeoutError:
             raise Fault("infrastructure_executor_timeout", 504) from None

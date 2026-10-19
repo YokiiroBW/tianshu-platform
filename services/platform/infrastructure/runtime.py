@@ -21,7 +21,8 @@ MAX_CACHED_BYTES = 16 * 1024**2
 class Infrastructure:
     def __init__(self, settings, *, clock=time.time, local):
         self.config = configuration(settings)
-        self.clock, self.local = clock, local
+        self.clock, self.run_local = clock, local
+        self.pending_local = set()
         self.started = False
         self.pump = None
         self.wake = asyncio.Event()
@@ -36,6 +37,20 @@ class Infrastructure:
             self.catalog = ExternalCatalog(self.config["directory"])
             self.repo = Repository(settings["database_path"] + ".infrastructure.sqlite")
             self.executor = Executor(self.config)
+        from .control import Control
+
+        self.control = Control(self)
+
+    async def local(self, operation, *args, **kwargs):
+        # LocalWork keeps a running SQLite transaction alive when its caller is cancelled.
+        # Keep ownership of that completion too, so close does not return with open files.
+        task = asyncio.create_task(self.run_local(operation, *args, **kwargs))
+        self.pending_local.add(task)
+        task.add_done_callback(self.pending_local.discard)
+        task.add_done_callback(
+            lambda result: result.exception() if not result.cancelled() else None
+        )
+        return await asyncio.shield(task)
 
     def definitions(self):
         if self.catalog is None:
@@ -63,10 +78,12 @@ class Infrastructure:
         if self.started or self.config is None:
             return
         self.started = True
+        await self.control.start()
         self.pump = asyncio.create_task(self._pump(), name="infrastructure-pump")
 
     async def close(self):
         self.started = False
+        await self.control.close()
         tasks = [item for item in [self.pump, self.catalog_job] if item]
         tasks.extend(item[1] for item in self.jobs.values())
         tasks.extend(self.log_jobs.values())
@@ -75,6 +92,7 @@ class Infrastructure:
         await asyncio.gather(*tasks, return_exceptions=True)
         if self.executor:
             await self.executor.close()
+        await asyncio.gather(*tuple(self.pending_local), return_exceptions=True)
         self.jobs.clear()
         self.log_jobs.clear()
 
@@ -151,6 +169,7 @@ class Infrastructure:
         )
 
     async def changed(self, node_id):
+        await self.control.changed(node_id)
         previous = self.jobs.pop(node_id, None)
         tasks = [previous[1]] if previous else []
         tasks.extend(task for key, task in self.log_jobs.items() if key[0] == node_id)
