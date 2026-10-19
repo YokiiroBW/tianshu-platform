@@ -274,12 +274,21 @@ class WebComics:
             return result
         if operation == "subscriptions/control":
             action = body.get("action")
-            require(action in {"pause", "resume", "interval"}, "invalid_input", 400)
+            require(action in {"pause", "resume", "interval", "remove"}, "invalid_input", 400)
 
             def subscription_control(db):
                 comic_id = comics.catalog.comic(body.get("comic_id"), db)["comic_id"]
                 current = repo._document(db, "comic_subscription", comic_id)
-                require(current, "not_found", 404)
+                require(current and current.get("state") != "removed", "not_found", 404)
+                if action == "remove":
+                    repo.remove_subscription(
+                        "comic_subscription",
+                        comic_id,
+                        body.get("expected_revision"),
+                        "comics:" + comic_id,
+                        db=db,
+                    )
+                    return {"removed": True}
                 interval = body.get("interval_seconds", current["interval_seconds"])
                 require(type(interval) is int and 3600 <= interval <= 2592000, "invalid_input", 400)
                 state = (

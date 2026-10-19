@@ -259,6 +259,15 @@ test("book subscription in existing shell searches, previews, subscribes, publis
   await expect(
     page.getByRole("heading", { name: "书籍订阅", exact: true, level: 2 }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "我的订阅", exact: true }).click();
+  await page.getByRole("button", { name: "删除订阅", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "还没有订阅书籍", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "本地书库", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "山海之间·校订", exact: true }),
+  ).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -298,21 +307,17 @@ test("automatic source selection repairs a stale unavailable source and preserve
     .locator("form.book-search-form")
     .getByRole("button", { name: "聚合搜索" })
     .click();
-  const card = page
-    .locator(".book-card")
-    .filter({
-      has: page.getByRole("heading", { name: "换源验证", exact: true }),
-    });
+  const card = page.locator(".book-card").filter({
+    has: page.getByRole("heading", { name: "换源验证", exact: true }),
+  });
   await card.getByRole("button", { name: "预览与资料" }).click();
   const drawer = page.getByRole("dialog");
   await drawer.getByLabel("预览来源").selectOption({ label: "自动优选·主源" });
   await expect(drawer.locator(".book-prose")).toContainText("合成正文");
   await drawer.getByRole("button", { name: "订阅并下载" }).click();
-  const subscription = page
-    .locator(".book-subscription")
-    .filter({
-      has: page.getByRole("heading", { name: "换源验证", exact: true }),
-    });
+  const subscription = page.locator(".book-subscription").filter({
+    has: page.getByRole("heading", { name: "换源验证", exact: true }),
+  });
   await expect
     .poll(
       async () => {

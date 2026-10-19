@@ -1,4 +1,4 @@
-import { Pause, Play, RefreshCw, BookOpen } from "lucide-react";
+import { Pause, Play, RefreshCw, BookOpen, Trash2 } from "lucide-react";
 import type { Book, BookSubscription } from "./types";
 import { timestamp } from "../wording";
 import { bookCode } from "./presentation";
@@ -134,12 +134,13 @@ export function BookSubscriptions({
                 disabled={busy}
                 onClick={() => onControl(subscription, "remove")}
               >
-                停止订阅
+                <Trash2 aria-hidden="true" />
+                删除订阅
               </button>
             </div>
             <BookSourceStatus book={book} />
             <p className="muted book-fineprint">
-              自动优选可读、更新领先的同书来源；已有章节继续复用。暂停或停止订阅保留文件。
+              自动优选可读、更新领先的同书来源；已有章节继续复用。删除订阅保留文件、阅读进度和已入队任务。
             </p>
           </article>
         );

@@ -92,6 +92,8 @@ class Subscriptions:
             400,
         )
         current = self.media.repo._document(db, "subscription", identity) if identity else None
+        if current:
+            require(current.get("state") != "removed", "not_found", 404)
         if identity and require_current:
             require(current is not None, "not_found", 404)
         if current:
@@ -209,9 +211,17 @@ class Subscriptions:
             "invalid_input",
             400,
         )
-        require(body["action"] in {"pause", "resume"}, "invalid_input", 400)
+        require(body["action"] in {"pause", "resume", "remove"}, "invalid_input", 400)
         current = self.media.repo._document(db, "subscription", body["subscription_id"])
-        require(current is not None, "not_found", 404)
+        require(current and current.get("state") != "removed", "not_found", 404)
+        if body["action"] == "remove":
+            return self.media.repo.remove_subscription(
+                "subscription",
+                current["subscription_id"],
+                body["expected_revision"],
+                current["subscription_id"],
+                db=db,
+            )
         if body["action"] == "resume" and current["account_id"] is not None:
             account = self.media.repo._document(db, "account", current["account_id"])
             require(account and account["state"] == "ready", "auth_required", 409)

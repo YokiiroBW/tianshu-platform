@@ -222,15 +222,19 @@ class WebBooks:
 
             def subscription_control(db):
                 current = repo._document(db, "book_subscription", body["book_id"])
+                require(current and current.get("state") != "removed", "not_found", 404)
                 require(
                     current and current["revision"] == body.get("expected_revision"),
                     "version_conflict",
                     409,
                 )
                 if body["action"] == "remove":
-                    db.execute(
-                        "DELETE FROM documents WHERE kind='book_subscription' AND id=?",
-                        (body["book_id"],),
+                    repo.remove_subscription(
+                        "book_subscription",
+                        body["book_id"],
+                        body["expected_revision"],
+                        "books:" + body["book_id"],
+                        db=db,
                     )
                     return {"removed": True}
                 interval = body.get("interval_seconds", current["interval_seconds"])

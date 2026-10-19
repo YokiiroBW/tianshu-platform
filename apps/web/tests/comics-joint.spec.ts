@@ -50,6 +50,16 @@ test("automatic English and Japanese aliases select a Chinese version and keep t
     path: info.outputPath("chinese-version-subscription.png"),
     fullPage: true,
   });
+  await page.getByRole("button", { name: "删除订阅", exact: true }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "订阅已删除" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "还没有订阅", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("固定版本：中文 · 测试版本", { exact: true }),
+  ).toHaveCount(0);
 });
 
 test("comic search, page preview, subscription, lossless folder import and reader receipts", async ({

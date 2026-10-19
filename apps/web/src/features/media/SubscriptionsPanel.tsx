@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Plus, RefreshCw } from "lucide-react";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { StatePanel } from "../../components/StatePanel";
 import { StatusRail } from "../../components/StatusRail";
 import { SubscriptionEditor } from "./SubscriptionEditor";
@@ -77,8 +77,10 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
     setEditing(null);
     requestAnimationFrame(() => trigger.current?.focus());
   };
-  const control = async (item: Subscription) => {
-    const action = item.state === "active" ? "pause" : "resume";
+  const control = async (
+    item: Subscription,
+    action = item.state === "active" ? "pause" : "resume",
+  ) => {
     const result = await media.command("subscriptions/control", {
       subscription_id: item.subscription_id,
       expected_revision: item.revision,
@@ -86,9 +88,11 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
     });
     if (result)
       media.setNotice(
-        action === "pause"
-          ? "订阅已暂停，已入队任务保留；取消任务请到下载任务。"
-          : "订阅已恢复，后续扫描将按当前规则处理。",
+        action === "remove"
+          ? "订阅已删除，已入队任务和已归档文件保留。"
+          : action === "pause"
+            ? "订阅已暂停，已入队任务保留；取消任务请到下载任务。"
+            : "订阅已恢复，后续扫描将按当前规则处理。",
       );
   };
   const scan = async (item: Subscription, recompute: boolean) => {
@@ -107,7 +111,7 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
         <div>
           <h2>订阅你关注的来源</h2>
           <p className="muted">
-            以来源成员判断新增，规则变更默认仅影响以后的扫描。
+            以来源成员判断新增，规则变更默认仅影响以后的扫描。删除订阅保留文件和已入队任务。
           </p>
         </div>
         <button
@@ -337,6 +341,14 @@ export function SubscriptionsPanel({ media }: { media: MediaController }) {
                 onClick={() => void scan(item, true)}
               >
                 按当前规则重算历史
+              </button>
+              <button
+                className="button"
+                disabled={!!media.busy}
+                onClick={() => void control(item, "remove")}
+              >
+                <Trash2 aria-hidden="true" />
+                删除订阅
               </button>
             </div>
           </article>

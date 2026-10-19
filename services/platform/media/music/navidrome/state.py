@@ -46,6 +46,20 @@ def mark_dirty(repo, db, playlist_id=None):
             )
 
 
+def pause_playlist(repo, db, playlist_id):
+    """Stop future publication without deleting the already published remote playlist."""
+    for raw in db.execute("SELECT body FROM documents WHERE kind=?", (LINK,)).fetchall():
+        row = json.loads(raw[0])
+        if row["playlist_id"] == playlist_id and row["status"] not in {"deleting", "deleted"}:
+            repo.put(
+                LINK,
+                row["link_id"],
+                {**row, "auto_sync": False, "status": "paused", "code": "paused"},
+                row["revision"],
+                db=db,
+            )
+
+
 class State:
     def __init__(self, music):
         self.music, self.repo = music, music.media.repo
@@ -167,7 +181,7 @@ class State:
         connection = self.repo._document(db, CONNECTION, "server")
         require(connection and connection["enabled"], "navidrome_not_configured", 409)
         playlist = self.repo._document(db, "music_playlist", body["playlist_id"])
-        require(playlist is not None, "not_found", 404)
+        require(playlist and playlist.get("state") != "removed", "not_found", 404)
         require(
             type(body["public"]) is bool and type(body["auto_sync"]) is bool, "invalid_input", 400
         )

@@ -40,6 +40,9 @@ OVERVIEW_STATES = {
     "cancelled": ("cancelled",),
 }
 VISIBLE = "id NOT IN (SELECT id FROM documents WHERE kind='deleted_job')"
+SUBSCRIPTIONS = frozenset(
+    {"subscription", "book_subscription", "comic_subscription", "music_playlist"}
+)
 
 
 class Repository:
@@ -104,12 +107,32 @@ class Repository:
 
     def list(self, kind):
         with self.transaction() as db:
-            return [
+            rows = [
                 json.loads(row[0])
                 for row in db.execute(
                     "SELECT body FROM documents WHERE kind=? ORDER BY id", (kind,)
                 )
             ]
+            # Keep retired snapshots for job references and monotonically increasing revisions.
+            return [
+                row for row in rows if kind not in SUBSCRIPTIONS or row.get("state") != "removed"
+            ]
+
+    def remove_subscription(self, kind, identity, expected, scan_id, *, db, changes=None):
+        require(kind in SUBSCRIPTIONS, "invalid_input", 400)
+        require(type(expected) is int and expected > 0, "invalid_input", 400)
+        current = self._document(db, kind, identity)
+        require(current and current.get("state") != "removed", "not_found", 404)
+        result = self.put(
+            kind,
+            identity,
+            {**current, **(changes or {}), "state": "removed", "code": "subscription_removed"},
+            expected,
+            db=db,
+        )
+        # A scan that already fetched a remote catalogue must not commit after removal.
+        db.execute("DELETE FROM scan_leases WHERE id=?", (scan_id,))
+        return result
 
     def put(self, kind, identity, body, expected=None, *, db=None):
         if db is None:

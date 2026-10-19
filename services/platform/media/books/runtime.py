@@ -200,7 +200,7 @@ class Books:
 
     async def scan(self, identity):
         subscription = await self.media.local(self.repo.get, "book_subscription", identity)
-        require(subscription, "not_found", 404)
+        require(subscription and subscription.get("state") != "removed", "not_found", 404)
         owner = uuid.uuid4().hex
         generation = await self.media.local(self.repo.scan_claim, "books:" + identity, owner)
 
@@ -219,7 +219,13 @@ class Books:
                 with self.repo.transaction() as db:
                     self.repo.require_scan(db, "books:" + identity, owner, generation)
                     current = self.repo._document(db, "book_subscription", identity)
-                    require(current, "not_found", 404)
+                    require(
+                        current
+                        and current.get("state") != "removed"
+                        and current["revision"] == subscription["revision"],
+                        "version_conflict",
+                        409,
+                    )
                     job = self.catalog.enqueue(book, db=db, refresh=False)
                     updated = self.repo.put(
                         "book_subscription",
@@ -239,7 +245,11 @@ class Books:
             return result
         except Fault as error:
             current = await self.media.local(self.repo.get, "book_subscription", identity)
-            if current:
+            if (
+                current
+                and current.get("state") != "removed"
+                and current["revision"] == subscription["revision"]
+            ):
                 await self.media.local(
                     self.repo.put,
                     "book_subscription",

@@ -423,12 +423,13 @@ class SourceSelection:
             )
             for candidate in candidates:
                 donor = candidate["book"]
+                donor_subscription = await self.media.local(
+                    self.repo.get, "book_subscription", donor["book_id"]
+                )
                 if (
                     donor["book_id"] != identity
                     and not donor.get("artifact")
-                    and not await self.media.local(
-                        self.repo.get, "book_subscription", donor["book_id"]
-                    )
+                    and (not donor_subscription or donor_subscription.get("state") == "removed")
                 ):
                     await self.media.local(
                         self.repo.put, "book_source_alias", donor["book_id"], {"book_id": identity}

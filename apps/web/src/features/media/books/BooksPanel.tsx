@@ -559,7 +559,7 @@ export function BooksPanel({ media }: { media: MediaController }) {
                 ...(interval ? { interval_seconds: interval } : {}),
               },
               action === "remove"
-                ? "已停止追更，已下载文件和当前任务保留。"
+                ? "订阅已删除，已下载文件、阅读进度和当前任务保留。"
                 : "追更设置已更新。",
             );
           }}

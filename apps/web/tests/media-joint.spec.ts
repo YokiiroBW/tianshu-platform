@@ -217,6 +217,11 @@ test("actual media HTTP supports QR transitions, all source URLs, new members an
   await expect(
     favorite.getByRole("button", { name: "恢复订阅", exact: true }),
   ).toBeVisible();
+  await favorite.getByRole("button", { name: "删除订阅", exact: true }).click();
+  await expect(favorite).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: "订阅已删除" }),
+  ).toBeVisible();
   await selectMediaSection(page, "下载中心");
   await expect(
     page

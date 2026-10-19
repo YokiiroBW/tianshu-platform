@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Music2, RefreshCw } from "lucide-react";
+import { Music2, RefreshCw, Trash2 } from "lucide-react";
 import type { MediaController } from "../useMediaController";
 import { timestamp, word } from "../wording";
 import { MusicAccounts } from "./MusicAccounts";
@@ -357,6 +357,34 @@ export function MusicPanel({ media }: { media: MediaController }) {
                   }}
                 >
                   {item.state === "active" ? "暂停同步" : "恢复同步"}
+                </button>
+                <button
+                  className="button"
+                  disabled={!!media.busy || !!reading}
+                  onClick={async () => {
+                    if (
+                      await media.command("music/playlists/control", {
+                        playlist_id: item.playlist_id,
+                        expected_revision: item.revision,
+                        action: "remove",
+                      })
+                    ) {
+                      if (
+                        detailCursor.current?.playlist_id === item.playlist_id
+                      ) {
+                        detailCursor.current = null;
+                        media.cancel("music-detail");
+                        setDetail(null);
+                      }
+                      media.setNotice(
+                        "订阅已删除，后续同步和自动下载停止；已入队任务、音乐文件及已发布的 Navidrome 歌单保留。",
+                      );
+                      await refresh();
+                    }
+                  }}
+                >
+                  <Trash2 aria-hidden="true" />
+                  删除订阅
                 </button>
               </div>
             </div>

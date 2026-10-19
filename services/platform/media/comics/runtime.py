@@ -131,6 +131,7 @@ class Comics:
     async def scan(self, comic_id):
         subscription = await self.media.local(self.repo.get, "comic_subscription", comic_id)
         require(subscription, "not_found", 404)
+        require(subscription["state"] == "active", "comic_subscription_paused", 409)
         owner = uuid.uuid4().hex
         key = "comics:" + comic_id
         generation = await self.media.local(self.repo.scan_claim, key, owner)
@@ -149,7 +150,11 @@ class Comics:
                     self.repo.require_scan(db, key, owner, generation)
                     current = self.repo._document(db, "comic_subscription", comic_id)
                     require(
-                        current and current["state"] == "active", "comic_subscription_paused", 409
+                        current
+                        and current["state"] == "active"
+                        and current["revision"] == subscription["revision"],
+                        "comic_subscription_paused",
+                        409,
                     )
                     seen = set(current["seen"])
                     matching = eligible(comic, chapters, current)
@@ -192,7 +197,11 @@ class Comics:
                 with self.repo.transaction() as db:
                     self.repo.require_scan(db, key, owner, generation)
                     current = self.repo._document(db, "comic_subscription", comic_id)
-                    if current:
+                    if (
+                        current
+                        and current["state"] == "active"
+                        and current["revision"] == subscription["revision"]
+                    ):
                         self.repo.fact(
                             "comic_subscription",
                             comic_id,

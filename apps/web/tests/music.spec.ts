@@ -255,6 +255,10 @@ async function musicFixture(page: Page, connected = true) {
     if (operation === "playlists/control") {
       const playlist = state.view.playlists[0];
       expect(body.expected_revision).toBe(playlist.revision);
+      if (body.action === "remove") {
+        state.view.playlists = [];
+        return reply({ removed: true });
+      }
       playlist.state = body.action === "pause" ? "paused" : "active";
       playlist.revision++;
       return reply({ playlist });
@@ -330,6 +334,31 @@ async function subscribe(page: Page) {
       .getByText("夜晚的收藏", { exact: true }),
   ).toBeVisible();
 }
+
+test("delete music subscription closes its detail and permits resubscription", async ({
+  page,
+}) => {
+  const state = await musicFixture(page);
+  await page.goto("/#/subscriptions/5");
+  await subscribe(page);
+  await page.getByRole("button", { name: "查看歌曲", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "歌单歌曲", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "删除订阅", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "删除订阅", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "歌单歌曲", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: "订阅已删除" }),
+  ).toBeVisible();
+  expect(state.view.accounts).toHaveLength(1);
+  await subscribe(page);
+  expect(state.view.playlists).toHaveLength(1);
+});
 
 test("Navidrome connection creates and controls one shared-file playlist", async ({
   page,

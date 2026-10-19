@@ -357,6 +357,9 @@ class Catalog:
         comic = self.comic(comic_id, db)
         require(comic["source_type"] == "remote", "comic_local_subscription_unsupported", 409)
         previous = self.repo._document(db, "comic_subscription", comic_id)
+        if previous and previous.get("state") == "removed":
+            # A new subscription chooses a new version/range, retaining archived content.
+            previous = None
         interval = body.get("interval_seconds", self.comics.settings.read(db)["interval_seconds"])
         require(type(interval) is int and 3600 <= interval <= 2592000, "invalid_input", 400)
         mode = body.get("mode", "all")

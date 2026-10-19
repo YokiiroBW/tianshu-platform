@@ -10,7 +10,7 @@ from .catalog import Catalog, ENRICHED_FIELDS, source_key
 from .providers import PROVIDERS, identity
 from .quality import policy, satisfies
 from .queue import enqueue_playlist
-from .navidrome.state import mark_dirty
+from .navidrome.state import mark_dirty, pause_playlist
 
 
 def public_account(account):
@@ -258,7 +258,12 @@ class MusicLibrary:
         self.check_account(account, db)
         identity = account["account_id"] + ":playlist:" + snapshot["playlist"]["source_id"]
         current = self.repo._document(db, "music_playlist", identity)
-        require((current["revision"] if current else 0) == expected, "version_conflict", 409)
+        removed = current and current.get("state") == "removed"
+        require(
+            (current["revision"] if current and not removed else 0) == expected,
+            "version_conflict",
+            409,
+        )
         return self.install_snapshot(
             account,
             identity,
@@ -266,7 +271,7 @@ class MusicLibrary:
             {
                 "interval_seconds": interval,
                 "state": "active",
-                "revision": expected,
+                "revision": current["revision"] if removed else expected,
             },
             db,
         )
@@ -336,8 +341,19 @@ class MusicLibrary:
 
     def control(self, body, db):
         row = self.repo._document(db, "music_playlist", body["playlist_id"])
-        require(row is not None, "not_found", 404)
-        require(body["action"] in {"pause", "resume"}, "invalid_input", 400)
+        require(row and row.get("state") != "removed", "not_found", 404)
+        require(body["action"] in {"pause", "resume", "remove"}, "invalid_input", 400)
+        if body["action"] == "remove":
+            self.repo.remove_subscription(
+                "music_playlist",
+                row["playlist_id"],
+                body["expected_revision"],
+                "music:" + row["playlist_id"],
+                db=db,
+                changes={"auto_download": False},
+            )
+            pause_playlist(self.repo, db, row["playlist_id"])
+            return {"removed": True}
         row = self.repo.put(
             "music_playlist",
             row["playlist_id"],
@@ -434,7 +450,7 @@ class MusicLibrary:
 
     def downloads(self, body, db):
         row = self.repo._document(db, "music_playlist", body["playlist_id"])
-        require(row is not None, "not_found", 404)
+        require(row and row.get("state") != "removed", "not_found", 404)
         require(type(body["auto_download"]) is bool, "invalid_input", 400)
         row = self.repo.put(
             "music_playlist",
@@ -452,6 +468,7 @@ class MusicLibrary:
 
     def download(self, body, db):
         row = self.repo._document(db, "music_playlist", body["playlist_id"])
+        require(row and row.get("state") != "removed", "not_found", 404)
         require(row and row["revision"] == body["expected_revision"], "version_conflict", 409)
         return enqueue_playlist(self, row["playlist_id"], db, manual=True)
 

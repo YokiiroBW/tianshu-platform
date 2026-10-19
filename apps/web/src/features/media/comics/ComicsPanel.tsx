@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { PanelsTopLeft, RefreshCw } from "lucide-react";
+import { PanelsTopLeft, RefreshCw, Trash2 } from "lucide-react";
 import { StatePanel } from "../../../components/StatePanel";
 import { word, timestamp } from "../wording";
 import { ComicSearch } from "./ComicSearch";
@@ -248,6 +248,24 @@ export function ComicsPanel({ media }: { media: Media }) {
                       }
                     >
                       {s.state === "active" ? "暂停追更" : "继续追更"}
+                    </button>
+                    <button
+                      className="button"
+                      disabled={!!media.busy}
+                      onClick={() =>
+                        void mutate(
+                          "subscriptions/control",
+                          {
+                            comic_id: s.comic_id,
+                            action: "remove",
+                            expected_revision: s.revision,
+                          },
+                          "订阅已删除，已入队任务、漫画归档和阅读进度保留。",
+                        )
+                      }
+                    >
+                      <Trash2 aria-hidden="true" />
+                      删除订阅
                     </button>
                     <label>
                       检查周期
