@@ -307,23 +307,6 @@ export function ProviderManager({
                   placeholder="名称或模型 ID"
                 />
               </label>
-              <button
-                className="button"
-                disabled={busy || !source.hasKey || !source.enabled}
-                onClick={() =>
-                  void run(async (signal) => {
-                    const items = await actions.listModels(source, signal);
-                    if (!signal.aborted)
-                      setDirectory({
-                        sourceId: source.sourceId,
-                        revision: source.revision,
-                        items: [...new Set(items)],
-                      });
-                  }, "模型列表已获取。勾选后可一次添加多个；获取列表不等于测试通过。")
-                }
-              >
-                获取模型列表
-              </button>
             </div>
             <h4>已添加的模型（{models.length}）</h4>
             <div className="provider-model-rows">
@@ -552,6 +535,24 @@ export function ProviderManager({
                 <p className="muted">
                   类型决定可分配的功能与测试接口。目录不会自动验证模型能力。
                 </p>
+                <button
+                  type="button"
+                  className="button"
+                  disabled={busy || !source.hasKey || !source.enabled}
+                  onClick={() =>
+                    void run(async (signal) => {
+                      const items = await actions.listModels(source, signal);
+                      if (!signal.aborted)
+                        setDirectory({
+                          sourceId: source.sourceId,
+                          revision: source.revision,
+                          items: [...new Set(items)],
+                        });
+                    }, "模型列表已获取。勾选后可一次添加多个；获取列表不等于测试通过。")
+                  }
+                >
+                  获取模型列表
+                </button>
                 {directory && (
                   <>
                     <div className="models-actions">

@@ -23,10 +23,11 @@ test("shared provider models survive reload, route by function and supply retrie
   const detail = page.getByRole("region", { name: `${name}供应商详情` });
   await expect(detail).toContainText("尚未添加模型");
   await detail.getByRole("button", { name: "添加模型", exact: true }).click();
-  await detail.getByRole("button", { name: "获取模型列表" }).click();
-  await detail.getByLabel("fixture-chat", { exact: true }).check();
-  await detail.getByLabel("fixture-writing", { exact: true }).check();
-  await detail
+  const addModel = page.getByRole("dialog", { name: "添加模型", exact: true });
+  await addModel.getByRole("button", { name: "获取模型列表" }).click();
+  await addModel.getByLabel("fixture-chat", { exact: true }).check();
+  await addModel.getByLabel("fixture-writing", { exact: true }).check();
+  await addModel
     .getByRole("button", { name: "添加所选模型（2）", exact: true })
     .click();
   await expect(detail.locator(".provider-model-row")).toHaveCount(2);
@@ -69,9 +70,11 @@ test("shared provider models survive reload, route by function and supply retrie
     ["rerank", "fixture-rerank"],
   ]) {
     await detail.getByRole("button", { name: "添加模型", exact: true }).click();
-    await detail.getByLabel("添加模型类型").selectOption(kind);
-    await detail.getByLabel("手动填写模型 ID").fill(model);
-    await detail.getByRole("button", { name: "添加模型", exact: true }).click();
+    await addModel.getByLabel("添加模型类型").selectOption(kind);
+    await addModel.getByLabel("手动填写模型 ID").fill(model);
+    await addModel
+      .getByRole("button", { name: "添加模型", exact: true })
+      .click();
     const row = detail.getByRole("article", {
       name: `${model}模型`,
       exact: true,
