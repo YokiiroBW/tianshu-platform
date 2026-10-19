@@ -236,6 +236,7 @@ class ComicTests(unittest.IsolatedAsyncioTestCase):
                 "comic_source_content_restricted",
             ),
             ("No chapters found", "comic_source_no_chapters"),
+            ("解析失败，請嘗試更換域名或參數", "comic_source_format_changed"),
             ("Unexpected undocumented failure", "comic_source_unavailable"),
         )
         for message, code in evidence:

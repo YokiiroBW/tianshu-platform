@@ -10,6 +10,7 @@ def source_error(messages):
         ("comic_source_search_unsupported", r": no search|search (?:is )?not supported|不支持搜索"),
         ("comic_source_content_restricted", r"r18.*(?:开关|显示|開關|顯示)|content.*restricted"),
         ("comic_source_no_chapters", r"no chapters? (?:found|available)|未找到章节|找不到章節"),
+        ("comic_source_format_changed", r"解析失[败敗]|解析(?:错误|錯誤)"),
         (
             "comic_source_address_required",
             r"修改网址|更换域名|设置.*(?:网址|域名)|change.*(?:base url|domain)",
