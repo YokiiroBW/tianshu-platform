@@ -1,6 +1,6 @@
 # Dockge 控制 HTTP 合同（TS-206，v1）
 
-本合同由 TS-206 单写，TS-207 消费。全部入口为同源 `POST /api/web/infrastructure/control/`，沿用真实管理员 Cookie、Origin、`X-CSRF-Token` 和 `external.manage`。普通动作不增加密码解锁。错误仍为平台现有 `{"error":"固定原因码"}`，成功 HTTP 200 只表示读取或持久受理；执行结果看操作记录。HTTP 不等待 SSH。
+本合同由 TS-206 单写，TS-207 消费。全部入口为同源 `POST /api/web/infrastructure/control/`，沿用真实管理员 Cookie、Origin、`X-CSRF-Token` 和 `external.manage`。普通动作不增加密码解锁。错误仍为平台现有 `{"code":"固定原因码"}`，成功 HTTP 200 只表示读取或持久受理；执行结果看操作记录。HTTP 不等待 SSH。
 
 旧 `/api/web/infrastructure/{view,node,containers,container,logs,...}` 保持不变。这里的节点 ID 与 ExternalCatalog 登记一致。浏览器不得提交路径、argv、地址、凭据或 SSH 选项。所有容器 ID 必须完整 64 位小写 hex；栈 ID、计划 ID、版本 ID 使用服务端原值，不能用显示名代替。
 
@@ -21,7 +21,7 @@
   "kind":"action",
   "node_id":"fixture-nas",
   "connection_revision":1,
-  "stack_id":"stack:synthetic-example",
+  "stack_id":"stack_aaaaaaaaaaaaaaaaaaaaaaaa",
   "container_id":null,
   "action":"stack.restart",
   "state":"queued",
@@ -39,7 +39,11 @@
 
 `kind` 为 `inventory/detail/plan/action/execute`。`state` 为 `queued/running/observed/partial/failed/unknown`。`observed` 表示对应目标读回或计划已生成；`partial` 表示有部分结果/实际启动或健康未完全满足；`unknown` 不能推断未发送。`stage` 是有限长度固定原因词，客户端可显示后备文案；首版包括 `queued/reading/planning/submitting/reconciling/finished`。`acceptance` 为 `not_sent/submitted/unknown/rejected`，与运行及健康状态分开。
 
-`result` 依 kind 为库存数据、详情数据、Plan 或执行回读。执行回读字段为 `{"runtime_state":"running","health_state":"none","containers":[],"version_id":null,"node_operation_id":"..."}`；`runtime_state` 为 `running/stopped/partial/unknown`，`health_state` 为 `healthy/unhealthy/starting/none/unknown`，无健康检查为 `none`。容器结果为 `{"container_id":"完整64位ID","state":"running","health":"none"}`。
+`result` 依 kind 为库存数据、详情数据、Plan 或执行回读。执行回读字段为 `{"runtime_state":"running","health_state":"none","containers":[],"version_id":null,"node_operation_id":"..."}`；`runtime_state` 为 `running/stopped/partial/absent/unknown`，`health_state` 为 `healthy/unhealthy/starting/none/mixed/unknown`，无健康检查为 `none`。容器结果为 `{"container_id":"完整64位ID","state":"running","health":"none"}`。
+
+执行回读另外必有 `command_state: not_sent/sent/succeeded/failed/unknown` 和 `execution_active: true/false/null`。实际运行观测不能证明命令成功；command unknown 始终保持 unknown。active 为 true 或 null 时操作尚不能释放同栈队列，只有节点明确 false 才可结案。unknown 的原操作仍可查询，不能因此生成新动作；partial 且 active 非 false 也继续轮询。stage 还会保留节点 `accepted/validating/pulling/applying/observing/complete/unknown` 阶段。
+
+节点 health `not_configured` 等价映射为 `none`（未配置健康检查），`mixed` 原样保留为混合结果；runtime `absent` 原样保留为未创建运行容器。它们都不冒称健康或已停止。inventory/detail操作的result为null，实际数据在view/detail缓存投影读取，避免操作历史重复存储全部库存。
 
 提交的 `client_id` 必须是规范 UUID。相同键与相同语义重放原记录；同键不同语义 409 `idempotency_conflict`。动作提交丢响应后，**只用 operation 的 client_id 查询原操作**；不生成新键重发。操作保存在既有可备份 `.infrastructure.sqlite`，离开页面、HTTP 取消或重启不会删除记录。
 
@@ -56,10 +60,10 @@
   "connection_revision":1,
   "capabilities":{"available":true,"reason_codes":[],"create":{"enabled":true,"reason_codes":[]}},
   "stacks":[{
-    "stack_id":"stack:synthetic-example",
+    "stack_id":"stack_aaaaaaaaaaaaaaaaaaaaaaaa",
     "project_name":"synthetic-example",
     "display_name":"synthetic-example",
-    "revision":"sha256:synthetic-input-fingerprint",
+    "revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "ownership":"platform",
     "exists":true,
     "runtime_state":"running",
@@ -77,7 +81,7 @@
   }],
   "containers":[{
     "container_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "stack_id":"stack:synthetic-example",
+    "stack_id":"stack_aaaaaaaaaaaaaaaaaaaaaaaa",
     "maintenance":{"required":false,"owner":null,"reason_codes":[]},
     "allowed_actions":{"start":{"enabled":true,"reason_codes":[]},"stop":{"enabled":true,"reason_codes":[]},"restart":{"enabled":true,"reason_codes":[]}}
   }],
@@ -91,13 +95,17 @@
 
 ## detail：栈配置、版本与维护归属
 
-请求：`{"node_id":"fixture-nas","stack_id":"stack:synthetic-example","refresh":false}`。轮询默认只读缓存；首次缺失自动排读取，显式刷新复用该栈正在运行的读取。
+请求：`{"node_id":"fixture-nas","stack_id":"stack_aaaaaaaaaaaaaaaaaaaaaaaa","refresh":false}`。轮询默认只读缓存；首次缺失自动排读取，显式刷新复用该栈正在运行的读取。
 
 响应：`{"node_id":"fixture-nas","connection_revision":1,"stack":Stack,"compose_content":"services:\n  app:\n    image: synthetic:v1\n","versions":[Version],"observation":Observation,"refresh":Operation|null}`。
 
 `Stack` 与 view 相同。`Version = {"version_id":"服务端版本ID","created_at":"UTC时间","label":"显示标签","current":false,"restorable":true,"reason_codes":[]}`。无记录为 []，读取失败须在 observation 标明原因。
 
 `compose_content` 仅为节点脱敏编辑内容或 null。节点插入的 opaque 秘密占位符必须原样保留，平台不向浏览器还原秘密；提交不带 `.env`，节点原样保留既有 `.env`、数据卷与 bind 数据。不能把星号掩码当新值写回。此处展示的恢复仅恢复配置/运行版本，不宣称恢复数据写入。
+
+容器控制详情使用同一detail接口的另一请求：`{"node_id":"fixture-nas","container_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","refresh":false}`，不得同时传stack_id。返回 `{"node_id":"fixture-nas","connection_revision":1,"container":ControlDescriptor|null,"observation":Observation,"refresh":Operation|null}`。ControlDescriptor与view.containers行一致。未检查过的容器首次自动排后台读取；前端只据该确切full64 ID当前描述允许动作。view.containers返回所有已获得节点单独inspect来源的描述，与栈分页独立，不为每次页面轮询给全部容器发SSH。
+
+节点尚无“当前保存版本”权威字段，version.current暂固定false，不能用包含文件身份的revision等号猜测当前版本。节点schema/语义固定来源为根提交 `6834fd5d0b43294b604b826fceca9587d24737c4`；HTTP configure映射节点stack.plan(action=deploy)，不改变浏览器用词。
 
 ## plan：具体预览（异步）
 
@@ -109,8 +117,8 @@
   "expected_connection_revision":1,
   "client_id":"22222222-2222-4222-8222-222222222222",
   "action":"configure",
-  "stack_id":"stack:synthetic-example",
-  "expected_revision":"sha256:synthetic-input-fingerprint",
+  "stack_id":"stack_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "compose_content":"services:\n  app:\n    image: synthetic:v2\n"
 }
 ```
@@ -124,10 +132,10 @@
   "plan_id":"服务端计划ID",
   "node_id":"fixture-nas",
   "connection_revision":1,
-  "stack_id":"stack:synthetic-example",
+  "stack_id":"stack_aaaaaaaaaaaaaaaaaaaaaaaa",
   "project_name":"synthetic-example",
   "action":"configure",
-  "expected_revision":"sha256:synthetic-input-fingerprint",
+  "expected_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "expires_at":"2026-10-19T00:10:00Z",
   "executable":true,
   "changes":["app 镜像 synthetic:v1 → synthetic:v2"],
@@ -153,7 +161,7 @@ changes/images/ports/mounts/warnings/blockers 都为有界字符串数组，diff
 
 容器请求：`{"node_id":"fixture-nas","expected_connection_revision":1,"client_id":"44444444-4444-4444-8444-444444444444","action":"container.restart","container_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`。
 
-栈请求：`{"node_id":"fixture-nas","expected_connection_revision":1,"client_id":"55555555-5555-4555-8555-555555555555","action":"stack.stop","stack_id":"stack:synthetic-example","expected_revision":"sha256:synthetic-input-fingerprint"}`。
+栈请求：`{"node_id":"fixture-nas","expected_connection_revision":1,"client_id":"55555555-5555-4555-8555-555555555555","action":"stack.stop","stack_id":"stack_aaaaaaaaaaaaaaaaaaaaaaaa","expected_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`。
 
 action 只允许 `container.start/container.stop/container.restart/stack.start/stack.stop/stack.restart`。返回 `{"operation":Operation}`。镜像更新通过 plan(update) 和 execute。普通动作单次点击，不另加密码或多确认；同栈进行中的另一变更串行等待，无法确认的旧操作不盲目重发。
 
@@ -165,7 +173,7 @@ action 只允许 `container.start/container.stop/container.restart/stack.start/s
 
 ## operations：分页操作记录
 
-请求：`{"node_id":"fixture-nas","stack_id":"stack:synthetic-example","cursor":null,"page_size":20}`，所有字段可省略。可选 `state` 使用通用状态枚举。page_size 1–100。默认只列 plan/action/execute，不把每次页面读取填满历史。
+请求：`{"node_id":"fixture-nas","stack_id":"stack_aaaaaaaaaaaaaaaaaaaaaaaa","cursor":null,"page_size":20}`，所有字段可省略。可选 `state` 使用通用状态枚举。page_size 1–100。默认只列 plan/action/execute，不把每次页面读取填满历史。
 
 返回：`{"items":[Operation],"page":{"returned":1,"has_more":false,"next_cursor":null}}`。按固定创建时间和 operation_id 倒序，游标绑定筛选；不匹配 409 `cursor_conflict`。任务中心复用同一台账的 action/execute，归属 `platform.infrastructure`，不新建执行库。
 
