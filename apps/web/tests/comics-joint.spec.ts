@@ -164,7 +164,9 @@ test("Chinese search accepts traditional spellings and aliases and survives retu
   await page.getByRole("button", { name: "搜索", exact: true }).click();
   await expect(page.getByText(/搜索完成/)).toBeVisible();
   await expect(
-    page.getByLabel("下载源", { exact: true }).locator("option"),
+    page
+      .getByRole("combobox", { name: "下载源", exact: true })
+      .locator("option"),
   ).toHaveCount(2);
   await expect(page.locator(".comic-card")).toHaveCount(1);
   await page.getByRole("button", { name: "查看章节与预览" }).click();
