@@ -33,6 +33,7 @@ import uuid
 
 from . import home as home_module
 from . import web_models as models_module
+from .plugins.task_source import STATUS as PLUGIN_STATUS
 from .contracts import Fault, canonical, digest, loads, require, utc
 from .infrastructure.control import TASK_PREFIX as INFRASTRUCTURE_PREFIX
 from .storage import is_ledger_key
@@ -96,6 +97,13 @@ def _by_status(table):
 
 
 MODULES = {
+    "platform.plugins": {
+        "kind": "plugin_action",
+        "prefixes": ("plugin:",),
+        "states": frozenset(PLUGIN_STATUS),
+        "by_status": _by_status(PLUGIN_STATUS),
+        "cancel_code": "use_plugin_instance",
+    },
     "platform.infrastructure": {
         "kind": "infrastructure_control",
         "prefixes": (INFRASTRUCTURE_PREFIX,),
@@ -153,6 +161,7 @@ SUMMARY_FIELDS = (
     "module",
 )
 MODULE_PAGES = {
+    "platform.plugins": "#/plugins",
     "platform.infrastructure": "#/home/1",
     "platform.home": "#/home",
     "platform.models": "#/settings/2",
@@ -256,6 +265,8 @@ class Tasks:
 
     def _page(self, name, after, size, states):
         """One module's next page, or `None` when that module's ledger cannot be read."""
+        if name == "platform.plugins":
+            return self.p.plugins.task_source.history(after=after, limit=size, states=states)
         if name == "platform.home":
             found = self.console.home.history(after=after, limit=size, states=states)
             return None if found is None else (found[0], found[1])
@@ -269,6 +280,8 @@ class Tasks:
     def _record(self, task_id):
         """One record by identifier; an unknown identifier is a real 404, not an empty record."""
         require(isinstance(task_id, str) and 0 < len(task_id) <= 128, "invalid_input", 400)
+        if task_id.startswith("plugin:"):
+            return self.p.plugins.task_source.record(task_id)
         if task_id.startswith(INFRASTRUCTURE_PREFIX):
             self._identifier(task_id, INFRASTRUCTURE_PREFIX)
             return self.p.infrastructure.control.record(task_id)
@@ -320,7 +333,30 @@ class Tasks:
         source = self._source_of(record["task_id"])
         module = MODULES[source]
         document = record["document"]
-        if source == "platform.home":
+        if source == "platform.plugins":
+            status, stage = PLUGIN_STATUS[record["state"]]
+            built = {
+                "title": document["action"],
+                "target": document["instance_id"],
+                "code": document["error"]["code"]
+                if document.get("error")
+                else document["execution"],
+                "settled": document["execution"] not in {"accepted", "running"},
+                "source_state": "current",
+                "attention": document["effect"] == "unknown" or status == "failed",
+                "evidence": {
+                    "execution": document["execution"],
+                    "effect": document["effect"],
+                    "external": document.get("external"),
+                    "delivery": document["delivery"],
+                },
+                "request": {
+                    "invocation_id": document["id"],
+                    "package_version": document["package_version"],
+                    "config_revision": document["config_revision"],
+                },
+            }
+        elif source == "platform.home":
             status, stage = HOME_STATUS[record["state"]]
             built = self._home_task(record, document, status)
         elif source == "platform.infrastructure":
@@ -519,7 +555,13 @@ class Tasks:
         """Every responsible module's own state, including the ones with nothing to show."""
         result = []
         for name, module in MODULES.items():
-            if name == "platform.infrastructure":
+            if name == "platform.plugins":
+                records = self.p.plugins.task_source.count()
+                state = {
+                    "state": "available" if records else "empty",
+                    "code": "ready" if records else "no_records",
+                }
+            elif name == "platform.infrastructure":
                 control = self.p.infrastructure.control
                 records = control.history_count()
                 if not control.configured and records == 0:

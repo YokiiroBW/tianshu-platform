@@ -139,6 +139,7 @@ SETTINGS_KEYS = frozenset(
         "role_runtime",
         "media",
         "infrastructure",
+        "plugins",
     }
 )
 
@@ -161,6 +162,9 @@ def validate_settings(settings, *, runtime=None):
     from .media.runtime import validate_media
 
     validate_media(settings)
+    from .plugins.manager import validate_settings as validate_plugins
+
+    validate_plugins(settings)
     infrastructure_configuration(settings, runtime=runtime)
     from .qq_admin import validate_profiles_configuration
 
@@ -429,6 +433,11 @@ class Platform:
         self.book_reading = ReadingAccess(self)
         self.infrastructure = Infrastructure(
             settings, clock=clock, local=self.local_work.run, runtime=self.storage_runtime
+        )
+        from .plugins import PluginManager
+
+        self.plugins = PluginManager(
+            settings, local=self.local_work.run, runtime=self.storage_runtime
         )
         self._register_history()
         self.storage_runtime.finalize()

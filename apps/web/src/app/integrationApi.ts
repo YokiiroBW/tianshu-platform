@@ -3,6 +3,17 @@ import { webFetch } from "./sessionTransport";
 // CONNECT-B-API.md: integration calls are same-origin, session-bound POSTs.
 // The browser never chooses an upstream address, service token or reader identity.
 const descriptions: Record<string, string> = {
+  plugin_install_failed: "插件安装失败，请检查包入口、依赖和安装来源。",
+  plugin_description_mismatch: "包内动作描述与实际导出不一致，请重新构建插件。",
+  plugin_version_conflict: "该版本已经安装了不同内容，请使用新的版本号。",
+  plugin_incompatible: "该插件与当前 SDK 版本不兼容。",
+  plugin_unavailable: "插件进程当前不可用，可查看实例状态后重新启用。",
+  plugin_host_busy: "另一服务入口正在管理这些插件，请通过该入口执行插件操作。",
+  instance_disabled: "此实例已停用。",
+  config_invalid: "插件配置不完整或不符合要求，请检查必填项与密钥。",
+  capability_unavailable: "当前宿主尚未提供此操作需要的能力。",
+  outcome_unknown: "外部操作结果尚未确认，请核对原任务。",
+  plugin_store_unavailable: "插件数据或加密密钥不可用，请核对完整备份。",
   web_not_configured: "网页登录尚未启用。",
   not_configured: "这个连接尚未由部署端配置。",
   knowledge_not_configured: "项目知识连接尚未由部署端配置。",
