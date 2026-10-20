@@ -1,19 +1,66 @@
 import asyncio
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from services.platform.media.background import Background
+from services.platform.media.books.audio.runtime import BookAudio
 from services.platform.media.destination import safe_path
 from services.platform.media.music.storage import stem
 from services.platform.media.repository import Repository
 from services.platform.media.types import MetadataValidationError
 from services.platform.media.worker import Worker
+from services.platform.local_work import LocalWork
 
 
 class MediaBackgroundTests(unittest.IsolatedAsyncioTestCase):
+    async def test_book_audio_reconcile_waits_for_capacity_without_restarting_background(self):
+        work = LocalWork(workers=1, capacity=1)
+        owner = Background()
+        entered, release, reconciled = threading.Event(), threading.Event(), threading.Event()
+
+        def held():
+            entered.set()
+            release.wait(5)
+
+        first = asyncio.create_task(work.run(held))
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+            with tempfile.TemporaryDirectory() as directory:
+                repo = Repository(Path(directory) / "ledger.sqlite")
+                books = SimpleNamespace(
+                    repo=repo, media=SimpleNamespace(local=work.run, config=None)
+                )
+                audio = BookAudio(books)
+                original = repo.list
+
+                def observe(kind):
+                    result = original(kind)
+                    if kind == "book_audio_plan":
+                        reconciled.set()
+                    return result
+
+                with patch.object(repo, "list", side_effect=observe):
+                    owner.start("book_audio", audio.loop)
+                    await asyncio.sleep(0)
+                    self.assertTrue(owner.healthy())
+                    self.assertEqual(owner.view()[0]["restarts"], 0)
+                    self.assertFalse(reconciled.is_set())
+                    release.set()
+                    await first
+                    self.assertTrue(await asyncio.to_thread(reconciled.wait, 2))
+                    self.assertTrue(owner.healthy())
+                    self.assertEqual(owner.view()[0]["restarts"], 0)
+                    await owner.close()
+        finally:
+            release.set()
+            await owner.close()
+            await first
+            work.close()
+
     def test_lost_lease_recovers_before_an_older_unstarted_download(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Repository(Path(directory) / "ledger.sqlite")

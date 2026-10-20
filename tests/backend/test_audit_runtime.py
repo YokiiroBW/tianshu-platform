@@ -103,14 +103,12 @@ class RuntimeFixTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
-            with self.assertRaises(Fault):
-                await work.run(lambda: "must not run")
+            waiting = asyncio.create_task(work.run(lambda: "after completion"))
+            await asyncio.sleep(0)
+            self.assertFalse(waiting.done())
             self.assertEqual(1, work.active)
             release.set()
-            for _ in range(100):
-                if work.active == 0:
-                    break
-                await asyncio.sleep(0.005)
+            self.assertEqual("after completion", await asyncio.wait_for(waiting, 2))
             self.assertEqual("ok", await work.run(lambda: "ok"))
         finally:
             release.set()

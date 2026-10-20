@@ -281,6 +281,11 @@ class RenewalHttpsTests(unittest.IsolatedAsyncioTestCase):
     async def test_slow_transaction_does_not_block_loop_and_capacity_is_retained(self):
         import threading
 
+        # This assertion measures the request's slot, not unrelated media pumps.
+        await self.p.media.close()
+        async with asyncio.timeout(2):
+            while self.p.local_work.active:
+                await asyncio.sleep(0.005)
         started, release = threading.Event(), threading.Event()
         original = self.p.auth.authenticate
 
