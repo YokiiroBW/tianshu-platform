@@ -236,14 +236,22 @@ def main():
         try:
             from .provider_catalog import ProviderCatalog
             from .provider_management import validate_configuration
+            from .backends import inspect as inspect_backend
 
             section = settings.get("provider_self_service")
             require(section is not None, "invalid_input", 400)
+            # Bootstrap owns a new private file/key pair only before PG selection.
+            # A bound deployment must never recreate a stale SQLite catalogue or a new key.
+            require(
+                inspect_backend(settings)["backend"] != "postgresql",
+                "provider_store_unavailable",
+                503,
+            )
             validate_configuration(section, existing=False)
             ProviderCatalog(section["directory"], create=True)
             print(canonical({"initialized": True}))
             return 0
-        except (Fault, OSError, ValueError, TypeError, KeyError):
+        except (Fault, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
             print(canonical({"code": "provider_store_unavailable", "status": 503}))
             return 1
 

@@ -82,7 +82,9 @@ class WebConsole:
         self.access = access or WebAccess(platform.settings)
         self.access_settings = WebAccessSettings(self, self.access)
         self.platform = platform
-        self.account = WebAccount(platform.settings)
+        self.account = WebAccount(
+            platform.settings, runtime=getattr(platform, "storage_runtime", None)
+        )
         self.config = platform.settings.get("web")
         if self.config is not None and self.access.current is not None:
             self.config = {**self.config, "origin": self.access.current["origin"]}

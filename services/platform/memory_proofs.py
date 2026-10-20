@@ -10,6 +10,7 @@ from contextlib import closing
 
 from .contracts import canonical, digest, epoch, loads, require, utc
 from .origins import source_key
+from .backends import postgres
 
 ISSUE = "/internal/v1/memory-context/proof/issue"
 VERIFY = "/internal/v1/memory-context/proof/verify"
@@ -31,9 +32,12 @@ class MemoryProofs:
         self.p = platform
         platform.contracts.load_runtime("memory-context/v1")
         with platform.store.connect(write=True) as db:
-            if not db.execute(
-                "SELECT 1 FROM sqlite_master WHERE name='memory_operation_proofs'"
-            ).fetchone():
+            if (
+                not postgres(db)
+                and not db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='memory_operation_proofs'"
+                ).fetchone()
+            ):
                 # Backup with a read connection: the Store's writer already owns a transaction.
                 with (
                     closing(sqlite3.connect(platform.store.path)) as source,

@@ -19,8 +19,9 @@ MAX_CACHED_BYTES = 16 * 1024**2
 
 
 class Infrastructure:
-    def __init__(self, settings, *, clock=time.time, local):
-        self.config = configuration(settings)
+    def __init__(self, settings, *, clock=time.time, local, runtime=None):
+        self.storage_runtime = runtime
+        self.config = configuration(settings, runtime=runtime)
         self.clock, self.run_local = clock, local
         self.pending_local = set()
         self.started = False
@@ -34,8 +35,10 @@ class Infrastructure:
         self.log_jobs, self.logs = {}, OrderedDict()
         self.catalog = self.repo = self.executor = None
         if self.config is not None:
-            self.catalog = ExternalCatalog(self.config["directory"])
-            self.repo = Repository(settings["database_path"] + ".infrastructure.sqlite")
+            self.catalog = ExternalCatalog(self.config["directory"], runtime=runtime)
+            self.repo = Repository(
+                settings["database_path"] + ".infrastructure.sqlite", runtime=runtime
+            )
             self.executor = Executor(self.config)
         from .control import Control
 

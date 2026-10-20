@@ -29,7 +29,7 @@ def executor_configuration(value):
     return {**value, "command": list(command)}
 
 
-def configuration(settings):
+def configuration(settings, *, runtime=None):
     value = settings.get("infrastructure")
     if value is None:
         return None
@@ -69,7 +69,7 @@ def configuration(settings):
         require(type(selected) is int and minimum <= selected <= maximum, "invalid_input", 400)
         result[name] = selected
     require(result["stale_after_seconds"] >= result["poll_interval_seconds"], "invalid_input", 400)
-    ExternalCatalog.verify_existing(result["directory"])
+    ExternalCatalog.verify_existing(result["directory"], runtime=runtime)
     from .client import Contract
 
     Contract(result["contract_directory"])

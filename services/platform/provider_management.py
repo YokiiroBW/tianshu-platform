@@ -19,7 +19,7 @@ class ProviderTestFault(Fault):
         self.diagnostic = validate_test_diagnostic(diagnostic)
 
 
-def validate_configuration(config, *, existing=True):
+def validate_configuration(config, *, existing=True, runtime=None):
     if config is None:
         return
     require(
@@ -66,7 +66,7 @@ def validate_configuration(config, *, existing=True):
     if existing:
         from .provider_catalog import ProviderCatalog
 
-        ProviderCatalog.verify_existing(config["directory"])
+        ProviderCatalog.verify_existing(config["directory"], runtime=runtime)
 
 
 def _client_id(body):

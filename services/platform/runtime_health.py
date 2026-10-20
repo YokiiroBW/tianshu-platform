@@ -88,6 +88,8 @@ class HealthInputs:
     log_state: object = None
     runtime_state: object = None
     web_account_enabled: bool = False
+    backend_check: object = None
+    account_check: object = None
 
 
 def _enabled_section(settings, name):
@@ -104,6 +106,8 @@ def health_inputs(
     log_state=None,
     runtime_state=None,
     config_problem=None,
+    backend_check=None,
+    account_check=None,
 ):
     """Derive the description from the deployment settings, without constructing any service."""
     settings = settings or {}
@@ -151,6 +155,8 @@ def health_inputs(
         log_state=log_state,
         runtime_state=runtime_state,
         web_account_enabled=settings.get("web_account") is not None,
+        backend_check=backend_check,
+        account_check=account_check,
     )
 
 
@@ -408,6 +414,8 @@ class Probe:
         return "ok"
 
     def _store(self):
+        if self.inputs.backend_check is not None:
+            return self.inputs.backend_check()
         if not self.inputs.database_path:
             return "failed"
         state, _ = inspect_sqlite(self.inputs.database_path, STORE_TABLES, STORE_VERSIONS)
@@ -418,10 +426,13 @@ class Probe:
     def _sidecar_states(self):
         """One read-only state per enabled sidecar, so preflight can tell "not yet" from "wrong"."""
         states = []
-        for path, kind in self.inputs.sidecars:
-            table = SIDECAR_TABLES.get(kind)
-            versions = (0, 1, 2) if kind in {"bots", "media"} else (0, 1)
-            states.append(inspect_sqlite(path, (table,) if table else (), versions)[0])
+        if self.inputs.backend_check is not None:
+            states.append(self.inputs.backend_check())
+        else:
+            for path, kind in self.inputs.sidecars:
+                table = SIDECAR_TABLES.get(kind)
+                versions = (0, 1, 2) if kind in {"bots", "media"} else (0, 1)
+                states.append(inspect_sqlite(path, (table,) if table else (), versions)[0])
         if self.inputs.web_account_enabled and self._account_state() != "ok":
             states.append("failed")
         return states
@@ -430,7 +441,10 @@ class Probe:
         # Only local account data is inspected. A genuinely fresh installation is an operable
         # setup page; missing data after the seal exists is a failure, never fresh setup.
         try:
-            inspect_account(self.inputs.database_path)
+            if self.inputs.account_check is not None:
+                self.inputs.account_check()
+            else:
+                inspect_account(self.inputs.database_path)
         except (Fault, OSError, ValueError, TypeError):
             return "failed"
         return "ok"
@@ -495,8 +509,22 @@ def preflight(settings, *, credential_names=(), credential_present=None, validat
     contracts and validates identities and page narrowing, and opens nothing - no store, no
     database, no port - so passing it does not weaken the read-only promise above.
     """
+    from . import backends
+
+    current, inspection, backend_problem = None, {}, None
+    try:
+        if isinstance(settings.get("database_path"), str) and settings["database_path"]:
+            inspection = backends.inspect(settings)
+            current = backends.readonly(settings)
+    except (ValueError, TypeError, KeyError, OSError, sqlite3.Error):
+        backend_problem = "config_load_failed"
     inputs = health_inputs(
-        settings, credential_names=credential_names, credential_present=credential_present
+        settings,
+        credential_names=credential_names,
+        credential_present=credential_present,
+        config_problem=backend_problem,
+        backend_check=current.probe if current is not None else None,
+        account_check=lambda: inspect_account(settings["database_path"], runtime=current),
     )
     reasons = []
     checks = {}
@@ -508,7 +536,7 @@ def preflight(settings, *, credential_names=(), credential_present=None, validat
         except Fault as exc:
             # Only the fixed code travels: never the offending value, the path or the exception.
             problem = safe_code(exc.code)
-        except (ValueError, TypeError, KeyError, OSError, RecursionError):
+        except (ValueError, TypeError, KeyError, OSError, RecursionError, sqlite3.Error):
             problem = "config_load_failed"
     if problem:
         checks["config"] = "failed"
@@ -521,8 +549,17 @@ def preflight(settings, *, credential_names=(), credential_present=None, validat
     if checks["contract"] != "ok" and inputs.contract_directory is not None:
         reasons.append("contract_not_verified")
 
-    requires_initialization = False
-    if not inputs.database_path:
+    requires_initialization = (
+        inspection.get("postgresql") == "requires_initialization"
+        or inspection.get("state") == "pending"
+    )
+    if requires_initialization:
+        reasons.append("requires_initialization")
+    if inputs.backend_check is not None:
+        checks["store"] = probe._store()
+        if checks["store"] != "ok":
+            reasons.append("store_not_verified")
+    elif not inputs.database_path:
         checks["store"] = "failed"
         reasons.append("database_path_not_configured")
     else:

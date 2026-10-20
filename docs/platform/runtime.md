@@ -1,5 +1,7 @@
 # TS-012 平台后端运行
 
+可选 PostgreSQL / Redis 已接入；默认 SQLite 和本地文件锚点保留，配置与迁移/备份步骤见 [存储后端](storage-backends.md)。
+
 TS-013 增量已实现，当前来源授权、TLS、批量回填和迁移入口见 [source-sync 运行](source-sync.md)。下面保留 TS-012 的两条旧 HTTP 与本地演练说明；“仅两项”“仅 local_rehearsal”描述的是旧切片，不限制 TS-013 新发布入口。
 
 本切片是可运行的本地 Python 平台服务，消费主协调仓库 `contracts/text-dialogue/v1` 的发布版 1.0.0（`102d347`）。启动逐一核对 manifest 和五份 schema 的 LF-normalized SHA-256；manifest 必须为 `81e6cc4ddef7c6f82e055d4cb04b090db036dd5c52763473ce697aa02db478a1`。不复制旧 candidate、不改公共 schema、不从网络加载 schema。

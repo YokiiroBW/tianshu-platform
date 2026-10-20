@@ -1,6 +1,6 @@
 """Durable web delivery through the published, service-authenticated sender port."""
 
-import sqlite3
+from .backends import database as bind_database
 import uuid
 from contextlib import closing
 
@@ -13,7 +13,10 @@ class WebSender:
         self.input_entries = list(platform.settings.get("web", {}).get("input_entries", []))
         # Dedicated additive sidecar: no migration of the authority store.
         self.path = platform.store.path + ".web-replies.sqlite"
-        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+        self.database = bind_database(
+            getattr(platform, "storage_runtime", None), "web_replies", self.path
+        )
+        with closing(self.database.connect(timeout=5)) as db, db:
             require(
                 db.execute("PRAGMA user_version").fetchone()[0] in (0, 1),
                 "dependency_unavailable",
@@ -84,7 +87,7 @@ class WebSender:
                 }
             )
             command_key = canonical([principal_id, command["idempotency_key"]])
-            with closing(sqlite3.connect(self.path, timeout=5)) as db:
+            with closing(self.database.connect(timeout=5)) as db:
                 db.execute("PRAGMA synchronous=FULL")
                 db.execute("BEGIN IMMEDIATE")
                 require(epoch(command["deadline_at"]) > p.origins.clock(), "timeout", 408)

@@ -105,7 +105,7 @@ class Ledger:
                 (now,),
             ).fetchall()
             for value in rows:
-                row = json.loads(value[0])
+                row = self.repo.payloads.read("book_audio_job", json.loads(value[0]))
                 if row.get("next_at", 0) > now:
                     continue
                 plan = self.repo._document(db, "book_audio_plan", row["book_id"])

@@ -2,6 +2,9 @@
 
 import hmac
 import time
+from pathlib import Path
+
+from . import backends
 
 from . import diagnostics, diagnostics_config, runtime_health
 from .assets import Assets, validate_connections, validate_page
@@ -100,6 +103,7 @@ SETTINGS_KEYS = frozenset(
     {
         "mode",
         "storage",
+        "storage_backends",
         "database_path",
         "contract_directory",
         "principals",
@@ -139,7 +143,7 @@ SETTINGS_KEYS = frozenset(
 )
 
 
-def validate_settings(settings):
+def validate_settings(settings, *, runtime=None):
     """Everything this deployment refuses before it touches a store, and nothing that writes.
 
     This is the *same* function the composition root runs first, and the rolling preflight is
@@ -153,10 +157,11 @@ def validate_settings(settings):
     """
     require(isinstance(settings, dict), "invalid_input", 400)
     require(set(settings) <= SETTINGS_KEYS, "invalid_input", 400)
+    runtime = runtime if runtime is not None else backends.readonly(settings)
     from .media.runtime import validate_media
 
     validate_media(settings)
-    infrastructure_configuration(settings)
+    infrastructure_configuration(settings, runtime=runtime)
     from .qq_admin import validate_profiles_configuration
 
     validate_profiles_configuration(
@@ -190,7 +195,7 @@ def validate_settings(settings):
     validate_max_lifetime(settings)
     from .provider_management import validate_configuration
 
-    validate_configuration(settings.get("provider_self_service"))
+    validate_configuration(settings.get("provider_self_service"), runtime=runtime)
     if settings.get("provider_self_service") is not None:
         require(
             settings["provider_self_service"]["gateway_token_env"]
@@ -199,7 +204,7 @@ def validate_settings(settings):
             400,
         )
     credentials = registered_credentials(settings, include_setup=False)
-    account = WebAccount(settings)
+    account = WebAccount(settings, runtime=runtime)
     # Read-only validation also prevents a damaged/lost account store from becoming a fresh
     # registration page after restart. The deployment password is never a recovery fallback.
     current_account = account.read()
@@ -249,7 +254,7 @@ def validate_settings(settings):
     from .relationships.config import validate as validate_relationships
 
     validate_relationships(settings)
-    validate_external_configuration(settings.get("web_external"), settings)
+    validate_external_configuration(settings.get("web_external"), settings, runtime=runtime)
     validate_bot_adapter_configuration(settings.get("bot_adapter_self_service"), settings)
     role_runtime = settings.get("role_runtime")
     if role_runtime is not None:
@@ -284,12 +289,36 @@ def validate_settings(settings):
 
 class Platform:
     def __init__(self, settings, *, clock=time.time):
-        # The pure half runs first and is the only place these rules live, so the preflight and the
-        # real startup cannot drift apart.
-        self.contracts, self.auth = validate_settings(settings)
+        # A pending PG binding is already authoritative: probes refuse it, and only
+        # normal startup may resume migration. Validation then uses actual PG handles.
+        require(isinstance(settings, dict), "invalid_input", 400)
+        require(set(settings) <= SETTINGS_KEYS, "invalid_input", 400)
+        require(
+            isinstance(settings.get("database_path"), str) and bool(settings["database_path"]),
+            "invalid_input",
+            400,
+        )
+        pending = backends.inspect(settings).get("state") == "pending"
+        if not pending:
+            self.contracts, self.auth = validate_settings(settings)
+        self.storage_runtime = backends.start(settings)
+        try:
+            if pending:
+                self.contracts, self.auth = validate_settings(
+                    settings, runtime=self.storage_runtime
+                )
+            self._assemble(settings, clock)
+        except BaseException:
+            if hasattr(self, "local_work"):
+                self.local_work.close()
+            self.storage_runtime.close()
+            raise
+
+    def _assemble(self, settings, clock):
         # The native snapshot HTTP port stays closed unless the deployment explicitly opens it.
         self.native_config_http = settings.get("native_config_http", False)
-        self.store = Store(settings["database_path"])
+        self.store = Store(settings["database_path"], runtime=self.storage_runtime)
+        WebAccount(settings, runtime=self.storage_runtime)
         self.origins = Origins(self.store, self.auth, self.contracts, clock)
         self.sources = Sources(self.store, self.auth, self.contracts, self.origins, settings, clock)
         self.origins.input_entries = self.sources.entries
@@ -305,7 +334,9 @@ class Platform:
         from .provider_catalog import ProviderCatalog
 
         self.provider_catalog = (
-            ProviderCatalog(settings["provider_self_service"]["directory"])
+            ProviderCatalog(
+                settings["provider_self_service"]["directory"], runtime=self.storage_runtime
+            )
             if settings.get("provider_self_service") is not None
             else None
         )
@@ -379,6 +410,10 @@ class Platform:
                 else "degraded"
             ),
             config_problem=self.contract_problem,
+            account_check=lambda: WebAccount(settings, runtime=self.storage_runtime).read(),
+            backend_check=self.storage_runtime.probe
+            if self.storage_runtime.backend == "postgresql"
+            else None,
         )
         from .local_work import LocalWork
 
@@ -386,16 +421,56 @@ class Platform:
         self.store.run_local = self.local_work.run
         from .media.runtime import Media
 
-        self.media = Media(settings, clock=clock, local=self.local_work.run)
+        self.media = Media(
+            settings, clock=clock, local=self.local_work.run, runtime=self.storage_runtime
+        )
         from .media.books.reading import ReadingAccess
 
         self.book_reading = ReadingAccess(self)
-        self.infrastructure = Infrastructure(settings, clock=clock, local=self.local_work.run)
+        self.infrastructure = Infrastructure(
+            settings, clock=clock, local=self.local_work.run, runtime=self.storage_runtime
+        )
+        self._register_history()
+        self.storage_runtime.finalize()
+
+    def _register_history(self):
+        """Past HA connection revisions remain part of the backend activation set."""
+        anchor = Path(self.store.path)
+        suffixes = {
+            ".web-inputs.sqlite": "web_inputs",
+            ".web-replies.sqlite": "web_replies",
+            ".web-models.sqlite": "web_models",
+            ".home-controls.sqlite": "home",
+            ".bots.sqlite": "bots",
+            ".bot-observations.sqlite": "bot_observations",
+            ".roles.sqlite": "roles",
+            ".qq-admin.sqlite": "qq_admin",
+            ".web-account.sqlite": "web_account",
+            ".infrastructure.sqlite": "infrastructure",
+        }
+        for suffix, logical in suffixes.items():
+            path = Path(str(anchor) + suffix)
+            if path.is_file() or (
+                self.settings.get("web") is not None
+                and logical in {"web_inputs", "web_replies", "web_models", "home"}
+            ):
+                backends.database(self.storage_runtime, logical, path)
+        catalog = self.service_credentials.catalog
+        if self.settings.get("web") is not None and catalog is not None:
+            _, rows = catalog.snapshot()
+            home = rows.get("home")
+            revision = home["value"]["connection_revision"] if home else None
+            path = str(anchor) + f".home-controls.external.{revision}.sqlite"
+            backends.database(self.storage_runtime, "home_" + str(revision), path)
+        for path in anchor.parent.glob(anchor.name + ".home-controls.external.*.sqlite"):
+            revision = path.name[len(anchor.name + ".home-controls.external.") : -len(".sqlite")]
+            backends.database(self.storage_runtime, "home_" + revision, path)
 
     def close(self):
         """Mark this runtime as no longer serving, so readiness stops presenting it as current."""
         self._runtime_state = "closed"
         self.local_work.close()
+        self.storage_runtime.close()
 
     def persona_reader(self):
         """The one upstream client this deployment's page may read through, or `None`.

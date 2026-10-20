@@ -22,7 +22,11 @@ class Control:
     def __init__(self, runtime):
         self.runtime = runtime
         self.local, self.clock = runtime.local, runtime.clock
-        self.repo = ControlRepository(runtime.repo.database) if runtime.repo else None
+        self.repo = (
+            ControlRepository(runtime.repo.database, runtime=runtime.storage_runtime)
+            if runtime.repo
+            else None
+        )
         self.client = (
             ControlClient(runtime.config, runtime.executor)
             if runtime.config and runtime.config.get("control")

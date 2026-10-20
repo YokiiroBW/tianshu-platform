@@ -11,6 +11,7 @@ import uuid
 from contextlib import closing
 
 from .contracts import canonical, require
+from .backends import postgres
 from .provider_values import PROTOCOL, ProviderExecutionContext, text as _text, normalize_base_url
 
 MODEL_KINDS = frozenset({"text", "embed", "rerank"})
@@ -36,7 +37,7 @@ class ProviderSources:
                 if row["secret"] is not None:
                     self.catalog._decrypt(row["secret"], row["id"])
             return
-        if not create:
+        if not create and not postgres(db):
             backup = self.catalog.directory / (
                 "providers.pre-sources-" + uuid.uuid4().hex + ".sqlite"
             )

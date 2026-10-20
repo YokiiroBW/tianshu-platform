@@ -1,6 +1,7 @@
 """QWeather location and current conditions, using the existing encrypted catalog."""
 
 import asyncio
+import math
 import re
 import time
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
-from .contracts import Fault, loads, require
+from .contracts import Fault, loads, require, digest
 
 PREFIX = "/api/web/weather/"
 CACHE_SECONDS = 300
@@ -79,6 +80,8 @@ class WebWeather:
         self.platform, self.console = platform, console
         self.cache = {}
         self.lock = asyncio.Lock()
+        runtime = getattr(platform, "storage_runtime", None)
+        self.shared_cache = runtime.cache if runtime else None
 
     @property
     def catalog(self):
@@ -265,6 +268,29 @@ class WebWeather:
         cached = self.cache.get(key)
         if cached and now < cached["retry_after"]:
             return {**state, **cached["result"]}
+        cache_key = digest(
+            {
+                "revision": key[0],
+                "location": state["location"],
+                "host": row["value"]["host"],
+                "language": "zh",
+                "unit": "celsius",
+            }
+        )
+        if self.shared_cache is not None:
+            shared = await asyncio.to_thread(self.shared_cache.get, "weather", cache_key)
+            if (
+                isinstance(shared, dict)
+                and isinstance(shared.get("result"), dict)
+                and type(shared.get("expires_at")) in (int, float)
+                and math.isfinite(shared["expires_at"])
+                and shared["expires_at"] > time.time()
+            ):
+                self.cache[key] = {
+                    "result": shared["result"],
+                    "retry_after": now + shared["expires_at"] - time.time(),
+                }
+                return {**state, **shared["result"]}
         try:
             location = state["location"]
             path = f"/weather/v1/current/{location['latitude']:.2f}/{location['longitude']:.2f}"
@@ -334,4 +360,13 @@ class WebWeather:
         if len(self.cache) >= 128 and key not in self.cache:
             self.cache.pop(next(iter(self.cache)))
         self.cache[key] = {"result": result, "retry_after": now + retry}
+        if self.shared_cache is not None:
+            fetched = time.time()
+            await asyncio.to_thread(
+                self.shared_cache.set,
+                "weather",
+                cache_key,
+                {"result": result, "fetched_at": fetched, "expires_at": fetched + retry},
+                ttl=retry,
+            )
         return {**state, **result}

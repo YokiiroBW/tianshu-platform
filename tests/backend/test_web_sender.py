@@ -133,8 +133,9 @@ class WebSenderTests(unittest.TestCase):
         self.reject(self.request)
 
     def test_durable_write_failure_never_reports_sent(self):
-        with patch(
-            "services.platform.web_sender.sqlite3.connect",
+        with patch.object(
+            self.sender.database,
+            "connect",
             side_effect=sqlite3.OperationalError("synthetic disk failure"),
         ):
             with self.assertRaises(sqlite3.OperationalError):

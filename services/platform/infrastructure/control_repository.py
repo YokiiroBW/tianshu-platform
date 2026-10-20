@@ -5,13 +5,15 @@ import sqlite3
 from contextlib import closing, contextmanager
 
 from ..contracts import Fault, canonical, digest, require, utc
+from ..backends import database as bind_database
 
 MUTATIONS = {"action", "execute"}
 
 
 class ControlRepository:
-    def __init__(self, database):
+    def __init__(self, database, *, runtime=None):
         self.database = database
+        self.backend = bind_database(runtime, "infrastructure", self.database)
         with self._db() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS control_operations (
                 operation_id TEXT PRIMARY KEY, client_id TEXT UNIQUE NOT NULL,
@@ -35,7 +37,7 @@ class ControlRepository:
     @contextmanager
     def _db(self, *, write=True):
         try:
-            with closing(sqlite3.connect(self.database, timeout=2)) as db:
+            with closing(self.backend.connect(timeout=2)) as db:
                 db.row_factory = sqlite3.Row
                 if write:
                     db.execute("PRAGMA synchronous=FULL")

@@ -11,6 +11,7 @@ ledger, and reads only redacted projections.
 import asyncio
 import math
 import sqlite3
+from .backends import database as bind_database
 import uuid
 from contextlib import closing
 
@@ -118,6 +119,9 @@ class WebModels:
         self.templates = {}
         self.unlock_ttl = 900
         self.ledger_path = platform.store.path + ".web-models.sqlite"
+        self.database = bind_database(
+            getattr(platform, "storage_runtime", None), "web_models", self.ledger_path
+        )
         if self.config is not None:
             self._configure()
 
@@ -136,7 +140,7 @@ class WebModels:
         self.unlock_ttl = ttl
         self.enabled = c.get("enabled", False)
         if self.enabled:
-            with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
+            with closing(self.database.connect(timeout=5)) as db:
                 db.execute("PRAGMA journal_mode=WAL")
                 # Prepared before the authoritative write, settled after: the recovery record.
                 db.execute(INTENT_SCHEMA)
@@ -575,7 +579,7 @@ class WebModels:
             None,
             self.p.models.clock(),
         )
-        with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
+        with closing(self.database.connect(timeout=5)) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
                 db.execute(
@@ -595,7 +599,7 @@ class WebModels:
         return prepared
 
     def _intent(self, client_id):
-        with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
+        with closing(self.database.connect(timeout=5)) as db:
             db.row_factory = sqlite3.Row
             row = db.execute(
                 "SELECT * FROM publication_intents WHERE client_id=?", (client_id,)
@@ -628,7 +632,7 @@ class WebModels:
 
     def _record(self, intent, result):
         """Write the durable receipt for an already verified publication."""
-        with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
+        with closing(self.database.connect(timeout=5)) as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute(
                 "UPDATE publication_intents SET state=?,result=?,settled_at=? WHERE client_id=?",
@@ -753,7 +757,7 @@ class WebModels:
     def _ledger(self, statement, params=()):
         """Read this console's own claim ledger, which is its own database file."""
         try:
-            with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
+            with closing(self.database.connect(timeout=5)) as db:
                 db.row_factory = sqlite3.Row
                 return db.execute(statement, params).fetchall()
         except (sqlite3.Error, OSError):

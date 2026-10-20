@@ -3,7 +3,7 @@
 import asyncio
 import copy
 import json
-import sqlite3
+from .backends import database as bind_database
 import uuid
 from contextlib import closing
 
@@ -28,6 +28,9 @@ class RoleRuntime:
         self.p = platform
         self.config = platform.settings.get("role_runtime")
         self.path = platform.store.path + ".roles.sqlite"
+        self.database = bind_database(
+            getattr(platform, "storage_runtime", None), "roles", self.path
+        )
         self.lock = asyncio.Lock()
         if self.config is None:
             return
@@ -64,7 +67,7 @@ class RoleRuntime:
                     db.execute("UPDATE roles SET body=? WHERE actor_id=?", (canonical(row), actor))
 
     def _db(self):
-        db = sqlite3.connect(self.path, timeout=5)
+        db = self.database.connect(timeout=5)
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")
         db.execute("PRAGMA busy_timeout=5000")

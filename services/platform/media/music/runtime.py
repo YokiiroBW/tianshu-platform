@@ -25,6 +25,9 @@ class Music:
         self.requests = RequestControl(media)
         self.connector = Netease(control=self.requests)
         self.connectors = {name: Bridge(name, self.requests) for name in ("qq", "kugou")}
+        for name, client in {"netease": self.connector, **self.connectors}.items():
+            client.cache.shared = getattr(media, "shared_cache", None)
+            client.cache.scope = name
         self.qr = {}
         self.downloads = Downloads(self)
         self.imports = Imports(self)

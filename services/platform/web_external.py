@@ -154,7 +154,13 @@ class WebExternal:
         self.platform = platform
         self.console = console
         self.config = platform.settings.get("web_external")
-        self.catalog = ExternalCatalog(self.config["directory"]) if self.config else None
+        self.catalog = (
+            ExternalCatalog(
+                self.config["directory"], runtime=getattr(platform, "storage_runtime", None)
+            )
+            if self.config
+            else None
+        )
         self.revision = self.catalog.snapshot()[0] if self.catalog else 0
 
     def _gate(self, session):

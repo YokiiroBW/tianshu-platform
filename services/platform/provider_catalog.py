@@ -3,7 +3,7 @@
 The caller MUST authenticate and authorize administrators before invoking mutations. This
 module is deliberately not registered with HTTP or Models. An executor may receive a secret
 only through execution_context after trusted authorization. The entire private directory is
-one offline backup unit; never restore just the SQLite database or just its encryption key.
+one offline backup unit; never restore just the database or just its encryption key.
 """
 
 import hashlib
@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import sqlite3
+from .backends import database as bind_database, postgres
 import time
 import uuid
 from contextlib import closing, contextmanager
@@ -81,7 +82,7 @@ def validate_test_diagnostic(diagnostic):
 
 
 class ProviderCatalog:
-    """SQLite serializes writers across processes; encrypted keys commit with public revisions.
+    """SQL transactions serialize writers; encrypted keys commit with public revisions.
 
     create=True is an explicit first-install operation, not an automatic missing-file recovery.
     Existing directories are never overwritten, including an interrupted initialization.
@@ -90,17 +91,18 @@ class ProviderCatalog:
     """
 
     @staticmethod
-    def verify_existing(directory):
+    def verify_existing(directory, *, runtime=None):
         """Read-only preflight of the complete backup unit, including every ciphertext."""
         try:
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
             root = Path(directory).absolute()
             database, key_file = root / "providers.sqlite", root / "providers.key"
+            backend = bind_database(runtime, "providers", database)
             require(
                 root.is_dir()
                 and not root.is_symlink()
-                and database.is_file()
+                and (backend.backend == "postgresql" or database.is_file())
                 and not database.is_symlink()
                 and key_file.is_file()
                 and not key_file.is_symlink(),
@@ -108,7 +110,7 @@ class ProviderCatalog:
                 503,
             )
             cipher = AESGCM(key_file.read_bytes())
-            with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+            with closing(backend.connect(mode="ro")) as db:
                 seal = db.execute("SELECT seal FROM metadata WHERE id=1").fetchone()
                 require(seal is not None, "provider_store_unavailable", 503)
                 value = seal[0]
@@ -147,9 +149,10 @@ class ProviderCatalog:
         except Exception:
             raise Fault("provider_store_unavailable", 503) from None
 
-    def __init__(self, directory, *, create=False, clock=time.time):
+    def __init__(self, directory, *, create=False, clock=time.time, runtime=None):
         self.directory = Path(directory).absolute()
         self.database = self.directory / "providers.sqlite"
+        self.backend = bind_database(runtime, "providers", self.database)
         self.key_file = self.directory / "providers.key"
         self.clock = clock
         try:
@@ -167,8 +170,9 @@ class ProviderCatalog:
                     os.fsync(handle.fileno())
                 self._cipher = AESGCM(key)
                 self._key = key
-                with closing(sqlite3.connect(self.database)) as db, db:
-                    os.chmod(self.database, 0o600)
+                with closing(self.backend.connect()) as db, db:
+                    if self.backend.backend == "sqlite":
+                        os.chmod(self.database, 0o600)
                     db.executescript("""
                         PRAGMA synchronous=FULL;
                         CREATE TABLE metadata (id INTEGER PRIMARY KEY CHECK(id=1),
@@ -193,7 +197,7 @@ class ProviderCatalog:
             require(
                 self.directory.is_dir()
                 and not self.directory.is_symlink()
-                and self.database.is_file()
+                and (self.backend.backend == "postgresql" or self.database.is_file())
                 and not self.database.is_symlink()
                 and self.key_file.is_file()
                 and not self.key_file.is_symlink(),
@@ -237,7 +241,7 @@ class ProviderCatalog:
                     ).fetchone()
                     is None
                 ):
-                    if not create:
+                    if not create and not postgres(db):
                         backup = self.directory / (
                             "providers.pre-functions-" + uuid.uuid4().hex + ".sqlite"
                         )
@@ -282,7 +286,7 @@ class ProviderCatalog:
                 503,
             )
             # mode=rw forbids silently creating a replacement if the live DB disappears.
-            db = sqlite3.connect(self.database.as_uri() + "?mode=rw", uri=True, timeout=5)
+            db = self.backend.connect(mode="rw", timeout=5)
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")

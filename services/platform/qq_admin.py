@@ -9,6 +9,7 @@ import hmac
 import json
 import re
 import sqlite3
+from .backends import database as bind_database
 import ssl
 import uuid
 from contextlib import closing
@@ -160,6 +161,9 @@ class QQAdmin:
         self.p = platform
         self.profiles_config = platform.settings.get("web_qq_profiles")
         self.path = str(platform.settings["database_path"]) + ".qq-admin.sqlite"
+        self.database = bind_database(
+            getattr(platform, "storage_runtime", None), "qq_admin", self.path
+        )
         with closing(self._db()) as db, db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             require(version in (0, 1), "dependency_unavailable", 503)
@@ -183,7 +187,7 @@ class QQAdmin:
             db.execute("PRAGMA user_version=1")
 
     def _db(self):
-        db = sqlite3.connect(self.path, timeout=5)
+        db = self.database.connect(timeout=5)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")

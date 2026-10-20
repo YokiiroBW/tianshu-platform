@@ -1,7 +1,7 @@
 """Explicitly initialized encrypted owner for administrator supplied peer connections.
 
 The directory, database and key are one backup unit. Missing pieces fail closed; serving a
-request never creates or repairs them. SQLite CAS serializes saves across platform processes.
+request never creates or repairs them. SQL CAS serializes saves across platform processes.
 """
 
 import hashlib
@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sqlite3
+from .backends import database as bind_database
 import uuid
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -38,7 +39,7 @@ def supported_kind(kind):
     )
 
 
-def validate_configuration(config, settings, *, existing=True):
+def validate_configuration(config, settings, *, existing=True, runtime=None):
     if config is None:
         return
     require(
@@ -85,20 +86,21 @@ def validate_configuration(config, settings, *, existing=True):
     )
     require(settings.get("home") is None, "invalid_input", 400)
     if existing:
-        ExternalCatalog.verify_existing(config["directory"])
+        ExternalCatalog.verify_existing(config["directory"], runtime=runtime)
 
 
 class ExternalCatalog:
     """Secret-bearing revisions and last-test receipts; never returns secrets in view()."""
 
     @staticmethod
-    def verify_existing(directory):
-        catalog = ExternalCatalog(directory)
+    def verify_existing(directory, *, runtime=None):
+        catalog = ExternalCatalog(directory, runtime=runtime)
         catalog.snapshot()
 
-    def __init__(self, directory, *, create=False):
+    def __init__(self, directory, *, create=False, runtime=None):
         self.root = Path(directory).absolute()
         self.database = self.root / "external.sqlite"
+        self.backend = bind_database(runtime, "external", self.database)
         self.key_file = self.root / "external.key"
         try:
             if create:
@@ -112,8 +114,9 @@ class ExternalCatalog:
                 cipher = AESGCM(key)
                 nonce = os.urandom(12)
                 seal = nonce + cipher.encrypt(nonce, b"external-catalog-v1:0", b"seal")
-                with closing(sqlite3.connect(self.database)) as db, db:
-                    os.chmod(self.database, 0o600)
+                with closing(self.backend.connect()) as db, db:
+                    if self.backend.backend == "sqlite":
+                        os.chmod(self.database, 0o600)
                     db.executescript("""
                         PRAGMA synchronous=FULL;
                         CREATE TABLE metadata (id INTEGER PRIMARY KEY CHECK(id=1),
@@ -128,7 +131,7 @@ class ExternalCatalog:
             require(
                 self.root.is_dir()
                 and not self.root.is_symlink()
-                and self.database.is_file()
+                and (self.backend.backend == "postgresql" or self.database.is_file())
                 and not self.database.is_symlink()
                 and self.key_file.is_file()
                 and not self.key_file.is_symlink(),
@@ -205,7 +208,7 @@ class ExternalCatalog:
                 "external_store_unavailable",
                 503,
             )
-            db = sqlite3.connect(self.database.as_uri() + "?mode=rw", uri=True, timeout=5)
+            db = self.backend.connect(mode="rw", timeout=5)
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")
             yield db
@@ -227,7 +230,7 @@ class ExternalCatalog:
                 "external_store_unavailable",
                 503,
             )
-            db = sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True, timeout=5)
+            db = self.backend.connect(mode="ro", timeout=5)
             yield db
         except (sqlite3.Error, OSError):
             raise Fault("external_store_unavailable", 503) from None

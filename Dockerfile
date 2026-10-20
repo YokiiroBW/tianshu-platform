@@ -21,6 +21,7 @@ WORKDIR /build
 COPY scripts/build/tools.lock scripts/build/runtime.lock ./
 RUN python -m pip install --no-cache-dir --no-deps -r tools.lock
 COPY pyproject.toml ./
+COPY vendor/ ./vendor/
 COPY services/ ./services/
 RUN python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels . \
     && python -m venv /opt/tianshu-venv \

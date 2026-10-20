@@ -2,6 +2,7 @@
 
 import asyncio
 import sqlite3
+from .backends import database as bind_database
 import uuid
 from contextlib import closing
 from pathlib import Path
@@ -16,10 +17,13 @@ class WebDialogue:
         self.p = platform
         self.input_entries = list(platform.settings.get("web", {}).get("input_entries", []))
         self.path = platform.store.path + ".web-inputs.sqlite"
+        self.database = bind_database(
+            getattr(platform, "storage_runtime", None), "web_inputs", self.path
+        )
         platform.contracts.load_web(
             Path(platform.settings["contract_directory"]).parents[1] / "web-conversation/v1"
         )
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(self.database.connect()) as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, semantic TEXT NOT NULL, entry_id TEXT NOT NULL, actor_id TEXT NOT NULL, account TEXT NOT NULL, message_id TEXT NOT NULL, state TEXT NOT NULL, result TEXT)"
@@ -54,7 +58,7 @@ class WebDialogue:
         )
 
     def submissions(self, body, entry):
-        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+        with closing(self.database.connect(timeout=5)) as db:
             rows = db.execute(
                 "SELECT message_id,state,result FROM submissions WHERE entry_id=? AND actor_id=? AND account=? ORDER BY rowid DESC LIMIT 20",
                 (body["conversation"], body["actor"], canonical(entry["account"])),
@@ -312,7 +316,7 @@ class WebDialogue:
             self.p.origins.context(db, reference, "platform", "companion", "dialogue")
 
     def _prepare_submission(self, body, entry, semantic):
-        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+        with closing(self.database.connect(timeout=5)) as db:
             db.execute("BEGIN IMMEDIATE")
             prior = db.execute(
                 "SELECT semantic,message_id,state,result FROM submissions WHERE id=?",
@@ -342,7 +346,7 @@ class WebDialogue:
         return message_id, None
 
     def _finish_submission(self, body, state, result):
-        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+        with closing(self.database.connect(timeout=5)) as db:
             db.execute(
                 "UPDATE submissions SET state=?,result=? WHERE id=?",
                 (state, canonical(result), body["client_id"]),

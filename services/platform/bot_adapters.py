@@ -57,7 +57,13 @@ class BotAdapters:
     def __init__(self, platform):
         self.p = platform
         self.config = platform.settings.get("bot_adapter_self_service")
-        self.catalog = BotAdapterCatalog(self.config["directory"]) if self.config else None
+        self.catalog = (
+            BotAdapterCatalog(
+                self.config["directory"], runtime=getattr(platform, "storage_runtime", None)
+            )
+            if self.config
+            else None
+        )
         self.drafts = {}
         self.lock = asyncio.Lock()
         self.row_locks = {}

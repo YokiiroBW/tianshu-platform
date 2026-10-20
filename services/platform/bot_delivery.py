@@ -327,7 +327,11 @@ class Delivery:
             ):
                 for media in loads(stored[0]).get("media", []):
                     media_count += 1
-                    media_size += len(base64.b64decode(media["data"], validate=True))
+                    media_size += (
+                        media["payload_ref"]["size_bytes"]
+                        if "payload_ref" in media
+                        else len(base64.b64decode(media["data"], validate=True))
+                    )
             for segment in request["segments"]:
                 previous = db.execute(
                     "SELECT * FROM expression_segments WHERE expression_id=? AND sequence=?",
@@ -431,7 +435,7 @@ class Delivery:
                         request["scope"]["actor_id"],
                         wire["turn_id"],
                         sequence,
-                        canonical(wire),
+                        canonical(self.bots.payloads.store(wire)),
                         "sent" if web else "pending",
                         "attempt:" + uuid.uuid4().hex,
                         canonical(["web:" + uuid.uuid4().hex]) if web else "[]",

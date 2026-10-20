@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .auth import secret
 from .contracts import Fault, require
+from .backends import database as bind_database, readonly
 
 
 def password_hash(password, salt=None):
@@ -52,30 +53,38 @@ def verify_password(password, verifier):
     )
 
 
-def inspect_account(database_path):
+def inspect_account(database_path, *, runtime=None):
     """Read the account at its fixed deployment path, including its loss-detection seal."""
     path = Path(str(database_path) + ".web-account.sqlite")
     seal = Path(str(path) + ".sealed")
+    backend = bind_database(runtime, "web_account", path)
     try:
         require(not path.is_symlink() and not seal.is_symlink(), "account_unavailable", 503)
-        if not path.exists():
+        if backend.backend == "sqlite" and not path.exists():
             require(not seal.exists(), "account_unavailable", 503)
             return None
-        with closing(
-            sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.25)
-        ) as db:
+        with closing(backend.connect(mode="ro", timeout=0.25)) as db:
             db.execute("PRAGMA query_only=ON")
+            if (
+                backend.backend == "postgresql"
+                and db.execute("PRAGMA user_version").fetchone()[0] == 0
+            ):
+                require(not seal.exists(), "account_unavailable", 503)
+                return None
             return WebAccount.read_record(db, seal)
     except (OSError, sqlite3.Error, ValueError, TypeError):
         raise Fault("account_unavailable", 503) from None
 
 
 class WebAccount:
-    def __init__(self, settings):
+    def __init__(self, settings, *, runtime=None):
+        runtime = runtime if runtime is not None else readonly(settings)
+        self.runtime = runtime
         self.config = settings.get("web_account")
         self.database_path = settings.get("database_path", "")
         self.path = Path(str(settings.get("database_path", "")) + ".web-account.sqlite")
         self.seal = Path(str(self.path) + ".sealed")
+        self.backend = bind_database(runtime, "web_account", self.path)
         if self.config is None:
             # Removing the opt-in setting is not a password reset or a rollback instruction.
             # Existing account state must never reactivate a deployment's superseded hash.
@@ -101,13 +110,20 @@ class WebAccount:
 
     def read(self):
         if self.config is None:
+            if self.backend.backend == "postgresql":
+                with closing(self.backend.connect(mode="ro", timeout=0.25)) as db:
+                    require(
+                        db.execute("PRAGMA user_version").fetchone()[0] == 0,
+                        "account_unavailable",
+                        503,
+                    )
             require(
                 not any(p.exists() or p.is_symlink() for p in (self.path, self.seal)),
                 "account_unavailable",
                 503,
             )
             return None
-        return inspect_account(self.database_path)
+        return inspect_account(self.database_path, runtime=self.runtime)
 
     @staticmethod
     def read_record(db, seal):
@@ -183,13 +199,12 @@ class WebAccount:
         try:
             # Exclusive creation avoids accidentally creating a replacement for a lost account.
             try:
-                descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                os.close(descriptor)
+                if self.backend.backend == "sqlite":
+                    descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    os.close(descriptor)
             except FileExistsError:
                 pass
-            with closing(
-                sqlite3.connect(self.path.resolve().as_uri() + "?mode=rw", uri=True, timeout=5)
-            ) as db:
+            with closing(self.backend.connect(mode="rw", timeout=5)) as db:
                 db.execute("PRAGMA synchronous=FULL")
                 db.execute("BEGIN IMMEDIATE")
                 try:

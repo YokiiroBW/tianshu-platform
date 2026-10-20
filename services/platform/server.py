@@ -729,7 +729,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
     app.router.add_route("*", "/{path:.*}", console.handle)
 
     async def close_local_work(app):
-        platform.local_work.close()
+        platform.close()
 
     if not public:
         app.on_cleanup.append(close_local_work)

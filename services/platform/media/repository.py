@@ -1,6 +1,7 @@
 """Durable subscriptions, source membership and CAS-owned download jobs.
 
-Only this module opens the media database. Transactions contain no network or file work.
+Only this module opens the media database. Transactions contain no network work.
+Immutable recovery files are sealed before their references commit.
 """
 
 import json
@@ -13,6 +14,8 @@ from pathlib import Path
 from ..contracts import Fault, digest, canonical, require
 from .destination import head_key, same_destination, directory_identity
 from .import_records import same_identity
+from ..backends import database as bind_database, postgres
+from ..payload_files import MediaPayloads
 
 TERMINAL = frozenset(
     {
@@ -46,16 +49,20 @@ SUBSCRIPTIONS = frozenset(
 
 
 class Repository:
-    def __init__(self, database, *, clock=time.time):
+    def __init__(self, database, *, clock=time.time, runtime=None):
         self.database = Path(database)
+        self.runtime = runtime
+        self.backend = bind_database(runtime, "media", self.database)
+        self.payloads = MediaPayloads(self.database)
         self.clock = clock
         self.database.parent.mkdir(parents=True, exist_ok=True)
         if self.database.exists():
-            with closing(sqlite3.connect(self.database)) as db:
+            with closing(self.backend.connect()) as db:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
                 require(version in (0, 1, 2), "media_store_unavailable", 503)
                 if (
-                    version < 2
+                    not postgres(db)
+                    and version < 2
                     and db.execute("SELECT 1 FROM sqlite_master WHERE type='table'").fetchone()
                 ):
                     backup = self.database.with_name(
@@ -79,10 +86,29 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS download_sources(bvid TEXT NOT NULL,cid TEXT NOT NULL,quality TEXT NOT NULL,state TEXT NOT NULL,owner TEXT,generation INTEGER NOT NULL DEFAULT 0,lease REAL NOT NULL DEFAULT 0,body TEXT,PRIMARY KEY(bvid,cid,quality));
                 PRAGMA user_version=2;
             """)
+        self._migrate_payloads()
+
+    def _migrate_payloads(self):
+        """Replace inline recovery data without changing revisions, leases or receipts."""
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT kind,id,body FROM documents WHERE kind IN ('book_chapter','book_audio_job','music_lyrics')"
+            ).fetchall()
+            for kind, identity, raw in rows:
+                value = json.loads(raw)
+                saved = self.payloads.store(kind, value)
+                if saved != value:
+                    recovered = self.payloads.read(kind, saved)
+                    if any(recovered.get(key) != item for key, item in value.items()):
+                        raise ValueError("media payload migration mismatch")
+                    db.execute(
+                        "UPDATE documents SET body=? WHERE kind=? AND id=?",
+                        (json.dumps(saved, ensure_ascii=False), kind, identity),
+                    )
 
     @contextmanager
     def transaction(self):
-        db = sqlite3.connect(self.database, timeout=10)
+        db = self.backend.connect(timeout=10)
         db.row_factory = sqlite3.Row
         try:
             db.execute("PRAGMA synchronous=FULL")
@@ -99,7 +125,7 @@ class Repository:
         row = db.execute(
             "SELECT body FROM documents WHERE kind=? AND id=?", (kind, identity)
         ).fetchone()
-        return json.loads(row[0]) if row else None
+        return self.payloads.read(kind, json.loads(row[0])) if row else None
 
     def get(self, kind, identity):
         with self.transaction() as db:
@@ -108,7 +134,7 @@ class Repository:
     def list(self, kind):
         with self.transaction() as db:
             rows = [
-                json.loads(row[0])
+                self.payloads.read(kind, json.loads(row[0]))
                 for row in db.execute(
                     "SELECT body FROM documents WHERE kind=? ORDER BY id", (kind,)
                 )
@@ -144,7 +170,12 @@ class Repository:
         result = {**body, "revision": revision + 1}
         db.execute(
             "INSERT INTO documents VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET revision=excluded.revision,body=excluded.body",
-            (kind, identity, result["revision"], json.dumps(result, ensure_ascii=False)),
+            (
+                kind,
+                identity,
+                result["revision"],
+                json.dumps(self.payloads.store(kind, result), ensure_ascii=False),
+            ),
         )
         return result
 
@@ -193,7 +224,7 @@ class Repository:
         body = {**current, **changes}
         db.execute(
             "UPDATE documents SET body=? WHERE kind=? AND id=?",
-            (json.dumps(body, ensure_ascii=False), kind, identity),
+            (json.dumps(self.payloads.store(kind, body), ensure_ascii=False), kind, identity),
         )
         return body
 
@@ -328,11 +359,11 @@ class Repository:
             music = dict(
                 db.execute("""
                 SELECT count(*) AS total,
-                  coalesce(sum(json_extract(body,'$.state')='active'),0) AS active,
-                  coalesce(sum(json_extract(body,'$.state')='paused'),0) AS paused,
-                  coalesce(sum(coalesce(json_extract(body,'$.code'),'ready') NOT IN ('','ready')),0) AS attention,
-                  coalesce(sum(json_extract(body,'$.auto_download')=1),0) AS auto_download,
-                  coalesce(sum(json_extract(body,'$.member_count')),0) AS members
+                  coalesce(sum(CASE WHEN json_extract(body,'$.state')='active' THEN 1 ELSE 0 END),0) AS active,
+                  coalesce(sum(CASE WHEN json_extract(body,'$.state')='paused' THEN 1 ELSE 0 END),0) AS paused,
+                  coalesce(sum(CASE WHEN coalesce(json_extract(body,'$.code'),'ready') NOT IN ('','ready') THEN 1 ELSE 0 END),0) AS attention,
+                  coalesce(sum(CASE WHEN json_extract(body,'$.auto_download')=1 THEN 1 ELSE 0 END),0) AS auto_download,
+                  coalesce(sum(CAST(json_extract(body,'$.member_count') AS INTEGER)),0) AS members
                 FROM documents WHERE kind='music_playlist'
             """).fetchone()
             )
@@ -345,9 +376,9 @@ class Repository:
             books = dict(
                 db.execute("""
                 SELECT count(*) AS total,
-                  coalesce(sum(json_extract(body,'$.state')='active'),0) AS active,
-                  coalesce(sum(json_extract(body,'$.state')='paused'),0) AS paused,
-                  coalesce(sum(coalesce(json_extract(body,'$.code'),'ready') NOT IN ('','ready')),0) AS attention
+                  coalesce(sum(CASE WHEN json_extract(body,'$.state')='active' THEN 1 ELSE 0 END),0) AS active,
+                  coalesce(sum(CASE WHEN json_extract(body,'$.state')='paused' THEN 1 ELSE 0 END),0) AS paused,
+                  coalesce(sum(CASE WHEN coalesce(json_extract(body,'$.code'),'ready') NOT IN ('','ready') THEN 1 ELSE 0 END),0) AS attention
                 FROM documents WHERE kind='book_subscription'
             """).fetchone()
             )
@@ -377,17 +408,22 @@ class Repository:
                     for row in (json.loads(value[0]) for value in rows)
                 ]
             schema = db.execute("PRAGMA user_version").fetchone()[0]
-        try:
-            size = self.database.stat().st_size
-        except OSError:
-            size = None
+            if postgres(db):
+                size = db.execute(
+                    "SELECT COALESCE(sum(pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename))),0)::bigint FROM pg_tables WHERE schemaname=current_schema()"
+                ).fetchone()[0]
+            else:
+                try:
+                    size = self.database.stat().st_size
+                except OSError:
+                    size = None
         return {
             "music": music,
             "books": books,
             "recent": recent,
             "database": {
                 "state": "ready",
-                "engine": "SQLite",
+                "engine": "PostgreSQL" if self.backend.backend == "postgresql" else "SQLite",
                 "schema_version": schema,
                 "query_ms": round((time.monotonic() - started) * 1000, 1),
                 "size_bytes": size,

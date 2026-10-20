@@ -150,7 +150,7 @@ def validate_media(settings):
 
 
 class Media:
-    def __init__(self, settings, *, clock, local):
+    def __init__(self, settings, *, runtime=None, clock, local):
         self.config = validate_media(settings)
         self.local = local
         self.started = False
@@ -158,7 +158,11 @@ class Media:
         self.previews = {}
         self.qr = {}
         self.wake = asyncio.Event()
-        self.repo = Repository(settings["database_path"] + ".media.sqlite", clock=clock)
+        self.storage_runtime = runtime
+        self.shared_cache = runtime.cache if runtime else None
+        self.repo = Repository(
+            settings["database_path"] + ".media.sqlite", clock=clock, runtime=runtime
+        )
         self.accounts = Accounts(self.repo)
         self.books = Books(self)
         self.comics = Comics(self)

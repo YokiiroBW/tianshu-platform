@@ -1,6 +1,6 @@
 """Private encrypted owner of self-service bot adapter connections.
 
-The key and SQLite file are one backup unit. All row data, including endpoints and credentials,
+The private key and selected SQL database are one backup unit. All row data, including endpoints and credentials,
 is authenticated and encrypted. An incomplete or damaged owner fails closed at startup.
 """
 
@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import sqlite3
+from .backends import database as bind_database
 from contextlib import closing
 from pathlib import Path
 
@@ -63,9 +64,10 @@ def validate_configuration(config, settings):
 
 
 class BotAdapterCatalog:
-    def __init__(self, directory):
+    def __init__(self, directory, *, runtime=None):
         self.root = Path(directory)
         self.database = self.root / "bot-adapters.sqlite"
+        self.backend = bind_database(runtime, "bot_adapters", self.database)
         self.key_file = self.root / "bot-adapters.key"
         try:
             require(not self.root.is_symlink(), "bot_adapter_store_unavailable", 503)
@@ -79,8 +81,9 @@ class BotAdapterCatalog:
                     output.write(AESGCM.generate_key(bit_length=256))
                     output.flush()
                     os.fsync(output.fileno())
-                with closing(sqlite3.connect(self.database)) as db:
-                    os.chmod(self.database, 0o600)
+                with closing(self.backend.connect()) as db, db:
+                    if self.backend.backend == "sqlite":
+                        os.chmod(self.database, 0o600)
                     db.executescript("""
                         PRAGMA synchronous=FULL;
                         CREATE TABLE rows (id TEXT PRIMARY KEY, document BLOB NOT NULL);
@@ -90,7 +93,7 @@ class BotAdapterCatalog:
             require(
                 self.root.is_dir()
                 and not self.root.is_symlink()
-                and self.database.is_file()
+                and (self.backend.backend == "postgresql" or self.database.is_file())
                 and not self.database.is_symlink()
                 and self.key_file.is_file()
                 and not self.key_file.is_symlink(),
@@ -136,7 +139,7 @@ class BotAdapterCatalog:
             "bot_adapter_store_unavailable",
             503,
         )
-        db = sqlite3.connect(self.database, timeout=5)
+        db = self.backend.connect(timeout=5)
         db.execute("PRAGMA synchronous=FULL")
         return db
 

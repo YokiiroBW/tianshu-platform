@@ -1,10 +1,12 @@
 """Single-flight background media accounting, scoped snapshots and cooperative shutdown."""
 
 import asyncio
+import math
 import copy
 import os
 import threading
 import time
+import socket
 
 from ..contracts import Fault, digest
 from .storage_scan import ScanCancelled, map_location, scan_files, server_path
@@ -70,6 +72,15 @@ class StorageBreakdown:
         self.retired = set()
         self.file_work = set()
         self.scan_gate = asyncio.Lock()
+        self.shared_cache = getattr(media, "shared_cache", None)
+        self.node_key = (
+            digest({"node": socket.gethostname(), "anchor": str(media.repo.database)})
+            if self.shared_cache is not None
+            else None
+        )
+
+    def shared_key(self, scope):
+        return digest({"node": self.node_key, "scope": scope})
 
     def configuration(self):
         targets = copy.deepcopy(self.media.config["targets"])
@@ -159,6 +170,10 @@ class StorageBreakdown:
     async def refresh(self, *, force=False):
         """Observe/wait for one scoped measurement; normal views remain nonblocking."""
         if force and (self.task is None or self.task.done()):
+            if self.shared_cache is not None and self.scope is not None:
+                await asyncio.to_thread(
+                    self.shared_cache.delete, "storage_breakdown", self.shared_key(self.scope)
+                )
             self.invalidate()
         storage = await self.media.local(media_storage, dict(self.media.config["targets"]))
         self.view(storage)
@@ -191,6 +206,27 @@ class StorageBreakdown:
 
     async def measure(self, scope, volumes, targets, servers, mappings, cancel):
         try:
+            if self.shared_cache is not None:
+                shared = await asyncio.to_thread(
+                    self.shared_cache.get, "storage_breakdown", self.shared_key(scope)
+                )
+                if (
+                    isinstance(shared, dict)
+                    and isinstance(shared.get("measurements"), dict)
+                    and type(shared.get("measured_at")) in (int, float)
+                    and type(shared.get("expires_at")) in (int, float)
+                    and math.isfinite(shared["expires_at"])
+                    and shared["expires_at"] > time.time()
+                    and scope == self.scope
+                    and not self.closed
+                    and not cancel.is_set()
+                ):
+                    self.snapshot = shared["measurements"]
+                    self.measured_at = shared["measured_at"]
+                    self.completed_at = self.monotonic() - (
+                        CACHE_SECONDS - (shared["expires_at"] - time.time())
+                    )
+                    return
             roots, discovery_code = await self.locations(servers, mappings)
             subscription_roots = [
                 (volume["storage_id"], target["directory"])
@@ -224,6 +260,20 @@ class StorageBreakdown:
             if not self.closed and scope == self.scope and not cancel.is_set():
                 self.snapshot = measurements
                 self.measured_at, self.completed_at = self.clock(), self.monotonic()
+                if self.shared_cache is not None:
+                    fetched = time.time()
+                    await asyncio.to_thread(
+                        self.shared_cache.set,
+                        "storage_breakdown",
+                        self.shared_key(scope),
+                        {
+                            "measurements": measurements,
+                            "measured_at": self.measured_at,
+                            "fetched_at": fetched,
+                            "expires_at": fetched + CACHE_SECONDS,
+                        },
+                        ttl=CACHE_SECONDS,
+                    )
         except (asyncio.CancelledError, ScanCancelled):
             cancel.set()
         except (Fault, OSError):

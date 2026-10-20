@@ -78,11 +78,18 @@ class PinsTests(unittest.TestCase):
         import re
 
         def pins(path):
-            return dict(re.findall(r"^([\w-]+)==([^\s]+)", path.read_text(), re.M))
+            return dict(re.findall(r"^([\w-]+)(?:\[[^]]+\])?==([^\s;]+)", path.read_text(), re.M))
 
         expected = pins(ROOT / "requirements-dev.txt")
         expected.pop("ruff")
         self.assertEqual(pins(ROOT / "scripts/build/runtime.lock"), expected)
+
+    def test_shared_wheel_is_vendored_and_hash_locked(self):
+        wheel = ROOT / "vendor/tianshu_storage-0.1.0-py3-none-any.whl"
+        pin = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        self.assertIn("--hash=sha256:" + pin, (ROOT / "scripts/build/runtime.lock").read_text())
+        self.assertIn("./vendor/" + wheel.name, (ROOT / "requirements-dev.txt").read_text())
+        self.assertIn("COPY vendor/ ./vendor/", (ROOT / "Dockerfile").read_text())
 
     def test_build_lock_directory_is_not_excluded(self):
         ignored = (ROOT / ".dockerignore").read_text().splitlines()

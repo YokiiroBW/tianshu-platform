@@ -120,3 +120,10 @@ Python 3.12+，独立 `pyproject.toml` 与固定依赖 `requirements-dev.txt`。
 - 镜像为两阶段：`console` 阶段用 `node:24.19.0-bookworm-slim` 按锁文件 `npm ci` + `npm run build`，`runtime` 阶段用 `python:3.12.11-slim-bookworm`、非 root、无 Node/npm；`.dockerignore` 排除本机 `apps/web/dist`，镜像内容不可能来自作者机器。`HEALTHCHECK` 调用产品自己的 `healthcheck` 子命令（`ssl.create_default_context(cafile=...)`，保持主机名校验），因此证书 SAN 必须覆盖 `127.0.0.1`。
 - 最窄：`.runtime/venv/Scripts/python.exe -m unittest discover -s tests/backend -p 'test_runtime_*.py'`（199 项；容器运行时项在无 Docker 时显式 skip，**不当作通过**）。受影响既有套件另跑 `test_web_console/test_http/test_platform/test_native_models`（51）、`test_sources/test_source_https`（19），不重复未变前端与旧媒体环境失败。完整后端仍用原 discover。`preflight` 子命令是只读的滚动前检查，首次部署报 `requires_initialization` 属正确语义。
 - **未验证**：本机无 Docker，`docker build`（含镜像内 `npm ci` + `npm run build`）、`docker run`、容器 `HEALTHCHECK`、`SIGTERM` 优雅退出、一次性 `preflight` 容器均未执行；Windows 上的 `SIGTERM` 路径（`loop.add_signal_handler` 不可用，回退 `signal.signal`）未在 Linux 验证。交付标注 `needs_validation`。
+
+
+## TS-231 可选存储后端
+
+- 当前默认仍为 SQLite，现可通过独立 `storage_backends` 配置或 `TIANSHU_POSTGRES_URL` / `TIANSHU_REDIS_URL` 自动检查并选择 PostgreSQL / Redis。`database_path` 和原有文件挂载是本地锚点，不改成 URL；配置、首次引导、文件目录和备份边界见 [存储后端](docs/platform/storage-backends.md)。
+- 真实后端专项：给独立可清空 PG 设置 `TS231_TEST_POSTGRES`，给隔离 Redis 设置 `TS231_TEST_REDIS` 后运行 `python -m unittest discover -s tests/backend -p test_storage_backends.py -v`。每例使用独立 namespace，不连接生产库。既定完整后端回归仍保留，前端输入未变不重跑。
+- 产品携带 `vendor/tianshu_storage-0.1.0-py3-none-any.whl`，依赖和镜像使用该相对 wheel；不依赖其他工作树源码或未发布 PyPI 包。共享层只负责连接/绑定/文件原子发布，业务 schema、JSON SQL、迁移和任务语义由本产品维护。

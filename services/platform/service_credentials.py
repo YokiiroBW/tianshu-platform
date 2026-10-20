@@ -65,7 +65,11 @@ class ServiceCredentials:
     def __init__(self, platform):
         self.p = platform
         config = platform.settings.get("web_external")
-        self.catalog = ExternalCatalog(config["directory"]) if config else None
+        self.catalog = (
+            ExternalCatalog(config["directory"], runtime=getattr(platform, "storage_runtime", None))
+            if config
+            else None
+        )
 
     def resolve(self, header, request):
         require(isinstance(request, dict), "invalid_input", 400)

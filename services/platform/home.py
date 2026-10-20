@@ -25,6 +25,7 @@ import ipaddress
 import math
 import re
 import sqlite3
+from .backends import database as bind_database
 import ssl
 import uuid
 from contextlib import closing
@@ -150,10 +151,14 @@ class Home:
         self.p = platform
         self.console = console
         candidate = getattr(console, "external", None)
-        self.external = candidate if candidate is not None and candidate.catalog is not None else None
+        self.external = (
+            candidate if candidate is not None and candidate.catalog is not None else None
+        )
         self.external_revision = self.external.home_generation() if self.external else None
         self.config = (
-            self.external.home_value() if self.external is not None else platform.settings.get("home")
+            self.external.home_value()
+            if self.external is not None
+            else platform.settings.get("home")
         )
         self.enabled = False
         self.entities = {}
@@ -167,7 +172,13 @@ class Home:
         self.clock = platform.models.clock
         self.ledger_path = platform.store.path + (
             f".home-controls.external.{self.external_revision}.sqlite"
-            if self.external else ".home-controls.sqlite"
+            if self.external
+            else ".home-controls.sqlite"
+        )
+        self.database = bind_database(
+            getattr(platform, "storage_runtime", None),
+            "home_" + str(self.external_revision) if self.external else "home",
+            self.ledger_path,
         )
         if self.config is not None:
             self._configure()
@@ -177,7 +188,10 @@ class Home:
         require(
             isinstance(c, dict)
             and set(c) <= SETTING_KEYS
-            and ({"base_url", "entities"} if self.external else {"base_url", "token_env", "entities"}) <= set(c),
+            and (
+                {"base_url", "entities"} if self.external else {"base_url", "token_env", "entities"}
+            )
+            <= set(c),
             "invalid_input",
             400,
         )
@@ -216,7 +230,7 @@ class Home:
         self.timeout = timeout
         self.max_age = age
         self.enabled = c.get("enabled", False)
-        with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
+        with closing(self.database.connect(timeout=5)) as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute(READING_SCHEMA)
             self._migrate(db)
@@ -642,7 +656,7 @@ class Home:
             None,
             None,
         )
-        with closing(sqlite3.connect(self.ledger_path, timeout=5)) as db:
+        with closing(self.database.connect(timeout=5)) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
                 db.execute(
@@ -954,7 +968,7 @@ class Home:
     # ---------------------------------------------------------------- ledger
 
     def _connect(self):
-        return closing(sqlite3.connect(self.ledger_path, timeout=5))
+        return closing(self.database.connect(timeout=5))
 
     def _readings(self):
         with self._connect() as db:

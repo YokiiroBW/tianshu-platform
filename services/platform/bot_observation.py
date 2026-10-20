@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import re
 import sqlite3
+from .backends import database as bind_database
 import time
 import uuid
 from contextlib import closing
@@ -75,6 +76,9 @@ class BotObservation:
         self.catalog = self.adapters.catalog
         self.lock = asyncio.Lock()
         self.path = platform.store.path + ".bot-observations.sqlite"
+        self.database = bind_database(
+            getattr(platform, "storage_runtime", None), "bot_observations", self.path
+        )
         if self.catalog:
             with closing(self._db()) as db:
                 db.executescript("""
@@ -125,7 +129,7 @@ class BotObservation:
                     self._install_reply(reply, authors)
 
     def _db(self):
-        db = sqlite3.connect(self.path, timeout=5)
+        db = self.database.connect(timeout=5)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA synchronous=FULL")
         db.execute("PRAGMA journal_mode=WAL")
@@ -877,7 +881,7 @@ class BotObservation:
                 db.execute(
                     "INSERT INTO discovered VALUES(?,?,?,?,?,?) "
                     "ON CONFLICT(connection_id,conversation,author,archive_epoch) DO UPDATE SET "
-                    "count=count+1,last_at=excluded.last_at",
+                    "count=discovered.count+1,last_at=excluded.last_at",
                     (
                         row["id"],
                         conversation,
@@ -991,7 +995,7 @@ class BotObservation:
         with closing(self._db()) as db:
             rows = db.execute(
                 "SELECT conversation,author,count,last_at FROM discovered "
-                "WHERE connection_id=? AND archive_epoch=? AND (? IS NULL OR conversation>? OR "
+                "WHERE connection_id=? AND archive_epoch=? AND (CAST(? AS TEXT) IS NULL OR conversation>? OR "
                 "(conversation=? AND author>?)) ORDER BY conversation,author LIMIT ?",
                 (
                     row["id"],

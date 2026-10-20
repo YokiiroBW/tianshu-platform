@@ -5,6 +5,8 @@ import copy
 import hmac
 import secrets
 import sqlite3
+from .backends import database as bind_database, postgres
+from .payload_files import DeliveryPayloads
 import uuid
 from contextlib import closing, nullcontext
 
@@ -95,16 +97,18 @@ class Bots:
             )
         )
         self.path = platform.store.path + ".bots.sqlite"
+        self.payloads = DeliveryPayloads(self.path)
+        self.database = bind_database(getattr(platform, "storage_runtime", None), "bots", self.path)
         if config is None and not platform.settings.get("web"):
             return
-        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+        with closing(self.database.connect(timeout=5)) as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             require(
                 version in (0, 1, 2),
                 "dependency_unavailable",
                 503,
             )
-            if version == 1:
+            if version == 1 and not postgres(db):
                 with closing(
                     sqlite3.connect(self.path + ".pre-delivery-" + uuid.uuid4().hex + ".sqlite")
                 ) as backup:
@@ -140,6 +144,21 @@ class Bots:
         from .bot_delivery import Delivery
 
         self.delivery = Delivery(self)
+        self._migrate_payloads()
+
+    def _migrate_payloads(self):
+        with closing(self._db()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            for identity, raw in db.execute("SELECT reply_id,request FROM replies").fetchall():
+                value = loads(raw)
+                saved = self.payloads.store(value)
+                if saved != value:
+                    require(self.payloads.read(saved) == value, "dependency_unavailable", 503)
+                    db.execute(
+                        "UPDATE replies SET request=? WHERE reply_id=?",
+                        (canonical(saved), identity),
+                    )
+            db.commit()
 
     def _db(self):
         require(
@@ -147,7 +166,7 @@ class Bots:
             "dependency_unavailable",
             503,
         )
-        db = sqlite3.connect(self.path, timeout=5)
+        db = self.database.connect(timeout=5)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA synchronous=FULL")
         return db
@@ -980,7 +999,7 @@ class Bots:
                     "UPDATE replies SET state='claimed',claimed_at=? WHERE reply_id=? AND state='pending'",
                     (now, reply["reply_id"]),
                 )
-                request = loads(reply["request"])
+                request = self.payloads.read(loads(reply["request"]))
                 channel = request["destination"]
                 deliveries.append(
                     {

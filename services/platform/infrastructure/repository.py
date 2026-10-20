@@ -6,13 +6,16 @@ from contextlib import closing
 from pathlib import Path
 
 from ..contracts import Fault, canonical
+from ..backends import database as bind_database
 
 
 class Repository:
-    def __init__(self, database):
+    def __init__(self, database, *, runtime=None):
         self.database = str(database)
+        self.runtime = runtime
+        self.backend = bind_database(runtime, "infrastructure", self.database)
         Path(database).parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(self.backend.connect()) as db, db:
             db.execute("PRAGMA synchronous=FULL")
             db.execute("""CREATE TABLE IF NOT EXISTS observations (
                 node_id TEXT NOT NULL, operation TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -20,7 +23,7 @@ class Repository:
 
     def record(self, node_id, operation, revision, result):
         try:
-            with closing(sqlite3.connect(self.database, timeout=2)) as db, db:
+            with closing(self.backend.connect(timeout=2)) as db, db:
                 db.execute("PRAGMA synchronous=FULL")
                 db.execute("BEGIN IMMEDIATE")
                 old = db.execute(
@@ -43,7 +46,7 @@ class Repository:
 
     def read(self, node_id, operation, revision):
         try:
-            with closing(sqlite3.connect(self.database, timeout=2)) as db:
+            with closing(self.backend.connect(timeout=2)) as db:
                 row = db.execute(
                     "SELECT revision,latest,sample FROM observations WHERE node_id=? AND operation=?",
                     (node_id, operation),
@@ -56,7 +59,7 @@ class Repository:
 
     def keys(self, node_id, prefix, revision):
         try:
-            with closing(sqlite3.connect(self.database, timeout=2)) as db:
+            with closing(self.backend.connect(timeout=2)) as db:
                 return [
                     row[0]
                     for row in db.execute(

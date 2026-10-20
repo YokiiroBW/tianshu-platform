@@ -1,9 +1,11 @@
-"""SQLite is an explicitly selected local rehearsal store, not PostgreSQL."""
+"""Platform authority schema on the selected SQLite or PostgreSQL backend."""
 
 import sqlite3
 import uuid
 from contextlib import closing, contextmanager
 from pathlib import Path
+
+from .backends import database as bind_database, postgres
 
 
 def is_ledger_key(value):
@@ -24,15 +26,18 @@ def is_ledger_key(value):
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, *, runtime=None):
         self.path = str(Path(path).resolve())
+        self.runtime = runtime
+        self.database = bind_database(runtime, "authority", self.path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+        with closing(self.database.connect(timeout=5)) as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version not in (0, 1, 2):
                 raise ValueError("unsupported platform store version")
             if (
-                version == 0
+                not postgres(db)
+                and version == 0
                 and db.execute("SELECT 1 FROM sqlite_master WHERE name='origins'").fetchone()
             ):
                 # SQLite backup includes WAL; retain a unique pre-migration copy.
@@ -40,7 +45,7 @@ class Store:
                     sqlite3.connect(self.path + ".pre-source-" + uuid.uuid4().hex + ".sqlite")
                 ) as backup:
                     db.backup(backup)
-            if version == 1:
+            if version == 1 and not postgres(db):
                 # TS-015 native configs join the schema; keep a unique pre-migration copy.
                 with closing(
                     sqlite3.connect(self.path + ".pre-native-" + uuid.uuid4().hex + ".sqlite")
@@ -155,7 +160,7 @@ class Store:
 
     @contextmanager
     def connect(self, *, write=False, timeout=5):
-        db = sqlite3.connect(self.path, timeout=timeout)
+        db = self.database.connect(timeout=timeout)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         try:
