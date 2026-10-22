@@ -1,3 +1,4 @@
+import { PASSWORD_MIN_LENGTH } from "../../app/passwordPolicy";
 import { LoginLink, useSessionGuard } from "../../app/Auth";
 import { requestId } from "../../app/requestId";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -378,7 +379,7 @@ export default function HomePage() {
                       name="password"
                       type="password"
                       autoComplete="current-password"
-                      minLength={12}
+                      minLength={PASSWORD_MIN_LENGTH}
                       maxLength={256}
                       required
                       disabled={busy}

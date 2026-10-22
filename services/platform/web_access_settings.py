@@ -3,6 +3,7 @@
 import asyncio
 
 from .contracts import Fault, require
+from .web_account import valid_password_length
 
 
 class WebAccessSettings:
@@ -18,7 +19,7 @@ class WebAccessSettings:
         require(self.access.current is not None, "web_not_configured", 503)
         require(set(body) == {"password", "value", "revision"}, "invalid_input", 400)
         password = body["password"]
-        require(isinstance(password, str) and 12 <= len(password) <= 256, "unauthorized", 401)
+        require(valid_password_length(password), "unauthorized", 401)
         console = self.console
         async with self.lock, console.login_lock:
             console.failures = [t for t in console.failures if t > console.clock() - 60]

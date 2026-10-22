@@ -28,7 +28,15 @@ from .tasks import Tasks
 from .transport import CoreFault
 from .web_access import WebAccess
 from .web_access_settings import WebAccessSettings
-from .web_account import WebAccount, password_hash, validate_hash, verify_password
+from .web_account import (
+    PASSWORD_MIN_LENGTH,
+    PASSWORD_MAX_LENGTH,
+    WebAccount,
+    password_hash,
+    valid_password_length,
+    validate_hash,
+    verify_password,
+)
 from .web_assets import WebAssets
 from .web_connections import view as connections_view
 from .web_content import WebContent
@@ -679,8 +687,7 @@ class WebConsole:
             require(
                 isinstance(body["username"], str)
                 and len(body["username"]) <= 128
-                and isinstance(body["password"], str)
-                and 12 <= len(body["password"]) <= 256,
+                and valid_password_length(body["password"]),
                 "unauthorized",
                 401,
             )
@@ -1033,6 +1040,8 @@ class WebConsole:
 if __name__ == "__main__":
     import getpass
 
-    password = getpass.getpass("New local administrator password (12-256 characters): ")
+    password = getpass.getpass(
+        f"New local administrator password ({PASSWORD_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} characters): "
+    )
     require(password == getpass.getpass("Confirm password: "), "invalid_input", 400)
     print(password_hash(password))

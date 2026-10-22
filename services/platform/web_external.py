@@ -12,6 +12,7 @@ from .contracts import Fault, require
 from .external_catalog import ExternalCatalog
 from .home import ENTITY_PATTERN, KINDS, MAX_ENTITIES, Home
 from .web_external_net import assert_pins, reviewed_pins
+from .web_account import valid_password_length
 
 PREFIX = "/api/web/external/"
 UNLOCK_TTL = 900
@@ -282,7 +283,7 @@ class WebExternal:
         if name == "unlock":
             require(set(body) == {"password"}, "invalid_input", 400)
             password = body["password"]
-            require(isinstance(password, str) and 12 <= len(password) <= 256, "unauthorized", 401)
+            require(valid_password_length(password), "unauthorized", 401)
             console = self.console
             async with console.login_lock:
                 console.failures = [t for t in console.failures if t > console.clock() - 60]

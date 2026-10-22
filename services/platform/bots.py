@@ -14,6 +14,7 @@ from .auth import secret
 from .bot_event_recovery import confirmed, public_state, retryable
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
 from .role_runtime import is_placeholder_actor
+from .web_account import valid_password_length
 
 
 def validate_bot_settings(settings, auth, sources, contracts):
@@ -295,7 +296,7 @@ class Bots:
             require(set(body) == {"password"}, "invalid_input", 400)
             require(self._web_code(console) == "ready", "operator_not_authorized", 403)
             password = body["password"]
-            require(isinstance(password, str) and 12 <= len(password) <= 256, "unauthorized", 401)
+            require(valid_password_length(password), "unauthorized", 401)
             async with console.login_lock:
                 console.failures = [t for t in console.failures if t > console.clock() - 60]
                 require(len(console.failures) < 5, "too_many_requests", 429)

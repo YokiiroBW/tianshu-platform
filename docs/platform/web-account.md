@@ -44,7 +44,7 @@
 
 - `POST /api/web/setup`：`{username,password,setup_token?}`，仅显式新安装且无账户时允许。省略或错误安装凭据为 401。
 - `POST /api/web/account/claim`：`{username,password,current_password}`，仅已登录旧配置账号允许，并再次验证旧密码。
-- 两操作均复用已有匿名/认证 Cookie、CSRF、精确 Origin/Host、JSON 请求体、16 KiB 上限及登录限流。未知字段（例如 principal）拒绝。用户名为去首尾空格后原样的 1–128 字符且无 ASCII 控制符；密码 12–256 字符。
+- 两操作均复用已有匿名/认证 Cookie、CSRF、精确 Origin/Host、JSON 请求体、16 KiB 上限及登录限流。未知字段（例如 principal）拒绝。用户名为去首尾空格后原样的 1–128 字符且无 ASCII 控制符；密码 8–256 字符。
 - 成功均返回 `{authenticated:true,csrf}` 并轮换 Cookie；前端随后重新 GET session。新凭据提交后旧会话失效。其他进程的旧会话通过每次重读的凭据来源/版本/摘要指纹失效，重启不恢复会话。
 
 新增业务错误闭集：`setup_required` 409（未创建账号时尝试普通登录），`setup_closed` 409（创建/接管已结束或该模式不允许），`setup_unavailable` 503（待初始化时安装凭据不可用），`account_unavailable` 503（账号存储缺失、损坏或不一致）。其余沿用 `unauthorized` 401、`session_expired` 401、`forbidden` 403、`invalid_input` 400、`too_many_requests` 429，以及既有请求预算/超时/依赖错误；错误不带请求内容。诊断事件沿用安全闭集映射，不记录密码、hash、安装凭据或请求正文。

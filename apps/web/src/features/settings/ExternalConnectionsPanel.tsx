@@ -1,3 +1,4 @@
+import { PASSWORD_MIN_LENGTH } from "../../app/passwordPolicy";
 import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { RefreshCw } from "lucide-react";
@@ -381,7 +382,7 @@ export function ExternalConnectionsPanel({ kind }: { kind: Kind }) {
                 <input
                   type="password"
                   autoComplete="current-password"
-                  minLength={12}
+                  minLength={PASSWORD_MIN_LENGTH}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                 />

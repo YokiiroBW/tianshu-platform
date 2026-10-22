@@ -19,8 +19,16 @@ from .contracts import Fault, require
 from .backends import database as bind_database, readonly
 
 
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 256
+
+
+def valid_password_length(password):
+    return isinstance(password, str) and PASSWORD_MIN_LENGTH <= len(password) <= PASSWORD_MAX_LENGTH
+
+
 def password_hash(password, salt=None):
-    require(isinstance(password, str) and 12 <= len(password) <= 256, "invalid_input", 400)
+    require(valid_password_length(password), "invalid_input", 400)
     salt = salt or secrets.token_bytes(16)
     key = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
     return "scrypt-v1$" + salt.hex() + "$" + key.hex()
@@ -47,7 +55,7 @@ def validate_username(value):
 
 
 def verify_password(password, verifier):
-    require(isinstance(password, str) and 12 <= len(password) <= 256, "unauthorized", 401)
+    require(valid_password_length(password), "unauthorized", 401)
     return hmac.compare_digest(
         password_hash(password, bytes.fromhex(verifier.split("$")[1])), verifier
     )

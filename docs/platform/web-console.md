@@ -10,7 +10,7 @@
 .runtime/venv/Scripts/python.exe -m services.platform.web_console
 ```
 
-交互输入12–256字符密码并确认。只将输出的`scrypt-v1$盐$校验值`放入本机设置的`web.password_hash`；不保存明文密码、不把设置或运行库入库。所有内部服务token由各自`token_env`读取，至少24字符且每个用途独立；没有内置默认凭据。浏览器只得到HttpOnly会话Cookie和CSRF随机值。
+交互输入8–256字符密码并确认。只将输出的`scrypt-v1$盐$校验值`放入本机设置的`web.password_hash`；不保存明文密码、不把设置或运行库入库。所有内部服务token由各自`token_env`读取，至少24字符且每个用途独立；没有内置默认凭据。浏览器只得到HttpOnly会话Cookie和CSRF随机值。
 
 ```powershell
 .runtime/venv/Scripts/python.exe -m services.platform --settings C:/local-rehearsal/platform/settings.json serve --port 4814

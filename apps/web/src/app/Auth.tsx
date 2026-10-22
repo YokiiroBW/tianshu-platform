@@ -1,3 +1,4 @@
+import { PASSWORD_MIN_LENGTH } from "./passwordPolicy";
 import {
   createContext,
   useCallback,
@@ -367,7 +368,7 @@ export function AccountPage() {
             type="password"
             autoComplete={setup ? "new-password" : "current-password"}
             required
-            minLength={12}
+            minLength={PASSWORD_MIN_LENGTH}
             maxLength={256}
             disabled={busy}
           />
@@ -375,7 +376,7 @@ export function AccountPage() {
         {setup && (
           <>
             <p className="muted">
-              密码至少 12 个字符，请保存到自己的密码管理器。
+              密码至少 {PASSWORD_MIN_LENGTH} 个字符，请保存到自己的密码管理器。
             </p>
             <label>
               确认密码
@@ -384,7 +385,7 @@ export function AccountPage() {
                 type="password"
                 autoComplete="new-password"
                 required
-                minLength={12}
+                minLength={PASSWORD_MIN_LENGTH}
                 maxLength={256}
                 disabled={busy}
               />

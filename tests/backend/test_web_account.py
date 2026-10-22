@@ -24,12 +24,12 @@ from services.platform.service import (
     registered_credentials,
     validate_settings,
 )
-from services.platform.web_account import WebAccount, password_hash
+from services.platform.web_account import WebAccount, password_hash, verify_password
 from services.platform.web_console import WebConsole
 from web_fixtures import PASSWORD, web_settings
 
 TOKEN = "synthetic-first-install-token-20260926"
-NEW_PASSWORD = "synthetic-user-chosen-password-20260926"
+NEW_PASSWORD = "Eight123"
 
 
 def configure(directory, mode="create"):
@@ -51,6 +51,24 @@ class AccountStorageTests(unittest.TestCase):
         self.addCleanup(env.stop)
         self.settings = configure(self.temp.name)
         self.account = WebAccount(self.settings)
+
+    def test_password_length_boundary_preserves_existing_verifiers(self):
+        verifier = password_hash(NEW_PASSWORD)
+        self.assertTrue(verify_password(NEW_PASSWORD, verifier))
+        self.assertFalse(verify_password("Wrong123", verifier))
+        for rejected in ("Seven77", "x" * 257, None):
+            with self.subTest(password_type=type(rejected).__name__):
+                with self.assertRaises(Fault) as caught:
+                    password_hash(rejected)
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.status), ("invalid_input", 400)
+                )
+                with self.assertRaises(Fault) as caught:
+                    verify_password(rejected, verifier)
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.status), ("unauthorized", 401)
+                )
+        self.assertTrue(verify_password(PASSWORD, password_hash(PASSWORD)))
 
     def test_validation_preflight_and_reads_do_not_initialize(self):
         before = sorted(str(p) for p in Path(self.temp.name).rglob("*"))
@@ -234,6 +252,13 @@ class AccountHttpTests(unittest.IsolatedAsyncioTestCase):
             {"state": "create_admin", "credential_source": "setup", "setup_token_required": True},
         )
         self.assertNotIn("username", first)
+        await self.post(
+            "setup",
+            {"username": "chosen-owner", "password": "Seven77", "setup_token": TOKEN},
+            first["csrf"],
+            400,
+        )
+        self.assertIsNone(self.console.account.read())
         await self.post(
             "login", {"username": "synthetic-admin", "password": PASSWORD}, first["csrf"], 409
         )

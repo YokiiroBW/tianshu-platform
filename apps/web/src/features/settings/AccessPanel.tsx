@@ -1,3 +1,4 @@
+import { PASSWORD_MIN_LENGTH } from "../../app/passwordPolicy";
 import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import { call, session, WebError } from "./api";
@@ -232,7 +233,7 @@ export function AccessPanel() {
                   type="password"
                   autoComplete="current-password"
                   required
-                  minLength={12}
+                  minLength={PASSWORD_MIN_LENGTH}
                   maxLength={256}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}

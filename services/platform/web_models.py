@@ -18,6 +18,7 @@ from contextlib import closing
 from .auth import secret
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
 from .storage import is_ledger_key
+from .web_account import valid_password_length
 
 # Fixed target registry: schema shape, protocol pin and workload per published contract.
 TARGETS = {
@@ -265,7 +266,7 @@ class WebModels:
         require(set(body) == {"password"}, "invalid_input", 400)
         self._require_available()
         password = body["password"]
-        require(isinstance(password, str) and 12 <= len(password) <= 256, "unauthorized", 401)
+        require(valid_password_length(password), "unauthorized", 401)
         console = self.console
         # Serialize with the login path and share its single failure budget.
         async with console.login_lock:

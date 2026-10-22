@@ -1,3 +1,4 @@
+import { PASSWORD_MIN_LENGTH } from "../../app/passwordPolicy";
 import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useAuth } from "../../app/Auth";
@@ -626,7 +627,7 @@ export function BotAdapterPanel() {
               <input
                 type="password"
                 autoComplete="current-password"
-                minLength={12}
+                minLength={PASSWORD_MIN_LENGTH}
                 maxLength={256}
                 required
                 value={password}

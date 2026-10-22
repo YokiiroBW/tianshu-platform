@@ -1,3 +1,4 @@
+import { PASSWORD_MIN_LENGTH } from "../../app/passwordPolicy";
 import {
   useCallback,
   useEffect,
@@ -468,7 +469,7 @@ export function ProviderModelsPanel() {
                     ref={password}
                     type="password"
                     autoComplete="current-password"
-                    minLength={12}
+                    minLength={PASSWORD_MIN_LENGTH}
                     maxLength={256}
                     required
                     disabled={busy}

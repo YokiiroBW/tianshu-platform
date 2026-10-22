@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 
 // No route mocks: built UI, actual cookies/CSRF, SQLite and process restarts.
 const root = resolve(import.meta.dirname, "../../..");
-const chosen = "synthetic-chosen-password-20260926";
+const chosen = "Eight123";
 const original = "synthetic-local-password-014";
 let server: ChildProcess | undefined;
 async function start(mode: string, data: string) {
@@ -91,9 +91,22 @@ test("real first use creates account, shares login and survives server restart",
     page.getByRole("heading", { name: "欢迎来到天枢" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("banner").getByRole("link", { name: "首次设置" }),
+    page.getByText("密码至少 8 个字符", { exact: false }),
   ).toBeVisible();
   await choose(page);
+  const password = page.locator('input[name="password"]');
+  await expect(password).toHaveAttribute("minlength", "8");
+  await password.fill("Seven77");
+  await password.blur();
+  expect(
+    await password.evaluate(
+      (input: HTMLInputElement) => input.validity.tooShort,
+    ),
+  ).toBe(true);
+  await password.fill(chosen);
+  expect(
+    await password.evaluate((input: HTMLInputElement) => input.checkValidity()),
+  ).toBe(true);
   await page
     .locator('input[name="setup_token"]')
     .fill("synthetic-first-install-token-20260926");
