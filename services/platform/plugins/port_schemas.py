@@ -1,0 +1,109 @@
+"""Machine contracts for the operations this host actually provides."""
+
+from .control import OBJECT, TEXT, request
+
+NULL_REVISION = {"type": ["integer", "null"], "minimum": 1}
+VALUE = {
+    "type": "object",
+    "required": ["value", "revision"],
+    "properties": {"value": {}, "revision": {"type": "integer", "minimum": 1}},
+    "additionalProperties": False,
+}
+RECEIPT = {"type": "object", "required": ["id", "execution", "effect", "delivery", "revision"]}
+OPERATIONS = {
+    ("state.kv", "get"): (request({"key": TEXT}), {"oneOf": [VALUE, {"type": "null"}]}),
+    ("state.kv", "compare_and_set"): (
+        request({"key": TEXT, "value": {}, "expected_revision": NULL_REVISION}),
+        VALUE,
+    ),
+    ("state.kv", "delete"): (
+        request({"key": TEXT, "expected_revision": {"type": "integer", "minimum": 1}}),
+        request({"deleted": {"type": "boolean"}}),
+    ),
+    ("http.client", "request"): (
+        request(
+            {
+                "method": {"enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]},
+                "url": {"type": "string", "format": "uri", "maxLength": 4096},
+                "headers": {"type": "object", "additionalProperties": {"type": "string"}},
+                "body": {},
+                "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 60},
+                "max_response_bytes": {"type": "integer", "minimum": 1, "maximum": 786432},
+                "auth": request(
+                    {"secret_name": TEXT, "scheme": {"enum": ["bearer", "x-api-key"]}},
+                    optional=("scheme",),
+                ),
+            },
+            optional=("method", "headers", "body", "timeout_seconds", "max_response_bytes", "auth"),
+        ),
+        request(
+            {
+                "status": {"type": "integer", "minimum": 100, "maximum": 599},
+                "headers": OBJECT,
+                "body": {},
+            }
+        ),
+    ),
+    ("secrets.read", "resolve"): (
+        request({"name": TEXT}),
+        request({"secret_ref": TEXT, "configured": {"const": True}}),
+    ),
+    ("jobs.manage", "submit"): (
+        request({"action": TEXT, "input": OBJECT, "intent_key": TEXT}),
+        request({"invocation_id": TEXT}),
+    ),
+    ("jobs.manage", "get"): (request({"invocation_id": TEXT}), RECEIPT),
+    ("jobs.manage", "cancel"): (request({"invocation_id": TEXT}), RECEIPT),
+    ("jobs.manage", "checkpoint"): (
+        request(
+            {"state": OBJECT, "expected_revision": NULL_REVISION}, optional=("expected_revision",)
+        ),
+        request({"checkpoint_ref": TEXT, "revision": {"type": "integer", "minimum": 1}}),
+    ),
+    ("jobs.manage", "schedule.put"): (
+        request(
+            {
+                "schedule_id": TEXT,
+                "action": TEXT,
+                "input": OBJECT,
+                "trigger": OBJECT,
+                "expected_revision": NULL_REVISION,
+            }
+        ),
+        request(
+            {"schedule_revision": {"type": "integer", "minimum": 1}, "removed": {"type": "boolean"}}
+        ),
+    ),
+    ("jobs.manage", "schedule.remove"): (
+        request({"schedule_id": TEXT, "expected_revision": {"type": "integer", "minimum": 1}}),
+        request(
+            {"schedule_revision": {"type": "integer", "minimum": 1}, "removed": {"type": "boolean"}}
+        ),
+    ),
+    ("notifications.emit", "publish"): (
+        request(
+            {
+                "dedup_key": TEXT,
+                "title": {"type": "string", "maxLength": 256},
+                "body": {"type": "string", "maxLength": 4096},
+                "severity": {"enum": ["info", "warning", "error"]},
+                "invocation_id": TEXT,
+            },
+            optional=("severity", "invocation_id"),
+        ),
+        request({"notification_ref": TEXT, "delivery": {"const": "delivered"}}),
+    ),
+}
+
+
+def describe():
+    return [
+        {
+            "capability": key[0],
+            "major": 1,
+            "operation": key[1],
+            "input_schema": value[0],
+            "output_schema": value[1],
+        }
+        for key, value in OPERATIONS.items()
+    ]

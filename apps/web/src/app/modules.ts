@@ -15,6 +15,7 @@ import {
   Music2,
   Activity,
   HardDrive,
+  Puzzle,
 } from "lucide-react";
 
 // Local navigation metadata, never a cross-product API or a connection-health registry.
@@ -95,6 +96,14 @@ export const modules = [
     sections: ["项目工作区", "经验与交接"],
   },
   {
+    id: "plugins",
+    label: "插件",
+    icon: Puzzle,
+    group: "管理",
+    description: "安装、配置和运行插件",
+    sections: [],
+  },
+  {
     id: "settings",
     label: "任务与设置",
     icon: Settings,
@@ -136,6 +145,7 @@ export const subscriptionNavigation = [
 
 // Room remains a separate chunk. Future modules register one lazy page here.
 export const pages = {
+  plugins: lazy(() => import("../features/plugins/PluginCenter")),
   companion: lazy(() => import("../features/companion/CompanionPage")),
   personas: lazy(() => import("../features/companion/PersonaPanel")),
   roles: lazy(() => import("../features/companion/RoleManager")),

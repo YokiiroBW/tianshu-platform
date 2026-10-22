@@ -614,6 +614,16 @@ def create_app(platform, probe=None, *, console=None, public=False):
 
     app = web.Application(middlewares=[boundary], client_max_size=45 * 1024 * 1024)
     app[PLATFORM] = platform
+    if not public and hasattr(platform, "plugins"):
+
+        async def plugin_context(app):
+            await platform.plugins.start()
+            try:
+                yield
+            finally:
+                await platform.plugins.close()
+
+        app.cleanup_ctx.append(plugin_context)
     infrastructure = platform.infrastructure
     if not public and infrastructure.config is not None:
 

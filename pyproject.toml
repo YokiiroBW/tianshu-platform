@@ -16,7 +16,7 @@ dev = ["ruff==0.15.7"]
 tianshu-platform = "services.platform.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["services.platform*"]
+include = ["services.platform*", "tianshu_plugin"]
 namespaces = true
 
 [tool.ruff]
@@ -25,6 +25,8 @@ line-length = 100
 extend-exclude = ["services/platform/media/books/_vendor"]
 
 [tool.setuptools.package-data]
+"services.platform.plugins" = ["schemas/*.json", "builtin/*/*.json", "builtin/*/*.html"]
+"tianshu_plugin" = ["*.js"]
 "services.platform.media.books._vendor" = ["SOURCE.json", "LICENSE.LegadoParser"]
 "services.platform.media.books._vendor.LegadoParser2.RuleJs" = ["*.js"]
 

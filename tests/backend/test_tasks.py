@@ -870,6 +870,7 @@ class TaskWatermarkTests(unittest.TestCase):
         from services.platform.tasks import Tasks
 
         records = {
+            "platform.plugins": [],
             "platform.infrastructure": [],
             "resources.download": [],
             "platform.home": [

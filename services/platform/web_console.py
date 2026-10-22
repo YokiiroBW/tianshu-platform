@@ -218,6 +218,9 @@ class WebConsole:
 
         self.media = WebMedia(platform.media, self)
         self.infrastructure = WebInfrastructure(platform.infrastructure, self)
+        from .plugins.web import WebPlugins
+
+        self.plugins = WebPlugins(platform.plugins, self)
         if self.role_runtime.config is not None:
             self.role_runtime.console = self
 
@@ -485,7 +488,11 @@ class WebConsole:
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "no-referrer",
-                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+                "Content-Security-Policy": self.plugins.view_policy
+                if request.path.startswith("/api/web/plugins/page/")
+                and response.status == 200
+                and response.content_type == "text/html"
+                else "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
                 "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
             }
         )
@@ -544,6 +551,10 @@ class WebConsole:
             # Never extend server-side absolute expiry by polling.
             self.set_cookie(response, token, session["authenticated"])
             return response
+        if request.path.startswith("/api/web/plugins/page/") and request.method == "GET":
+            html = await self.plugins.page(request.path[len("/api/web/plugins/page/") :], session)
+            request[CONSOLE_AUTH] = AUTH_SUCCEEDED
+            return web.Response(text=html, content_type="text/html")
         if request.path.startswith(MEDIA_PREFIX + "books/files/") and request.method in {
             "GET",
             "HEAD",
@@ -641,6 +652,8 @@ class WebConsole:
                                 MEDIA_PREFIX + "books/library/import",
                                 MEDIA_PREFIX + "books/sources/import",
                             }
+                            else 9 * 1024 * 1024
+                            if request.path.startswith("/api/web/plugins/")
                             else 6 * 1024 * 1024
                             if request.path.startswith(MEDIA_PREFIX)
                             else 1048576
@@ -924,6 +937,13 @@ class WebConsole:
         if request.path.startswith("/api/web/skills/"):
             name = request.path[len("/api/web/skills/") :]
             result = await self.skills.route(name, body, session)
+            return web.json_response(result, headers={"Cache-Control": "no-store"})
+        if request.path.startswith("/api/web/plugins/"):
+            name = request.path[len("/api/web/plugins/") :]
+            try:
+                result = await self.plugins.route(name, body, session)
+            except (KeyError, TypeError, ValueError):
+                raise Fault("invalid_input", 400) from None
             return web.json_response(result, headers={"Cache-Control": "no-store"})
         if request.path.startswith("/api/web/content/"):
             name = request.path[len("/api/web/content/") :]

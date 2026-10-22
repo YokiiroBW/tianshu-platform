@@ -65,6 +65,7 @@ const stageWording: Record<string, string> = {
   finished: "本轮结束",
 };
 const sourceWording: Record<string, string> = {
+  "platform.plugins": "插件动作",
   "platform.home": "家庭设备控制",
   "platform.models": "模型配置发布",
   "platform.infrastructure": "容器与 Compose 控制",

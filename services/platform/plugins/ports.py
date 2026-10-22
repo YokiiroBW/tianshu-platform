@@ -1,0 +1,229 @@
+"""Registered host operations; secrets are injected here and never serialized to workers."""
+
+import base64
+import json
+import time
+from urllib.parse import urlsplit
+
+import aiohttp
+
+from ..contracts import Fault, canonical, digest, require
+from .port_schemas import OPERATIONS
+from .schema import check
+
+
+async def capability(executions, context, name, operation, value):
+    schemas = OPERATIONS.get((name, operation))
+    require(schemas, "capability_unavailable", 409)
+    check(schemas[0], value)
+    result = await execute_capability(executions, context, name, operation, value)
+    check(schemas[1], result)
+    return result
+
+
+async def execute_capability(executions, context, name, operation, value):
+    host, repo = executions.host, executions.repo
+    instance, call = context["instance"], context["call"]
+    require(isinstance(value, dict), "invalid_input", 400)
+    if name == "state.kv":
+        require(operation in {"get", "compare_and_set", "delete"}, "capability_unavailable", 409)
+        return await host.local(repo.state, instance, operation, value)
+    if name == "http.client" and operation == "request":
+        return await http_request(executions, context, value)
+    if name == "secrets.read" and operation == "resolve":
+        require(value.get("name") in context["secrets"], "not_found", 404)
+        # This opaque handle is usable only as auth.secret_name on this instance's transport.
+        return {"secret_ref": "secret:" + digest([instance, value["name"]]), "configured": True}
+    if name == "jobs.manage":
+        if operation == "checkpoint":
+            require(
+                call
+                and isinstance(value.get("state"), dict)
+                and len(canonical(value["state"]).encode()) <= 65536,
+                "invalid_input",
+                400,
+            )
+            current = await host.local(repo.call, call)
+            checkpoint = current.get("checkpoint")
+            expected = value.get(
+                "expected_revision", checkpoint["revision"] if checkpoint else None
+            )
+            require(
+                expected == (checkpoint["revision"] if checkpoint else None),
+                "revision_conflict",
+                409,
+            )
+            checkpoint = {
+                "value": value["state"],
+                "revision": (checkpoint["revision"] if checkpoint else 0) + 1,
+            }
+            await host.local(repo.update_call, call, checkpoint=checkpoint)
+            return {
+                "checkpoint_ref": call + ":" + str(checkpoint["revision"]),
+                "revision": checkpoint["revision"],
+            }
+        if operation == "submit":
+            require(call, "permission_denied", 403)
+            parent = await host.local(repo.call, call)
+            result = await executions.invoke(
+                instance,
+                value["action"],
+                value["input"],
+                value["intent_key"],
+                parent["principal"],
+                authorize=executions.authorizers.get(call),
+                binding_id=parent.get("binding_id"),
+            )
+            return {"invocation_id": result["id"]}
+        if operation in {"get", "cancel"}:
+            identifier = value["invocation_id"]
+            document = await host.local(repo.call, identifier)
+            require(document and document["instance_id"] == instance, "not_found", 404)
+            require(identifier != call or operation != "cancel", "invalid_input", 400)
+            return (
+                await executions.cancel(identifier)
+                if operation == "cancel"
+                else executions.public(document)
+            )
+        if operation in {"schedule.put", "schedule.remove"}:
+            return await host.scheduler.manage(instance, operation, value)
+    if name == "notifications.emit" and operation == "publish":
+        require(
+            isinstance(value.get("dedup_key"), str)
+            and 1 <= len(value["dedup_key"]) <= 128
+            and isinstance(value.get("title"), str)
+            and len(value["title"]) <= 256
+            and isinstance(value.get("body"), str)
+            and len(value["body"]) <= 4096,
+            "invalid_input",
+            400,
+        )
+        identifier = digest([instance, value["dedup_key"]])
+        old = await host.local(repo.get, "notifications", identifier)
+        fingerprint = digest(value)
+        if old:
+            require(old["fingerprint"] == fingerprint, "idempotency_conflict", 409)
+        else:
+            await host.local(
+                repo.put,
+                "notifications",
+                {
+                    "id": identifier,
+                    "instance_id": instance,
+                    "title": value["title"],
+                    "body": value["body"],
+                    "severity": value.get("severity", "info"),
+                    "invocation_id": call,
+                    "fingerprint": fingerprint,
+                    "created_at": time.time(),
+                    "delivery": "delivered",
+                    "channel": "in_app",
+                },
+            )
+        return {"notification_ref": identifier, "delivery": "delivered"}
+    raise Fault("capability_unavailable", 409)
+
+
+async def http_request(executions, context, value):
+    method, url = value.get("method", "GET").upper(), value.get("url")
+    require(
+        method in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
+        and isinstance(url, str)
+        and len(url) <= 4096,
+        "invalid_input",
+        400,
+    )
+    parsed = urlsplit(url)
+    require(
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname
+        and not parsed.username
+        and not parsed.password
+        and not parsed.fragment,
+        "invalid_input",
+        400,
+    )
+    require(context["call"] or method in {"GET", "HEAD"}, "permission_denied", 403)
+    headers = value.get("headers", {})
+    require(
+        isinstance(headers, dict)
+        and not any(
+            key.lower() in {"authorization", "cookie", "host", "proxy-authorization"}
+            for key in headers
+        ),
+        "invalid_input",
+        400,
+    )
+    auth = value.get("auth")
+    if auth:
+        name = auth["secret_name"]
+        require(name in context["secrets"], "permission_denied", 403)
+        # Authentication is only injected at the instance's configured base origin.
+        call = (
+            await executions.host.local(executions.repo.call, context["call"])
+            if context["call"]
+            else None
+        )
+        config = (
+            call["config"]
+            if call
+            else (await executions.host.instance(context["instance"]))["config"]
+        )
+        base = urlsplit(config.get("base_url", ""))
+        require(
+            (base.scheme, base.hostname, base.port)
+            == (parsed.scheme, parsed.hostname, parsed.port),
+            "permission_denied",
+            403,
+        )
+        secret = executions.host.vault.unseal(
+            context["instance"], name, base64.b64decode(context["secrets"][name])
+        )
+        scheme = auth.get("scheme", "bearer")
+        require(scheme in {"bearer", "x-api-key"}, "invalid_input", 400)
+        headers = {
+            **headers,
+            "Authorization" if scheme == "bearer" else "X-API-Key": "Bearer " + secret
+            if scheme == "bearer"
+            else secret,
+        }
+    maximum = value.get("max_response_bytes", 512 * 1024)
+    timeout = value.get("timeout_seconds", 25)
+    require(
+        type(maximum) is int
+        and 1 <= maximum <= 768 * 1024
+        and isinstance(timeout, (int, float))
+        and 0 < timeout <= 60,
+        "invalid_input",
+        400,
+    )
+    write = method not in {"GET", "HEAD"}
+    if write:
+        await executions.host.local(executions.repo.update_call, context["call"], dispatch="sent")
+    try:
+        async with aiohttp.ClientSession(trust_env=False) as session:
+            async with session.request(
+                method,
+                url,
+                headers=headers,
+                json=value.get("body"),
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,
+            ) as response:
+                raw = bytearray()
+                async for chunk in response.content.iter_chunked(16384):
+                    raw.extend(chunk)
+                    require(len(raw) <= maximum, "budget_exceeded", 413)
+                try:
+                    body = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    body = raw.decode("utf-8", errors="replace")
+                return {
+                    "status": response.status,
+                    "headers": {"content-type": response.headers.get("Content-Type", "")},
+                    "body": body,
+                }
+    except (aiohttp.ClientError, TimeoutError, OSError):
+        error = Fault("outcome_unknown" if write else "dependency_unavailable", 503)
+        error.effect = "unknown" if write else "none"
+        raise error from None
