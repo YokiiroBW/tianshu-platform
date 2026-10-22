@@ -1,4 +1,4 @@
-"""Read the published 1.0.0 documents in place; never fetch remote schemas."""
+"""Read the exact pinned contract releases in place; never fetch remote schemas."""
 
 import hashlib
 import json
@@ -21,7 +21,7 @@ RUNTIME_PACKAGES = {
     "life-runtime/v2": "85aff438f91cb96876e259204b5a198e2fedaead56db64a2265aa520a59ea7e3",
     "image-backend/v1": "62e71dd2f42fb5b1376c439c362a555619da41cb7f7ae26d07acc1182b80ffbd",
     "bot-delivery/v2.1": "768aaf25db41ada4bc4ac3768c9e4758b0753e362bd3c8be482881a9e530eb1a",
-    "memory-context/v1": "d44a23ac674d5fd3f8e9325c80884dc1426305055b873be1da239f126056e570",
+    "memory-context/v1": "aaf25b4446c3915d48e46c6f0f687a26b57f30ac1c4494085266a586f67953e8",
     "knowledge-content/v1": "75d210454102af5af505ec1f72d69cc7dfd344550f7cf90e70125c082fdf4cd7",
 }
 

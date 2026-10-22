@@ -138,6 +138,7 @@ SETTINGS_KEYS = frozenset(
         "bot_adapter_self_service",
         "role_runtime",
         "media",
+        "plugins",
         "infrastructure",
     }
 )
@@ -157,6 +158,19 @@ def validate_settings(settings, *, runtime=None):
     """
     require(isinstance(settings, dict), "invalid_input", 400)
     require(set(settings) <= SETTINGS_KEYS, "invalid_input", 400)
+    plugin_config = settings.get("plugins", {})
+    require(
+        isinstance(plugin_config, dict) and set(plugin_config) <= {"package_directory"},
+        "invalid_input",
+        400,
+    )
+    if "package_directory" in plugin_config:
+        require(
+            isinstance(plugin_config["package_directory"], str)
+            and Path(plugin_config["package_directory"]).is_absolute(),
+            "invalid_input",
+            400,
+        )
     runtime = runtime if runtime is not None else backends.readonly(settings)
     from .media.runtime import validate_media
 
@@ -465,6 +479,11 @@ class Platform:
         for path in anchor.parent.glob(anchor.name + ".home-controls.external.*.sqlite"):
             revision = path.name[len(anchor.name + ".home-controls.external.") : -len(".sqlite")]
             backends.database(self.storage_runtime, "home_" + revision, path)
+
+        # Retain the new source during rollback without constructing a plugin host.
+        binding = backends.inspect(self.settings)
+        if binding["backend"] == "postgresql" and "plugins" in binding["databases"]:
+            backends.database(self.storage_runtime, "plugins", str(anchor) + ".plugins.sqlite")
 
     def close(self):
         """Mark this runtime as no longer serving, so readiness stops presenting it as current."""

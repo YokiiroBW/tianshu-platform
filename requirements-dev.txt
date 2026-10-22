@@ -73,7 +73,7 @@ OpenCC==1.4.2
     # via tianshu-platform-backend; offline simplified/traditional search
 
 # Shared runtime is shipped alongside this product; never resolve it from PyPI.
-./vendor/tianshu_storage-0.1.0-py3-none-any.whl
+./vendor/tianshu_storage-0.1.3-py3-none-any.whl
 psycopg[binary,pool]==3.3.6
 psycopg-binary==3.3.6
 psycopg-pool==3.3.3
