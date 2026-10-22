@@ -73,11 +73,11 @@ class PluginPostgresTests(unittest.IsolatedAsyncioTestCase):
                 plugins = backends.database(runtime, "plugins", anchor + ".plugins.sqlite")
                 runtime.finalize()
                 for name, database in databases.items():
-                    with closing(database.connect(read_only=True)) as db:
+                    with closing(database.connect(mode="ro")) as db:
                         self.assertEqual(
                             db.execute("SELECT value FROM retained").fetchone()[0], name
                         )
-                with closing(plugins.connect(read_only=True)) as db:
+                with closing(plugins.connect(mode="ro")) as db:
                     self.assertEqual(
                         db.execute("SELECT value FROM plugin_state").fetchone()[0], "7"
                     )
