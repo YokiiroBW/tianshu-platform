@@ -23,6 +23,7 @@ RUN python -m pip install --no-cache-dir --no-deps -r tools.lock
 COPY pyproject.toml ./
 COPY vendor/ ./vendor/
 COPY services/ ./services/
+COPY tianshu_plugin/ ./tianshu_plugin/
 RUN python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels . \
     && python -m venv /opt/tianshu-venv \
     && /opt/tianshu-venv/bin/python -m pip install --no-cache-dir --only-binary=:all: --require-hashes -r runtime.lock \
@@ -32,7 +33,7 @@ RUN python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-di
 
 FROM --platform=linux/amd64 python:3.12.11-slim-bookworm@sha256:c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49 AS runtime
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ffmpeg \
+    && apt-get install --yes --no-install-recommends ffmpeg git \
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 tianshu \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin tianshu \
