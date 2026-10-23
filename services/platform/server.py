@@ -649,22 +649,36 @@ def create_app(platform, probe=None, *, console=None, public=False):
     if not public and platform.bot_adapters.catalog is not None:
 
         async def bot_pump_context(app):
-            async def pump():
+            async def pump_adapters():
                 while True:
                     try:
                         await platform.bot_adapters.pump_once()
-                        await platform.bot_observation.pump_once()
                         await platform.qq_admin.flush_aliases()
                     except (Fault, OSError, sqlite3.Error):
                         pass
                     await asyncio.sleep(2)
 
-            task = asyncio.create_task(pump())
+            async def pump_observations():
+                while True:
+                    try:
+                        await platform.bot_observation.pump_once(wait=False)
+                    except (Fault, OSError, sqlite3.Error):
+                        pass
+                    await asyncio.sleep(2)
+
+            # Legacy adapters skip observation rows. Their slow admissions and
+            # alias writes must not delay the account observation poll lease.
+            tasks = [
+                asyncio.create_task(pump_adapters()),
+                asyncio.create_task(pump_observations()),
+            ]
             try:
                 yield
             finally:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await platform.bot_observation.close()
 
         app.cleanup_ctx.append(bot_pump_context)
     if (

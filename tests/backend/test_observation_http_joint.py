@@ -471,6 +471,10 @@ class ObservationHttpJointTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 200, await response.text())
             result = await response.json()
         self.assertEqual(result["archive_items"][0]["text"], "hello")
+        # The old-source check above injected a paused owner projection without
+        # applying it to the SDK. Restore the fixture's actual host revision
+        # before this independent new-input/retryable-verifier scenario.
+        self.platform.bot_observation.catalog.put(row)
         # A new accepted event waits while Platform is saving policy. A 503
         # verifier answer must stay retryable, never become a revocation.
         self.assertTrue(

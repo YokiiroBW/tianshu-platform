@@ -19,6 +19,7 @@ PREFIX = "/api/web/bot-observation/"
 ID = re.compile(r"^[1-9][0-9]*$")
 MODES = {"observe_only", "whitelist", "blacklist"}
 MAX_SOURCES = 100000
+REPLY_SCOPE_BATCH = 8
 
 
 def _qq(value):
@@ -75,6 +76,11 @@ class BotObservation:
         self.adapters = platform.bot_adapters
         self.catalog = self.adapters.catalog
         self.lock = asyncio.Lock()
+        self._pump_lock = asyncio.Lock()
+        self._batches = {}
+        self._local_tasks = set()
+        self._reply_cursors = {}
+        self._closed = False
         self.path = platform.store.path + ".bot-observations.sqlite"
         self.database = bind_database(
             getattr(platform, "storage_runtime", None), "bot_observations", self.path
@@ -135,11 +141,31 @@ class BotObservation:
         db.execute("PRAGMA journal_mode=WAL")
         return db
 
+    async def _local(self, operation, *args):
+        # Keep ownership of this operation through cancellation. LocalWork's
+        # thread may still be using our database after its HTTP caller stops.
+        task = asyncio.create_task(self.p.local_work.run(operation, *args))
+        self._local_tasks.add(task)
+        task.add_done_callback(self._local_finished)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(task)
+            except Exception:
+                pass
+            raise
+
+    def _local_finished(self, task):
+        self._local_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
     def _reply_token(self, connection_id):
         return hmac.new(self.catalog.key, connection_id.encode(), hashlib.sha256).hexdigest()
 
-    def _install_reply(self, reply, authors):
-        row = self.get(reply["observation_id"])
+    def _install_reply(self, reply, authors, *, row=None):
+        row = row if row is not None else self.get(reply["observation_id"])
         require(row is not None, "dependency_unavailable", 503)
         conn = reply["connection_id"]
         slot_id = "observation:" + conn
@@ -220,7 +246,7 @@ class BotObservation:
         # become sendable after an allow/deny list or mode change.
         return "bot:" + digest([row["id"], row["host_revision"], conversation, actor_id])[:32]
 
-    async def _ensure_reply_scope(self, row, conversation, author, actor_id):
+    def _prepare_reply_scope(self, row, conversation, author, actor_id):
         conn = self._reply_connection_id(row, conversation, actor_id)
         with closing(self._db()) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -247,12 +273,25 @@ class BotObservation:
             "conversation": conversation,
             "actor_id": actor_id,
         }
-        self._install_reply(reply, authors)
         token = self._reply_token(conn)
+        current = self.get(row["id"])
+        require(current is not None, "dependency_unavailable", 503)
+        return conn, token, reply, authors, current
+
+    def _create_reply_scope(self, conn, token, actor_id):
         with closing(self.p.bots._db()) as db:
             exists = db.execute("SELECT enabled FROM connections WHERE id=?", (conn,)).fetchone()
         if exists is None:
             self.p.bots.create("observation:" + conn, [actor_id], connection_id=conn, token=token)
+
+    async def _ensure_reply_scope(self, row, conversation, author, actor_id):
+        conn, token, reply, authors, current = await self._local(
+            self._prepare_reply_scope, row, conversation, author, actor_id
+        )
+        # Publish the in-memory source/actor projection without yielding, just
+        # as before. Only the complete local SQL operations run off-loop.
+        self._install_reply(reply, authors, row=current)
+        await self._local(self._create_reply_scope, conn, token, actor_id)
         current = await self.adapters._core("status", {"connection_id": conn})
         if current.get("found") is not True:
             initial = {
@@ -286,11 +325,14 @@ class BotObservation:
             await self.adapters._core("apply", enabled)
         elif binding.get("revision") != 2 or binding.get("enabled") is not True:
             raise Fault("dependency_unavailable", 503)
+        await self._local(self._enable_reply_scope, conn)
+        return conn, token
+
+    def _enable_reply_scope(self, conn):
         with closing(self.p.bots._db()) as db:
             active = db.execute("SELECT enabled FROM connections WHERE id=?", (conn,)).fetchone()
         if not active or not active[0]:
             self.p.bots.change(conn, "enable")
-        return conn, token
 
     def _disable_invalid_replies(self, row):
         with closing(self._db()) as db:
@@ -1082,16 +1124,15 @@ class BotObservation:
             return True
         actor = policy["actor_id"]
         require(actor is not None, "scope_changed", 409)
-        managed = self.p.role_runtime.get(actor)
-        if managed is not None and not self.p.role_runtime.active(actor):
+        if not await self._local(self._reply_role_active, actor):
             return True
         conn, token = await self._ensure_reply_scope(row, conversation, event["account_id"], actor)
-        current = self.get(row["id"])
+        current = await self._local(self.get, row["id"])
         if (
             current is None
             or current["pending"]
             or current["host_revision"] != row["host_revision"]
-            or not self.reply_connection_active(conn)
+            or not await self._local(self.reply_connection_active, conn)
         ):
             return True
         body = {
@@ -1130,7 +1171,7 @@ class BotObservation:
         if outcome["state"] == "accepted":
             return True
         if outcome["state"] == "unknown":
-            status = await self.p.local_work.run(
+            status = await self._local(
                 self.p.bots.event_status,
                 "Bearer " + token,
                 {
@@ -1142,35 +1183,59 @@ class BotObservation:
             return status["state"] == "accepted"
         return False
 
-    async def _deliver_replies(self, row):
+    def _reply_role_active(self, actor):
+        managed = self.p.role_runtime.get(actor)
+        return managed is None or self.p.role_runtime.active(actor)
+
+    def _reply_page(self, row):
+        # A fixed, rotating page prevents a large number of empty reply scopes
+        # from monopolizing an account. The existing queue owns all deliveries.
+        cursor = self._reply_cursors.get(row["id"], "")
         with closing(self._db()) as db:
             replies = db.execute(
-                "SELECT * FROM reply_connections WHERE observation_id=?", (row["id"],)
+                "SELECT * FROM reply_connections WHERE observation_id=? AND connection_id>? "
+                "ORDER BY connection_id LIMIT ?",
+                (row["id"], cursor, REPLY_SCOPE_BATCH),
             ).fetchall()
+            if not replies and cursor:
+                replies = db.execute(
+                    "SELECT * FROM reply_connections WHERE observation_id=? "
+                    "ORDER BY connection_id LIMIT ?",
+                    (row["id"], REPLY_SCOPE_BATCH),
+                ).fetchall()
+        self._reply_cursors[row["id"]] = replies[-1]["connection_id"] if replies else ""
+        return replies
+
+    def _reply_enabled(self, conn):
+        if not self.reply_connection_active(conn):
+            return False
+        with closing(self.p.bots._db()) as queue:
+            connection = queue.execute(
+                "SELECT enabled FROM connections WHERE id=?", (conn,)
+            ).fetchone()
+        return connection is not None and bool(connection[0])
+
+    async def _deliver_replies(self, row):
+        replies = await self._local(self._reply_page, row)
         for reply in replies:
             conn = reply["connection_id"]
-            if not self.reply_connection_active(conn):
-                continue
             # A reply scope can be recorded before its Core binding is enabled.
             # Retrying that admission owns activation; an unfinished scope must not
             # prevent already enabled conversations from draining their replies.
-            with closing(self.p.bots._db()) as queue:
-                connection = queue.execute(
-                    "SELECT enabled FROM connections WHERE id=?", (conn,)
-                ).fetchone()
-            if connection is None or not connection[0]:
+            if not await self._local(self._reply_enabled, conn):
                 continue
             token = self._reply_token(conn)
-            claimed = await self.p.local_work.run(
+            claimed = await self._local(
                 self.p.bots.claim,
                 "Bearer " + token,
                 {"connection_id": conn, "instance_id": "platform-observation-pump", "limit": 20},
             )
             for delivery in claimed["deliveries"]:
-                current = self.get(row["id"])
-                if current is None or not self.reply_connection_active(conn):
+                current = await self._local(self.get, row["id"])
+                if current is None or not await self._local(self.reply_connection_active, conn):
                     break
                 receipt = None
+                cancelled = False
                 try:
                     receipt = await self._plugin(
                         current,
@@ -1182,6 +1247,10 @@ class BotObservation:
                             "delivery": delivery,
                         },
                     )
+                except asyncio.CancelledError:
+                    # The SDK write may have started. Settle the existing claim
+                    # as unknown before shutting down; never repeat that write.
+                    cancelled = True
                 except Fault:
                     try:
                         status = await self._plugin(
@@ -1210,7 +1279,7 @@ class BotObservation:
                     "adapter_incompatible",
                     502,
                 )
-                await self.p.local_work.run(
+                await self._local(
                     self.p.bots.ack,
                     "Bearer " + token,
                     {
@@ -1221,6 +1290,8 @@ class BotObservation:
                         "channel_message_ids": receipt.get("channel_message_ids", []),
                     },
                 )
+                if cancelled:
+                    raise asyncio.CancelledError
 
     async def _refresh_host_status(self, row):
         status = await self._plugin(row, "status", {"account_id": row["account_id"]})
@@ -1240,69 +1311,127 @@ class BotObservation:
         )
         row["last_error"] = "observation_capacity_exceeded" if account["dropped"] else None
         row["last_checked_at"] = utc(time.time())
-        self.catalog.observe(row)
+        await self._local(self.catalog.observe, row)
 
-    async def pump_once(self):
-        if not self.catalog:
+    async def pump_once(self, *, wait=True):
+        """Poll even while the account's one bounded business batch is busy.
+
+        Unacknowledged SDK events remain its durable queue. A busy poll renews
+        the real host lease but neither replaces the retained batch nor starts
+        another dispatch. Standalone callers may await that same batch.
+        """
+        if not self.catalog or self._closed:
             return
-        for snapshot in self.rows():
-            row = self.get(snapshot["id"])
-            if row is None:
-                continue
-            if row["pending"]:
-                await self._apply(row)
-                row = self.get(row["id"])
-            if row["pending"]:
-                continue
-            try:
-                await self._refresh_host_status(row)
-                # Drain ready replies before another ingress batch. A busy room must
-                # not hold already generated replies behind twenty slow admissions.
-                await self._deliver_replies(row)
-                result = await self._plugin(
-                    row, "poll", {"account_id": row["account_id"], "limit": 20}
-                )
-                events = result.get("events")
-                require(isinstance(events, list) and len(events) <= 20, "adapter_incompatible", 502)
-                acknowledged = []
-                for index, item in enumerate(events, 1):
-                    current = self.get(row["id"])
-                    if (
-                        current is None
-                        or current["revision"] != row["revision"]
-                        or current["pending"]
-                    ):
-                        break
-                    event = item["event"]
-                    source = self.record(current, event)
-                    receipt = await self._companion({**source, "event": event})
-                    require(
-                        receipt.get("source_ref") == source["source_ref"]
-                        and receipt.get("state") in {"accepted", "duplicate"}
-                        and receipt.get("archive_state") in {"pending_memory", "archived"},
-                        "dependency_unavailable",
-                        503,
-                    )
-                    # The Companion write may have waited while an administrator
-                    # tightened policy. Re-evaluate under the local policy lock.
+        batches = []
+        async with self._pump_lock:
+            if self._closed:
+                return
+            for snapshot in await self._local(self.rows):
+                row = await self._local(self.get, snapshot["id"])
+                if row is None:
+                    continue
+                if row["pending"]:
+                    # Management routes use this same policy lock. Do not race
+                    # a newer configure/rebind while the pump applies an intent.
+                    # Another account's long reply admission may hold it; that
+                    # must not delay polls for the remaining active accounts.
+                    if self.lock.locked():
+                        continue
                     async with self.lock:
-                        current = self.get(row["id"])
-                        if current is None or current["pending"]:
-                            break
-                        if await self._reply_event(
-                            current, event, item.get("reply_claimed") is True
-                        ):
-                            acknowledged.append(item["id"])
-                    if index % 4 == 0:
-                        await self._deliver_replies(row)
-                if acknowledged:
-                    ack = await self._plugin(
-                        row, "ack", {"account_id": row["account_id"], "event_ids": acknowledged}
+                        row = await self._local(self.get, row["id"])
+                        if row and row["pending"]:
+                            await self._apply(row)
+                        row = await self._local(self.get, snapshot["id"])
+                if row is None or row["pending"] or not row["enabled"]:
+                    continue
+                try:
+                    result = await self._plugin(
+                        row, "poll", {"account_id": row["account_id"], "limit": 20}
                     )
-                    require(ack.get("acknowledged") == acknowledged, "adapter_incompatible", 502)
-                await self._deliver_replies(row)
-                await self._refresh_host_status(row)
-            except (Fault, ValueError, TypeError, KeyError) as exc:
-                row["state"] = "degraded"
-                row["last_error"] = exc.code if isinstance(exc, Fault) else "adapter_incompatible"
-            self.catalog.observe(row)
+                    events = result.get("events")
+                    require(
+                        isinstance(events, list) and len(events) <= 20, "adapter_incompatible", 502
+                    )
+                    batch = self._batches.get(row["id"])
+                    if batch is not None and batch.done():
+                        # Observe an unexpected exception before replacing its
+                        # task. Expected peer failures are recorded by the owner.
+                        if not batch.cancelled():
+                            error = batch.exception()
+                            if error is not None:
+                                await self._observe_failure(row, error)
+                        del self._batches[row["id"]]
+                        batch = None
+                    if batch is None:
+                        batch = asyncio.create_task(self._process_batch(row, events))
+                        self._batches[row["id"]] = batch
+                    batches.append(batch)
+                except (Fault, OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+                    await self._observe_failure(row, exc)
+        if wait and batches:
+            try:
+                await asyncio.gather(*batches)
+            finally:
+                for key, batch in list(self._batches.items()):
+                    if batch.done():
+                        del self._batches[key]
+
+    async def _observe_failure(self, row, exc):
+        row["state"] = "degraded"
+        row["last_error"] = exc.code if isinstance(exc, Fault) else "adapter_incompatible"
+        await self._local(self.catalog.observe, row)
+
+    async def _process_batch(self, row, events):
+        try:
+            await self._refresh_host_status(row)
+            await self._deliver_replies(row)
+            acknowledged = []
+            for index, item in enumerate(events, 1):
+                current = await self._local(self.get, row["id"])
+                if current is None or current["revision"] != row["revision"] or current["pending"]:
+                    break
+                event = item["event"]
+                source = await self._local(self.record, current, event)
+                receipt = await self._companion({**source, "event": event})
+                require(
+                    receipt.get("source_ref") == source["source_ref"]
+                    and receipt.get("state") in {"accepted", "duplicate"}
+                    and receipt.get("archive_state") in {"pending_memory", "archived"},
+                    "dependency_unavailable",
+                    503,
+                )
+                # The Companion write may have waited while an administrator
+                # tightened policy. Re-evaluate under the local policy lock.
+                async with self.lock:
+                    current = await self._local(self.get, row["id"])
+                    if current is None or current["pending"]:
+                        break
+                    if await self._reply_event(current, event, item.get("reply_claimed") is True):
+                        acknowledged.append(item["id"])
+                if index % 4 == 0:
+                    await self._deliver_replies(row)
+            if acknowledged:
+                ack = await self._plugin(
+                    row, "ack", {"account_id": row["account_id"], "event_ids": acknowledged}
+                )
+                require(ack.get("acknowledged") == acknowledged, "adapter_incompatible", 502)
+            await self._deliver_replies(row)
+            await self._refresh_host_status(row)
+        except (Fault, OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+            await self._observe_failure(row, exc)
+
+    async def close(self):
+        self._closed = True
+        async with self._pump_lock:
+            batches = list(self._batches.values())
+            for task in batches:
+                task.cancel()
+            await asyncio.gather(*batches, return_exceptions=True)
+            # A second caller cancellation can leave an owned local await
+            # alive. Drain only those operations, not the shared worker pool.
+            while self._local_tasks:
+                tasks = list(self._local_tasks)
+                await asyncio.gather(*tasks, return_exceptions=True)
+                self._local_tasks.difference_update(tasks)
+            self._batches.clear()
+            self._reply_cursors.clear()

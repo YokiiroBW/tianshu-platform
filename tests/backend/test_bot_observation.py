@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 from services.platform.bot_adapter_catalog import BotAdapterCatalog
 from services.platform.bot_observation import BotObservation, decision
 from services.platform.contracts import Fault
+from services.platform.local_work import LocalWork
 
 
 class Store:
@@ -52,6 +53,8 @@ class ObservationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.platform = Platform(self.temp.name)
+        self.platform.local_work = LocalWork()
+        self.addCleanup(self.platform.local_work.close)
         self.manager = BotObservation(self.platform)
         self.row = {
             "kind": "observation",
