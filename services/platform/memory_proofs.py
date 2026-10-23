@@ -13,6 +13,7 @@ from .origins import source_key
 from .backends import postgres
 
 ISSUE = "/internal/v1/memory-context/proof/issue"
+ISSUE_V2 = "/internal/v2/memory-context/proof/issue"
 VERIFY = "/internal/v1/memory-context/proof/verify"
 
 
@@ -71,8 +72,14 @@ class MemoryProofs:
             """)
 
     def issue(self, header, request):
+        return self._issue(header, request, "memory-context#issue")
+
+    def issue_v2(self, header, request):
+        return self._issue(header, request, "memory-context-v2#forget_issue")
+
+    def _issue(self, header, request, schema):
         p = self.p
-        p.contracts.check("memory-context#issue_request", request)
+        p.contracts.check(schema + "_request", request)
         proposal, source = request["proposal"], request["source"]
         require(proposal["command"]["origin"] == request["origin"], "forbidden", 403)
         require(epoch(proposal["command"]["deadline_at"]) > p.origins.clock(), "timeout", 408)
@@ -167,7 +174,7 @@ class MemoryProofs:
                 "operation_digest": semantic,
                 "expires_at": utc(row["expires_at"]),
             }
-            p.contracts.check("memory-context#issue_response", result)
+            p.contracts.check(schema + "_response", result)
             return result
 
     def verify(self, header, request):

@@ -17,6 +17,7 @@ from .bot_delivery import ROUTES as DELIVERY_ROUTES
 from .contracts import Fault, loads, require
 from .memory_retrieval import PATH as RETRIEVAL_PATH
 from .memory_proofs import ISSUE as PROOF_ISSUE
+from .memory_proofs import ISSUE_V2 as PROOF_ISSUE_V2
 from .memory_proofs import VERIFY as PROOF_VERIFY
 from .qq_admin import CHECK_PATH as QQ_ADMIN_CHECK
 from .service import registered_credentials
@@ -202,6 +203,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 "/internal/v1/conversation/send": "conversation#send_request",
                 REPLY_STATUS: "conversation#send_request",
                 PROOF_ISSUE: "memory-context#issue_request",
+                PROOF_ISSUE_V2: "memory-context-v2#forget_issue_request",
                 PROOF_VERIFY: "memory-context#proof_request",
             }.get(request.path)
             delivery_call = request.path in DELIVERY_ROUTES and hasattr(platform.bots, "delivery")
@@ -644,11 +646,11 @@ def create_app(platform, probe=None, *, console=None, public=False):
         return web.json_response(result, headers={"Cache-Control": "no-store"})
 
     async def proof_route(request):
-        operation = (
-            platform.memory_proofs.issue
-            if request.path == PROOF_ISSUE
-            else platform.memory_proofs.verify
-        )
+        operation = {
+            PROOF_ISSUE: platform.memory_proofs.issue,
+            PROOF_ISSUE_V2: platform.memory_proofs.issue_v2,
+            PROOF_VERIFY: platform.memory_proofs.verify,
+        }[request.path]
         result = await platform.local_work.run(
             operation, request.headers["Authorization"], request[BODY]
         )
@@ -794,6 +796,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             app.router.add_post(OBSERVATION_ADMIN_ENROLL, observation_admin_enroll)
         app.router.add_post("/internal/v1/conversation/send", send)
         app.router.add_post(PROOF_ISSUE, proof_route)
+        app.router.add_post(PROOF_ISSUE_V2, proof_route)
         app.router.add_post(PROOF_VERIFY, proof_route)
         app.router.add_post(SERVICE_CREDENTIALS, credential_route)
         app.router.add_post(RETRIEVAL_PATH, retrieval_route)
