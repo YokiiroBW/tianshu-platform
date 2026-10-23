@@ -22,6 +22,7 @@ INSTANCE = {"instance_id": TEXT, "expected_revision": REVISION}
 OPERATIONS = {
     "view": request(),
     "catalog": request(),
+    "actors": request(),
     "schema": request(),
     "install": request(
         {

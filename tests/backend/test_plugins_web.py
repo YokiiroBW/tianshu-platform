@@ -102,6 +102,53 @@ class PluginWebTests(unittest.IsolatedAsyncioTestCase):
         await self.post("logout")
         await self.post("plugins/view", expected=401)
 
+    async def test_character_bindings_use_registered_roles_and_explicit_action_entries(self):
+        from test_actor_capabilities import seed_roles
+
+        await self.post("plugins/actors", expected=401)
+        await self.login()
+        self.assertEqual(await self.post("plugins/actors"), {"items": []})
+        seed_roles(self.platform)
+        directory = await self.post("plugins/actors")
+        self.assertEqual({row["actor_id"] for row in directory["items"]}, {"actor:a", "actor:b"})
+        self.assertTrue(
+            all(set(row) == {"actor_id", "name", "version"} for row in directory["items"])
+        )
+        package = await self.install()
+        instance = await self.post(
+            "plugins/create",
+            {"package_id": package, "name": "Role actions", "client_request_id": "role-actions"},
+        )
+        binding = {
+            "kind": "binding",
+            "schema_version": 1,
+            "binding_id": str(uuid.uuid4()),
+            "instance_id": instance["id"],
+            "revision": 1,
+            "enabled": True,
+            "scope": {"kind": "character", "character_id": "actor:a"},
+            "overrides": {},
+            "priority": 0,
+        }
+        body = {"instance_id": instance["id"], "expected_revision": instance["revision"]}
+        await self.post("plugins/bindings", {**body, "bindings": [binding]}, expected=400)
+        binding["entries"] = [{"kind": "action", "id": "echo"}]
+        for scope, status in [
+            ([], 400),
+            ({"kind": "character", "character_id": "actor:unknown"}, 403),
+        ]:
+            await self.post(
+                "plugins/bindings",
+                {**body, "bindings": [{**binding, "scope": scope}]},
+                expected=status,
+            )
+        row = self.platform.role_runtime.get("actor:a")
+        self.platform.role_runtime._put({**row, "enabled": False})
+        await self.post("plugins/bindings", {**body, "bindings": [binding]}, expected=403)
+        self.platform.role_runtime._put(row)
+        saved = await self.post("plugins/bindings", {**body, "bindings": [binding]})
+        self.assertEqual(saved["bindings"], [binding])
+
     async def test_real_schema_configuration_never_reads_back_secrets(self):
         await self.login()
         package = await self.install("http-query")

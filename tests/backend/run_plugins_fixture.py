@@ -12,6 +12,7 @@ from fixtures import ENV, ROOT
 from services.platform.server import create_app
 from services.platform.service import Platform
 from web_fixtures import web_settings
+from test_actor_capabilities import seed_roles
 
 
 async def serve():
@@ -31,7 +32,9 @@ async def serve():
         settings = web_settings(
             folder, origin="http://127.0.0.1:4874", static=Path(ROOT) / "apps/web/dist"
         )
-        runner = web.AppRunner(create_app(Platform(settings)), access_log=None)
+        platform = Platform(settings)
+        seed_roles(platform)
+        runner = web.AppRunner(create_app(platform), access_log=None)
         await runner.setup()
         await web.TCPSite(runner, "127.0.0.1", 4874).start()
         try:

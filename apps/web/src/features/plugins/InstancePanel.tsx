@@ -281,6 +281,7 @@ export function InstancePanel({
         <BindingsPanel
           instance={instance}
           busy={busy}
+          csrf={csrf}
           save={(bindings) =>
             void mutate("bindings", {
               instance_id: instance.id,

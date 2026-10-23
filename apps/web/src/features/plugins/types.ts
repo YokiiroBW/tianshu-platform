@@ -82,7 +82,9 @@ export type Binding = {
   priority: number;
   overrides: Record<string, unknown>;
   scope: { kind: string; workspace_id?: string; [key: string]: unknown };
+  entries?: { kind: "action" | "event" | "bridge"; id: string }[];
 };
+export type ActorOption = { actor_id: string; name: string; version: number };
 export type Invocation = {
   id: string;
   instance_id: string;

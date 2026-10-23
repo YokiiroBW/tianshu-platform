@@ -161,3 +161,53 @@ test("real query plugin: generated settings form, encrypted secret and HTTP prov
     "synthetic-query-secret",
   );
 });
+
+test("real role binding: choose a registered actor and explicit actions, save and reload", async ({
+  page,
+}) => {
+  await login(page);
+  await install(page, "回声", "角色能力验收");
+  const detail = page.getByRole("region", { name: "插件实例" });
+  await detail.getByRole("button", { name: "作用范围", exact: true }).click();
+  await page.getByRole("button", { name: "添加角色能力", exact: true }).click();
+  await page
+    .getByRole("combobox", { name: "角色", exact: true })
+    .selectOption({ label: "合成角色乙" });
+  const actions = page.getByRole("group", {
+    name: "允许调用的动作",
+    exact: true,
+  });
+  const first = actions.getByRole("checkbox").first();
+  await first.check();
+  const firstName = await first.locator("..").innerText();
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/web/plugins/bindings") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "保存范围", exact: true }).click();
+  const response = await saved;
+  expect(response.ok()).toBe(true);
+  const body = await response.json();
+  const binding = body.bindings.find(
+    (row: { scope: { kind: string } }) => row.scope.kind === "character",
+  );
+  expect(binding.scope.character_id).toBe("actor:b");
+  expect(binding.entries).toHaveLength(1);
+  await detail.getByRole("button", { name: "功能", exact: true }).click();
+  await detail.getByRole("button", { name: "作用范围", exact: true }).click();
+  await expect(
+    page.getByRole("combobox", { name: "角色", exact: true }),
+  ).toHaveValue("actor:b");
+  await expect(
+    page
+      .getByRole("group", { name: "允许调用的动作", exact: true })
+      .getByRole("checkbox", { name: firstName }),
+  ).toBeChecked();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+});

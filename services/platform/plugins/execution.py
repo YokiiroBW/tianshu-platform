@@ -37,6 +37,8 @@ class Executions:
                 None,
             )
             require(action is not None, "not_found", 404)
+            if authorize and hasattr(authorize, "authorize_action"):
+                await self.host.local(authorize.authorize_action, identifier, action_id, binding_id)
             from .manager import AVAILABLE
 
             require(
@@ -271,6 +273,13 @@ class Executions:
             authorization = self.authorizers.get(call)
             if authorization:
                 require(await self.host.local(authorization), "session_expired", 401)
+                if method == "host.capability" and hasattr(authorization, "authorize_capability"):
+                    await self.host.local(
+                        authorization.authorize_capability,
+                        params.get("capability"),
+                        params.get("operation"),
+                        params.get("input", {}),
+                    )
         secret_values = [
             self.host.vault.unseal(instance, name, base64.b64decode(value))
             for name, value in context["secrets"].items()
@@ -336,13 +345,14 @@ class Executions:
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+            self.authorizers.pop(identifier, None)
             document = await self.host.local(self.repo.call, identifier)
             if document["execution"] == "accepted":
                 await self.host.local(
                     self.repo.update_call,
                     identifier,
                     execution="cancelled",
-                    effect="none",
+                    effect="not_applied" if document["write"] else "none",
                     error={"code": "cancelled", "retriable": False},
                 )
         return self.public(await self.host.local(self.repo.call, identifier))

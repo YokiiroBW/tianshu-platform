@@ -439,6 +439,9 @@ class Platform:
         self.plugins = PluginManager(
             settings, local=self.local_work.run, runtime=self.storage_runtime
         )
+        from .actor_capabilities import ActorCapabilities
+
+        self.actor_capabilities = ActorCapabilities(self)
         self._register_history()
         self.storage_runtime.finalize()
 
