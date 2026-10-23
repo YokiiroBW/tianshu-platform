@@ -7,6 +7,7 @@ import os
 import sqlite3
 import time
 import uuid
+from threading import Event
 
 from aiohttp import web
 
@@ -24,6 +25,7 @@ from .web_console import CONSOLE_AUTH
 
 PLATFORM = web.AppKey("platform", object)
 BODY = web.RequestKey("body", dict)
+DELIVERY_MUTATION_STARTED = web.RequestKey("delivery_mutation_started", Event)
 NATIVE_SNAPSHOT = "/internal/v1/model-config/native/snapshot"
 PROVIDER_SELECT = "/internal/v1/provider-self-service/select"
 PROVIDER_RUNTIME = "/internal/v1/provider-self-service/runtime"
@@ -331,17 +333,46 @@ def create_app(platform, probe=None, *, console=None, public=False):
         except web.HTTPRequestEntityTooLarge:
             response = error("budget_exceeded", 413, request_id, native, web_error)
         except Fault as exc:
-            response = error(exc.code, exc.status, request_id, native, web_error)
+            response = error(
+                exc.code,
+                exc.status,
+                request_id,
+                native,
+                web_error,
+                uncertain=exc.status >= 500 and delivery_mutation_started(request),
+            )
         except (sqlite3.Error, OSError):
-            response = error("dependency_unavailable", 503, request_id, native, web_error)
+            response = error(
+                "dependency_unavailable",
+                503,
+                request_id,
+                native,
+                web_error,
+                uncertain=delivery_mutation_started(request),
+            )
         except (ValueError, TypeError, KeyError, RecursionError):
-            response = error("invalid_input", 400, request_id, native, web_error)
+            uncertain = delivery_mutation_started(request)
+            response = error(
+                "dependency_unavailable" if uncertain else "invalid_input",
+                503 if uncertain else 400,
+                request_id,
+                native,
+                web_error,
+                uncertain=uncertain,
+            )
         except Exception:
             # An exception this product did not anticipate is still answered with a code the
             # published error contract allows, and recorded as the one fixed internal code: no
             # exception text, type or traceback reaches either the wire or the log.
             unexpected = True
-            response = error("dependency_unavailable", 503, request_id, native, web_error)
+            response = error(
+                "dependency_unavailable",
+                503,
+                request_id,
+                native,
+                web_error,
+                uncertain=delivery_mutation_started(request),
+            )
         except asyncio.CancelledError:
             # Cancellation is this request's terminal state, so it is recorded here and only here:
             # one place owns request lifecycle, and a cancelled request never produces a response.
@@ -391,7 +422,11 @@ def create_app(platform, probe=None, *, console=None, public=False):
             response.headers[diagnostics.HEADER] = correlation
         return response
 
-    def error(code, status, request_id, native, web_error=False):
+    def delivery_mutation_started(request):
+        started = request.get(DELIVERY_MUTATION_STARTED)
+        return started is not None and started.is_set()
+
+    def error(code, status, request_id, native, web_error=False, *, uncertain=False):
         if native:
             # The native contract fixes both the code set and one status per code.
             status, code = NATIVE_ERRORS.get(code, (503, "dependency_unavailable"))
@@ -411,10 +446,14 @@ def create_app(platform, probe=None, *, console=None, public=False):
             "code": code,
             "execution_state": (
                 "unknown"
-                if web_error and code in {"timed_out", "connection_failed", "result_unknown"}
+                if uncertain
+                or web_error
+                and code in {"timed_out", "connection_failed", "result_unknown"}
                 else "not_started"
             ),
-            "retryable": status == 503 and code not in {"result_unknown", "connection_failed"},
+            "retryable": not uncertain
+            and status == 503
+            and code not in {"result_unknown", "connection_failed"},
         }
         if not web_error:
             # Internal v1 remains the published closed code set. Browser management has its
@@ -437,7 +476,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             }:
                 body["code"] = "dependency_unavailable"
                 status = 503
-                body["retryable"] = True
+                body["retryable"] = not uncertain
             platform.contracts.check("common#error", body)
         return web.json_response(body, status=status)
 
@@ -576,17 +615,32 @@ def create_app(platform, probe=None, *, console=None, public=False):
         operation = request.path[len(DELIVERY_PREFIX) :]
         delivery = platform.bots.delivery
         if operation == "send":
-            result = await platform.local_work.run(
-                delivery.send, request.headers["Authorization"], request[BODY]
-            )
+            application, args = delivery.send, (request.headers["Authorization"], request[BODY])
         elif operation == "context":
-            result = await platform.local_work.run(
-                delivery.context, request.headers["Authorization"], request[BODY]
-            )
+            application, args = delivery.context, (request.headers["Authorization"], request[BODY])
         else:
-            result = await platform.local_work.run(
-                delivery.control, request.headers["Authorization"], request[BODY], operation
+            application, args = (
+                delivery.control,
+                (
+                    request.headers["Authorization"],
+                    request[BODY],
+                    operation,
+                ),
             )
+        if operation in {"send", "finalize", "cancel"}:
+            started = Event()
+            request[DELIVERY_MUTATION_STARTED] = started
+
+            def execute():
+                # This worker touches no aiohttp request. Once the complete
+                # mutation starts, a generic failure cannot prove no commit:
+                # its queue may commit before the authority context exits.
+                started.set()
+                return application(*args)
+
+            result = await platform.local_work.run(execute)
+        else:
+            result = await platform.local_work.run(application, *args)
         return web.json_response(result, headers={"Cache-Control": "no-store"})
 
     async def proof_route(request):

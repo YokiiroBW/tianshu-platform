@@ -15,6 +15,7 @@ import aiohttp
 import test_bots as bot_fixtures
 from fixtures import ENV, bearer, start_http
 
+from services.platform.contracts import Fault
 from services.platform.server import create_app
 from services.platform.service import Platform
 
@@ -170,6 +171,155 @@ class DeliveryHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["receipt"]["state"], "partial")
         self.assertTrue(all(not part["retry_safe"] for part in result["receipt"]["segments"]))
         self.assertEqual((await self.post("query", self.lookup("missing")))[1]["receipt"], None)
+
+    async def test_committed_append_error_is_unknown_and_original_claim_is_not_replayed(self):
+        original = self.platform.bots.delivery.send
+        failures = [OSError("synthetic exit"), Fault("dependency_unavailable", 503), TypeError()]
+        for index, failure in enumerate(failures):
+            with self.subTest(failure=type(failure).__name__):
+                expression = f"expression:committed:{index}"
+                request = self.request(expression=expression, final=True)
+                calls = []
+
+                def committed_then_failed(*args):
+                    calls.append(args[1]["request_id"])
+                    original(*args)
+                    # The complete real queue operation has committed. A later
+                    # authority-context/response failure cannot undo that fact.
+                    raise failure
+
+                with patch.object(self.platform.bots.delivery, "send", committed_then_failed):
+                    status, result = await self.post("send", request)
+                self.assertEqual(status, 503, result)
+                self.assertEqual(result["execution_state"], "unknown")
+                self.assertFalse(result["retryable"])
+                self.assertEqual(calls, [request["request_id"]])
+                lookup = self.lookup(expression)
+                status, found = await self.post("query", lookup)
+                self.assertEqual((status, found["receipt"]["state"]), (200, "queued"))
+                deliveries = await self.claim()
+                self.assertEqual(
+                    [item["reply_id"] for item in deliveries], [request["segments"][0]["reply_id"]]
+                )
+                self.assertEqual(await self.claim(), [])
+                await self.ack(deliveries[0])
+                self.assertEqual(await self.claim(), [])
+                self.assertEqual((await self.post("query", lookup))[1]["receipt"]["state"], "sent")
+        with closing(self.platform.bots._db()) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM replies").fetchone()[0], 3)
+
+    async def test_committed_finalize_and_cancel_errors_remain_unknown(self):
+        original = self.platform.bots.delivery.control
+        for operation in ("finalize", "cancel"):
+            with self.subTest(operation=operation):
+                expression = "expression:control:" + operation
+                self.assertEqual(
+                    (await self.post("send", self.request(expression=expression)))[0], 200
+                )
+                request = self.lookup(expression, "control:" + operation)
+                if operation == "finalize":
+                    request["origin"] = self.origin
+                calls = []
+
+                def committed_then_failed(*args):
+                    calls.append(args[2])
+                    original(*args)
+                    raise OSError("synthetic authority exit")
+
+                with patch.object(self.platform.bots.delivery, "control", committed_then_failed):
+                    status, result = await self.post(operation, request)
+                self.assertEqual(status, 503, result)
+                self.assertEqual(result["execution_state"], "unknown")
+                self.assertFalse(result["retryable"])
+                self.assertEqual(calls, [operation])
+                receipt = (await self.post("query", self.lookup(expression)))[1]["receipt"]
+                self.assertTrue(receipt["final"])
+                self.assertEqual(
+                    receipt["state"], "queued" if operation == "finalize" else "cancelled"
+                )
+                deliveries = await self.claim()
+                self.assertEqual(len(deliveries), 1 if operation == "finalize" else 0)
+                if deliveries:
+                    await self.ack(deliveries[0])
+                self.assertEqual(await self.claim(), [])
+
+    async def test_response_encoding_failure_after_append_is_unknown(self):
+        from services.platform import server
+
+        original = server.web.json_response
+
+        def encode(body, *args, **kwargs):
+            if isinstance(body, dict) and body.get("expression_id") == "expression:c4":
+                raise TypeError("synthetic response encoding failure")
+            return original(body, *args, **kwargs)
+
+        with patch.object(server.web, "json_response", encode):
+            status, result = await self.post("send", self.request())
+        self.assertEqual(status, 503, result)
+        self.assertEqual(result["execution_state"], "unknown")
+        self.assertFalse(result["retryable"])
+        self.assertEqual((await self.post("query", self.lookup()))[1]["receipt"]["state"], "queued")
+        self.assertEqual(len(await self.claim()), 1)
+        self.assertEqual(await self.claim(), [])
+
+    async def test_explicit_mutation_rejections_are_still_not_started(self):
+        invalid = self.request()
+        invalid.pop("segments")
+        foreign = self.request()
+        foreign["scope"] = dict(self.scope, person_id="person:foreign")
+        for request, token, expected in (
+            (invalid, None, 400),
+            (self.request(), "Bearer invalid", 401),
+            (self.request(), bearer("MEMORY"), 403),
+            (foreign, None, 403),
+        ):
+            with self.subTest(expected=expected, token=token is not None):
+                status, result = await self.post("send", request, token=token)
+                self.assertEqual(status, expected, result)
+                self.assertEqual(result["execution_state"], "not_started")
+                self.assertFalse(result["retryable"])
+        self.assertIsNone((await self.post("query", self.lookup()))[1]["receipt"])
+        self.assertEqual(await self.claim(), [])
+
+    async def test_log_or_executor_refusal_does_not_claim_mutation_started(self):
+        from services.platform import diagnostics
+
+        with patch.object(diagnostics, "admitted", return_value=False):
+            status, result = await self.post("send", self.request())
+        self.assertEqual(status, 503, result)
+        self.assertEqual(result["execution_state"], "not_started")
+        self.assertTrue(result["retryable"])
+        with (
+            patch.object(self.platform.local_work.executor, "submit", side_effect=RuntimeError()),
+            patch.object(
+                self.platform.bots.delivery, "send", wraps=self.platform.bots.delivery.send
+            ) as send,
+        ):
+            status, result = await self.post("send", self.request())
+            self.assertEqual(send.call_count, 0)
+        self.assertEqual(status, 503, result)
+        self.assertEqual(result["execution_state"], "not_started")
+        self.assertTrue(result["retryable"])
+        self.assertIsNone((await self.post("query", self.lookup()))[1]["receipt"])
+
+    async def test_read_only_delivery_errors_keep_their_existing_contract(self):
+        with patch.object(self.platform.bots.delivery, "control", side_effect=OSError()):
+            status, result = await self.post("query", self.lookup())
+        self.assertEqual(status, 503, result)
+        self.assertEqual(result["execution_state"], "not_started")
+        self.assertTrue(result["retryable"])
+        request = dict(
+            schema_version=2,
+            request_id="context:failure",
+            origin=self.origin,
+            scope=self.scope,
+            channel=self.channel,
+        )
+        with patch.object(self.platform.bots.delivery, "context", side_effect=OSError()):
+            status, result = await self.post("context", request)
+        self.assertEqual(status, 503, result)
+        self.assertEqual(result["execution_state"], "not_started")
+        self.assertTrue(result["retryable"])
 
     async def test_scope_and_connection_revoke_not_receipt_admission(self):
         request = self.request()
