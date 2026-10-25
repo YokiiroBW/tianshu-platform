@@ -22,8 +22,8 @@ RUNTIME_PACKAGES = {
     "image-backend/v1": "62e71dd2f42fb5b1376c439c362a555619da41cb7f7ae26d07acc1182b80ffbd",
     "bot-delivery/v2.1": "768aaf25db41ada4bc4ac3768c9e4758b0753e362bd3c8be482881a9e530eb1a",
     "memory-context/v1": "aaf25b4446c3915d48e46c6f0f687a26b57f30ac1c4494085266a586f67953e8",
-    "memory-context/v2": "885405636073f8a431b2d839d87fbd4afa690f6e9fac3d87b1acb5802237a50d",
-    "memory-extraction/v1": "ffd88f881026d77cc26b9f3f92226fbbecac5ab67a4de98ad2347ba63bdc97fa",
+    "memory-context/v2": "dc162b6dba3390dcdf0a672fcbb9f9c0bd0fa08c7a06d343ed8e823224bc792e",
+    "memory-extraction/v1": "41bb91c75889b15c8d658840306f8a15b024e5515474112139f9aaadb2b9fd7a",
     "context-history/v1": "5db7d9223a8c9bb69dd8046355ed0bc0fff1f963290adf43566b529493624e6e",
     "knowledge-content/v1": "75d210454102af5af505ec1f72d69cc7dfd344550f7cf90e70125c082fdf4cd7",
 }
