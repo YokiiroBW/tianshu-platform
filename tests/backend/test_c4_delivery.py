@@ -18,6 +18,7 @@ from fixtures import ENV, bearer, start_http
 from services.platform.contracts import Fault
 from services.platform.server import create_app
 from services.platform.service import Platform
+from source_fixtures import SOURCE_DOCS, core_fixture, input_request
 
 
 class DeliveryHTTPTests(unittest.IsolatedAsyncioTestCase):
@@ -464,6 +465,180 @@ class DeliveryHTTPTests(unittest.IsolatedAsyncioTestCase):
         ref = self.origin["origin"]["assertion_ref"]
         self.platform.origins.revoke(bearer("ADMIN"), "origin", ref)
         self.assertEqual((await self.post("context", request))[0], 403)
+
+    async def pending_dispatch(self):
+        """Real pending exchange; only the Core ACK is an explicit upstream stand-in."""
+        from services.platform.contracts import canonical, utc
+
+        entry = self.settings["input_entries"]["bot-input-2"]
+        with self.platform.store.connect(write=True) as db:
+            db.execute("DELETE FROM identities WHERE account=?", (canonical(entry["account"]),))
+            db.execute("DELETE FROM channels WHERE channel=?", (canonical(entry["channel"]),))
+        ingest = copy.deepcopy(SOURCE_DOCS["group/request"])
+        ingest["input"]["author"] = entry["account"]
+        ingest["input"]["message_key"]["channel"] = entry["channel"]
+        registered = self.platform.sources.register_input(
+            bearer("CONNECTOR"), "bot-input-2", ingest["input"]
+        )
+        ingest["command"]["origin"] = {"assertion_ref": registered["assertion_ref"]}
+        ingest["command"]["deadline_at"] = utc(self.now + 30)
+        ingest["target_actor_ids"] = ["actor:a"]
+        accepted = []
+
+        async def lost_ack(config, actual, contracts):
+            authority = self.platform.sources.read(bearer("COMPANION"), input_request(actual))
+            response = core_fixture(actual, authority, self.now)
+            for outcome in response["outcomes"]:
+                if outcome["receipt"] is not None:
+                    outcome["receipt"]["collection_key"] = dict(
+                        channel=actual["input"]["message_key"]["channel"],
+                        author=actual["input"]["author"],
+                    )
+            accepted.append(response)
+            raise Fault("dependency_unavailable", 503)
+
+        with patch("services.platform.transport.core_post", side_effect=lost_ack):
+            with self.assertRaises(Fault) as caught:
+                await self.platform.sources.dispatch(bearer("CONNECTOR"), ingest)
+        self.assertFalse(getattr(caught.exception, "source_not_started", False))
+        admission = accepted[0]["outcomes"][0]["admission"]
+        request = dict(
+            schema_version=2,
+            request_id="pending:context",
+            origin=dict(
+                kind="response",
+                actor_id="actor:a",
+                turn_id="turn:pending",
+                origin=admission["accepted_origin"],
+                sources=[],
+            ),
+            scope=admission["scope"],
+            channel=entry["channel"],
+        )
+        return ingest, accepted[0], request
+
+    async def test_pending_ingest_ack_context_waits_without_renewing_then_duplicate_confirms(self):
+        from services.platform.contracts import canonical
+
+        ingest, accepted, request = await self.pending_dispatch()
+        ref = request["origin"]["origin"]["assertion_ref"]
+        with self.platform.store.connect() as db:
+            expiry = db.execute("SELECT expires_at FROM origins WHERE ref=?", (ref,)).fetchone()[0]
+            self.assertEqual(
+                self.platform.origins.scope(db, self.platform.auth.entries["bot-actor-2"]),
+                dict(request["scope"], person_id=None, conversation_id=None),
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM actor_origins WHERE ref=?", (ref,)).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM fanout_exchanges WHERE response IS NULL"
+                ).fetchone()[0],
+                1,
+            )
+        self.now += 1
+        status, waiting = await self.post("context", request)
+        self.assertEqual(status, 503, waiting)
+        self.assertEqual(
+            waiting,
+            dict(
+                schema_version=1,
+                request_id=request["request_id"],
+                code="dependency_unavailable",
+                execution_state="not_started",
+                retryable=True,
+            ),
+        )
+        with self.platform.store.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT expires_at FROM origins WHERE ref=?", (ref,)).fetchone()[0],
+                expiry,
+            )
+            self.assertIsNone(
+                db.execute(
+                    "SELECT person_id FROM identities WHERE account=?",
+                    (canonical(ingest["input"]["author"]),),
+                ).fetchone()
+            )
+            self.assertIsNone(
+                db.execute(
+                    "SELECT conversation_id FROM channels WHERE channel=?",
+                    (canonical(request["channel"]),),
+                ).fetchone()
+            )
+        unsent = self.request(origin=request["origin"])
+        unsent.update(scope=request["scope"], channel=request["channel"])
+        self.assertEqual((await self.post("send", unsent))[0], 403)
+        authority = self.platform.sources.read(bearer("COMPANION"), input_request(ingest))
+        duplicate = core_fixture(ingest, authority, self.now, previous=accepted)
+        with patch("services.platform.transport.core_post", return_value=duplicate):
+            confirmed = await self.platform.sources.dispatch(bearer("CONNECTOR"), ingest)
+        self.assertEqual(confirmed["outcomes"][0]["state"], "duplicate")
+        status, ready = await self.post("context", request)
+        self.assertEqual(status, 200, ready)
+        self.assertEqual(ready["scope"], request["scope"])
+        self.assertEqual(ready["origin"], request["origin"]["origin"])
+        for field, value in (
+            ("person_id", "person:foreign"),
+            ("conversation_id", "conversation:foreign"),
+            ("actor_id", "actor:foreign"),
+            ("audience", "self_private"),
+        ):
+            with self.subTest(field=field):
+                bad = copy.deepcopy(request)
+                bad["scope"][field] = value
+                self.assertEqual((await self.post("context", bad))[0], 403)
+        bad = copy.deepcopy(request)
+        bad["channel"]["channel_conversation_id"] = "group:foreign"
+        self.assertEqual((await self.post("context", bad))[0], 403)
+        self.platform.origins.revoke(bearer("ADMIN"), "origin", ref)
+        self.assertEqual((await self.post("context", request))[0], 403)
+
+    async def test_pending_context_keeps_live_connection_and_real_origin_boundaries(self):
+        _, _, request = await self.pending_dispatch()
+        bad = copy.deepcopy(request)
+        bad["channel"]["channel_conversation_id"] = "group:foreign"
+        self.assertEqual((await self.post("context", bad))[0], 403)
+        issued = self.platform.origins.issue(bearer("CONNECTOR"), "bot-actor-2")
+        unbacked = copy.deepcopy(request)
+        unbacked["origin"]["origin"] = {"assertion_ref": issued["assertion_ref"]}
+        self.assertEqual((await self.post("context", unbacked))[0], 403)
+        self.platform.bots.change(self.connection_id, "disable")
+        self.assertEqual((await self.post("context", request))[0], 403)
+        self.platform.bots.change(self.connection_id, "enable")
+        self.assertEqual((await self.post("context", request))[0], 503)
+        self.platform.origins.revoke(
+            bearer("ADMIN"), "origin", request["origin"]["origin"]["assertion_ref"]
+        )
+        self.assertEqual((await self.post("context", request))[0], 403)
+
+    async def test_pending_context_rejects_known_scope_fields_before_readiness(self):
+        from services.platform.contracts import canonical
+
+        ingest, accepted, request = await self.pending_dispatch()
+        with self.platform.store.connect(write=True) as db:
+            db.execute(
+                "INSERT INTO identities VALUES(?,?,?)",
+                (canonical(ingest["input"]["author"]), accepted["person_id"], 1),
+            )
+        wrong_person = copy.deepcopy(request)
+        wrong_person["scope"]["person_id"] = "person:foreign"
+        self.assertEqual((await self.post("context", wrong_person))[0], 403)
+        self.assertEqual((await self.post("context", request))[0], 503)
+        with self.platform.store.connect(write=True) as db:
+            db.execute(
+                "DELETE FROM identities WHERE account=?", (canonical(ingest["input"]["author"]),)
+            )
+            db.execute(
+                "INSERT INTO channels VALUES(?,?)",
+                (canonical(request["channel"]), accepted["conversation_id"]),
+            )
+        wrong_conversation = copy.deepcopy(request)
+        wrong_conversation["scope"]["conversation_id"] = "conversation:foreign"
+        self.assertEqual((await self.post("context", wrong_conversation))[0], 403)
+        self.assertEqual((await self.post("context", request))[0], 503)
 
     async def test_direct_continuation_still_checks_disabled_connection(self):
         self.now += 3600

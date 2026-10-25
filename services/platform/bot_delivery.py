@@ -56,15 +56,17 @@ class Delivery:
             closing(self.bots._db()) as queue,
         ):
             principal = self._caller(authority, header)
-            entry_id, entry = self._entry(
+            entry_id, entry, current_scope = self._entry(
                 authority,
                 request["origin"],
                 request["scope"],
                 request["channel"],
                 allow_expired=True,
+                allow_pending=True,
             )
             self.p.auth.route(entry, "companion", "memory", "dialogue")
             self._connection(authority, queue, entry_id, entry, request["scope"])
+            require(current_scope == request["scope"], "dependency_unavailable", 503)
             if request["origin"]["kind"] in {"response", "direct"}:
                 ref = request["origin"]["origin"]["assertion_ref"]
                 now = self.p.origins.clock()
@@ -101,7 +103,9 @@ class Delivery:
             self.p.contracts.check("bot-delivery#context_response", result)
             return result
 
-    def _entry(self, db, origin, scope, channel, entry_id=None, *, allow_expired=False):
+    def _entry(
+        self, db, origin, scope, channel, entry_id=None, *, allow_expired=False, allow_pending=False
+    ):
         require(
             scope["person_id"] is not None
             and scope["conversation_id"] is not None
@@ -124,9 +128,19 @@ class Delivery:
                     db, origin["origin"]["assertion_ref"], "companion", "platform", "dialogue"
                 )
                 current_scope = context["allowed_scope"]
-            require(current_scope == scope and entry["channel"] == channel)
+            require(entry["channel"] == channel)
+            if current_scope != scope:
+                require(
+                    allow_pending
+                    and all(
+                        value is None or value == scope[key] for key, value in current_scope.items()
+                    )
+                    and self.p.sources.mapping_pending(
+                        db, origin["origin"]["assertion_ref"], entry, scope
+                    )
+                )
             require(entry_id is None or selected == entry_id, "scope_changed", 409)
-            return selected, entry
+            return selected, entry, current_scope
         candidates = []
         for key in [entry_id] if entry_id else self.p.auth.entries:
             try:
@@ -139,7 +153,8 @@ class Delivery:
             if entry["channel"] == channel and self.p.origins.scope(db, entry) == scope:
                 candidates.append((key, entry))
         require(len(candidates) == 1, "forbidden", 403)
-        return candidates[0]
+        selected, entry = candidates[0]
+        return selected, entry, scope
 
     def _connection(self, authority, queue, entry_id, entry, scope):
         if entry["channel"]["namespace"] == "web":
@@ -186,7 +201,7 @@ class Delivery:
         stored = loads(row["origin"])
         if origin is not None:
             require(canonical(origin) == row["origin"], "idempotency_conflict", 409)
-            entry_id, entry = self._entry(
+            entry_id, entry, _ = self._entry(
                 authority, origin, loads(row["scope"]), loads(row["channel"]), row["entry_id"]
             )
         else:
@@ -293,7 +308,7 @@ class Delivery:
                 authority, db, header, request["expression_id"], request["origin"]
             )
             if row is None:
-                entry_id, entry = self._entry(
+                entry_id, entry, _ = self._entry(
                     authority, request["origin"], request["scope"], request["channel"]
                 )
                 connection = self._connection(authority, db, entry_id, entry, request["scope"])

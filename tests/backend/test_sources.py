@@ -44,6 +44,38 @@ class SourceTests(unittest.TestCase):
         self.p.sources.confirm_mapping(bearer("COMPANION"), ticket, response)
         return ingest, authority, response
 
+    def test_pending_mapping_requires_exact_current_fanout_and_never_installs_scope(self):
+        ingest, ticket, authority, response = self.prepare(targets=["actor:a"])
+        ref = authority["actor_contexts"][0]["assertion_ref"]
+        entry = self.p.auth.entries["actor-a"]
+        scope = response["outcomes"][0]["admission"]["scope"]
+        with self.p.store.connect(write=True) as db:
+            before = db.execute("SELECT expires_at FROM origins WHERE ref=?", (ref,)).fetchone()[0]
+            self.assertTrue(self.p.sources.mapping_pending(db, ref, entry, scope))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM identities").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM channels").fetchone()[0], 0)
+            self.assertEqual(
+                db.execute("SELECT expires_at FROM origins WHERE ref=?", (ref,)).fetchone()[0],
+                before,
+            )
+            self.assertFalse(self.p.sources.mapping_pending(db, "origin:unissued", entry, scope))
+        self.p.origins.revoke(
+            bearer("ADMIN"), "origin", ingest["command"]["origin"]["assertion_ref"]
+        )
+        with self.p.store.connect(write=True) as db:
+            self.assertFalse(self.p.sources.mapping_pending(db, ref, entry, scope))
+        # A distinct real request can be confirmed normally; a completed exchange
+        # is not pending evidence for later removal of its mappings.
+        renewed = register(self.p, self.now, targets=["actor:a"])
+        renewed["command"]["idempotency_key"] = "mapping:renewed"
+        renewed_ticket = self.p.sources.prepare_mapping(bearer("CONNECTOR"), renewed)
+        current = self.p.sources.read(bearer("COMPANION"), input_request(renewed))
+        confirmed = core_fixture(renewed, current, self.now)
+        self.p.sources.confirm_mapping(bearer("COMPANION"), renewed_ticket, confirmed)
+        fresh_ref = current["actor_contexts"][0]["assertion_ref"]
+        with self.p.store.connect(write=True) as db:
+            self.assertFalse(self.p.sources.mapping_pending(db, fresh_ref, entry, scope))
+
     def test_retry_does_not_reuse_actor_lease_that_expires_during_admission(self):
         ingest, _, first, _ = self.prepare(targets=["actor:a"])
         old_ref = first["actor_contexts"][0]["assertion_ref"]

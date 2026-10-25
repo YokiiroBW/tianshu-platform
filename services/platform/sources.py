@@ -183,7 +183,7 @@ class Sources:
         )
         return row, entry
 
-    def _route(self, db, ingest, source, entry):
+    def _route(self, db, ingest, source, entry, *, create=True):
         command_key = canonical(
             [source["ingress"], "core.ingest_actors", ingest["command"]["idempotency_key"]]
         )
@@ -196,6 +196,8 @@ class Sources:
         if row:
             require(row["semantic_digest"] == semantic, "idempotency_conflict", 409)
         else:
+            if not create:
+                return None
             effective = (
                 []
                 if ingest["input"]["kind"] == "retract"
@@ -346,6 +348,62 @@ class Sources:
             _, principal = self.auth.authenticate(header, db, "mapping.confirm")
             require(principal["kind"] == "service" and principal["service"] == "companion")
             self._confirm(db, ticket, response)
+
+    def mapping_pending(self, db, ref, entry, scope):
+        """An issued actor origin has a current frozen fanout still awaiting its Core ACK.
+
+        This proves readiness is unknown, never the requested person/conversation.
+        Only the existing authenticated confirmation port can install those mappings.
+        """
+        origin = db.execute("SELECT * FROM actor_origins WHERE ref=?", (ref,)).fetchone()
+        if origin is None or origin["entry_document"] != canonical(entry):
+            return False
+        exchanges = db.execute(
+            "SELECT * FROM fanout_exchanges WHERE response IS NULL "
+            "AND json_extract(authority,'$.input_digest')=?",
+            (origin["input_digest"],),
+        ).fetchall()
+        for exchange in exchanges:
+            authority = loads(exchange["authority"])
+            contexts = [
+                item for item in authority["actor_contexts"] if item["assertion_ref"] == ref
+            ]
+            if not any(
+                item["verified_account"] == entry["account"]
+                and item["verified_channel"] == entry["channel"]
+                and all(
+                    value is None or value == scope[key]
+                    for key, value in item["allowed_scope"].items()
+                )
+                for item in contexts
+            ):
+                continue
+            ingest = loads(exchange["request"])
+            try:
+                source, input_entry = self._input(db, ingest)
+                # A real prepared exchange already owns this frozen route. Do not
+                # create a route from a delivery request if that fact is absent.
+                route = self._route(db, ingest, source, input_entry, create=False)
+                if route is None:
+                    continue
+                self.auth.route(entry, source["ingress"], "companion", "dialogue")
+                self.auth.route(entry, "companion", "memory", "dialogue")
+            except Fault as error:
+                if error.status in {403, 408, 409}:
+                    continue
+                raise
+            if (
+                exchange["prepared_by"] == input_entry["owner"]
+                and source["input_digest"] == origin["input_digest"]
+                and source["entry_id"] == origin["input_entry_id"]
+                and source["ingress"] == origin["ingress"]
+                and authority["origin_ref"] == source["ref"]
+                and route["command_key"] == exchange["command_key"]
+                and entry["actor_id"] in loads(route["effective"])
+                and any(self.auth.entries[key] == entry for key in input_entry["actor_entries"])
+            ):
+                return True
+        return False
 
     def _confirm(self, db, ticket, response):
         self.contracts.check("sources#fanout_response", response)
