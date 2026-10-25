@@ -181,11 +181,11 @@ class Delivery:
             _, inputs = self.bots._slot(row)
             if (
                 scope["actor_id"] in loads(row["actor_ids"])
-                and self.bots._managed_active(row)
                 and any(
                     item["channel"] == entry["channel"] and entry_id in item["actor_entries"]
                     for item in inputs
                 )
+                and self.bots._managed_active(row)
             ):
                 self.bots._connection(queue, row["id"], authority=authority)
                 rows.append(row)

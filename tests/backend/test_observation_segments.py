@@ -249,3 +249,102 @@ class SegmentMappingTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
         self.assertEqual(revoked.exception.status, 409)
+
+    def context_request(self, admission):
+        return dict(
+            schema_version=2,
+            request_id="context:segment-candidates",
+            origin=dict(
+                kind="response",
+                actor_id=admission["scope"]["actor_id"],
+                turn_id="turn:segment-candidates",
+                origin=copy.deepcopy(admission["accepted_origin"]),
+                sources=[],
+            ),
+            scope=copy.deepcopy(admission["scope"]),
+            channel=copy.deepcopy(admission["source"]["message_key"]["channel"]),
+        )
+
+    async def test_delivery_context_skips_unrelated_channel_managed_reads(self):
+        _, _, admission, _ = await self.accepted()
+        unrelated, _ = await self.manager._ensure_reply_scope(
+            self.row, "group:1000", "8", "actor:a"
+        )
+        self.assertNotEqual(unrelated, self.connection)
+        with (
+            patch.object(
+                self.platform.bots, "_managed_active", wraps=self.platform.bots._managed_active
+            ) as managed,
+            patch.object(self.manager, "get", wraps=self.manager.get) as catalog,
+        ):
+            result = self.platform.bots.delivery.context(
+                bearer("COMPANION"), self.context_request(admission)
+            )
+        self.assertEqual(result["scope"], admission["scope"])
+        self.assertEqual(
+            [call.args[0]["id"] for call in managed.call_args_list],
+            [self.connection, self.connection],
+        )
+        self.assertEqual(catalog.call_count, 2)
+
+    async def test_delivery_context_still_rejects_matching_inactive_connection(self):
+        _, _, admission, _ = await self.accepted()
+        self.manager.catalog.put(dict(self.row, enabled=False))
+        with (
+            patch.object(
+                self.platform.bots, "_managed_active", wraps=self.platform.bots._managed_active
+            ) as managed,
+            patch.object(self.manager, "get", wraps=self.manager.get) as catalog,
+            self.assertRaises(Fault) as rejected,
+        ):
+            self.platform.bots.delivery.context(
+                bearer("COMPANION"), self.context_request(admission)
+            )
+        self.assertEqual((rejected.exception.status, rejected.exception.code), (403, "forbidden"))
+        self.assertEqual([call.args[0]["id"] for call in managed.call_args_list], [self.connection])
+        self.assertEqual(catalog.call_count, 1)
+
+    async def test_delivery_context_rechecks_catalog_after_candidate_selection(self):
+        _, _, admission, _ = await self.accepted()
+        original = self.platform.bots._managed_active
+        calls = []
+
+        def revoke_after_first_guard(row):
+            active = original(row)
+            calls.append(row["id"])
+            if len(calls) == 1:
+                # Model a real control change between the two live reads.
+                self.manager.catalog.put(dict(self.row, enabled=False))
+            return active
+
+        with (
+            patch.object(self.platform.bots, "_managed_active", revoke_after_first_guard),
+            patch.object(self.manager, "get", wraps=self.manager.get) as catalog,
+            self.assertRaises(Fault) as rejected,
+        ):
+            self.platform.bots.delivery.context(
+                bearer("COMPANION"), self.context_request(admission)
+            )
+        self.assertEqual((rejected.exception.status, rejected.exception.code), (403, "forbidden"))
+        self.assertEqual(calls, [self.connection, self.connection])
+        self.assertEqual(catalog.call_count, 2)
+
+    async def test_delivery_context_keeps_duplicate_physical_owner_rejection(self):
+        _, _, admission, _ = await self.accepted()
+        bots = self.platform.bots
+        with closing(bots._db()) as db:
+            saved = dict(
+                db.execute("SELECT * FROM connections WHERE id=?", (self.connection,)).fetchone()
+            )
+        duplicate_slot = "fixture:duplicate-observation-target"
+        bots.slots[duplicate_slot] = copy.deepcopy(bots.slots[saved["slot_id"]])
+        duplicate = bots.create(duplicate_slot, ["actor:a"])["connection_id"]
+        # Normal enable rejects this state. Retain the existing read-side guard
+        # for an inconsistent/legacy enabled row as well.
+        with closing(bots._db()) as db, db:
+            db.execute("UPDATE connections SET enabled=1 WHERE id=?", (duplicate,))
+        with self.assertRaises(Fault) as rejected:
+            bots.delivery.context(bearer("COMPANION"), self.context_request(admission))
+        self.assertEqual(
+            (rejected.exception.status, rejected.exception.code), (409, "idempotency_conflict")
+        )
