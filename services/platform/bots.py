@@ -129,6 +129,7 @@ class Bots:
                     state TEXT NOT NULL, result TEXT,
                     PRIMARY KEY(connection_id,event_id,account_id)
                 );
+                CREATE INDEX IF NOT EXISTS events_message ON events(message_id);
                 CREATE TABLE IF NOT EXISTS replies (
                     reply_id TEXT PRIMARY KEY, command_key TEXT NOT NULL UNIQUE,
                     semantic TEXT NOT NULL, scope TEXT NOT NULL,

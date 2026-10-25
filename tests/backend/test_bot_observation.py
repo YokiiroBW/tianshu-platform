@@ -1,6 +1,7 @@
 """Account observation policy and source authority without chat dispatch."""
 
 import asyncio
+import copy
 import tempfile
 import unittest
 from contextlib import closing, contextmanager
@@ -10,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from services.platform.bot_adapter_catalog import BotAdapterCatalog
 from services.platform.bot_observation import BotObservation, decision
-from services.platform.contracts import Fault
+from services.platform.contracts import Contracts, Fault
 from services.platform.local_work import LocalWork
 
 
@@ -98,6 +99,258 @@ class ObservationTests(unittest.TestCase):
             "mentioned": True,
             "scope_revision": 1,
         }
+
+    def segment_request(self, *, actor=None):
+        from fixtures import CONTRACT
+
+        self.platform.contracts = Contracts(CONTRACT)
+        self.row["group_policy"] = policy(actor="actor:a")
+        self.manager.catalog.put(self.row)
+        sources = []
+        for account, native in (("30003", "44"), ("30004", "45")):
+            event = self.event(native=native)
+            event["account_id"] = account
+            sources.append(self.manager.record(self.row, event))
+        return dict(
+            operation="segment",
+            actor_id=actor,
+            instance_id="instance-a",
+            self_id="10001",
+            conversation_id="group:20002",
+            sources=sources,
+        )
+
+    def test_segment_discovery_binds_all_real_authors_without_opening_reply(self):
+        request = self.segment_request()
+        response = self.manager.verify("Bearer memory", request)
+        self.assertEqual(
+            self.manager.verify("Bearer memory", {**request, "actor_id": response["actor_id"]}),
+            response,
+        )
+        self.assertEqual(response["actor_id"], "actor:a")
+        self.assertEqual(response["instance_id"], request["instance_id"])
+        self.assertEqual(response["self_id"], request["self_id"])
+        self.assertEqual(response["conversation_id"], request["conversation_id"])
+        self.assertEqual(response["authority"]["owner_id"], self.row["id"])
+        self.assertEqual(response["authority"]["epoch"], 1)
+        self.assertEqual(response["authority"]["revision"], 1)
+        self.assertEqual(response["channel"]["namespace"], "qq")
+        self.assertEqual(response["channel"]["channel_conversation_id"], "group:20002")
+        self.assertIsNone(response["channel"]["thread_id"])
+        self.assertTrue(response["channel"]["binding_id"].startswith("binding:observation:"))
+        self.assertEqual(
+            [item["physical_key"] for item in response["sources"]],
+            [
+                dict(
+                    platform_id="instance-a",
+                    self_id="10001",
+                    conversation_id="group:20002",
+                    account_id=account,
+                    event_id=native,
+                    revision=1,
+                )
+                for account, native in (("30003", "44"), ("30004", "45"))
+            ],
+        )
+        self.assertEqual(
+            [{key: item[key] for key in request["sources"][0]} for item in response["sources"]],
+            request["sources"],
+        )
+        with closing(self.manager._db()) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM reply_connections").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM reply_authors").fetchone()[0], 0)
+        self.assertFalse(hasattr(self.platform, "bots"))
+
+    def test_segment_requires_the_configured_actor_even_when_memory_is_authenticated(self):
+        request = self.segment_request(actor="actor:b")
+        with self.assertRaises(Fault) as error:
+            self.manager.verify("Bearer memory", request)
+        self.assertEqual((error.exception.code, error.exception.status), ("forbidden", 403))
+        self.manager.catalog.put({**self.row, "group_policy": policy()})
+        for actor in (None, "actor:a"):
+            with self.subTest(actor=actor), self.assertRaises(Fault) as error:
+                self.manager.verify("Bearer memory", {**request, "actor_id": actor})
+            self.assertEqual((error.exception.code, error.exception.status), ("forbidden", 403))
+        with self.assertRaises(Fault) as error:
+            self.manager.verify("Bearer companion", {**request, "actor_id": None})
+        self.assertEqual(error.exception.status, 401)
+
+    def test_segment_whole_batch_rejects_wrong_source_revision_epoch_and_frame(self):
+        original = self.segment_request()
+        changes = (
+            ("source_digest", "0" * 64),
+            ("scope_version", 2),
+            ("archive_epoch", 2),
+            ("source_ref", "obs:" + "0" * 64),
+        )
+        for key, value in changes:
+            request = copy.deepcopy(original)
+            request["sources"][-1][key] = value
+            with self.subTest(field=key), self.assertRaises(Fault) as error:
+                self.manager.verify("Bearer memory", request)
+            self.assertEqual((error.exception.code, error.exception.status), ("scope_changed", 409))
+        for key, value in (
+            ("instance_id", "instance-other"),
+            ("self_id", "10002"),
+            ("conversation_id", "group:20003"),
+        ):
+            with self.subTest(field=key), self.assertRaises(Fault) as error:
+                self.manager.verify("Bearer memory", {**original, key: value})
+            self.assertEqual((error.exception.code, error.exception.status), ("scope_changed", 409))
+
+    def test_segment_uses_one_complete_source_batch_and_never_accepts_duplicate_refs(self):
+        request = self.segment_request()
+        for sources in (
+            [],
+            [request["sources"][0]] * 2,
+            [{**request["sources"][0], "source_ref": "obs:" + f"{i:064x}"} for i in range(257)],
+        ):
+            with self.subTest(sources=len(sources)), self.assertRaises(Fault) as error:
+                self.manager.verify("Bearer memory", {**request, "sources": sources})
+            self.assertEqual(error.exception.status, 400)
+        request["sources"].append(self.manager.record(self.row, self.event(native="_native.46")))
+        statements = []
+        original = self.manager._db
+
+        def traced():
+            db = original()
+            db.set_trace_callback(statements.append)
+            return db
+
+        # SQLite exposes a statement trace; the PG subclass checks the same
+        # complete result, using the real backend rather than a fake query.
+        if self.manager.database.backend == "sqlite":
+            with patch.object(self.manager, "_db", traced):
+                response = self.manager.verify("Bearer memory", request)
+            self.assertEqual(
+                sum(sql.startswith("SELECT * FROM sources WHERE") for sql in statements), 1
+            )
+        else:
+            response = self.manager.verify("Bearer memory", request)
+        self.assertEqual(len(response["sources"]), len(request["sources"]))
+        self.assertEqual(response["sources"][-1]["physical_key"]["event_id"], "_native.46")
+
+    def test_segment_pause_preserves_archive_but_history_revocation_cannot_be_restored(self):
+        request = self.segment_request(actor="actor:a")
+        before = self.manager.verify("Bearer memory", request)
+        paused = {
+            **self.row,
+            "enabled": False,
+            "revision": 2,
+            "host_revision": 2,
+            "group_policy": policy(observe=False, actor="actor:a"),
+        }
+        self.manager.catalog.put(paused)
+        after = self.manager.verify("Bearer memory", request)
+        self.assertTrue(after["valid"])
+        self.assertEqual(before["channel"], after["channel"])
+        self.assertNotEqual(before["delivery_channel"], after["delivery_channel"])
+        self.assertEqual(before["sources"], after["sources"])
+        self.assertNotEqual(before["authority"], after["authority"])
+        self.assertEqual(after["authority"]["revision"], 2)
+        self.assertNotEqual(
+            self.manager._reply_connection_id(self.row, "group:20002", "actor:a"),
+            self.manager._reply_connection_id(paused, "group:20002", "actor:a"),
+        )
+        legacy = dict(
+            operation="read",
+            **{
+                key: request["sources"][0][key]
+                for key in ("source_ref", "source_digest", "scope_version")
+            },
+        )
+        old_reply = self.manager.verify("Bearer memory", legacy)
+        self.assertEqual(
+            set(old_reply),
+            {
+                "valid",
+                "source_ref",
+                "instance_id",
+                "self_id",
+                "conversation_id",
+                "account_id",
+                "event_id",
+                "source_digest",
+                "scope_version",
+                "archive_epoch",
+            },
+        )
+        for readable in (False, True):
+            self.manager.catalog.put({**paused, "read_enabled": readable, "archive_epoch": 2})
+            with self.subTest(read_enabled=readable), self.assertRaises(Fault) as error:
+                self.manager.verify("Bearer memory", request)
+            self.assertEqual((error.exception.code, error.exception.status), ("scope_changed", 409))
+
+    def test_segment_authority_is_fresh_per_request_and_ignores_unrelated_source_appends(self):
+        request = self.segment_request(actor="actor:a")
+        first = self.manager.verify("Bearer memory", request)
+        self.manager.record(self.row, self.event(native="46"))
+        self.assertEqual(self.manager.verify("Bearer memory", request), first)
+        changed = {
+            **self.row,
+            "revision": 2,
+            "host_revision": 2,
+            "group_policy": policy(actor="actor:b"),
+        }
+        self.manager.catalog.put(changed)
+        with self.assertRaises(Fault) as error:
+            self.manager.verify("Bearer memory", request)
+        self.assertEqual(error.exception.status, 403)
+        second = self.manager.verify("Bearer memory", {**request, "actor_id": None})
+        self.assertEqual(second["actor_id"], "actor:b")
+        self.assertNotEqual(second["authority"], first["authority"])
+        self.assertNotEqual(second["channel"], first["channel"])
+        self.manager = BotObservation(self.platform)
+        self.assertEqual(
+            self.manager.verify("Bearer memory", {**request, "actor_id": None}), second
+        )
+        self.manager.catalog.put({**changed, "pending": {"request_id": "new-policy"}})
+        with self.assertRaises(Fault) as error:
+            self.manager.verify("Bearer memory", {**request, "actor_id": None})
+        self.assertEqual(
+            (error.exception.code, error.exception.status), ("dependency_unavailable", 503)
+        )
+
+    def test_segment_catalog_change_during_source_read_rejects_the_entire_snapshot(self):
+        request = self.segment_request(actor="actor:a")
+        original = self.manager._db
+        owner = self
+
+        class ChangeDuringRead:
+            def __init__(self):
+                self.db = original()
+
+            def execute(self, sql, parameters):
+                result = self.db.execute(sql, parameters)
+                owner.manager.catalog.put({**owner.row, "revision": 2, "host_revision": 2})
+                return result
+
+            def close(self):
+                self.db.close()
+
+        with patch.object(self.manager, "_db", ChangeDuringRead):
+            with self.assertRaises(Fault) as error:
+                self.manager.verify("Bearer memory", request)
+        self.assertEqual((error.exception.code, error.exception.status), ("scope_changed", 409))
+
+    def test_segment_private_frame_does_not_accept_group_or_another_contact(self):
+        request = self.segment_request()
+        self.row["private_policy"] = policy(actor="actor:a")
+        self.manager.catalog.put(self.row)
+        event = self.event(conversation="private:30003")
+        event["mentioned"] = False
+        source = self.manager.record(self.row, event)
+        private = {**request, "conversation_id": "private:30003", "sources": [source]}
+        response = self.manager.verify("Bearer memory", private)
+        self.assertEqual(response["sources"][0]["physical_key"]["account_id"], "30003")
+        self.assertEqual(response["channel"]["channel_conversation_id"], "private:30003")
+        for changed in (
+            {**private, "conversation_id": "private:30004"},
+            {**private, "sources": [source, request["sources"][0]]},
+        ):
+            with self.subTest(request=changed), self.assertRaises(Fault) as error:
+                self.manager.verify("Bearer memory", changed)
+            self.assertEqual((error.exception.code, error.exception.status), ("scope_changed", 409))
 
     def test_decision_empty_lists_and_trigger(self):
         assert decision(policy(), "20002", True, "group") == {

@@ -169,14 +169,8 @@ class BotObservation:
         require(row is not None, "dependency_unavailable", 503)
         conn = reply["connection_id"]
         slot_id = "observation:" + conn
-        binding_id = "binding:" + conn
         kind = reply["conversation"].split(":", 1)[0]
-        channel = {
-            "namespace": "qq",
-            "binding_id": binding_id,
-            "channel_conversation_id": reply["conversation"],
-            "thread_id": None,
-        }
+        channel = self._observation_channel("binding:" + conn, reply["conversation"])
         entry_ids = []
         for author in authors:
             entry_id = conn + ":author:" + author
@@ -246,6 +240,30 @@ class BotObservation:
         # become sendable after an allow/deny list or mode change.
         return "bot:" + digest([row["id"], row["host_revision"], conversation, actor_id])[:32]
 
+    @staticmethod
+    def _observation_channel(binding_id, conversation):
+        return {
+            "namespace": "qq",
+            "binding_id": binding_id,
+            "channel_conversation_id": conversation,
+            "thread_id": None,
+        }
+
+    def segment_channel(self, row, conversation, actor_id):
+        """Project a read-only frame without installing a reply or admission."""
+        frame = digest([row["id"], row["instance_id"], row["account_id"], conversation, actor_id])
+        return self._observation_channel("binding:observation:" + frame[:32], conversation)
+
+    def segment_delivery_channel(self, row, conversation, actor_id):
+        """Identify the current reply generation without installing or enabling it."""
+        return self._observation_channel(
+            "binding:" + self._reply_connection_id(row, conversation, actor_id), conversation
+        )
+
+    @staticmethod
+    def _source_ref(instance_id, self_id, conversation, author, event_id):
+        return "obs:" + digest([instance_id, self_id, conversation, author, event_id])[:64]
+
     def _prepare_reply_scope(self, row, conversation, author, actor_id):
         conn = self._reply_connection_id(row, conversation, actor_id)
         with closing(self._db()) as db, db:
@@ -292,6 +310,29 @@ class BotObservation:
         # as before. Only the complete local SQL operations run off-loop.
         self._install_reply(reply, authors, row=current)
         await self._local(self._create_reply_scope, conn, token, actor_id)
+        channel = self.segment_channel(current, conversation, actor_id)
+        delivery_channel = self.segment_delivery_channel(current, conversation, actor_id)
+        require(delivery_channel["binding_id"] == "binding:" + conn, "scope_changed", 409)
+        frame_request = {
+            "schema_version": 1,
+            "actor_id": actor_id,
+            "channel": channel,
+            "delivery_channel": delivery_channel,
+            "conversation_id": None,
+        }
+        self.p.contracts.check("memory-extraction#segment_frame_request", frame_request)
+        linked = await self.adapters._core("learning-frame", frame_request)
+        self.p.contracts.check("memory-extraction#segment_frame_response", linked)
+        require(
+            linked["valid"]
+            and linked["frame"]["actor_id"] == actor_id
+            and linked["frame"]["audience"]
+            == ("group" if conversation.startswith("group:") else "self_private")
+            and linked["channel"] == channel
+            and linked["delivery_channel"] == delivery_channel,
+            "dependency_unavailable",
+            503,
+        )
         current = await self.adapters._core("status", {"connection_id": conn})
         if current.get("found") is not True:
             initial = {
@@ -878,17 +919,12 @@ class BotObservation:
             require(moment.tzinfo is not None, "adapter_incompatible", 502)
         except ValueError:
             raise Fault("adapter_incompatible", 502) from None
-        source_ref = (
-            "obs:"
-            + digest(
-                [
-                    row["instance_id"],
-                    row["account_id"],
-                    conversation,
-                    event["account_id"],
-                    event["event_id"],
-                ]
-            )[:64]
+        source_ref = self._source_ref(
+            row["instance_id"],
+            row["account_id"],
+            conversation,
+            event["account_id"],
+            event["event_id"],
         )
         value = digest(event)
         with closing(self._db()) as db, db:
@@ -948,6 +984,14 @@ class BotObservation:
                 principal["kind"] == "service" and principal["service"] == "memory",
                 "forbidden",
                 403,
+            )
+        if body.get("operation") in {"segment", "segment_resolve"}:
+            from .observation_segments import check_segment, resolve_segment
+
+            return (
+                check_segment(self, body)
+                if body["operation"] == "segment"
+                else resolve_segment(self, body)
             )
         if body.get("operation") == "scope":
             require(

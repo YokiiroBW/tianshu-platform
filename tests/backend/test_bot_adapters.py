@@ -2,6 +2,7 @@
 
 import os
 import asyncio
+import copy
 import ipaddress
 import socket
 import time
@@ -53,6 +54,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.acked = []
         self.sends = []
         self.receipts = {}
+        self.learning_frames = []
         self.adapter_kind = "nonebot"
 
         async def handler(request):
@@ -118,6 +120,22 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     def _install_core_peer(self):
         async def core_peer(path, body):
+            if path == "learning-frame":
+                self.platform.contracts.check("memory-extraction#segment_frame_request", body)
+                self.learning_frames.append(copy.deepcopy(body))
+                return {
+                    "schema_version": 1,
+                    "valid": True,
+                    "frame": {
+                        "actor_id": body["actor_id"],
+                        "audience": "group"
+                        if body["channel"]["channel_conversation_id"].startswith("group:")
+                        else "self_private",
+                        "conversation_id": "conversation:recorded-core",
+                    },
+                    "channel": body["channel"],
+                    "delivery_channel": body["delivery_channel"],
+                }
             if path == "apply":
                 result = {key: body[key] for key in ("connection_id", "revision", "enabled")}
                 self.core_state[body["connection_id"]] = result
@@ -167,6 +185,14 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         manager.catalog.put(row)
         conn, token = await manager._ensure_reply_scope(row, "group:999", "7", "actor:a")
         self.assertTrue(conn.startswith("bot:"))
+        self.assertEqual(len(self.learning_frames), 1)
+        self.assertEqual(
+            self.learning_frames[0]["channel"],
+            manager.segment_channel(row, "group:999", "actor:a"),
+        )
+        self.assertEqual(
+            self.learning_frames[0]["delivery_channel"]["binding_id"], "binding:" + conn
+        )
         self.assertIn(
             "7",
             [
@@ -946,7 +972,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 "qq_admin": {
                     "url": "https://platform.synthetic.invalid",
                     "token_env": "TS_ADAPTER_CORE_TOKEN",
-                }
+                },
             },
         }
         core, _, clients, _ = build_runtime(config)
