@@ -11,7 +11,7 @@ import uuid
 from contextlib import closing, nullcontext
 
 from .auth import secret
-from .bot_event_recovery import confirmed, public_state, retryable
+from .bot_event_recovery import public_state, retryable
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
 from .role_runtime import is_placeholder_actor
 from .web_account import valid_password_length
@@ -608,23 +608,9 @@ class Bots:
                 )
             )
         result, state = [], "unknown"
-        if admission.get("recover_unknown"):
-            try:
-                found = await confirmed(
-                    self.p,
-                    data,
-                    admission["actor_ids"],
-                    "bot:" + digest([connection_id, body["event_id"], body["account_id"]]),
-                )
-            except (Fault, OSError, sqlite3.Error):
-                found = False  # A failed receipt query says nothing about original execution.
-            if not found:
-                return {
-                    "event_id": body["event_id"],
-                    "message_id": message_id,
-                    "state": "unknown",
-                    "outcomes": [],
-                }
+        # Unknown delivery reuses this event's message and semantic key. The
+        # prepared route and Core admission are idempotent even when the first
+        # handler is still running; every dispatch obtains fresh authority.
         dispatch_started = False
         try:
             platform_header = self._platform_header()
@@ -748,15 +734,21 @@ class Bots:
             "entry_id": entry_id,
             "entry": entry,
             "actor_ids": loads(row["actor_ids"]),
-            "recover_unknown": old is not None and old["state"] == "unknown",
         }
 
     def _finish_event(self, connection_id, event_id, account_id, state, result):
         with closing(self._db()) as db:
-            db.execute(
-                "UPDATE events SET state=?,result=? WHERE connection_id=? AND event_id=? AND account_id=?",
+            updated = db.execute(
+                "UPDATE events SET state=?,result=? WHERE connection_id=? AND event_id=? AND account_id=? "
+                "AND state!='accepted'",
                 (state, canonical(result), connection_id, event_id, account_id),
             )
+            if not updated.rowcount:
+                # Another same-key dispatch may already have confirmed this
+                # event. A late failure must not replace its result or mark the
+                # connection unknown. This attempt still returns its own outcome;
+                # event_status exposes the durable accepted result.
+                return
             if state == "accepted":
                 db.execute(
                     "UPDATE connections SET last_event_at=?,last_error=NULL WHERE id=?",

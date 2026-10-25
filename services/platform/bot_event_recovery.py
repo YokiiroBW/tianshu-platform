@@ -1,32 +1,6 @@
-"""Only a verified Core nonexecution receipt permits replay of an inbound event."""
+"""Preserve the actual dispatch outcome without inventing a nonexecution receipt."""
 
-import uuid
-
-from .contracts import digest
-from .transport import CoreFault, core_web_call
-
-
-async def confirmed(platform, data, actors, key):
-    """Only a positive, exact Core receipt allows replay to repair mapping/ack.
-
-    Core's existing durable idempotency key returns the same admission without
-    another collection/model call. A missing/unavailable receipt stays unknown.
-    """
-    response = await core_web_call(
-        platform.settings.get("core"),
-        "ingest-receipt",
-        {
-            "schema_version": 1,
-            "request_id": "receipt:" + uuid.uuid4().hex,
-            "idempotency_key": key,
-            "semantic_digest": digest(
-                {"schema_version": 1, "input": data, "target_actor_ids": actors}
-            ),
-        },
-        platform.contracts,
-        None,
-    )
-    return response["found"]
+from .transport import CoreFault
 
 
 def retryable(error):

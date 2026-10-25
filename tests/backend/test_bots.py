@@ -320,7 +320,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             {f"sdk:{index + 1000}" for index in range(40)},
         )
 
-    async def test_event_dedup_author_binding_and_unknown_no_replay(self):
+    async def test_event_dedup_author_binding_and_unknown_same_key_replay(self):
         bot = self.platform.bots
         self.platform.sources.dispatch = AsyncMock(
             return_value={"outcomes": [{"actor_id": "actor:a", "state": "accepted"}]}
@@ -367,7 +367,13 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             "unknown",
         )
         await bot.event(self.token, {**self.event(), "event_id": "sdk:unknown"})
-        self.assertEqual(self.platform.sources.dispatch.await_count, 1)
+        self.assertEqual(self.platform.sources.dispatch.await_count, 2)
+        calls = self.platform.sources.dispatch.call_args_list
+        self.assertEqual(calls[0].args[1]["input"], calls[1].args[1]["input"])
+        self.assertEqual(
+            calls[0].args[1]["command"]["idempotency_key"],
+            calls[1].args[1]["command"]["idempotency_key"],
+        )
 
     async def test_structured_reply_and_mentions_reach_registered_source_without_changing_author(
         self,
