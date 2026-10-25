@@ -37,25 +37,43 @@ class Origins:
                    (issuer, "origin.issue", ref, self.clock()))
         return {"assertion_ref": ref, "expires_at": utc(expires), "mode": self.auth.mode}
 
-    def scope(self, db, entry):
-        identity = db.execute(
-            "SELECT person_id FROM identities WHERE account=?", (canonical(entry["account"]),)
-        ).fetchone()
-        channel = db.execute(
-            "SELECT conversation_id FROM channels WHERE channel=?", (channel_key(entry),)
-        ).fetchone()
+    def scope(self, db, entry, *, reads=None):
+        identity = (
+            reads.identity(canonical(entry["account"]))
+            if reads is not None
+            else db.execute(
+                "SELECT person_id FROM identities WHERE account=?", (canonical(entry["account"]),)
+            ).fetchone()
+        )
+        channel = (
+            reads.channel(channel_key(entry))
+            if reads is not None
+            else db.execute(
+                "SELECT conversation_id FROM channels WHERE channel=?", (channel_key(entry),)
+            ).fetchone()
+        )
+        if reads is None:
+            person_id = identity[0] if identity else None
+            conversation_id = channel[0] if channel else None
+        else:
+            person_id = identity["person_id"] if identity else None
+            conversation_id = channel["conversation_id"] if channel else None
         return {
             "actor_id": entry["actor_id"],
             "audience": entry["audience"],
-            "person_id": identity[0] if identity else None,
-            "conversation_id": channel[0] if channel else None,
+            "person_id": person_id,
+            "conversation_id": conversation_id,
         }
 
-    def context(self, db, ref, caller, receiver, purpose):
-        row = db.execute("SELECT * FROM origins WHERE ref=?", (ref,)).fetchone()
+    def context(self, db, ref, caller, receiver, purpose, *, reads=None):
+        row = (
+            reads.origin(ref)
+            if reads is not None
+            else db.execute("SELECT * FROM origins WHERE ref=?", (ref,)).fetchone()
+        )
         require(row is not None and not row["revoked"])
         require(row["expires_at"] > self.clock())
-        entry = self.auth.entry(db, row["entry_id"], row["entry_digest"])
+        entry = self.auth.entry(db, row["entry_id"], row["entry_digest"], reads=reads)
         self.auth.route(entry, caller, receiver, purpose)
         owner = self.auth.principals[entry["owner"]]
         context = {
@@ -65,7 +83,7 @@ class Origins:
             "assertion_ref": ref,
             "verified_account": entry["account"],
             "principal_id": entry["owner"] if owner["kind"] == "operator" else None,
-            "allowed_scope": self.scope(db, entry),
+            "allowed_scope": self.scope(db, entry, reads=reads),
             "verified_channel": entry["channel"],
             "expires_at": utc(row["expires_at"]),
             "revoked": False,

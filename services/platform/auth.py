@@ -277,16 +277,27 @@ class Auth:
         require(action in item["actions"] and (not operator or item["kind"] == "operator"))
         return key, item
 
-    def entry(self, db, entry_id, expected_digest=None):
-        entry = self.entries.get(entry_id)
-        require(entry is not None)
-        require(not db.execute("SELECT 1 FROM revoked_entries WHERE id=?", (entry_id,)).fetchone())
-        require(
-            not db.execute(
+    def check_entry_current(self, db, entry_id, entry, *, reads=None):
+        revoked_entry = (
+            reads.revoked_entry(entry_id)
+            if reads is not None
+            else db.execute("SELECT 1 FROM revoked_entries WHERE id=?", (entry_id,)).fetchone()
+        )
+        require(not revoked_entry)
+        revoked_principal = (
+            reads.revoked_principal(entry["owner"])
+            if reads is not None
+            else db.execute(
                 "SELECT 1 FROM revoked_principals WHERE id=?", (entry["owner"],)
             ).fetchone()
         )
+        require(not revoked_principal)
         require(secret(self.principals[entry["owner"]]["token_env"]) is not None)
+
+    def entry(self, db, entry_id, expected_digest=None, *, reads=None):
+        entry = self.entries.get(entry_id)
+        require(entry is not None)
+        self.check_entry_current(db, entry_id, entry, reads=reads)
         require("expires_at" not in entry or epoch(entry["expires_at"]) > self.clock())
         require(expected_digest is None or expected_digest == digest(entry))
         return entry

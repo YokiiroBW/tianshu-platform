@@ -8,9 +8,9 @@ import copy
 import sqlite3
 import uuid
 
-from .auth import secret
 from .contracts import Fault, canonical, digest, epoch, loads, require, utc
 from .origins import source_key
+from .sources_current import CurrentReads
 
 
 class Sources:
@@ -88,17 +88,11 @@ class Sources:
             require(len(set(actors)) == len(actors), "invalid_input", 400)
             # Defaults express intent and may include currently unauthorized actors.
 
-    def _entry(self, db, entry_id, expected_digest=None):
+    def _entry(self, db, entry_id, expected_digest=None, *, reads=None):
         entry = self.entries.get(entry_id)
         require(entry is not None)
         require(expected_digest is None or expected_digest == digest(entry))
-        require(not db.execute("SELECT 1 FROM revoked_entries WHERE id=?", (entry_id,)).fetchone())
-        require(
-            not db.execute(
-                "SELECT 1 FROM revoked_principals WHERE id=?", (entry["owner"],)
-            ).fetchone()
-        )
-        require(secret(self.auth.principals[entry["owner"]]["token_env"]) is not None)
+        self.auth.check_entry_current(db, entry_id, entry, reads=reads)
         return entry
 
     def register_input(self, header, entry_id, data):
@@ -499,18 +493,16 @@ class Sources:
             "invalid_input",
             400,
         )
+        reads = CurrentReads(db, admissions, request["viewer"], self.auth.entries, self.entries)
         grants = []
         for admission in admissions:
-            saved = db.execute(
-                "SELECT * FROM admission_history WHERE receipt_id=?",
-                (admission["source"]["receipt_id"],),
-            ).fetchone()
+            saved = reads.admission(admission["source"]["receipt_id"])
             require(saved is not None, "dependency_unavailable", 503)
             require(saved["admission"] == canonical(admission))
             historic = loads(saved["entry_document"])
             allowed = False
             try:
-                current = self.auth.entry(db, saved["entry_id"])
+                current = self.auth.entry(db, saved["entry_id"], reads=reads)
                 require(
                     all(
                         current[k] == historic[k]
@@ -518,12 +510,9 @@ class Sources:
                     )
                 )
                 self.auth.route(current, "companion", "memory", "dialogue")
-                origin = db.execute(
-                    "SELECT ingress,input_entry_id FROM actor_origins WHERE ref=?",
-                    (admission["accepted_origin"]["assertion_ref"],),
-                ).fetchone()
+                origin = reads.actor_origin(admission["accepted_origin"]["assertion_ref"])
                 require(origin is not None)
-                input_entry = self._entry(db, origin["input_entry_id"])
+                input_entry = self._entry(db, origin["input_entry_id"], reads=reads)
                 require(saved["entry_id"] in input_entry["actor_entries"])
                 require(
                     all(
@@ -531,12 +520,10 @@ class Sources:
                         for k in ("owner", "account", "channel", "audience")
                     )
                 )
-                self.auth.route(current, origin[0], "companion", "dialogue")
-                require(self.origins.scope(db, current) == admission["scope"])
-                binding = db.execute(
-                    "SELECT version FROM identities WHERE account=?", (saved["account"],)
-                ).fetchone()
-                require(binding is not None and binding[0] == admission["binding_version"])
+                self.auth.route(current, origin["ingress"], "companion", "dialogue")
+                require(self.origins.scope(db, current, reads=reads) == admission["scope"])
+                binding = reads.identity(saved["account"])
+                require(binding is not None and binding["version"] == admission["binding_version"])
                 allowed = True
             except Fault as exc:
                 if exc.status != 403:
@@ -557,7 +544,12 @@ class Sources:
         if request["viewer"] is not None:
             viewer = request["viewer"]
             _, _, context = self.origins.context(
-                db, viewer["origin"]["assertion_ref"], "companion", "memory", "dialogue"
+                db,
+                viewer["origin"]["assertion_ref"],
+                "companion",
+                "memory",
+                "dialogue",
+                reads=reads,
             )
             require(
                 context["allowed_scope"] == viewer["scope"]
