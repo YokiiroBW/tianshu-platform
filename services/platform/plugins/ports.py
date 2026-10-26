@@ -30,6 +30,8 @@ async def execute_capability(executions, context, name, operation, value):
         return await host.local(repo.state, instance, operation, value)
     if name == "http.client" and operation == "request":
         return await http_request(executions, context, value)
+    if name == "content.discovery" and operation == "discover":
+        return await discover_content(executions, context, value)
     if name == "secrets.read" and operation == "resolve":
         require(value.get("name") in context["secrets"], "not_found", 404)
         # This opaque handle is usable only as auth.secret_name on this instance's transport.
@@ -122,6 +124,39 @@ async def execute_capability(executions, context, name, operation, value):
             )
         return {"notification_ref": identifier, "delivery": "delivered"}
     raise Fault("capability_unavailable", 409)
+
+
+async def discover_content(executions, context, value):
+    host = executions.host
+    require(host.content_discovery is not None and context["call"], "capability_unavailable", 409)
+    document = await host.local(executions.repo.call, context["call"])
+
+    async def current():
+        instance = await host.instance(context["instance"])
+        require(
+            instance["desired_state"] == "enabled"
+            and instance["revision"] == document["binding_revision"],
+            "version_conflict",
+            409,
+        )
+        authorize = executions.authorizers.get(context["call"])
+        if authorize:
+            require(await host.local(authorize), "session_expired", 401)
+
+    async def request(arguments):
+        await current()
+        require("http.client" in context["ports"], "capability_unavailable", 409)
+        if context["secrets"].get("api_key"):
+            arguments = {**arguments, "auth": {"secret_name": "api_key", "scheme": "bearer"}}
+        answer = await http_request(executions, context, arguments)
+        await current()
+        return answer
+
+    await current()
+    answer = await host.content_discovery.discover(document["config"], value, request=request)
+    # A read can race revocation. No data leaves this host after a stale grant.
+    await current()
+    return answer
 
 
 async def http_request(executions, context, value):

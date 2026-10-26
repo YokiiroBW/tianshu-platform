@@ -144,6 +144,63 @@ class Repository:
                 row for row in rows if kind not in SUBSCRIPTIONS or row.get("state") != "removed"
             ]
 
+    def document_page(self, kind, *, limit=64, after_id=None):
+        """One bounded owner page; a filtered empty page still advances its cursor."""
+        require(kind in {"book", "comic", "music_source", "subscription"}, "invalid_input", 400)
+        require(
+            type(limit) is int
+            and 1 <= limit <= 128
+            and (after_id is None or isinstance(after_id, str) and len(after_id) <= 256),
+            "invalid_input",
+            400,
+        )
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT id,body FROM documents WHERE kind=? AND id>? ORDER BY id LIMIT ?",
+                (kind, after_id or "", limit + 1),
+            ).fetchall()
+            page = rows[:limit]
+            documents = [self.payloads.read(kind, json.loads(row[1])) for row in page]
+            return (
+                [
+                    row
+                    for row in documents
+                    if kind not in SUBSCRIPTIONS or row.get("state") != "removed"
+                ],
+                page[-1][0] if len(rows) > limit else None,
+            )
+
+    def member_page(self, subscription_id, *, limit=64, after=None):
+        """Recorded membership only; an upload without known parts has cid=None."""
+        require(
+            isinstance(subscription_id, str)
+            and 0 < len(subscription_id) <= 128
+            and type(limit) is int
+            and 1 <= limit <= 128
+            and (
+                after is None
+                or isinstance(after, (tuple, list))
+                and len(after) == 2
+                and all(isinstance(value, str) and len(value) <= 128 for value in after)
+            ),
+            "invalid_input",
+            400,
+        )
+        bvid, cid = after or ("", "")
+        with self.transaction() as db:
+            rows = db.execute(
+                "SELECT m.bvid,p.cid FROM members m LEFT JOIN member_parts p "
+                "ON p.subscription_id=m.subscription_id AND p.bvid=m.bvid "
+                "WHERE m.subscription_id=? AND (m.bvid>? OR (m.bvid=? AND coalesce(p.cid,'')>?)) "
+                "ORDER BY m.bvid,coalesce(p.cid,'') LIMIT ?",
+                (subscription_id, bvid, bvid, cid, limit + 1),
+            ).fetchall()
+        page = rows[:limit]
+        return (
+            [{"bvid": row[0], "cid": row[1]} for row in page],
+            (page[-1][0], page[-1][1] or "") if len(rows) > limit else None,
+        )
+
     def remove_subscription(self, kind, identity, expected, scan_id, *, db, changes=None):
         require(kind in SUBSCRIPTIONS, "invalid_input", 400)
         require(type(expected) is int and expected > 0, "invalid_input", 400)

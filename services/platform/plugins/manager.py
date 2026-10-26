@@ -41,10 +41,16 @@ def validate_settings(settings):
 
 
 class PluginManager:
-    def __init__(self, settings, *, runtime=None, local=asyncio.to_thread):
+    def __init__(self, settings, *, runtime=None, local=asyncio.to_thread, content_discovery=None):
         validate_settings(settings)
         anchor = Path(settings["database_path"])
         self.local = local
+        require(
+            content_discovery is None or callable(getattr(content_discovery, "discover", None)),
+            "invalid_input",
+            400,
+        )
+        self.content_discovery = content_discovery
         self.repository = Repository(str(anchor) + ".plugins.sqlite", runtime=runtime)
         self.vault = Vault(self.repository, str(anchor) + ".plugins.key")
         self.packages = Packages(
@@ -66,6 +72,10 @@ class PluginManager:
         from .task_source import PluginTasks
 
         self.task_source = PluginTasks(self)
+
+    @property
+    def available_capabilities(self):
+        return AVAILABLE | ({"content.discovery"} if self.content_discovery is not None else set())
 
     async def start(self):
         if self.started:
@@ -282,7 +292,7 @@ class PluginManager:
         missing = [
             item["id"]
             for item in package["manifest"]["capabilities"]["required"]
-            if item["major"] != 1 or item["id"] not in AVAILABLE
+            if item["major"] != 1 or item["id"] not in self.available_capabilities
         ]
         problem = None
         try:
@@ -306,7 +316,7 @@ class PluginManager:
             gaps = [
                 port["id"]
                 for port in action["required_capabilities"]
-                if port["major"] != 1 or port["id"] not in AVAILABLE
+                if port["major"] != 1 or port["id"] not in self.available_capabilities
             ]
             action["availability"] = {
                 "available": state == "ready" and not gaps,
@@ -335,7 +345,7 @@ class PluginManager:
             ],
             "instances": [await self.projection(instance) for instance in instances],
             "installations": await self.local(self.repository.list, "operations"),
-            "capabilities": sorted(AVAILABLE),
+            "capabilities": sorted(self.available_capabilities),
             "catalog": await self.catalog(),
             "notifications": await self.local(self.repository.list, "notifications"),
         }

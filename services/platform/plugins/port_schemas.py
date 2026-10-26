@@ -1,6 +1,7 @@
 """Machine contracts for the operations this host actually provides."""
 
 from .control import OBJECT, TEXT, request
+from ..content_discovery.schemas import INPUT as DISCOVERY_INPUT, OUTPUT as DISCOVERY_OUTPUT
 
 NULL_REVISION = {"type": ["integer", "null"], "minimum": 1}
 VALUE = {
@@ -11,6 +12,7 @@ VALUE = {
 }
 RECEIPT = {"type": "object", "required": ["id", "execution", "effect", "delivery", "revision"]}
 OPERATIONS = {
+    ("content.discovery", "discover"): (DISCOVERY_INPUT, DISCOVERY_OUTPUT),
     ("state.kv", "get"): (request({"key": TEXT}), {"oneOf": [VALUE, {"type": "null"}]}),
     ("state.kv", "compare_and_set"): (
         request({"key": TEXT, "value": {}, "expected_revision": NULL_REVISION}),

@@ -5,7 +5,6 @@ import copy
 from jsonschema import Draft202012Validator, SchemaError
 
 from ..contracts import Fault, require
-from .manager import AVAILABLE
 from .schema import merge, validate_config
 
 
@@ -68,7 +67,7 @@ class PluginActorBridge:
         require(instance["desired_state"] == "enabled", "capability_unavailable", 409)
         require(
             all(
-                item["id"] in AVAILABLE and item["major"] == 1
+                item["id"] in self.host.available_capabilities and item["major"] == 1
                 for item in package["manifest"]["capabilities"]["required"]
                 + action["required_capabilities"]
             ),

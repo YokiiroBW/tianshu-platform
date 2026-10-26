@@ -39,11 +39,9 @@ class Executions:
             require(action is not None, "not_found", 404)
             if authorize and hasattr(authorize, "authorize_action"):
                 await self.host.local(authorize.authorize_action, identifier, action_id, binding_id)
-            from .manager import AVAILABLE
-
             require(
                 all(
-                    port["id"] in AVAILABLE and port["major"] == 1
+                    port["id"] in self.host.available_capabilities and port["major"] == 1
                     for port in action["required_capabilities"]
                 ),
                 "capability_unavailable",
@@ -84,9 +82,7 @@ class Executions:
         snapshot = instance.get("secret_snapshot")
         if snapshot is None:
             snapshot = await self.host.local(self.host.vault.snapshot, instance["id"])
-        from .manager import AVAILABLE
-
-        ports = capabilities(package["manifest"]) & AVAILABLE
+        ports = capabilities(package["manifest"]) & self.host.available_capabilities
         envelope = {
             "instance_id": instance["id"],
             "context_ref": reference,
@@ -333,8 +329,13 @@ class Executions:
         )
         from .ports import capability
 
-        return await capability(
+        result = await capability(
             self, context, params["capability"], params["operation"], params["input"]
+        )
+        return (
+            self.redact(result, secret_values)
+            if params["capability"] == "content.discovery"
+            else result
         )
 
     async def cancel(self, identifier):

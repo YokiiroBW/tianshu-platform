@@ -450,9 +450,15 @@ class Platform:
             settings, clock=clock, local=self.local_work.run, runtime=self.storage_runtime
         )
         from .plugins import PluginManager
+        from .content_discovery import Discovery, MediaCatalog
 
         self.plugins = PluginManager(
-            settings, local=self.local_work.run, runtime=self.storage_runtime
+            settings,
+            local=self.local_work.run,
+            runtime=self.storage_runtime,
+            content_discovery=Discovery(
+                MediaCatalog(self.media), local=self.local_work.run, clock=clock
+            ),
         )
         from .actor_capabilities import ActorCapabilities
 
