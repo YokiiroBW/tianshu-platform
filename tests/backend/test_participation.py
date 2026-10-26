@@ -206,8 +206,13 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         listed = await self.part.route(
             bearer("COMPANION"), "candidates", dict(actor_id="actor:a", after="", limit=20)
         )
-        self.assertEqual(len(listed["candidates"]), 1, listed)
-        return listed["candidates"][0]
+        selected = [
+            item
+            for item in listed["candidates"]
+            if item["native"]["native_message_id"] == event["event_id"]
+        ]
+        self.assertEqual(len(selected), 1, listed)
+        return selected[0]
 
     def decision(self, candidate):
         return dict(
@@ -642,3 +647,139 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
             [item["reply_id"] for item in (await self.claim(registration))["deliveries"]],
             ["zz:last"],
         )
+
+    async def test_unchecked_active_claimed_batch_after_twenty_invalid_rows_still_blocks(self):
+        first = await self.engage()
+        registration = self.part.repository.registration(first["candidate_id"])["document"]
+        self.now += 40
+        await self.part.delivery.prepare_creation(
+            bearer("COMPANION"), registration["admission"]["actor_assertion_ref"]
+        )
+        for number in range(1, 21):
+            self.platform.bots.delivery.send(
+                bearer("COMPANION"), self.send_request(registration, number)
+            )
+        self.assertEqual(len((await self.claim(registration))["deliveries"]), 20)
+        # Candidate/origin expires before the existing 60-second delivery claim lease.
+        self.now += 21
+        self.host_claim = None
+        second = await self.capture(self.event("native:second"))
+        core = self.core
+
+        async def another_source(config, ingest, contracts):
+            response = await core(config, ingest, contracts)
+            response["physical_receipt_id"] = "physical:second"
+            for outcome in response["outcomes"]:
+                outcome["receipt"]["receipt_id"] = "receipt:second"
+                outcome["admission"]["source"]["receipt_id"] = "receipt:second"
+                outcome["admission"]["physical_receipt_id"] = "physical:second"
+            return response
+
+        with patch("services.platform.transport.core_post", side_effect=another_source):
+            answer = await self.part.route(bearer("COMPANION"), "decision", self.decision(second))
+        self.assertEqual(answer["state"], "accepted", answer)
+        second_registration = self.part.repository.registration(second["candidate_id"])["document"]
+        request = self.send_request(second_registration)
+        request.update(request_id="second:request", expression_id="second:expression")
+        request["origin"]["turn_id"] = "turn:second"
+        request["segments"][0].update(reply_id="zz:active", segment_id="second:segment")
+        self.platform.bots.delivery.send(bearer("COMPANION"), request)
+        active = (await self.claim(second_registration))["deliveries"]
+        self.assertEqual([item["reply_id"] for item in active], ["zz:active"])
+        ordinary = self.platform.origins.issue(
+            bearer("CONNECTOR"), second_registration["author_anchor"]["entry_id"]
+        )
+        normal = self.send_request(second_registration)
+        normal.update(request_id="normal:request", expression_id="normal:expression")
+        normal["origin"].update(
+            origin={"assertion_ref": ordinary["assertion_ref"]}, turn_id="turn:normal"
+        )
+        normal["segments"][0].update(reply_id="zz:normal", segment_id="normal:segment")
+        self.platform.bots.delivery.send(bearer("COMPANION"), normal)
+        with closing(self.platform.bots._db()) as db:
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM replies WHERE state='claimed'").fetchone()[0], 21
+            )
+        self.assertEqual((await self.claim(second_registration))["deliveries"], [])
+        connection = second_registration["admission"]["connection_id"]
+        self.platform.bots.ack(
+            "Bearer " + self.manager._reply_token(connection),
+            dict(
+                connection_id=connection,
+                reply_id="zz:active",
+                attempt_id=active[0]["attempt_id"],
+                state="sent",
+                channel_message_ids=["sdk:second"],
+            ),
+        )
+        self.assertEqual(
+            [item["reply_id"] for item in (await self.claim(second_registration))["deliveries"]],
+            ["zz:normal"],
+        )
+
+    async def test_confirmed_source_outlives_dispatch_deadline_but_never_source_ttl(self):
+        first = await self.capture()
+
+        async def lost(config, ingest, contracts):
+            await self.core(config, ingest, contracts)
+            raise Fault("dependency_unavailable", 503)
+
+        with patch("services.platform.transport.core_post", side_effect=lost):
+            result = await self.part.route(bearer("COMPANION"), "decision", self.decision(first))
+        self.assertEqual(result["state"], "unknown")
+        pending = self.part.repository.registration(first["candidate_id"])["document"]
+
+        def key(registration):
+            return canonical(
+                [
+                    registration["admission"][field]
+                    for field in ("connection_id", "event_id", "account_id")
+                ]
+            )
+
+        self.now += 31
+        with self.assertRaises(Fault) as unresolved:
+            self.platform.sources.participation_prepared(
+                bearer("CONNECTOR"), key(pending), pending["candidate"]
+            )
+        self.assertEqual(unresolved.exception.code, "timeout")
+        self.host_claim = None
+        second = await self.capture(self.event("native:later"))
+        result = await self.part.route(bearer("COMPANION"), "decision", self.decision(second))
+        self.assertEqual(result["state"], "accepted", result)
+        registered = self.part.repository.registration(second["candidate_id"])["document"]
+        self.now += 31
+        prepared = self.platform.sources.participation_prepared(
+            bearer("CONNECTOR"), key(registered), registered["candidate"]
+        )
+        self.assertIsNotNone(prepared["response"])
+        with self.assertRaises(Fault) as re_dispatch:
+            await self.platform.sources.dispatch_participation(
+                bearer("CONNECTOR"), key(registered), registered
+            )
+        self.assertEqual(re_dispatch.exception.code, "timeout")
+        ref = registered["admission"]["actor_assertion_ref"]
+        await self.part.delivery.prepare_creation(bearer("COMPANION"), ref)
+        request = self.send_request(registered)
+        self.platform.bots.delivery.send(bearer("COMPANION"), request)
+        self.platform.bots.delivery.context(
+            bearer("COMPANION"),
+            dict(
+                schema_version=2,
+                request_id="context:renew",
+                origin=request["origin"],
+                scope=request["scope"],
+                channel=request["channel"],
+            ),
+        )
+        self.now += 30
+        with self.platform.store.connect() as db:
+            self.assertGreater(
+                db.execute("SELECT expires_at FROM origins WHERE ref=?", (ref,)).fetchone()[0],
+                self.now,
+            )
+        with self.assertRaises(Fault) as expired:
+            self.platform.sources.participation_prepared(
+                bearer("CONNECTOR"), key(registered), registered["candidate"]
+            )
+        self.assertEqual(expired.exception.status, 403)

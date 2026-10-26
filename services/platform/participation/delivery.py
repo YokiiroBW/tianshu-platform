@@ -219,12 +219,23 @@ class Delivery:
             rows = [*claimed, *pending]
         checked = {}
         for row in rows:
+            proof = {
+                "attempt_id": row["attempt_id"],
+                "checked_at": self.p.origins.clock(),
+                "active": False,
+            }
             try:
                 evidence = await self.p.local_work.run(
                     self._check, row["reply_id"], row["attempt_id"]
                 )
                 record, live, binding = evidence
-                await self.app.refresh_claim(record, active=True)
+                claim = await self.app.refresh_claim(record)
+                if (
+                    claim["current_claim_state"] != "active"
+                    or epoch(claim["claim"]["expires_at"]) <= self.p.origins.clock()
+                ):
+                    checked[row["reply_id"]] = proof
+                    continue
                 response = await self.app.rpc(live, "bind", binding)
                 require(response.get("binding") == binding, "adapter_incompatible", 502)
                 if binding["source_confirmation"] != "confirmed":
@@ -234,8 +245,14 @@ class Delivery:
                     "attempt_id": row["attempt_id"],
                     "candidate_id": record["id"],
                     "checked_at": self.p.origins.clock(),
+                    "active": True,
                 }
-            except (Fault, OSError):
+            except Fault as error:
+                # A transport/unavailable result is not proof that an in-flight
+                # batch became invalid. Unvisited and uncertain claims still block.
+                if error.status in {403, 404, 408, 409}:
+                    checked[row["reply_id"]] = proof
+            except OSError:
                 continue
         return checked
 
@@ -243,7 +260,7 @@ class Delivery:
         """Exclude participation before ordering/limits and before blocking a connection."""
         valid = []
         for reply_id, proof in (checked or {}).items():
-            if self.p.origins.clock() - proof["checked_at"] > 5:
+            if not proof["active"] or self.p.origins.clock() - proof["checked_at"] > 5:
                 continue
             try:
                 record = self.app.repository.get(proof["candidate_id"], db=db)
@@ -262,6 +279,20 @@ class Delivery:
             ):
                 valid.append(reply_id)
         return valid
+
+    def inactive_claimed(self, db, connection_id, checked):
+        invalid = []
+        for reply_id, proof in (checked or {}).items():
+            if proof["active"] or self.p.origins.clock() - proof["checked_at"] > 5:
+                continue
+            row = db.execute(
+                "SELECT 1 FROM replies r JOIN participation_bindings b ON b.reply_id=r.reply_id "
+                "WHERE r.reply_id=? AND r.attempt_id=? AND r.connection_id=? AND r.state='claimed'",
+                (reply_id, proof["attempt_id"], connection_id),
+            ).fetchone()
+            if row:
+                invalid.append(reply_id)
+        return invalid
 
     async def before_send(self, reply_id, attempt_id):
         if not self.app.enabled:

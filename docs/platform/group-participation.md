@@ -42,7 +42,9 @@
 4. 首次人物由原 Memory identity owner 在正常 Core 受理中解析，Platform 经原 `_confirm` 写入身份及 admission。既有身份不代表本次来源已经确认。
 5. 原 BotDelivery 与旧 conversation/send 在各自插入 reply 的同一 Bot 队列事务中写 binding。任何绑定失败都回滚该 reply；不存在先发布 pending 再补关联的窗口。
 6. 早到的合法回复可带 resolved 身份和 `source_confirmation=pending`。原本次 fanout 确认后只升级 confirmation，不更换 registration/reply/attempt/bound_at。
-7. 原领取 SQL 排序和限量前排除失效/待确认关联。待核 pending 分页轮转，claimed 批次单独重核，失效参与不占正常回复连接。宿主 bind 成功后才给原 claim 本次已核集合；SDK 调用前再次检查原 claim。发送、查询和 ACK 始终使用原队列。
+7. 原领取 SQL 排序和限量前排除失效/待确认关联。待核 pending 分页轮转，claimed 批次单独重核；仅已证明失效的 claimed 可不占连接，未检查或 RPC 不确定的在途批次仍保留原阻塞。宿主 bind 成功后才给原 claim 本次已核集合；SDK 调用前再次检查原 claim。发送、查询和 ACK 始终使用原队列。
+
+原 Core 派发 deadline 只限制派发及尚未确认的准备。已经由真实回执确认的来源读取仍检查 source/origin TTL、撤销和当前作者/entry/input；不会因为派发 deadline 已过而提前拒绝仍获许可的回复，也不因此延长任一来源期限。
 
 关联记录在已有 Bot 数据库的 `participation_candidates/events/registrations/bindings` 表；来源标记在现有权威库 `participation_sources`，实际来源和回执仍归 `source_inputs/actor_origins/fanout_exchanges/admission_history`。这些是候选及关联记录，不是第二套执行队列或用户记忆。
 
@@ -50,4 +52,4 @@
 
 本地检查入口：设置 `TS012_CONTRACT_DIR` 后运行 `python -m unittest discover -s tests/backend -p test_participation.py -v`。测试使用真实 Platform、临时 SQLite 和实际 HTTP；Core/宿主响应是明确的合成 peer，不能代替宿主 CAS 或 SDK 测试。精确命令、分组结果和失败历史见 [TS-321 交接](../handoffs/TS-321.md)。
 
-真实两产品固定提交联合尚待完成；AL12 自动语义消费者、真实模型、QQ 账号、原生 PostgreSQL 新关联表、生产迁移与部署均未验证。存储沿原 backend 绑定和动态表登记，但 SQLite 检查不等于 PostgreSQL 实测。未修改 Memory、Companion 源码或用户记忆。
+已完成与 TS320 固定提交实际受控 NoneBot 宿主的双进程联合，包含原宿主领取、ACK 后参与、同绑定确认、SDK sender 和未知回执恢复；合成的是 Core/归档服务与 QQ API 返回。可复现 CLI、精确提交和失败历史见交接。AL12 自动消费者、真实模型、QQ 账号、生产迁移与部署未验证。父级独立 PG 收据单列，SQLite 检查不替代 PostgreSQL 实测。未修改 Memory、Companion 源码或用户记忆。

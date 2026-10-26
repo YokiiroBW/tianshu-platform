@@ -991,6 +991,7 @@ class Bots:
             now = self.p.origins.clock()
             participation = getattr(self.p, "participation", None)
             eligible_sql, eligible_args = "", []
+            claimed_sql, claimed_args = "", []
             if participation is not None and participation.enabled:
                 eligible = participation.delivery.eligible(db, row["id"], participation_checked)
                 placeholders = ",".join("?" for _ in eligible) or "NULL"
@@ -999,15 +1000,21 @@ class Bots:
                     f"OR reply_id IN ({placeholders}))"
                 )
                 eligible_args = eligible
+                inactive = participation.delivery.inactive_claimed(
+                    db, row["id"], participation_checked
+                )
+                if inactive:
+                    claimed_sql = " AND reply_id NOT IN (" + ",".join("?" for _ in inactive) + ")"
+                    claimed_args = inactive
             db.execute(
                 "UPDATE replies SET state='unknown',unknown_origin='lease',observed_at=? WHERE connection_id=? AND state='claimed' AND claimed_at<?",
                 (now, row["id"], now - 60),
             )
             if db.execute(
                 "SELECT 1 FROM replies WHERE connection_id=? AND state='claimed'"
-                + eligible_sql
+                + claimed_sql
                 + " LIMIT 1",
-                [row["id"], *eligible_args],
+                [row["id"], *claimed_args],
             ).fetchone():
                 # A second adapter poll cannot overtake an already claimed output batch.
                 db.commit()

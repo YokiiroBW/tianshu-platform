@@ -156,13 +156,14 @@ class Sources:
                 "external_identity": "adapter_owned",
             }
 
-    def _input(self, db, ingest):
+    def _input(self, db, ingest, *, dispatch_deadline=True):
         row = db.execute(
             "SELECT * FROM source_inputs WHERE ref=?",
             (ingest["command"]["origin"]["assertion_ref"],),
         ).fetchone()
         require(row is not None and not row["revoked"] and row["expires_at"] > self.clock())
-        require(epoch(ingest["command"]["deadline_at"]) > self.clock(), "timeout", 408)
+        if dispatch_deadline:
+            require(epoch(ingest["command"]["deadline_at"]) > self.clock(), "timeout", 408)
         entry = self._entry(db, row["entry_id"], row["entry_digest"])
         data = ingest["input"]
         require(
@@ -341,7 +342,9 @@ class Sources:
         ).fetchone()
         require(exchange is not None, "dependency_unavailable", 503)
         ingest, authority = loads(exchange["request"]), loads(exchange["authority"])
-        source, entry = self._input(db, ingest)
+        # A confirmed fanout's dispatch deadline is not a new reply deadline.
+        # The original source TTL, revocations, entry and current input still apply.
+        source, entry = self._input(db, ingest, dispatch_deadline=exchange["response"] is None)
         actor = db.execute(
             "SELECT o.entry_id,a.* FROM origins o JOIN actor_origins a ON o.ref=a.ref WHERE o.ref=?",
             (marker["actor_ref"],),
