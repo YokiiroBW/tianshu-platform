@@ -129,6 +129,7 @@ SETTINGS_KEYS = frozenset(
         "web_knowledge",
         "web_life",
         "web_memory",
+        "web_group_memory",
         "web_relationships",
         "web_qq_profiles",
         "qq_alias_memory",
@@ -255,6 +256,9 @@ def validate_settings(settings, *, runtime=None):
         )
     validate_readers(settings, existing)
     validate_memory_binding(settings, auth)
+    from .web_group_memory import validate as validate_group_memory
+
+    validate_group_memory(settings, auth)
     from .relationships.config import validate as validate_relationships
 
     validate_relationships(settings)
@@ -323,7 +327,18 @@ class Platform:
         self.native_config_http = settings.get("native_config_http", False)
         self.store = Store(settings["database_path"], runtime=self.storage_runtime)
         WebAccount(settings, runtime=self.storage_runtime)
-        self.origins = Origins(self.store, self.auth, self.contracts, clock)
+        group_reads = settings.get("web_group_memory") or {}
+        self.origins = Origins(
+            self.store,
+            self.auth,
+            self.contracts,
+            clock,
+            read_channels={
+                group["entry_id"]: group["chat_channel"] for group in group_reads.get("groups", [])
+            }
+            if group_reads.get("enabled", False)
+            else None,
+        )
         self.sources = Sources(self.store, self.auth, self.contracts, self.origins, settings, clock)
         self.origins.input_entries = self.sources.entries
         self.settings = settings
@@ -442,6 +457,9 @@ class Platform:
         from .actor_capabilities import ActorCapabilities
 
         self.actor_capabilities = ActorCapabilities(self)
+        from .actor_memory_authority import ActorMemoryAuthority
+
+        self.actor_memory_authority = ActorMemoryAuthority(self)
         self._register_history()
         self.storage_runtime.finalize()
 

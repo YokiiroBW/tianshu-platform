@@ -62,6 +62,49 @@ test("memory role selection persists and late responses cannot replace the new r
     };
     requests.push({ path, role: body.role_id });
     expect(body.role_version).toBe(body.role_id === "actor:a" ? 0 : 2);
+    if (path === "groups")
+      return answer(route, {
+        available: true,
+        groups: [
+          {
+            id: "registered-group",
+            label: "已登记群",
+            conversation_id: "conversation-b",
+          },
+        ],
+      });
+    if (path === "group-insights")
+      return answer(route, {
+        group: {
+          id: "registered-group",
+          label: "已登记群",
+          conversation_id: "conversation-b",
+        },
+        window: { start_timestamp: 1792418400, end_timestamp: 1792504799 },
+        stats: { state: "unavailable", code: "not_configured" },
+        topics: {
+          state: "available",
+          data: { items: [], next_cursor: null, omitted_invalidated: false },
+        },
+        records: {
+          state: "available",
+          data: {
+            items: [
+              {
+                semantic_group_id: "group-b",
+                units: [
+                  {
+                    record_id: "record-b",
+                    record_version: 1,
+                    statement: "乙的记忆",
+                  },
+                ],
+              },
+            ],
+            next_cursor: null,
+          },
+        },
+      });
     if (path === "overview") {
       if (body.role_id === "actor:b" && holdBVerification) {
         bVerifications++;
@@ -153,8 +196,7 @@ test("memory role selection persists and late responses cannot replace the new r
     fullPage: true,
   });
   await page.getByRole("link", { name: "群画像", exact: true }).click();
-  await expect(page.getByText("群 conversation-b")).toBeVisible();
-  await page.locator(".memory-list button").click();
+  await expect(page.getByLabel("群选择")).toHaveValue("registered-group");
   await expect(page.getByText("乙的记忆")).toBeVisible();
   await page.getByRole("link", { name: "本人记忆", exact: true }).click();
   await expect(page.getByText("乙的记忆")).toBeVisible();

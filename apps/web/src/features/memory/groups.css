@@ -1,0 +1,130 @@
+.group-workspace {
+  display: grid;
+  gap: var(--space-4, 1rem);
+  min-width: 0;
+}
+.group-workspace > .panel,
+.group-graph,
+.group-graph-scroll,
+.group-history-form label {
+  min-width: 0;
+}
+.group-toolbar,
+.group-history-form,
+.group-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+}
+.group-toolbar label,
+.group-history-form label {
+  display: grid;
+  gap: 0.35rem;
+}
+.group-history-form input,
+.group-toolbar select {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  padding: var(--space-2);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-input);
+  font: inherit;
+}
+.group-metrics {
+  margin-block: 1rem;
+}
+.group-metrics strong {
+  font-size: 1.5rem;
+}
+.group-graph-scroll,
+.group-table-scroll {
+  overflow: auto;
+}
+.group-graph svg {
+  width: 100%;
+  min-width: 32rem;
+  min-height: 20rem;
+}
+.group-graph-edge {
+  stroke: var(--color-muted);
+  opacity: 0.35;
+}
+.group-graph-node {
+  cursor: pointer;
+  outline: none;
+}
+.group-graph-node circle {
+  fill: var(--color-accent);
+  stroke: var(--color-text);
+  stroke-width: 1;
+}
+.group-graph-node .group-topic-point {
+  fill: var(--color-yellow);
+}
+.group-graph-node text {
+  fill: var(--color-muted);
+  font-size: 12px;
+}
+.group-graph-node[data-selected] circle,
+.group-graph-node:focus-visible circle {
+  stroke-width: 4;
+}
+.group-selection {
+  border: 1px solid var(--color-line);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  margin-top: 1rem;
+  overflow-wrap: anywhere;
+}
+.group-selection [data-target] {
+  border-inline-start: 3px solid var(--color-accent);
+  padding-inline-start: 0.75rem;
+}
+.group-original {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.group-heat {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.25rem;
+  height: 10rem;
+  overflow-x: auto;
+  padding-block: 1rem;
+}
+.group-heat-bucket {
+  display: flex;
+  flex: 1 0 1rem;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  height: 100%;
+}
+.group-heat-bucket > span {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+  background: var(--color-accent);
+  border-radius: 0.2rem 0.2rem 0 0;
+}
+.group-heat-bucket small {
+  font-size: 0.65rem;
+}
+.group-table-scroll td,
+.group-table-scroll th {
+  padding: 0.5rem;
+  text-align: start;
+  white-space: nowrap;
+}
+@media (max-width: 680px) {
+  .group-history-form label {
+    width: 100%;
+  }
+  .group-graph svg {
+    min-width: 25rem;
+  }
+}

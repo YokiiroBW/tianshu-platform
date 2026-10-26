@@ -8,6 +8,7 @@ import re
 from .contracts import canonical, digest, epoch, loads, require
 
 ACTIONS = {
+    "actor.memory.authorize",
     "actor.capabilities",
     "memory.retrieval",
     "qq.admin.view",
@@ -78,6 +79,7 @@ class Auth:
             "web_knowledge",
             "web_life",
             "web_memory",
+            "web_group_memory",
             "web_qq_profiles",
             "qq_alias_memory",
         ):

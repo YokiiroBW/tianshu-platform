@@ -15,8 +15,16 @@ def source_key(message_key):
 
 
 class Origins:
-    def __init__(self, store, auth, contracts, clock):
+    def __init__(self, store, auth, contracts, clock, *, read_channels=None):
         self.store, self.auth, self.contracts, self.clock = store, auth, contracts, clock
+        # A read-only browser delegation keeps its real web account/channel.
+        self.read_channels = read_channels or {}
+
+    def scope_channel(self, entry, entry_id):
+        channel = self.read_channels.get(entry_id)
+        if channel is not None and entry == self.auth.entries.get(entry_id):
+            return canonical(channel)
+        return channel_key(entry)
 
     def issue(self, header, entry_id):
         with self.store.connect(write=True) as db:
@@ -37,7 +45,7 @@ class Origins:
                    (issuer, "origin.issue", ref, self.clock()))
         return {"assertion_ref": ref, "expires_at": utc(expires), "mode": self.auth.mode}
 
-    def scope(self, db, entry, *, reads=None):
+    def scope(self, db, entry, *, reads=None, entry_id=None):
         identity = (
             reads.identity(canonical(entry["account"]))
             if reads is not None
@@ -46,10 +54,10 @@ class Origins:
             ).fetchone()
         )
         channel = (
-            reads.channel(channel_key(entry))
+            reads.channel(self.scope_channel(entry, entry_id))
             if reads is not None
             else db.execute(
-                "SELECT conversation_id FROM channels WHERE channel=?", (channel_key(entry),)
+                "SELECT conversation_id FROM channels WHERE channel=?", (self.scope_channel(entry, entry_id),)
             ).fetchone()
         )
         if reads is None:
@@ -83,7 +91,7 @@ class Origins:
             "assertion_ref": ref,
             "verified_account": entry["account"],
             "principal_id": entry["owner"] if owner["kind"] == "operator" else None,
-            "allowed_scope": self.scope(db, entry, reads=reads),
+            "allowed_scope": self.scope(db, entry, reads=reads, entry_id=row["entry_id"]),
             "verified_channel": entry["channel"],
             "expires_at": utc(row["expires_at"]),
             "revoked": False,

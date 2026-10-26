@@ -49,6 +49,9 @@ def validate_memory_binding(settings, auth):
 class WebMemory(WebReader):
     def __init__(self, platform, console):
         super().__init__("memory", platform, console)
+        from .web_group_memory import GroupMemory
+
+        self.groups = GroupMemory(self)
 
     def state(self):
         answer = super().state()
@@ -114,7 +117,7 @@ class WebMemory(WebReader):
         require(row["available"], row["reason"], 403)
         return row
 
-    def _scope(self, actor, version):
+    def _scope(self, actor, version, entry_id=None):
         p, config = self.platform, self.config
         self.role_choice(actor, version)
         principal_id = self.console.config["principal"]
@@ -123,17 +126,17 @@ class WebMemory(WebReader):
         with p.store.connect() as db:
             identity, _ = p.auth.authenticate(header, db, "origin.issue", operator=True)
             require(identity == principal_id, "forbidden", 403)
-            entry = p.auth.entry(db, config["entry_id"])
+            entry = p.auth.entry(db, entry_id or config["entry_id"])
             require(
                 entry["owner"] == identity
                 and entry["account"] == principal["account"]
                 and entry["kind"] == "local_operator"
-                and entry["audience"] == "self_private",
+                and entry["audience"] == ("group" if entry_id is not None else "self_private"),
                 "forbidden",
                 403,
             )
             p.auth.route(entry, "platform", "memory", "dialogue")
-            scope = p.origins.scope(db, entry)
+            scope = p.origins.scope(db, entry, entry_id=entry_id or config["entry_id"])
             scope["actor_id"] = actor
             require(
                 scope["person_id"] is not None and scope["conversation_id"] is not None,
@@ -142,9 +145,9 @@ class WebMemory(WebReader):
             )
         return header, scope, entry
 
-    def _selection(self, actor, version, temporary_entry):
-        header, scope, template = self._scope(actor, version)
-        entry_id = temporary_entry or self.config["entry_id"]
+    def _selection(self, actor, version, temporary_entry, template_entry=None):
+        header, scope, template = self._scope(actor, version, template_entry)
+        entry_id = temporary_entry or template_entry or self.config["entry_id"]
         if temporary_entry is not None:
             require(actor != template["actor_id"], "scope_changed", 409)
             entry = copy.deepcopy(template)
@@ -152,7 +155,7 @@ class WebMemory(WebReader):
             self.platform.auth.entries[entry_id] = entry
         try:
             origin = self.platform.origins.issue(header, entry_id)
-            _, current, _ = self._scope(actor, version)
+            _, current, _ = self._scope(actor, version, template_entry)
             require(current == scope, "scope_changed", 409)
             return origin["assertion_ref"], scope
         except BaseException:
@@ -168,18 +171,20 @@ class WebMemory(WebReader):
             require(context["allowed_scope"] == scope, "scope_changed", 409)
 
     @asynccontextmanager
-    async def scoped_origin(self, actor, version, session):
+    async def scoped_origin(self, actor, version, session, *, entry_id=None):
         """Issue and recheck a selected role's origin, owning temporary entry cleanup."""
         await self.platform.local_work.run(self.prove_access, session)
         require(self.active < 4, "too_many_requests", 429)
         self.active += 1
-        default = self.platform.auth.entries[self.config["entry_id"]]["actor_id"]
+        default = self.platform.auth.entries[entry_id or self.config["entry_id"]]["actor_id"]
         temporary = "memory-view-" + uuid.uuid4().hex if actor != default else None
         try:
             async with self.slots:
                 await self.platform.local_work.run(self.prove_access, session)
                 selection = asyncio.create_task(
-                    self.platform.local_work.run(self._selection, actor, version, temporary)
+                    self.platform.local_work.run(
+                        self._selection, actor, version, temporary, entry_id
+                    )
                 )
                 try:
                     reference, scope = await asyncio.shield(selection)
@@ -196,7 +201,9 @@ class WebMemory(WebReader):
                 await self.platform.local_work.run(self.prove_access, session)
                 yield reference, scope
                 await self.platform.local_work.run(self.prove_access, session)
-                _, current, _ = await self.platform.local_work.run(self._scope, actor, version)
+                _, current, _ = await self.platform.local_work.run(
+                    self._scope, actor, version, entry_id
+                )
                 require(current == scope, "scope_changed", 409)
                 await self.platform.local_work.run(self._still_issued, reference, scope)
         finally:
@@ -206,6 +213,10 @@ class WebMemory(WebReader):
 
     async def route(self, path, body, session):
         name = path[len(PREFIX) :] if path.startswith(PREFIX) else ""
+        from .web_group_memory import ROUTES as GROUP_ROUTES
+
+        if name in GROUP_ROUTES:
+            return await self.groups.route(name, body, session)
         require(name == "state" or name in ROUTES, "not_found", 404)
         require(isinstance(body, dict), "invalid_input", 400)
         if name == "state":

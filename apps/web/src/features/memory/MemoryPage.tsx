@@ -13,6 +13,7 @@ import {
   saveRolePreference,
 } from "../../app/rolePreference";
 import "./memory.css";
+import GroupInsights from "./GroupInsights";
 
 type SubjectKey =
   | { kind: "person"; person_id: string }
@@ -301,13 +302,15 @@ export default function MemoryPage({
   useEffect(() => {
     if (!state) return;
     clearResults();
+    if (groupsOnly) return;
     if (!state?.available || !role?.available) return;
     if (section === 1) void listSubjects();
     else if (section === 3) void listRecords(null);
-  }, [state, roleId, section, csrf]);
+  }, [state, roleId, section, csrf, groupsOnly]);
 
   useEffect(() => {
     const selection = roleRequest();
+    if (groupsOnly) return;
     if (!csrf || !state?.available || !selection) return;
     let pending: AbortController | null = null;
     const verify = async (resumed = false) => {
@@ -358,7 +361,7 @@ export default function MemoryPage({
       document.removeEventListener("visibilitychange", visible);
       pending?.abort();
     };
-  }, [csrf, state?.available, role?.id, role?.version, section]);
+  }, [csrf, state?.available, role?.id, role?.version, section, groupsOnly]);
 
   function choose(row: SubjectKey) {
     generation.current++;
@@ -480,6 +483,19 @@ export default function MemoryPage({
         <StatePanel kind="loading" title="正在重新核验角色记忆">
           <p>请稍候，核验完成后会显示当前角色的记忆。</p>
         </StatePanel>
+      </div>
+    );
+
+  if (groupsOnly)
+    return (
+      <div className="memory-page">
+        {rolePicker}
+        <GroupInsights
+          key={`${role.id}:${role.version}`}
+          roleId={role.id}
+          roleVersion={role.version}
+          csrf={csrf}
+        />
       </div>
     );
 

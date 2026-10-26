@@ -37,14 +37,15 @@ class ProviderAuthority:
             400,
         )
         require(
-            body["caller_service"] == "companion" and body["workload"] == "companion.text",
+            body["caller_service"] in {"companion", "companion_background"}
+            and body["workload"] == "companion.text",
             "forbidden",
             403,
         )
         for field in ("turn_id", "actor_id", "person_id", "conversation_id"):
             self.platform.contracts.check("common#id", body[field])
         require(body["audience"] in {"group", "self_private"}, "invalid_input", 400)
-        self._identity(header, "config.select", "companion")
+        self._identity(header, "config.select", body["caller_service"])
         function_id = validate_function(body.get("function_id", "chat"))
         view = self.catalog.view()
         selected = view["default"]
@@ -137,7 +138,7 @@ class ProviderAuthority:
             "config_version": version,
             "expires_at": until,
             "revoked": False,
-            "caller_service": "companion",
+            "caller_service": body["caller_service"],
             "workload": "companion.text",
         }
 
@@ -150,7 +151,8 @@ class ProviderAuthority:
             400,
         )
         require(
-            body["caller_service"] == "companion" and body["workload"] == "companion.text",
+            body["caller_service"] in {"companion", "companion_background"}
+            and body["workload"] == "companion.text",
             "forbidden",
             403,
         )

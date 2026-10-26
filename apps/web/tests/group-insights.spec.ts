@@ -1,0 +1,495 @@
+import { test, expect, type Page, type Route } from "@playwright/test";
+
+// Browser interaction only. Chat SQL/TLS and Memory/Platform authority have separate evidence.
+// Copy this file to apps/web/tests/group-insights.spec.ts and use the existing desktop/mobile config.
+type Filters = {
+  keyword: string | null;
+  sender_id: string | null;
+  start_timestamp: number | null;
+  end_timestamp: number | null;
+};
+type Body = {
+  role_id: string;
+  role_version: number;
+  group_id?: string;
+  window?: string;
+  filters?: Filters;
+  cursor?: string | null;
+  limit?: number;
+  locator?: string;
+  stored_content_sha256?: string;
+};
+type Seen = { path: string; body: Body };
+const ROLES = [
+  { id: "actor:a", label: "角色甲", version: 0, available: true, reason: null },
+  { id: "actor:b", label: "角色乙", version: 2, available: true, reason: null },
+];
+const GROUPS = [
+  { id: "group-a", label: "甲群", conversation_id: "conversation:a" },
+  { id: "group-b", label: "乙群", conversation_id: "conversation:b" },
+];
+const ROLE_B_GROUP = {
+  id: "group-role-b",
+  label: "甲群（角色乙）",
+  conversation_id: "conversation:a",
+};
+const HASH = "a".repeat(64);
+const LOCATOR = `audit-evidence:0:${"b".repeat(64)}:message-a:${HASH}`;
+
+async function answer(route: Route, value: unknown) {
+  await route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(value),
+  });
+}
+
+function record(index = 1) {
+  return {
+    locator:
+      index === 1
+        ? LOCATOR
+        : `audit-evidence:0:${"b".repeat(64)}:message-${index}:${HASH}`,
+    stored_content_sha256: HASH,
+    sender_id: index === 1 ? "10001" : "10002",
+    timestamp: 1792472400 + index,
+    text: index === 1 ? "10001 当时的完整原话。" : "10002 随后的完整原话。",
+  };
+}
+
+function marker(body: Body) {
+  const group = [...GROUPS, ROLE_B_GROUP].find(
+    (item) => item.id === body.group_id,
+  )!;
+  return `${body.role_id === "actor:a" ? "角色甲" : "角色乙"} / ${group.label}`;
+}
+
+function summary(body: Body) {
+  return `${marker(body)}：读书讨论`;
+}
+function statement(body: Body) {
+  return `${marker(body)} 当前群画像`;
+}
+
+function insights(body: Body) {
+  const group = [...GROUPS, ROLE_B_GROUP].find(
+    (item) => item.id === body.group_id,
+  )!;
+  return {
+    group,
+    window: { start_timestamp: 1792418400, end_timestamp: 1792504799 },
+    stats: {
+      state: "available",
+      data: {
+        authors: [
+          { sender_id: "10001", messages: 4 },
+          { sender_id: "10002", messages: 2 },
+        ],
+        edges: [
+          {
+            from_sender_id: "10001",
+            to_sender_id: "10002",
+            reply_count: 2,
+            mention_count: 1,
+            interaction_count: 2,
+            evidence_locators: [LOCATOR],
+          },
+        ],
+        buckets: [
+          {
+            start_timestamp: 1792418400,
+            messages: 2,
+            active_senders: 1,
+            reply_messages: 0,
+            mention_messages: 0,
+            broadcast_messages: 0,
+          },
+          {
+            start_timestamp: 1792422000,
+            messages: 4,
+            active_senders: 2,
+            reply_messages: 2,
+            mention_messages: 1,
+            broadcast_messages: 1,
+          },
+        ],
+        coverage: {
+          messages_scanned: 6,
+          complete: true,
+          has_more: false,
+          unresolved_reply: 1,
+          unresolved_mention: 2,
+          broadcast_messages: 1,
+          relation_unavailable_messages: 1,
+        },
+      },
+    },
+    topics: {
+      state: "available",
+      data: {
+        items: [
+          {
+            segment_id: `segment:${body.role_id}:${group.id}`,
+            window_id: `window:${group.id}`,
+            recorded_at: "2026-10-20T10:00:00Z",
+            topics: [
+              {
+                topic_id: "topic:reading",
+                summary: summary(body),
+                person_ids: ["person:reader-a", "person:reader-b"],
+                member_refs: [
+                  {
+                    member_id: "material:human-a",
+                    role: "human",
+                    person_id: "person:reader-a",
+                    actor_id: null,
+                    observed_at: "2026-10-20T09:00:00Z",
+                    reality: "real",
+                  },
+                  {
+                    member_id: "reply:bot-a",
+                    role: "bot",
+                    person_id: null,
+                    actor_id: body.role_id,
+                    observed_at: "2026-10-20T09:01:00Z",
+                    reality: "real",
+                  },
+                ],
+                memory_refs: [
+                  {
+                    subject_person_id: "person:reader-a",
+                    record_id: "record:reading",
+                    record_version: 3,
+                  },
+                ],
+              },
+            ],
+            coverage: {
+              complete_new: true,
+              omitted_context: false,
+              result_person_count: 2,
+            },
+          },
+        ],
+        next_cursor: null,
+        omitted_invalidated: false,
+      },
+    },
+    records: {
+      state: "available",
+      data: {
+        items: [
+          {
+            semantic_group_id: `semantic:${group.id}`,
+            units: [
+              {
+                record_id: "record:reading",
+                record_version: 3,
+                statement: statement(body),
+              },
+            ],
+          },
+        ],
+        next_cursor: null,
+      },
+    },
+  };
+}
+
+async function mockApi(
+  page: Page,
+  intercept?: (route: Route, seen: Seen) => Promise<boolean>,
+) {
+  const sent: Seen[] = [];
+  await page.route("**/api/web/session", (route) =>
+    answer(route, {
+      authenticated: true,
+      csrf: "ts316-browser-only",
+      username: "ts316-synthetic-owner",
+      conversations: [],
+      dialogue: { available: false, code: "model_not_configured", model: "" },
+    }),
+  );
+  await page.route("**/api/web/memory/*", async (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").at(-1)!;
+    if (path === "state")
+      return answer(route, {
+        available: true,
+        code: "ready",
+        actor_id: "actor:a",
+        roles: ROLES,
+        peer: { configured: true, verified_at: null, code: "unverified" },
+      });
+    const body = route.request().postDataJSON() as Body;
+    expect(body.role_version).toBe(body.role_id === "actor:a" ? 0 : 2);
+    const seen = { path, body };
+    sent.push(seen);
+    if (intercept && (await intercept(route, seen))) return;
+    if (path === "groups")
+      return answer(route, {
+        available: true,
+        groups: body.role_id === "actor:b" ? [ROLE_B_GROUP] : GROUPS,
+        chat_configured: true,
+      });
+    if (path === "group-insights") return answer(route, insights(body));
+    if (path === "group-history")
+      return answer(route, {
+        records: [record(body.cursor ? 2 : 1)],
+        next_cursor: body.cursor ? null : "history:next-page",
+        visibility: { withdrawn: 1, unsupported: 0, archive_returned: 2 },
+      });
+    if (path === "group-evidence")
+      return answer(route, {
+        status: "archive_current",
+        target: record(),
+        context: { before: [], after: [record(2)] },
+      });
+    throw new Error(`unexpected memory UI operation ${path}`);
+  });
+  return sent;
+}
+
+function signal() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function answerLate(route: Route, value: unknown) {
+  try {
+    await answer(route, value);
+  } catch (error) {
+    // The prior fetch must be aborted by the real component. Other routing failures are errors.
+    if (!route.request().failure()?.errorText.includes("ERR_ABORTED"))
+      throw error;
+  }
+}
+
+test("group heat, explicit interaction evidence, person topics and zoom remain separate", async ({
+  page,
+}, testInfo) => {
+  const sent = await mockApi(page);
+  await page.goto("/#/memory/1");
+  await expect(page.getByLabel("群选择")).toHaveValue("group-a");
+  await expect(page.locator(".group-metrics")).toContainText("6 条已扫描消息");
+  await expect(page.locator(".group-metrics")).toContainText("2 位实际作者");
+  await expect(page.getByText(/互动结构不可解析 1 条/)).toBeVisible();
+  await expect(page.locator(".group-heat-bucket")).toHaveCount(2);
+  const interaction = page.getByRole("group", {
+    name: "定向互动图",
+    exact: true,
+  });
+  await interaction
+    .getByRole("button", { name: "QQ 10001", exact: true })
+    .click();
+  await expect(page.getByText(/10002 · 2 次定向互动/)).toBeVisible();
+  await page.getByRole("button", { name: "证据 1", exact: true }).click();
+  const evidence = page.getByRole("article", { name: "原始证据" });
+  await expect(
+    evidence.getByText("10001 当时的完整原话。", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    evidence.getByText("10002 随后的完整原话。", { exact: true }),
+  ).toBeVisible();
+  expect(
+    sent.find((item) => item.path === "group-evidence")?.body,
+  ).toMatchObject({
+    group_id: "group-a",
+    locator: LOCATOR,
+    stored_content_sha256: HASH,
+  });
+
+  await page.getByRole("button", { name: "话题点云", exact: true }).click();
+  const topics = page.getByRole("group", { name: "整理话题点云", exact: true });
+  await expect(
+    topics.getByRole("button", { name: "人物 person:reader-a", exact: true }),
+  ).toBeVisible();
+  await expect(
+    topics.getByRole("button", { name: "QQ 10001", exact: true }),
+  ).toHaveCount(0);
+  await topics
+    .getByRole("button", { name: "角色甲 / 甲群：读书讨论", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "当前话题", exact: true }),
+  ).toBeVisible();
+  const selection = page
+    .locator("article.group-selection")
+    .filter({
+      has: page.getByRole("heading", { name: "当前话题", exact: true }),
+    });
+  await expect(selection).toContainText("person:reader-a、person:reader-b");
+  await selection.getByText("查看原归属依据", { exact: true }).click();
+  await expect(selection).toContainText("人物 person:reader-a");
+  await expect(selection).toContainText("BOT actor:a");
+
+  const zoom = page.getByLabel("图缩放", { exact: true });
+  await zoom.focus();
+  await zoom.press("End");
+  await expect(zoom).toHaveValue("2");
+  await expect(topics.locator("g[transform]").first()).toHaveAttribute(
+    "transform",
+    /scale\(2\)/,
+  );
+  await page.getByRole("button", { name: "还原视图", exact: true }).click();
+  await expect(zoom).toHaveValue("1");
+  const graphBox = await page.locator(".group-graph-scroll").boundingBox();
+  expect(graphBox).not.toBeNull();
+  expect(graphBox!.x).toBeGreaterThanOrEqual(0);
+  expect(graphBox!.x + graphBox!.width).toBeLessThanOrEqual(
+    page.viewportSize()!.width + 1,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath(`group-insights-${testInfo.project.name}.png`),
+    fullPage: true,
+  });
+});
+
+test("history next page retains the submitted filters rather than unsent form edits", async ({
+  page,
+}) => {
+  const sent = await mockApi(page);
+  await page.goto("/#/memory/1");
+  await expect(
+    page.getByText("角色甲 / 甲群 当前群画像", { exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("历史关键词", { exact: true }).fill("读书");
+  await page.getByLabel("历史作者ID", { exact: true }).fill("10001");
+  await page
+    .getByLabel("历史开始时间", { exact: true })
+    .fill("2026-10-20T09:00");
+  await page
+    .getByLabel("历史结束时间", { exact: true })
+    .fill("2026-10-21T09:00");
+  await page.getByRole("button", { name: "查询", exact: true }).click();
+  await expect(
+    page.getByText("10001 当时的完整原话。", { exact: true }),
+  ).toBeVisible();
+  const first = sent.find((item) => item.path === "group-history")!.body;
+  expect(first).toMatchObject({
+    role_id: "actor:a",
+    role_version: 0,
+    group_id: "group-a",
+    cursor: null,
+    limit: 20,
+  });
+  expect(first.filters).toEqual({
+    keyword: "读书",
+    sender_id: "10001",
+    start_timestamp: 1792458000,
+    end_timestamp: 1792544400,
+  });
+  await page.getByLabel("历史关键词", { exact: true }).fill("尚未提交的新词");
+  await page.getByLabel("历史作者ID", { exact: true }).fill("10002");
+  await page
+    .getByLabel("历史开始时间", { exact: true })
+    .fill("2026-10-19T09:00");
+  await page.getByRole("button", { name: "下一页历史", exact: true }).click();
+  await expect(
+    page.getByText("10002 随后的完整原话。", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("10001 当时的完整原话。", { exact: true }),
+  ).toBeVisible();
+  const pages = sent.filter((item) => item.path === "group-history");
+  expect(pages).toHaveLength(2);
+  expect(pages[1].body).toEqual({ ...first, cursor: "history:next-page" });
+  expect(
+    pages.every(
+      (item) =>
+        !("channel" in item.body) &&
+        !("account" in item.body) &&
+        !("origin" in item.body),
+    ),
+  ).toBe(true);
+});
+
+test("a late old-group response cannot replace the newly selected group", async ({
+  page,
+}) => {
+  const entered = signal(),
+    release = signal(),
+    finished = signal();
+  let held = false;
+  await mockApi(page, async (route, { path, body }) => {
+    if (path !== "group-insights" || body.group_id !== "group-a" || held)
+      return false;
+    held = true;
+    entered.resolve();
+    await release.promise;
+    try {
+      await answerLate(route, insights(body));
+    } finally {
+      finished.resolve();
+    }
+    return true;
+  });
+  try {
+    await page.goto("/#/memory/1");
+    await entered.promise;
+    await page.getByLabel("群选择", { exact: true }).selectOption("group-b");
+    await expect(
+      page.getByText("角色甲 / 乙群 当前群画像", { exact: true }),
+    ).toBeVisible();
+    release.resolve();
+    await finished.promise;
+    await expect(page.getByLabel("群选择", { exact: true })).toHaveValue(
+      "group-b",
+    );
+    await expect(
+      page.getByText("角色甲 / 乙群 当前群画像", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("角色甲 / 甲群 当前群画像", { exact: true }),
+    ).toHaveCount(0);
+  } finally {
+    release.resolve();
+  }
+});
+
+test("a late old-role response cannot populate a remounted group view", async ({
+  page,
+}) => {
+  const entered = signal(),
+    release = signal(),
+    finished = signal();
+  let held = false;
+  await mockApi(page, async (route, { path, body }) => {
+    if (path !== "group-insights" || body.role_id !== "actor:a" || held)
+      return false;
+    held = true;
+    entered.resolve();
+    await release.promise;
+    try {
+      await answerLate(route, insights(body));
+    } finally {
+      finished.resolve();
+    }
+    return true;
+  });
+  try {
+    await page.goto("/#/memory/1");
+    await entered.promise;
+    await page
+      .getByLabel("查看哪位角色的记忆", { exact: true })
+      .selectOption("actor:b");
+    await expect(
+      page.getByText("角色乙 / 甲群（角色乙） 当前群画像", { exact: true }),
+    ).toBeVisible();
+    release.resolve();
+    await finished.promise;
+    await expect(
+      page.getByLabel("查看哪位角色的记忆", { exact: true }),
+    ).toHaveValue("actor:b");
+    await expect(
+      page.getByText("角色乙 / 甲群（角色乙） 当前群画像", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("角色甲 / 甲群 当前群画像", { exact: true }),
+    ).toHaveCount(0);
+  } finally {
+    release.resolve();
+  }
+});

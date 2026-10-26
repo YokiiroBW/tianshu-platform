@@ -27,7 +27,12 @@ class ModelFunctionsTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         env = patch.dict(
-            os.environ, {**ENV, "TS_FUNCTION_GATEWAY": "synthetic-management-token-only"}
+            os.environ,
+            {
+                **ENV,
+                "TS_FUNCTION_GATEWAY": "synthetic-management-token-only",
+                "TS_FUNCTION_BACKGROUND": "synthetic-background-selector-credential-only",
+            },
         )
         env.start()
         self.addCleanup(env.stop)
@@ -63,6 +68,12 @@ class ModelFunctionsTests(unittest.IsolatedAsyncioTestCase):
         }
         settings["principals"]["companion"]["actions"].append("config.select")
         settings["principals"]["gateway"]["actions"].append("provider.runtime")
+        settings["principals"]["companion_background"] = {
+            "kind": "service",
+            "service": "companion_background",
+            "token_env": "TS_FUNCTION_BACKGROUND",
+            "actions": ["config.select"],
+        }
         self.platform = Platform(settings)
         self.authority = ProviderAuthority(self.platform)
         self.runner, self.url = await start_http(create_app(self.platform))
@@ -81,6 +92,48 @@ class ModelFunctionsTests(unittest.IsolatedAsyncioTestCase):
         )
         body.update(changes)
         return body
+
+    async def test_background_selection_uses_its_actual_service_and_exact_runtime_grant(self):
+        self.catalog.functions.set_binding(**self.binding("writing"))
+        body = {
+            "turn_id": "turn:background-writing",
+            "actor_id": "actor:a",
+            "person_id": "person:life:a",
+            "audience": "self_private",
+            "conversation_id": "life:a",
+            "caller_service": "companion_background",
+            "workload": "companion.text",
+            "function_id": "writing",
+        }
+
+        async def post(path, payload, header, expected=200):
+            async with self.client.post(
+                self.url + "/internal/v1/provider-self-service/" + path,
+                json=payload,
+                headers={"Authorization": header},
+            ) as response:
+                answer = await response.json()
+                self.assertEqual(response.status, expected, answer)
+                return answer
+
+        credential = "Bearer " + os.environ["TS_FUNCTION_BACKGROUND"]
+        chosen = await post("select", body, credential)
+        self.assertEqual(chosen["caller_service"], "companion_background")
+        runtime = {
+            "turn_id": body["turn_id"],
+            "caller_service": body["caller_service"],
+            "workload": body["workload"],
+            "config_version": chosen["config_version"],
+        }
+        selected = await post("runtime", runtime, bearer("GATEWAY"))
+        self.assertEqual(selected["model_id"], "specialist")
+        await post("select", body, bearer("COMPANION"), 403)
+        await post("select", {**body, "caller_service": "companion"}, credential, 403)
+        await post("runtime", {**runtime, "caller_service": "companion"}, bearer("GATEWAY"), 403)
+        await post("runtime", runtime, credential, 403)
+        await post("select", {**body, "caller_service": "unregistered-background"}, credential, 403)
+        self.platform.auth.principals["companion_background"]["actions"].remove("config.select")
+        await post("select", {**body, "turn_id": "turn:next"}, credential, 403)
 
     def selection(self, function=None, turn=None):
         body = dict(

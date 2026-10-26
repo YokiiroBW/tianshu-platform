@@ -1,9 +1,10 @@
 """Service identity and current role authorization; execution stays with plugins."""
 
 from ..contracts import canonical, require
+from ..candidate_protocol import CandidateProtocol
 from ..plugins.actor_bridge import PluginActorBridge, principal
 from ..plugins.schema import check, fill_defaults
-from .protocol import Protocol, REQUEST_LIMIT
+from .protocol import MANIFEST, PACKAGE, REQUEST_LIMIT
 
 
 class Authorization:
@@ -40,7 +41,7 @@ class Authorization:
 class ActorCapabilities:
     def __init__(self, platform):
         self.p = platform
-        self.protocol = Protocol(platform.contracts.root)
+        self.protocol = CandidateProtocol(platform.contracts.root, PACKAGE, MANIFEST)
         self.bridge = PluginActorBridge(platform.plugins)
 
     def role(self, actor, version=None):
