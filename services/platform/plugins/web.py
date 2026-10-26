@@ -55,6 +55,8 @@ class WebPlugins:
             result = openapi()
         elif operation == "catalog":
             result = {"items": await host.catalog()}
+        elif operation == "actors":
+            result = {"items": await host.local(self.console.platform.actor_capabilities.directory)}
         elif operation == "view-content":
             instance = await host.instance(body["instance_id"])
             package = await host.package(instance["package_id"], instance["version"])
@@ -101,6 +103,9 @@ class WebPlugins:
                 body["instance_id"], operation == "enable", body["expected_revision"]
             )
         elif operation == "bindings":
+            await host.local(
+                self.console.platform.actor_capabilities.validate_selection, body["bindings"]
+            )
             result = await host.bindings(
                 body["instance_id"], body["bindings"], body["expected_revision"]
             )

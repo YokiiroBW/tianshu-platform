@@ -20,6 +20,7 @@ from .memory_proofs import ISSUE as PROOF_ISSUE
 from .memory_proofs import ISSUE_V2 as PROOF_ISSUE_V2
 from .memory_proofs import VERIFY as PROOF_VERIFY
 from .qq_admin import CHECK_PATH as QQ_ADMIN_CHECK
+from .actor_capabilities import http as actor_capability_http
 from .service import registered_credentials
 from .service_credentials import PATH as SERVICE_CREDENTIALS
 from .web_console import CONSOLE_AUTH
@@ -156,6 +157,17 @@ def create_app(platform, probe=None, *, console=None, public=False):
         reached_handler = False
         started = time.monotonic()
 
+        def boundary_error(code, status, request_id, native, web_error=False, *, uncertain=False):
+            if request.path == actor_capability_http.PATH:
+                body, status = actor_capability_http.error_body(
+                    code,
+                    status,
+                    request_id,
+                    request.get(actor_capability_http.EXECUTION, "not_started"),
+                )
+                return web.json_response(body, status=status)
+            return error(code, status, request_id, native, web_error, uncertain=uncertain)
+
         async def dispatch(request):
             nonlocal request_id, reached_handler
             if not request.path.startswith("/internal/"):
@@ -176,6 +188,8 @@ def create_app(platform, probe=None, *, console=None, public=False):
                     limit = (
                         45 * 1024 * 1024
                         if request.path == DELIVERY_PREFIX + "send"
+                        else 256 * 1024
+                        if request.path == actor_capability_http.PATH
                         else 1024 * 1024
                     )
                     if request.path == DELIVERY_PREFIX + "send":
@@ -240,6 +254,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             qq_admin_call = request.path == QQ_ADMIN_CHECK
             retrieval_call = request.path == RETRIEVAL_PATH
             credential_call = request.path == SERVICE_CREDENTIALS
+            actor_capability_call = request.path == actor_capability_http.PATH
             reading_call = request.path == "/internal/v1/books/reading"
             require(
                 request.method == "POST"
@@ -253,11 +268,14 @@ def create_app(platform, probe=None, *, console=None, public=False):
                     or credential_call
                     or retrieval_call
                     or reading_call
+                    or actor_capability_call
                 ),
                 "not_found",
                 404,
             )
-            if reading_call:
+            if actor_capability_call:
+                platform.actor_capabilities.validate(body)
+            elif reading_call:
                 require(len(raw) <= 4096, "budget_exceeded", 413)
                 platform.book_reading.validate(body)
             elif retrieval_call:
@@ -322,7 +340,9 @@ def create_app(platform, probe=None, *, console=None, public=False):
             if not diagnostics.admitted():
                 # New business is refused while the log cannot be written. Work already in flight
                 # keeps its own result; only the next request is turned away.
-                response = error("dependency_unavailable", 503, request_id, native, web_error)
+                response = boundary_error(
+                    "dependency_unavailable", 503, request_id, native, web_error
+                )
             else:
                 context = diagnostics.use_correlation(correlation)
                 # Admission waits for the accepting event's bytes without ever blocking the loop:
@@ -331,11 +351,13 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 if admitted:
                     response = await dispatch(request)
                 else:
-                    response = error("dependency_unavailable", 503, request_id, native, web_error)
+                    response = boundary_error(
+                        "dependency_unavailable", 503, request_id, native, web_error
+                    )
         except web.HTTPRequestEntityTooLarge:
-            response = error("budget_exceeded", 413, request_id, native, web_error)
+            response = boundary_error("budget_exceeded", 413, request_id, native, web_error)
         except Fault as exc:
-            response = error(
+            response = boundary_error(
                 exc.code,
                 exc.status,
                 request_id,
@@ -344,7 +366,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 uncertain=exc.status >= 500 and delivery_mutation_started(request),
             )
         except (sqlite3.Error, OSError):
-            response = error(
+            response = boundary_error(
                 "dependency_unavailable",
                 503,
                 request_id,
@@ -354,7 +376,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             )
         except (ValueError, TypeError, KeyError, RecursionError):
             uncertain = delivery_mutation_started(request)
-            response = error(
+            response = boundary_error(
                 "dependency_unavailable" if uncertain else "invalid_input",
                 503 if uncertain else 400,
                 request_id,
@@ -367,7 +389,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             # published error contract allows, and recorded as the one fixed internal code: no
             # exception text, type or traceback reaches either the wire or the log.
             unexpected = True
-            response = error(
+            response = boundary_error(
                 "dependency_unavailable",
                 503,
                 request_id,
@@ -662,6 +684,21 @@ def create_app(platform, probe=None, *, console=None, public=False):
         )
         return web.json_response(result, headers={"Cache-Control": "no-store"})
 
+    async def actor_capability_route(request):
+        def execution_state(state):
+            request[actor_capability_http.EXECUTION] = state
+
+        try:
+            async with asyncio.timeout(30):
+                answer = await platform.actor_capabilities.operate(
+                    request.headers["Authorization"],
+                    request[BODY],
+                    execution_state=execution_state,
+                )
+        except TimeoutError:
+            raise Fault("dependency_unavailable", 503) from None
+        return web.json_response(answer)
+
     async def credential_route(request):
         result = await platform.local_work.run(
             platform.service_credentials.resolve, request.headers["Authorization"], request[BODY]
@@ -799,6 +836,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
         app.router.add_post(PROOF_ISSUE_V2, proof_route)
         app.router.add_post(PROOF_VERIFY, proof_route)
         app.router.add_post(SERVICE_CREDENTIALS, credential_route)
+        app.router.add_post(actor_capability_http.PATH, actor_capability_route)
         app.router.add_post(RETRIEVAL_PATH, retrieval_route)
         if hasattr(platform.bots, "delivery"):
             for path in DELIVERY_ROUTES:
