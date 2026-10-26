@@ -495,7 +495,7 @@ class Bots:
             db.commit()
         return {"state": "online", "observed_at": utc(at)}
 
-    async def event(self, header, body):
+    async def event(self, header, body, *, participation=None):
         version = body.get("schema_version")
         base_fields = {
             "schema_version",
@@ -581,7 +581,9 @@ class Bots:
         require(isinstance(body["sent_at"], str), "invalid_input", 400)
         epoch(body["sent_at"])
         semantic = digest(body)
-        admission = await self.p.local_work.run(self._admit_event, header, body, semantic)
+        admission = await self.p.local_work.run(
+            self._admit_event, header, body, semantic, participation
+        )
         if "prior" in admission:
             if admission["prior"]["state"] == "accepted":
                 await self.p.local_work.run(self.p.qq_admin.queue_alias, body)
@@ -615,24 +617,30 @@ class Bots:
         dispatch_started = False
         try:
             platform_header = self._platform_header()
-            origin = await self.p.local_work.run(
-                self.p.sources.register_input, platform_header, entry_id, data
-            )
-            ingest = {
-                "schema_version": 1,
-                "command": {
+            if participation is not None:
+                dispatch_started = True
+                answer = await self.p.participation.admission.dispatch(
+                    participation, body, admission, data
+                )
+            else:
+                origin = await self.p.local_work.run(
+                    self.p.sources.register_input, platform_header, entry_id, data
+                )
+                ingest = {
                     "schema_version": 1,
-                    "request_id": "request:" + uuid.uuid4().hex,
-                    "idempotency_key": "bot:"
-                    + digest([connection_id, body["event_id"], body["account_id"]]),
-                    "origin": {"assertion_ref": origin["assertion_ref"]},
-                    "deadline_at": utc(self.p.origins.clock() + 30),
-                },
-                "input": data,
-                "target_actor_ids": admission["actor_ids"],
-            }
-            dispatch_started = True
-            answer = await self.p.sources.dispatch(platform_header, ingest)
+                    "command": {
+                        "schema_version": 1,
+                        "request_id": "request:" + uuid.uuid4().hex,
+                        "idempotency_key": "bot:"
+                        + digest([connection_id, body["event_id"], body["account_id"]]),
+                        "origin": {"assertion_ref": origin["assertion_ref"]},
+                        "deadline_at": utc(self.p.origins.clock() + 30),
+                    },
+                    "input": data,
+                    "target_actor_ids": admission["actor_ids"],
+                }
+                dispatch_started = True
+                answer = await self.p.sources.dispatch(platform_header, ingest)
             result = [
                 {"actor_id": item["actor_id"], "state": item["state"]}
                 for item in answer["outcomes"]
@@ -662,11 +670,11 @@ class Bots:
             "outcomes": result,
         }
 
-    def _admit_event(self, header, body, semantic):
+    def _admit_event(self, header, body, semantic, participation=None):
         with self._managed_guard():
-            return self._admit_event_guarded(header, body, semantic)
+            return self._admit_event_guarded(header, body, semantic, participation)
 
-    def _admit_event_guarded(self, header, body, semantic):
+    def _admit_event_guarded(self, header, body, semantic, participation=None):
         with closing(self._db()) as db:
             db.execute("BEGIN IMMEDIATE")
             row, slot, entries = self._authenticate(db, header, body["connection_id"])
@@ -699,6 +707,12 @@ class Bots:
                 "SELECT * FROM events WHERE connection_id=? AND event_id=? AND account_id=?",
                 (row["id"], body["event_id"], body["account_id"]),
             ).fetchone()
+            actors = loads(row["actor_ids"])
+            manager = getattr(self.p, "participation", None)
+            if manager is not None and manager.enabled:
+                actors = manager.admission.reserve(db, body, semantic, participation, old, actors)
+            else:
+                require(participation is None, "dependency_unavailable", 503)
             if old:
                 require(old["semantic"] == semantic, "idempotency_conflict", 409)
                 if old["state"] not in {"retryable", "unknown"}:
@@ -734,7 +748,7 @@ class Bots:
             "message_id": message_id,
             "entry_id": entry_id,
             "entry": entry,
-            "actor_ids": loads(row["actor_ids"]),
+            "actor_ids": actors,
         }
 
     def _finish_event(self, connection_id, event_id, account_id, state, result):
@@ -828,7 +842,12 @@ class Bots:
                 }
             )
             command_key = canonical([principal_id, command["idempotency_key"]])
-        with closing(self._db()) as db:
+        with p.store.connect(write=True) as authority, closing(self._db()) as db:
+            # Same authority→queue lock order as BotDelivery.send.
+            _, _, fresh = p.origins.context(
+                authority, command["origin"]["assertion_ref"], "companion", "platform", "dialogue"
+            )
+            require(fresh["allowed_scope"] == scope, "scope_changed", 409)
             db.execute("BEGIN IMMEDIATE")
             candidates = []
             for row in db.execute("SELECT * FROM connections WHERE enabled=1"):
@@ -895,6 +914,11 @@ class Bots:
                     now,
                 ),
             )
+            participation = getattr(p, "participation", None)
+            if participation is not None:
+                participation.delivery.bind(
+                    authority, db, command["origin"]["assertion_ref"], scope, request["reply_id"]
+                )
             db.commit()
             row = db.execute(
                 "SELECT * FROM replies WHERE reply_id=?", (request["reply_id"],)
@@ -947,11 +971,11 @@ class Bots:
                 else None
             }
 
-    def claim(self, header, body):
+    def claim(self, header, body, *, participation_checked=None):
         with self._managed_guard():
-            return self._claim_guarded(header, body)
+            return self._claim_guarded(header, body, participation_checked=participation_checked)
 
-    def _claim_guarded(self, header, body):
+    def _claim_guarded(self, header, body, *, participation_checked=None):
         require(set(body) == {"connection_id", "instance_id", "limit"}, "invalid_input", 400)
         require(
             isinstance(body["instance_id"], str)
@@ -965,21 +989,35 @@ class Bots:
             db.execute("BEGIN IMMEDIATE")
             row, slot, entries = self._authenticate(db, header, body["connection_id"])
             now = self.p.origins.clock()
+            participation = getattr(self.p, "participation", None)
+            eligible_sql, eligible_args = "", []
+            if participation is not None and participation.enabled:
+                eligible = participation.delivery.eligible(db, row["id"], participation_checked)
+                placeholders = ",".join("?" for _ in eligible) or "NULL"
+                eligible_sql = (
+                    " AND (reply_id NOT IN (SELECT reply_id FROM participation_bindings) "
+                    f"OR reply_id IN ({placeholders}))"
+                )
+                eligible_args = eligible
             db.execute(
                 "UPDATE replies SET state='unknown',unknown_origin='lease',observed_at=? WHERE connection_id=? AND state='claimed' AND claimed_at<?",
                 (now, row["id"], now - 60),
             )
             if db.execute(
-                "SELECT 1 FROM replies WHERE connection_id=? AND state='claimed' LIMIT 1",
-                (row["id"],),
+                "SELECT 1 FROM replies WHERE connection_id=? AND state='claimed'"
+                + eligible_sql
+                + " LIMIT 1",
+                [row["id"], *eligible_args],
             ).fetchone():
                 # A second adapter poll cannot overtake an already claimed output batch.
                 db.commit()
                 return {"deliveries": []}
             pending = list(
                 db.execute(
-                    "SELECT * FROM replies WHERE connection_id=? AND state='pending' ORDER BY observed_at,rowid LIMIT ?",
-                    (row["id"], body["limit"]),
+                    "SELECT * FROM replies WHERE connection_id=? AND state='pending'"
+                    + eligible_sql
+                    + " ORDER BY observed_at,rowid LIMIT ?",
+                    [row["id"], *eligible_args, body["limit"]],
                 )
             )
             deliveries = []

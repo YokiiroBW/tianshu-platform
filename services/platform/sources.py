@@ -315,12 +315,145 @@ class Sources:
                 return self._authority(db, request)[0]
             return self._current(db, request)
 
-    def prepare_mapping(self, header, ingest):
+    def initialize_participation(self):
+        """Correlation only: source_inputs/fanout_exchanges still own every source fact."""
+        with self.store.connect(write=True) as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS participation_sources (
+                event_key TEXT PRIMARY KEY, candidate_ref TEXT NOT NULL,
+                ticket TEXT NOT NULL UNIQUE, actor_ref TEXT NOT NULL UNIQUE,
+                registration TEXT, registration_digest TEXT
+            )""")
+
+    def participation_prepared(self, header, event_key, candidate):
+        with self.store.connect() as db:
+            self.auth.authenticate(header, db, "source.dispatch")
+            row = db.execute(
+                "SELECT * FROM participation_sources WHERE event_key=?", (event_key,)
+            ).fetchone()
+            if row is None:
+                return None
+            require(row["candidate_ref"] == canonical(candidate), "idempotency_conflict", 409)
+            return self._participation_prepared(db, row)
+
+    def _participation_prepared(self, db, marker):
+        exchange = db.execute(
+            "SELECT * FROM fanout_exchanges WHERE ticket=?", (marker["ticket"],)
+        ).fetchone()
+        require(exchange is not None, "dependency_unavailable", 503)
+        ingest, authority = loads(exchange["request"]), loads(exchange["authority"])
+        source, entry = self._input(db, ingest)
+        actor = db.execute(
+            "SELECT o.entry_id,a.* FROM origins o JOIN actor_origins a ON o.ref=a.ref WHERE o.ref=?",
+            (marker["actor_ref"],),
+        ).fetchone()
+        require(
+            actor is not None
+            and actor["input_entry_id"] == source["entry_id"]
+            and actor["input_digest"] == digest(ingest["input"]),
+            "forbidden",
+            403,
+        )
+        entry_id, actor_entry, context = self.origins.context(
+            db, marker["actor_ref"], source["ingress"], "companion", "dialogue"
+        )
+        require(
+            entry_id in entry["actor_entries"]
+            and ingest["target_actor_ids"] == [actor_entry["actor_id"]]
+            and any(
+                item["assertion_ref"] == marker["actor_ref"] for item in authority["actor_contexts"]
+            )
+            and actor_entry["account"] == ingest["input"]["author"]
+            and actor_entry["channel"] == ingest["input"]["message_key"]["channel"],
+            "forbidden",
+            403,
+        )
+        return {
+            "ticket": marker["ticket"],
+            "ingest": ingest,
+            "source": dict(source),
+            "actor_ref": marker["actor_ref"],
+            "entry_id": entry_id,
+            "entry": actor_entry,
+            "scope": context["allowed_scope"],
+            "response": loads(exchange["response"]) if exchange["response"] else None,
+            "registration": loads(marker["registration"]) if marker["registration"] else None,
+        }
+
+    def register_participation(self, header, event_key, document):
+        """Record the exact queue registration against the already prepared source."""
+        with self.store.connect(write=True) as db:
+            self.auth.authenticate(header, db, "source.dispatch")
+            marker = db.execute(
+                "SELECT * FROM participation_sources WHERE event_key=?", (event_key,)
+            ).fetchone()
+            require(marker is not None, "dependency_unavailable", 503)
+            prepared = self._participation_prepared(db, marker)
+            admission, ingest = document["admission"], prepared["ingest"]
+            require(
+                marker["candidate_ref"] == canonical(document["candidate"])
+                and admission["fanout_ticket"] == prepared["ticket"]
+                and admission["actor_assertion_ref"] == prepared["actor_ref"]
+                and admission["input_entry_id"] == prepared["source"]["entry_id"]
+                and admission["source_input_assertion_ref"]
+                == ingest["command"]["origin"]["assertion_ref"]
+                and admission["input_digest"] == digest(ingest["input"])
+                and admission["message_id"] == ingest["input"]["message_key"]["message_id"]
+                and admission["core_idempotency_key"] == ingest["command"]["idempotency_key"]
+                and document["author_anchor"]["entry_id"] == prepared["entry_id"],
+                "forbidden",
+                403,
+            )
+            require(
+                marker["registration"] is None or marker["registration"] == canonical(document),
+                "idempotency_conflict",
+                409,
+            )
+            db.execute(
+                "UPDATE participation_sources SET registration=?,registration_digest=? WHERE event_key=?",
+                (canonical(document), digest(document), event_key),
+            )
+
+    def participation_origin(self, db, ref):
+        """Resolve only through actual actor-origin rows, including owner-proven aliases."""
+        rows = db.execute(
+            "SELECT DISTINCT p.* FROM participation_sources p "
+            "JOIN actor_origins original ON original.ref=p.actor_ref "
+            "JOIN actor_origins supplied ON supplied.input_digest=original.input_digest "
+            "AND supplied.input_entry_id=original.input_entry_id "
+            "AND supplied.entry_document=original.entry_document "
+            "AND supplied.ingress=original.ingress WHERE supplied.ref=?",
+            (ref,),
+        ).fetchall()
+        require(len(rows) <= 1, "dependency_unavailable", 503)
+        if not rows:
+            return None
+        prepared = self._participation_prepared(db, rows[0])
+        require(prepared["registration"] is not None, "dependency_unavailable", 503)
+        return prepared
+
+    def prepare_mapping(self, header, ingest, *, participation=None):
         self.contracts.check("sources#fanout_request", ingest)
         with self.store.connect(write=True) as db:
             preparer, principal = self.auth.authenticate(header, db, "mapping.prepare")
             source, entry = self._input(db, ingest)
             require(entry["owner"] == preparer and source["ingress"] == principal["service"])
+            if participation is not None:
+                event_key, candidate = participation
+                prior = db.execute(
+                    "SELECT * FROM participation_sources WHERE event_key=?", (event_key,)
+                ).fetchone()
+                if prior:
+                    require(
+                        prior["candidate_ref"] == canonical(candidate), "idempotency_conflict", 409
+                    )
+                    saved = self._participation_prepared(db, prior)
+                    require(
+                        saved["ingest"]["input"] == ingest["input"]
+                        and saved["ingest"]["target_actor_ids"] == ingest["target_actor_ids"],
+                        "idempotency_conflict",
+                        409,
+                    )
+                    return prior["ticket"]
             access = {
                 "schema_version": 1,
                 "request_id": "access:" + uuid.uuid4().hex,
@@ -340,6 +473,19 @@ class Sources:
                     canonical(authority),
                 ),
             )
+            if participation is not None:
+                contexts = authority["actor_contexts"]
+                require(
+                    len(contexts) == 1
+                    and ingest["target_actor_ids"] == [candidate["actor_id"]]
+                    and contexts[0]["allowed_scope"]["actor_id"] == candidate["actor_id"],
+                    "forbidden",
+                    403,
+                )
+                db.execute(
+                    "INSERT INTO participation_sources(event_key,candidate_ref,ticket,actor_ref) VALUES(?,?,?,?)",
+                    (event_key, canonical(candidate), ticket, contexts[0]["assertion_ref"]),
+                )
             return ticket
 
     def confirm_mapping(self, header, ticket, response):
@@ -643,6 +789,24 @@ class Sources:
             raise error
         response = await core_post(self.core, ingest, self.contracts)
         await self.store.run_local(self._confirm_dispatch, header, ticket, response)
+        return response
+
+    async def dispatch_participation(self, header, event_key, registration):
+        """Use the exact persisted preparation; never mint another source on recovery."""
+        from .transport import core_post
+
+        prepared = await self.store.run_local(
+            self.participation_prepared, header, event_key, registration["candidate"]
+        )
+        require(
+            prepared is not None and prepared["registration"] == registration,
+            "dependency_unavailable",
+            503,
+        )
+        ingest = prepared["ingest"]
+        require(epoch(ingest["command"]["deadline_at"]) > self.clock(), "timeout", 408)
+        response = await core_post(self.core, ingest, self.contracts)
+        await self.store.run_local(self._confirm_dispatch, header, prepared["ticket"], response)
         return response
 
     def _prepare_dispatch(self, header, ingest):

@@ -469,6 +469,18 @@ class Delivery:
                         semantic,
                     ),
                 )
+                participation = getattr(self.p, "participation", None)
+                if participation is not None and request["origin"]["kind"] in {
+                    "response",
+                    "direct",
+                }:
+                    participation.delivery.bind(
+                        authority,
+                        db,
+                        request["origin"]["origin"]["assertion_ref"],
+                        request["scope"],
+                        segment["reply_id"],
+                    )
             if request["final"]:
                 db.execute("UPDATE expressions SET final=1 WHERE id=?", (row["id"],))
             row = db.execute("SELECT * FROM expressions WHERE id=?", (row["id"],)).fetchone()

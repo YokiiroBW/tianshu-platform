@@ -1179,6 +1179,26 @@ class BotObservation:
             or not await self._local(self.reply_connection_active, conn)
         ):
             return True
+        body = self.reply_body(conn, event)
+        outcome = await self.p.bots.event("Bearer " + token, body)
+        if outcome["state"] == "accepted":
+            return True
+        if outcome["state"] == "unknown":
+            status = await self._local(
+                self.p.bots.event_status,
+                "Bearer " + token,
+                {
+                    "connection_id": conn,
+                    "event_id": event["event_id"],
+                    "account_id": event["account_id"],
+                },
+            )
+            return status["state"] == "accepted"
+        return False
+
+    @staticmethod
+    def reply_body(conn, event):
+        """The same immutable original Bot input for explicit and selected participation."""
         body = {
             "schema_version": 1,
             "connection_id": conn,
@@ -1187,7 +1207,7 @@ class BotObservation:
             "event_id": event["event_id"],
             "revision": 1,
             "namespace": "qq",
-            "conversation_id": conversation,
+            "conversation_id": event["conversation_id"],
             "thread_id": None,
             "account_id": event["account_id"],
             "sent_at": event["sent_at"],
@@ -1211,21 +1231,7 @@ class BotObservation:
                 group_card=event["group_card"],
                 message_context=event["message_context"],
             )
-        outcome = await self.p.bots.event("Bearer " + token, body)
-        if outcome["state"] == "accepted":
-            return True
-        if outcome["state"] == "unknown":
-            status = await self._local(
-                self.p.bots.event_status,
-                "Bearer " + token,
-                {
-                    "connection_id": conn,
-                    "event_id": event["event_id"],
-                    "account_id": event["account_id"],
-                },
-            )
-            return status["state"] == "accepted"
-        return False
+        return body
 
     def _reply_role_active(self, actor):
         managed = self.p.role_runtime.get(actor)
@@ -1269,10 +1275,23 @@ class BotObservation:
             if not await self._local(self._reply_enabled, conn):
                 continue
             token = self._reply_token(conn)
+            participation = getattr(self.p, "participation", None)
+            claim_body = {
+                "connection_id": conn,
+                "instance_id": "platform-observation-pump",
+                "limit": 20,
+            }
+            checked = (
+                await participation.delivery.prepare("Bearer " + token, claim_body)
+                if participation
+                else None
+            )
             claimed = await self._local(
-                self.p.bots.claim,
-                "Bearer " + token,
-                {"connection_id": conn, "instance_id": "platform-observation-pump", "limit": 20},
+                lambda: (
+                    self.p.bots.claim("Bearer " + token, claim_body, participation_checked=checked)
+                    if participation
+                    else self.p.bots.claim("Bearer " + token, claim_body)
+                )
             )
             for delivery in claimed["deliveries"]:
                 current = await self._local(self.get, row["id"])
@@ -1281,6 +1300,10 @@ class BotObservation:
                 receipt = None
                 cancelled = False
                 try:
+                    if participation is not None:
+                        await participation.delivery.before_send(
+                            delivery["reply_id"], delivery["attempt_id"]
+                        )
                     receipt = await self._plugin(
                         current,
                         "messages/send",
@@ -1452,6 +1475,9 @@ class BotObservation:
                         break
                     if await self._reply_event(current, event, item.get("reply_claimed") is True):
                         acknowledged.append(item["id"])
+                participation = getattr(self.p, "participation", None)
+                if participation is not None:
+                    await participation.observe(current, event, source)
                 if index % 4 == 0:
                     await self._deliver_replies(row)
             if acknowledged:

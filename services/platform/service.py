@@ -397,6 +397,9 @@ class Platform:
         from .bot_observation import BotObservation
 
         self.bot_observation = BotObservation(self)
+        from .participation import Participation
+
+        self.participation = Participation(self)
         from .qq_admin import QQAdmin
 
         self.qq_admin = QQAdmin(self)
