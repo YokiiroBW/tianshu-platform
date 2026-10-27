@@ -560,6 +560,106 @@ class PostgreSQLObservationTests(observation_tests.ObservationTests):
         self.manager = BotObservation(self.platform)
         runtime.finalize()
 
+    def test_reply_generation_ddl_is_atomic_and_preserves_history(self):
+        with closing(self.manager._db()) as db:
+            with db:
+                db.native("BEGIN")
+                db.native("DROP TABLE reply_connections")
+                db.native(
+                    "CREATE TABLE reply_connections(connection_id TEXT PRIMARY KEY,"
+                    "observation_id TEXT NOT NULL,conversation TEXT NOT NULL,actor_id TEXT NOT NULL,"
+                    "UNIQUE(observation_id,conversation,actor_id),"
+                    "UNIQUE(observation_id,connection_id))"
+                )
+                db.execute(
+                    "INSERT INTO reply_connections VALUES(?,?,?,?)",
+                    ("bot:old", "obs:synthetic", "group:20002", "actor:a"),
+                )
+                db.execute("INSERT INTO reply_authors VALUES(?,?)", ("bot:old", "30003"))
+
+            def rows():
+                return [
+                    tuple(row)
+                    for row in db.execute("SELECT * FROM reply_connections ORDER BY connection_id")
+                ]
+
+            def constraints():
+                return [
+                    (kind, list(columns))
+                    for kind, columns in db.native(
+                        "SELECT c.contype,array_agg(a.attname ORDER BY k.ord) FROM pg_constraint c "
+                        "CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY k(num,ord) "
+                        "JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.num "
+                        "WHERE c.conrelid='reply_connections'::regclass GROUP BY c.conname,c.contype "
+                        "ORDER BY c.conname"
+                    )
+                ]
+
+            original, original_constraints = rows(), constraints()
+            authors = [
+                tuple(row)
+                for row in db.execute("SELECT * FROM reply_authors ORDER BY connection_id,author")
+            ]
+
+            class FailedDDL:
+                @property
+                def in_transaction(self):
+                    return db.in_transaction
+
+                def native(self, statement, *args):
+                    cursor = db.native(statement, *args)
+                    if statement.startswith("ALTER TABLE reply_connections DROP CONSTRAINT "):
+                        raise RuntimeError("synthetic_after_drop_before_commit")
+                    return cursor
+
+                def __enter__(self):
+                    db.__enter__()
+                    return self
+
+                def __exit__(self, *args):
+                    return db.__exit__(*args)
+
+            with self.assertRaisesRegex(RuntimeError, "synthetic_after_drop_before_commit"):
+                self.manager._migrate_reply_generations(FailedDDL())
+            self.assertEqual(rows(), original)
+            self.assertEqual(constraints(), original_constraints)
+
+            self.manager._migrate_reply_generations(db)
+            expected = [
+                value
+                for value in original_constraints
+                if value != ("u", ["observation_id", "conversation", "actor_id"])
+            ]
+            self.assertEqual(constraints(), expected)
+            self.assertIn(("p", ["connection_id"]), expected)
+            self.assertEqual(rows(), original)
+            self.assertEqual(
+                [
+                    tuple(row)
+                    for row in db.execute(
+                        "SELECT * FROM reply_authors ORDER BY connection_id,author"
+                    )
+                ],
+                authors,
+            )
+            with db:
+                db.execute(
+                    "INSERT INTO reply_connections VALUES(?,?,?,?)",
+                    ("bot:new", "obs:synthetic", "group:20002", "actor:a"),
+                )
+            self.assertEqual(len(rows()), 2)
+            self.assertIn(original[0], rows())
+            with self.assertRaises(sqlite3.IntegrityError):
+                with db:
+                    db.execute(
+                        "INSERT INTO reply_connections VALUES(?,?,?,?)",
+                        ("bot:new", "obs:other", "group:30003", "actor:b"),
+                    )
+            self.assertEqual(len(rows()), 2)
+            before_reentry = rows(), constraints()
+            self.manager._migrate_reply_generations(db)
+            self.assertEqual((rows(), constraints()), before_reentry)
+
 
 @unittest.skipUnless(PG, "TS231_TEST_POSTGRES requires a disposable PostgreSQL database")
 class PostgreSQLRoleTests(unittest.TestCase):

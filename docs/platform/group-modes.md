@@ -43,6 +43,8 @@
 
 原 `reply_connections` 移除三列 tuple UNIQUE，保留 connection_id 主键和所有历史行；旧 native→Core resolve 不丢失。SQLite 迁移前通过原数据库 backup API 保存 `.pre-group-modes-<uuid>.sqlite`；PostgreSQL 只删除精确三列唯一约束。后者本卡未在真实 PG 执行，发布仍需部署方原冷备/迁移边界。
 
+发布前隔离 PG 首轮发现 native DDL 不会由连接上下文自动开始事务；迁移现仅在精确目标存在时显式 BEGIN，将所有目标删除放在同一事务，失败保持原约束/历史。发布方仍先走原完整冷备，再在受保护边界执行迁移及当前行/约束校验；不能把换回旧镜像当作数据库回退，也不能为补回旧 UNIQUE 删除已写入的历史代际。实际 PG 复验结果由本批发布收据记录。
+
 ## 当前处理状态
 
 `POST /internal/v2/observation-source/processing` 复用 service 身份和 `observation.verify` action，仅允许实际 companion/memory。部署需显式登记该既有 action；不由请求自报身份。历史 verify 仍只允许 Memory，语义不变。

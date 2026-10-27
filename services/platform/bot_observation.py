@@ -178,11 +178,20 @@ class BotObservation:
             rows = db.native(
                 "SELECT c.conname,array_agg(a.attname ORDER BY k.ord) FROM pg_constraint c CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY k(num,ord) JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.num WHERE c.conrelid='reply_connections'::regclass AND c.contype='u' GROUP BY c.conname"
             ).fetchall()
-            for name, columns in rows:
-                if list(columns) == ["observation_id", "conversation", "actor_id"]:
-                    from .postgres import quote
+            constraints = [
+                name
+                for name, columns in rows
+                if list(columns) == ["observation_id", "conversation", "actor_id"]
+            ]
+            if constraints:
+                from .postgres import quote
 
-                    with db:
+                with db:
+                    # Native DDL stays autocommit until explicitly begun;
+                    # the connection context only commits or rolls back.
+                    if not db.in_transaction:
+                        db.native("BEGIN")
+                    for name in constraints:
                         db.native("ALTER TABLE reply_connections DROP CONSTRAINT " + quote(name))
 
     async def _local(self, operation, *args):

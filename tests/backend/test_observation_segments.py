@@ -185,12 +185,15 @@ class SegmentMappingTests(unittest.IsolatedAsyncioTestCase):
         _, _, _, request = await self.accepted()
         before = self.resolve(request)
         with closing(self.manager._db()) as db, db:
-            db.execute("ALTER TABLE reply_connections RENAME TO temporary_replies")
-            db.execute(
+            ddl = db.native if self.manager.database.backend == "postgresql" else db.execute
+            if self.manager.database.backend == "postgresql":
+                db.native("BEGIN")
+            ddl("ALTER TABLE reply_connections RENAME TO temporary_replies")
+            ddl(
                 "CREATE TABLE reply_connections(connection_id TEXT PRIMARY KEY,observation_id TEXT NOT NULL,conversation TEXT NOT NULL,actor_id TEXT NOT NULL,UNIQUE(observation_id,conversation,actor_id))"
             )
             db.execute("INSERT INTO reply_connections SELECT * FROM temporary_replies")
-            db.execute("DROP TABLE temporary_replies")
+            ddl("DROP TABLE temporary_replies")
         from services.platform.bot_observation import BotObservation
 
         self.manager = self.platform.bot_observation = BotObservation(self.platform)
