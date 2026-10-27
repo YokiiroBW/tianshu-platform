@@ -2,6 +2,7 @@
 
 from .control import OBJECT, TEXT, request
 from ..content_discovery.schemas import INPUT as DISCOVERY_INPUT, OUTPUT as DISCOVERY_OUTPUT
+from ..media.comics.plugin import EMPTY as COMIC_EMPTY, STATUS as COMIC_STATUS
 
 NULL_REVISION = {"type": ["integer", "null"], "minimum": 1}
 VALUE = {
@@ -12,6 +13,10 @@ VALUE = {
 }
 RECEIPT = {"type": "object", "required": ["id", "execution", "effect", "delivery", "revision"]}
 OPERATIONS = {
+    **{
+        ("comics.files", operation): (COMIC_EMPTY, COMIC_STATUS)
+        for operation in ("start", "stop", "status")
+    },
     ("content.discovery", "discover"): (DISCOVERY_INPUT, DISCOVERY_OUTPUT),
     ("state.kv", "get"): (request({"key": TEXT}), {"oneOf": [VALUE, {"type": "null"}]}),
     ("state.kv", "compare_and_set"): (

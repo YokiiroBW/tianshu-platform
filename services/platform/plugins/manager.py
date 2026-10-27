@@ -30,7 +30,14 @@ AVAILABLE = frozenset(
 
 def validate_settings(settings):
     config = settings.get("plugins", {})
-    require(isinstance(config, dict) and set(config) <= {"package_directory"}, "invalid_input", 400)
+    require(
+        isinstance(config, dict) and set(config) <= {"package_directory", "comic_files"},
+        "invalid_input",
+        400,
+    )
+    from ..media.comics.plugin import configuration
+
+    configuration(settings)
     if "package_directory" in config:
         require(
             isinstance(config["package_directory"], str)
@@ -41,7 +48,15 @@ def validate_settings(settings):
 
 
 class PluginManager:
-    def __init__(self, settings, *, runtime=None, local=asyncio.to_thread, content_discovery=None):
+    def __init__(
+        self,
+        settings,
+        *,
+        runtime=None,
+        local=asyncio.to_thread,
+        content_discovery=None,
+        comic_files=None,
+    ):
         validate_settings(settings)
         anchor = Path(settings["database_path"])
         self.local = local
@@ -51,6 +66,7 @@ class PluginManager:
             400,
         )
         self.content_discovery = content_discovery
+        self.comic_files = comic_files
         self.repository = Repository(str(anchor) + ".plugins.sqlite", runtime=runtime)
         self.vault = Vault(self.repository, str(anchor) + ".plugins.key")
         self.packages = Packages(
@@ -75,7 +91,11 @@ class PluginManager:
 
     @property
     def available_capabilities(self):
-        return AVAILABLE | ({"content.discovery"} if self.content_discovery is not None else set())
+        return (
+            AVAILABLE
+            | ({"content.discovery"} if self.content_discovery is not None else set())
+            | ({"comics.files"} if self.comic_files is not None else set())
+        )
 
     async def start(self):
         if self.started:
@@ -121,6 +141,15 @@ class PluginManager:
                         await self.worker(instance)
                 except (Fault, RemoteError, TimeoutError, OSError):
                     pass
+            elif await self.comic_instance(instance):
+                # Recover a crash after persisting disable but before releasing
+                # the runtime's old owner. Never re-enable that instance.
+                try:
+                    await self.comic_files.stop(instance["id"])
+                except (Fault, TimeoutError, OSError):
+                    pass
+        if self.comic_files is not None:
+            await self.ensure_comic_plugin()
         self.spawn(self.scheduler.run())
 
     def spawn(self, coroutine):
@@ -141,7 +170,7 @@ class PluginManager:
         await asyncio.gather(*tuple(self.background), return_exceptions=True)
         await self.executions.close()
         await asyncio.gather(
-            *(process.close("host_shutdown") for process, _ in self.workers.values()),
+            *(self.stop_worker(identifier, "host_shutdown") for identifier in tuple(self.workers)),
             return_exceptions=True,
         )
         self.workers.clear()
@@ -158,7 +187,7 @@ class PluginManager:
             for path in sorted(builtin.glob("*/plugin.json"))
         ]
 
-    async def install(self, source, client_id):
+    async def install(self, source, client_id, *, wait=False):
         await self.ensure_active()
         require(isinstance(client_id, str) and 1 <= len(client_id) <= 128, "invalid_input", 400)
         require(isinstance(source, dict), "invalid_input", 400)
@@ -189,8 +218,43 @@ class PluginManager:
                 "package_id": None,
             }
             await self.local(self.repository.put, "operations", operation)
-            self.spawn(self._install(operation, source))
-            return operation
+            task = self.spawn(self._install(operation, source))
+        if wait:
+            await task
+        return operation
+
+    async def ensure_comic_plugin(self):
+        """Use normal installation/instance records; seed once, respect later disable."""
+        from ..media.comics.plugin import BUILTIN
+
+        instances = await self.local(self.repository.list, "instances")
+        for instance in instances:
+            if await self.comic_instance(instance):
+                return
+        operation = await self.install(
+            {"type": "builtin", "id": BUILTIN},
+            "comic-files-bootstrap:" + uuid.uuid4().hex,
+            wait=True,
+        )
+        if operation["execution"] != "succeeded":
+            return
+        instance = await self.create(operation["package_id"], "漫画文件辅助", "comic-files-default")
+        try:
+            await self.state(instance["id"], True, instance["revision"])
+        except (Fault, RemoteError, TimeoutError, OSError):
+            # Desired and actual state remain visible; an unavailable helper does
+            # not prevent unrelated Platform modules from starting.
+            pass
+
+    async def comic_instance(self, instance):
+        if self.comic_files is None:
+            return False
+        from ..media.comics.plugin import builtin_package
+
+        package = await self.local(
+            self.repository.get, "packages", instance["package_id"] + "@" + instance["version"]
+        )
+        return package is not None and builtin_package(package)
 
     async def _install(self, operation, source):
         async with self.installation_lock:
@@ -311,6 +375,16 @@ class PluginManager:
             state = "blocked"
         if problem:
             state = "pending_configuration"
+        file_runtime = None
+        if await self.comic_instance(instance):
+            try:
+                file_runtime = await self.comic_files.status(instance["id"])
+                expected = "ready" if instance["desired_state"] == "enabled" else "stopped"
+                if file_runtime["state"] != expected:
+                    state = "error"
+            except (Fault, TimeoutError, OSError):
+                file_runtime = {"state": "unavailable"}
+                state = "error"
         description = copy.deepcopy(package.get("description", {"actions": []}))
         for action in description["actions"]:
             gaps = [
@@ -333,6 +407,7 @@ class PluginManager:
             },
             "config_schema": package["schema"],
             "contributions": description,
+            **({"file_runtime": file_runtime} if file_runtime is not None else {}),
         }
 
     async def view(self):
@@ -406,14 +481,24 @@ class PluginManager:
         require(type(enabled) is bool, "invalid_input", 400)
         async with self.locks[identifier]:
             instance = await self.instance(identifier)
+            previous_state = instance["desired_state"]
             instance.update(
                 desired_state="enabled" if enabled else "disabled",
                 revision=instance["revision"] + 1,
             )
             await self.local(self.repository.put, "instances", instance, expected=expected)
-            await self.stop_worker(identifier, "instance_state_changed")
-            if enabled:
-                await self.worker(instance)
+            try:
+                await self.stop_worker(identifier, "instance_state_changed")
+                if enabled:
+                    await self.worker(instance)
+            except Fault as error:
+                if enabled and error.code == "comic_file_owner_conflict":
+                    # A rejected second instance must not become a future owner
+                    # merely because it sorts before the real owner after reboot.
+                    revision = instance["revision"]
+                    instance.update(desired_state=previous_state, revision=revision + 1)
+                    await self.local(self.repository.put, "instances", instance, expected=revision)
+                raise
             return await self.projection(instance)
 
     async def bindings(self, identifier, bindings, expected):
@@ -474,18 +559,40 @@ class PluginManager:
             await process.call("plugin.initialize", context, timeout=15)
             await process.call("plugin.start", {}, timeout=15)
             self.workers[instance["id"]] = process, instance["revision"]
+            if await self.comic_instance(instance):
+                self.spawn(self.watch_comic_worker(instance["id"], process))
             await self.scheduler.seed(instance["id"], package["description"])
             return process
         except BaseException:
             await process.close("startup_failed")
             self.executions.revoke(instance["id"])
+            if await self.comic_instance(instance):
+                try:
+                    await self.comic_files.stop(instance["id"])
+                except (Fault, TimeoutError, OSError):
+                    pass
             raise
+
+    async def watch_comic_worker(self, identifier, process):
+        await process.process.wait()
+        async with self.locks[identifier]:
+            current = self.workers.get(identifier)
+            if current and current[0] is process:
+                try:
+                    await self.stop_worker(identifier, "worker_exited")
+                except (Fault, TimeoutError, OSError):
+                    # The worker has gone; projection still compares its absence
+                    # with the real file roles and cannot turn this into ready.
+                    pass
 
     async def stop_worker(self, identifier, reason):
         item = self.workers.pop(identifier, None)
         if item:
             await item[0].close(reason)
         self.executions.revoke(identifier)
+        instance = await self.instance(identifier)
+        if await self.comic_instance(instance):
+            await self.comic_files.stop(identifier)
 
     async def uninstall(self, package_id):
         await self.ensure_active()

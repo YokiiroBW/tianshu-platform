@@ -130,6 +130,9 @@ class PluginPackagingTests(unittest.TestCase):
                     "tianshu_plugin/worker.py",
                     "tianshu_plugin/view_bridge.js",
                     "services/platform/plugins/builtin/hello/main.py",
+                    "services/platform/plugins/builtin/comic-files/main.py",
+                    "services/platform/plugins/builtin/comic-files/contract.json",
+                    "services/platform/plugins/builtin/comic-files/plugin.json",
                 ):
                     self.assertIn(entry, archive.namelist())
             result = subprocess.run(

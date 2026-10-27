@@ -454,11 +454,13 @@ class Platform:
         )
         from .plugins import PluginManager
         from .content_discovery import Discovery, MediaCatalog
+        from .media.comics.plugin import ComicFileWorkers
 
         self.plugins = PluginManager(
             settings,
             local=self.local_work.run,
             runtime=self.storage_runtime,
+            comic_files=ComicFileWorkers.from_settings(settings),
             content_discovery=Discovery(
                 MediaCatalog(self.media), local=self.local_work.run, clock=clock
             ),

@@ -25,6 +25,10 @@ async def execute_capability(executions, context, name, operation, value):
     host, repo = executions.host, executions.repo
     instance, call = context["instance"], context["call"]
     require(isinstance(value, dict), "invalid_input", 400)
+    if name == "comics.files":
+        from ..media.comics.plugin import capability as comic_capability
+
+        return await comic_capability(host, context, operation)
     if name == "state.kv":
         require(operation in {"get", "compare_and_set", "delete"}, "capability_unavailable", 409)
         return await host.local(repo.state, instance, operation, value)

@@ -44,6 +44,26 @@ AssetLibrary preview23/schema63已通过正式主Host的`/assetlink/v1/service-i
 
 AS侧保留现有Documents库和真实原生根。其目录链需要read/search与inotify，不能仅授x权限。AS部署单写者已对Documents、Cartoon、漫画、本子四祖先各增加1654本目录只读ACE，不继承；仅两新天枢root具有自身继承写权限。原ACE与旧子树权限保留，真实native root和target均已登记。后续部署沿用现有配置，不重复添加ACL、不递归修改旧目录。
 
+### 单容器内置文件辅助插件（TS-332，本地候选）
+
+统一容器可以通过既有插件宿主管理这两个文件角色，用户无需再部署独立的 inputs/publisher 容器。Platform 设置增加：
+
+```json
+{"plugins": {"comic_files": {"runtime_socket": "/run/tianshu/comics-control.sock"}}}
+```
+
+首次配置后，原 PluginManager 按正常安装流程创建 `tianshu.comics-files` 内置包及一个默认启用实例。配置、启停、实例修订与卸载均沿用原插件台账和界面；后续停用或卸载不会在重启时被自动开启。已有启用实例重启时恢复同一实例，不另建漫画队列。没有这项配置时，不自动安装辅助插件，旧本地/外置 socket 入口仍可继续使用。
+
+插件自身不接受命令、目录、UID 或 socket 配置，也不启动通用 shell。它仅在生命周期中通过 `comics.files` 能力请求受信运行时启动/停止固定的 `comic-inputs` 与 `comic-publisher`；正式内置包来源也会复核，上传同名包不能获得这项控制。`status` 是纯读动作，动作/模型调用不能启动或停止文件角色。
+
+运行时控制为私有 Unix socket，`POST /v1/comics/{start,stop,status}` 的唯一请求字段是 `owner`（原插件实例 UUID）。两角色命令、设置路径和 UID 由统一容器配置固定：原 `source_service` 仍为 1026:10001，原 `publisher_service` 仍为 1654:10001，Platform 仍为 10001。运行时检查连接进程 UID10001；已有两个业务 socket 的 SO_PEERCRED、只读原库、AS owner 与文件回执协议保持。控制响应仅含 `state`（ready/starting/stopped/failed）及两角色的 running/stopped/failed，不下发路径或凭据。
+
+启动先请求 start，最多等10秒轮询真实 status，两个角色都 ready 后插件才就绪；查询状态从不启动进程。同包第二实例抢占返回409，并恢复其原期望状态，避免下一次重启抢占原实例。正常停用和宿主关闭释放自己的 owner；插件 worker 崩溃时宿主也请求停止文件角色。运行时不可达或 stop 失败时，投影保留期望状态与实际角色状态的差异并显示 error，不宣称已经停好。整个容器退出的最终进程收尾归统一运行时。
+
+插件投影新增 `file_runtime`，用于区分插件 worker 与真实文件角色状态。关闭辅助仅关闭文件访问角色；原漫画订阅、下载和任务仍归原模块，访问不可用按原任务与重试流程报告，重新启用不绕过原断点与回执。
+
+这项交付只实现本地接点；Linux UID 切换、统一容器控制端、真实 NAS/AS 和单容器启动验收由统一发行集成完成。512MiB仍是旧每角色内存上限，不能当成合并后的节省量。部署不会因此统一三个 UID 或递归修改 NAS ACL。
+
 Suwayomi实机为2.3.2243、Komga为1.24.4-master；未升级。按用户明确要求停用Suwayomi旧SOCKS开关，由路由器分流。正式网页17个普通源聚合返回97个来源版本，12源可用、5源暂不可用；不代表所有插件可用。Komga专用密钥已获动作确认并保存到现有Accounts加密设置，旧密钥和其他媒体配置保持。真实最新22页、原目录13张图片、普通样本私密目标6页已通过完整归档与阅读，原序章24页保留；重复请求不产生新任务或文件。
 
 ## 验证
