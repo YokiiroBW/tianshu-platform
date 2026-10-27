@@ -74,7 +74,7 @@ class ProbeTestCase(unittest.IsolatedAsyncioTestCase):
         self.client = None
         self.stream = None
 
-    async def boot(self, settings=None):
+    async def boot(self, settings=None, *, probe=None):
         """Assemble the real composition root and serve it; TLS when the settings say so."""
         settings = self.settings if settings is None else settings
         self.settings = settings
@@ -89,7 +89,9 @@ class ProbeTestCase(unittest.IsolatedAsyncioTestCase):
                 settings["tls"]["certificate_file"], settings["tls"]["private_key_file"]
             )
             self.trusted = ssl.create_default_context(cafile=settings["tls"]["certificate_file"])
-        self.runner, self.url = await start_server(create_app(self.platform), tls=context)
+        self.runner, self.url = await start_server(
+            create_app(self.platform, probe=probe), tls=context
+        )
         self.addAsyncCleanup(self.runner.cleanup)
         self.client = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=10),
@@ -687,6 +689,65 @@ class ReadinessTests(ProbeTestCase):
             self.assertTrue(probe._inflight)
         finally:
             release.set()
+
+    async def test_public_probes_stay_closed_without_starting_a_check_or_closing_native_probe(self):
+        from services.platform.web_console import WebConsole
+
+        self.settings["web_access"] = {
+            "host": "127.0.0.1",
+            "port": 8080,
+            "certificates": {},
+            "initial": {"mode": "http", "origin": "http://127.0.0.1:8080", "certificate": None},
+        }
+        await self.boot()
+        console = next(
+            route.handler.__self__
+            for route in self.runner.app.router.routes()
+            if isinstance(getattr(route.handler, "__self__", None), WebConsole)
+        )
+        public, url = await start_server(create_app(self.platform, console=console, public=True))
+        self.addAsyncCleanup(public.cleanup)
+        client = aiohttp.ClientSession(trust_env=False)
+        self.addAsyncCleanup(client.close)
+        started, release = threading.Event(), threading.Event()
+        calls = []
+        real = runtime_health.Probe.evaluate
+
+        def held(probe):
+            calls.append(True)
+            started.set()
+            release.wait(10)
+            return real(probe)
+
+        with patch.object(runtime_health.Probe, "evaluate", held):
+            owner = asyncio.create_task(self.probe(READY))
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 5))
+                for path in (READY, LIVE):
+                    async with client.get(url + path, headers=authorization()) as response_public:
+                        self.assertEqual(response_public.status, 404)
+                self.assertEqual(len(calls), 1)
+            finally:
+                release.set()
+            self.assertEqual((await owner)[0].status, 200)
+            await public.cleanup()
+            self.assertEqual((await self.probe(READY))[0].status, 200)
+            self.assertEqual(len(calls), 1)
+
+    async def test_an_explicit_probe_override_is_used_by_the_tls_app(self):
+        injected = runtime_health.Probe(runtime_health.HealthInputs(mode="service_https"))
+        calls = []
+
+        def evaluate():
+            calls.append(True)
+            return injected._document(dict.fromkeys(runtime_health.CHECK_KEYS, "failed"))
+
+        injected.evaluate = evaluate
+        await self.boot(probe=injected)
+        response, document = await self.probe(READY)
+        self.assertEqual(response.status, 503)
+        self.assertEqual(set(document["checks"].values()), {"failed"})
+        self.assertEqual(len(calls), 1)
 
     async def test_a_timeout_does_not_overwrite_a_fresh_green_with_an_unknown(self):
         """A cached answer is never replaced by the not_verified document a timeout produced."""

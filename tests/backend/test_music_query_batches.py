@@ -5,15 +5,18 @@ import os
 import unittest
 import uuid
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import test_music_foundation as foundation
-from music_fixtures import snapshot
+from music_fixtures import SyntheticNetease, snapshot
 from services.platform import backends
 from services.platform.contracts import Fault, digest
 from services.platform.media.music.catalog import Catalog
 from services.platform.media.music.maintenance import CHECK, SETTINGS
+from services.platform.media.music.imports import safe_path, stamp
 from services.platform.media.music.resolver import Resolver
+from services.platform.media.music.runtime import Music
+from services.platform.media.accounts import Accounts
 from services.platform.media.repository import Repository
 
 
@@ -56,10 +59,11 @@ class MusicQueryBatchTests(unittest.IsolatedAsyncioTestCase):
             )
             self.addCleanup(runtime.close)
             self.repo = self.media.repo = Repository(self.repo.database, runtime=runtime)
-            self.music.media.repo = self.repo
-            self.library.repo = self.repo
-            self.library.catalog.repo = self.repo
-            self.music.maintenance.repo = self.repo
+            self.accounts = self.media.accounts = Accounts(self.repo)
+            self.music = Music(self.media)
+            self.addAsyncCleanup(self.music.close)
+            self.music.connector = SyntheticNetease()
+            self.library = self.music.library
             runtime.finalize()
         self.directory = str(self.root)
         self.repo.put(
@@ -255,6 +259,59 @@ class MusicQueryBatchTests(unittest.IsolatedAsyncioTestCase):
             [(j["job_id"], j["request_version"]) for j in before],
             [(j["job_id"], j["request_version"]) for j in after],
         )
+
+    async def test_unchanged_index_scan_batches_observations_and_aliases(self):
+        _, playlist = self.playlist(300)
+        self.archive_jobs(playlist)
+        with self.repo.transaction() as db:
+            for i in range(300):
+                relative = str(1000 + i) + ".flac"
+                path = self.root / relative
+                path.write_bytes(b"synthetic-index-fixture")
+                self.repo.put(
+                    "music_file_observation",
+                    digest({"directory": self.directory, "path": relative}),
+                    {
+                        "directory": self.directory,
+                        "path": relative,
+                        "state": "indexed",
+                        **stamp(path),
+                    },
+                    db=db,
+                )
+        update = AsyncMock()
+        with (
+            self.reads() as queries,
+            patch.object(self.music.imports, "index", AsyncMock()) as index,
+        ):
+            await self.music.imports.scan(
+                {"destination_directory": self.directory, "job_id": "synthetic-scan"}, update
+            )
+        index.assert_not_awaited()
+        self.assertLessEqual(len(queries), 10)
+        self.assertEqual(self.music.imports.view()["unchanged"], 300)
+        self.assertEqual(self.music.imports.view()["failed"], 0)
+
+    async def test_missing_scan_cannot_replace_a_new_publication_after_its_read_phase(self):
+        _, playlist = self.playlist(1)
+        self.archive_jobs(playlist)
+        artifact = self.repo.list("music_library_file")[0]
+        replacement = {**artifact, "files": [{"kind": "audio", "path": "new.flac"}]}
+        (self.root / "new.flac").write_bytes(b"new-synthetic-publication")
+        published = []
+
+        def publish_before_stat(root, relative):
+            # The actual filesystem phase must be outside its media transaction. Publishing
+            # here would deadlock if that writer lock were still held by the scanner.
+            if not published:
+                published.append(
+                    self.repo.put("music_library_file", artifact["recording_id"], replacement)
+                )
+            return safe_path(root, relative)
+
+        with patch("services.platform.media.music.imports.safe_path", publish_before_stat):
+            self.music.imports.mark_missing(self.root, set())
+        self.assertEqual(self.library.catalog.file(artifact["recording_id"]), published[0])
 
 
 @unittest.skipUnless(

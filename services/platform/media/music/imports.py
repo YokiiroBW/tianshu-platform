@@ -1,6 +1,7 @@
 """Index existing originals and decode inbox files through the shared media queue."""
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -207,10 +208,11 @@ class Imports:
         local = self.media.local
         root = Path(job["destination_directory"])
         items = await local(discover, str(root))
+        observations = await local(self.observations, root, items)
         counts = {"total": len(items), "indexed": 0, "unchanged": 0, "queued": 0, "failed": 0}
         for index, item in enumerate(items):
             key = digest({"directory": str(root), "path": item["path"]})
-            prior = await local(self.repo.get, "music_file_observation", key)
+            prior = observations.get(key)
             if (
                 prior
                 and prior.get("state") not in {"missing", "failed"}
@@ -240,11 +242,12 @@ class Imports:
             await local(self.repo.put, "music_file_observation", key, result)
             if index % 10 == 0:
                 await update(progress=(index + 1) / max(1, len(items)))
+                status = await local(self.view)
                 await local(
                     self.repo.put,
                     "music_import_scan",
                     "library",
-                    {**self.view(), **counts, "state": "scanning"},
+                    {**status, **counts, "state": "scanning"},
                 )
         await local(
             self.repo.put,
@@ -263,28 +266,64 @@ class Imports:
         if finish:
             await update(state="completed", stage="completed", code="music_indexed", progress=1)
 
+    def observations(self, root, items):
+        with self.repo.transaction() as db:
+            return self.repo._documents(
+                db,
+                "music_file_observation",
+                [digest({"directory": str(root), "path": item["path"]}) for item in items],
+            )
+
     def mark_missing(self, root, seen):
-        for row in self.repo.list("music_file_observation"):
-            if (
-                row["directory"] == str(root)
-                and row["path"] not in seen
-                and row["state"] != "missing"
-            ):
+        # Read aliases together, then release the media writer lock before touching the
+        # filesystem. Existing unchanged files need no per-file connection/transaction.
+        with self.repo.transaction() as db:
+            observations = [
+                json.loads(row[0])
+                for row in db.execute(
+                    "SELECT body FROM documents WHERE kind='music_file_observation' "
+                    "AND json_extract(body,'$.directory')=?",
+                    (str(root),),
+                )
+            ]
+            artifacts = [
+                json.loads(row[0])
+                for row in db.execute(
+                    "SELECT body FROM documents WHERE kind='music_library_file' "
+                    "AND json_extract(body,'$.directory')=?",
+                    (str(root),),
+                )
+            ]
+            reads = self.catalog.reads(
+                db, recordings=[row["recording_id"] for row in artifacts], with_files=False
+            )
+            artifacts = [
+                row
+                for row in artifacts
+                if reads.resolve(row["recording_id"]) == row["recording_id"]
+            ]
+        for row in observations:
+            if row["path"] not in seen and row["state"] != "missing":
                 self.repo.put(
                     "music_file_observation",
                     digest({"directory": str(root), "path": row["path"]}),
                     {**row, "state": "missing"},
                 )
-        for artifact in self.repo.list("music_library_file"):
-            if artifact["directory"] != str(root):
-                continue
-            current = self.catalog.file(artifact["recording_id"])
-            if not current or current["recording_id"] != artifact["recording_id"]:
-                continue
+        for artifact in artifacts:
             audio = next((f for f in artifact["files"] if f["kind"] == "audio"), None)
             missing = not audio or not safe_path(root, audio["path"]).is_file()
             if missing != artifact.get("missing", False):
                 with self.repo.transaction() as db:
+                    current = self.repo._document(
+                        db, "music_library_file", artifact["recording_id"]
+                    )
+                    if (
+                        not current
+                        or current["revision"] != artifact["revision"]
+                        or self.catalog.resolve(artifact["recording_id"], db)
+                        != artifact["recording_id"]
+                    ):
+                        continue  # A newer publication/merge owns its own next observation.
                     self.catalog.store_file(
                         artifact["recording_id"], {**artifact, "missing": missing}, db
                     )
@@ -427,11 +466,12 @@ class Imports:
                 retry_delay=5,
             )
             if job["audio_operation"] == "scan":
+                status = await local(self.view)
                 await local(
                     repo.put,
                     "music_import_scan",
                     "library",
-                    {**self.view(), "state": "failed", "code": code},
+                    {**status, "state": "failed", "code": code},
                 )
         finally:
             pulse.cancel()
