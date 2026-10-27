@@ -9,8 +9,16 @@ import { WeatherPanel } from "./WeatherPanel";
 import "./settings.css";
 import { RetrievalSettings } from "../memory/RetrievalSettings";
 import { NodeConnections } from "../infrastructure/NodeConnections";
+import { lazy, Suspense } from "react";
+
+const FlowGraphPage = lazy(() => import("../flow-graph/FlowGraphPage"));
 
 const setupLinks = [
+  {
+    href: "#/settings/12",
+    title: "链路图",
+    detail: "查看账号、角色、会话关系，以及真实运行关联事件。",
+  },
   {
     href: "#/settings/11",
     title: "节点连接",
@@ -90,6 +98,12 @@ function ConnectionsOverview() {
 }
 
 export default function SettingsPage({ section }: { section: number }) {
+  if (section === 12)
+    return (
+      <Suspense fallback={<p role="status">正在载入链路图…</p>}>
+        <FlowGraphPage />
+      </Suspense>
+    );
   if (section === 11) return <NodeConnections />;
   if (section === 10) return <RetrievalSettings />;
   if (section === 0) return <TasksPanel />;

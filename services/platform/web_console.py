@@ -42,6 +42,7 @@ from .web_connections import view as connections_view
 from .web_content import WebContent
 from .web_dialogue import WebDialogue
 from .web_external import WebExternal
+from .web_flow_graph import PREFIX as FLOW_GRAPH_PREFIX, WebFlowGraph
 from .web_life_management import WebLifeManagement
 from .web_memory import WebMemory
 from .web_memory_links import WebMemoryLinks
@@ -241,6 +242,7 @@ class WebConsole:
 
         self.media = WebMedia(platform.media, self)
         self.infrastructure = WebInfrastructure(platform.infrastructure, self)
+        self.flow_graph = WebFlowGraph(self)
         from .plugins.web import WebPlugins
 
         self.plugins = WebPlugins(platform.plugins, self)
@@ -765,6 +767,14 @@ class WebConsole:
         # merely carried a cookie. A later refusal in this same request answers 401/403 and is
         # recorded as a refusal, which the boundary gives precedence to.
         request[CONSOLE_AUTH] = AUTH_SUCCEEDED
+        if request.path.startswith(FLOW_GRAPH_PREFIX):
+            result = await self.flow_graph.route(request.path, body, session)
+            require(
+                await self.platform.local_work.run(self.session_valid, session),
+                "session_expired",
+                401,
+            )
+            return web.json_response(result)
         if request.path.startswith("/api/web/access/"):
             result = await self.access_settings.route(request.path, body, session)
             fingerprint, _ = await self.platform.local_work.run(self.authority)

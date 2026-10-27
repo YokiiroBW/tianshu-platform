@@ -122,6 +122,7 @@ export const modules = [
       "位置与天气",
       "记忆检索",
       "节点连接",
+      "链路图",
     ],
   },
 ] as const;
