@@ -454,7 +454,9 @@ class Platform:
         )
         from .local_work import LocalWork
 
-        self.local_work = LocalWork()
+        # Media loops cannot consume the last interactive worker. Their permit
+        # covers only one accepted synchronous operation, never a remote await.
+        self.local_work = LocalWork(background_capacity=3)
         self.store.run_local = self.local_work.run
         from .media.runtime import Media
 

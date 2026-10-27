@@ -17,9 +17,10 @@ from unittest.mock import patch
 
 import aiohttp
 from aiohttp import web
-
 from fixtures import CONTRACT, ENV, ROOT, bearer, config, query, settings
+
 from services.platform.contracts import Fault, epoch, utc
+from services.platform.media.background import Background
 from services.platform.model_origin_renewal import (
     PATH,
     enabled,
@@ -306,3 +307,43 @@ class RenewalHttpsTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 release.set()
             await task
+
+    async def test_three_media_workers_cannot_starve_authenticated_renewal_and_snapshot(self):
+        import threading
+
+        await self.p.media.close()
+        await self.p.local_work.drain()
+        self.p.models.publish(bearer("ADMIN"), config())
+        owner, release, lock = Background(), threading.Event(), threading.Lock()
+        entered = []
+
+        def held(index):
+            with lock:
+                entered.append(index)
+            release.wait(5)
+
+        async def pump(index):
+            await self.p.local_work.run(held, index)
+            await asyncio.Event().wait()
+
+        try:
+            for index in range(4):
+                owner.start(str(index), pump, index)
+            async with asyncio.timeout(2):
+                while len(entered) < 3:
+                    await asyncio.sleep(0.005)
+            async with asyncio.timeout(1):
+                result = await self.post(request(self.ref))
+                self.assertEqual(result["assertion_ref"], self.ref)
+                async with self.client.post(
+                    self.url + "/internal/v1/model-config/snapshot",
+                    json=query(self.ref),
+                    headers={"Authorization": bearer("GATEWAY")},
+                ) as response:
+                    self.assertEqual(response.status, 200)
+            self.assertEqual(len(entered), 3)
+            self.assertEqual(self.p.local_work._background.active, 3)
+        finally:
+            release.set()
+            await owner.close()
+            await self.p.local_work.drain()

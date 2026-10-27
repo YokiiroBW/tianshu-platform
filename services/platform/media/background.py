@@ -3,6 +3,8 @@
 import asyncio
 import time
 
+from ..local_work import background_scope
+
 
 class Background:
     def __init__(self):
@@ -20,7 +22,8 @@ class Background:
         while True:
             try:
                 state["state"] = "running"
-                await operation(*args)
+                with background_scope():
+                    await operation(*args)
             except asyncio.CancelledError:
                 raise
             except Exception:

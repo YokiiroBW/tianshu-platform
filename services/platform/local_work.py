@@ -5,9 +5,22 @@ import contextvars
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from functools import partial
 
 from .contracts import Fault
+
+_BACKGROUND = contextvars.ContextVar("platform-local-background", default=False)
+
+
+@contextmanager
+def background_scope():
+    """Trusted producer context; a scope is not an acquired worker permit."""
+    token = _BACKGROUND.set(True)
+    try:
+        yield
+    finally:
+        _BACKGROUND.reset(token)
 
 
 async def settled(local, operation, *args, **kwargs):
@@ -32,9 +45,10 @@ async def settled(local, operation, *args, **kwargs):
     return result
 
 
-class LocalWork:
-    def __init__(self, workers=4, capacity=16):
-        self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="platform-local")
+class _Capacity:
+    """FIFO admission owned until actual completion, usable across caller loops."""
+
+    def __init__(self, capacity):
         self.capacity = capacity
         self.active = 0
         self.closed = False
@@ -91,37 +105,7 @@ class LocalWork:
                 self._wake_next()
             raise
 
-    async def run(self, operation, *args, **kwargs):
-        await self._acquire()
-        with self.lock:
-            try:
-                if self.closed:
-                    raise Fault("dependency_unavailable", 503)
-                context = contextvars.copy_context()
-                future = self.executor.submit(context.run, partial(operation, *args, **kwargs))
-            except BaseException:
-                self.active -= 1
-                self._wake_next()
-                raise
-        # Cancellation of a caller cannot release a still-running local operation's
-        # capacity. No operation is replayed or its transaction split across threads.
-        future.add_done_callback(self._finished)
-        wrapped = asyncio.wrap_future(future)
-        wrapped.add_done_callback(lambda item: item.exception() if not item.cancelled() else None)
-        try:
-            return await asyncio.shield(wrapped)
-        except asyncio.CancelledError:
-            # A queued operation can still be prevented; an already running one
-            # keeps its slot until the executor's completion callback fires.
-            future.cancel()
-            raise
-
-    async def run_settled(self, operation, *args, **kwargs):
-        # Used only where cancellation must not release a domain lock while a
-        # previously accepted synchronous write is still running. Never replay.
-        return await settled(self.run, operation, *args, **kwargs)
-
-    def _finished(self, future):
+    def _release(self):
         with self.lock:
             self.active -= 1
             self._wake_next()
@@ -149,4 +133,69 @@ class LocalWork:
             waiters, self._waiters = self._waiters, deque()
         for waiter in waiters:
             self._notify(waiter)
+
+
+class LocalWork(_Capacity):
+    def __init__(self, workers=4, capacity=16, *, background_capacity=None):
+        if background_capacity is not None and (
+            type(background_capacity) is not int
+            or not 0 < background_capacity < min(workers, capacity)
+        ):
+            raise ValueError("background_capacity_requires_reserved_worker")
+        super().__init__(capacity)
+        self._background = _Capacity(background_capacity) if background_capacity else None
+        self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="platform-local")
+
+    async def run(self, operation, *args, **kwargs):
+        background = self._background if _BACKGROUND.get() else None
+        # Wait outside the shared FIFO. A fourth background operation must not
+        # occupy a worker, a shared capacity slot or its interactive queue head.
+        if background is not None:
+            await background._acquire()
+        admitted = False
+        try:
+            await self._acquire()
+            admitted = True
+            with self.lock:
+                if self.closed:
+                    raise Fault("dependency_unavailable", 503)
+                context = contextvars.copy_context()
+                future = self.executor.submit(context.run, partial(operation, *args, **kwargs))
+        except BaseException:
+            if admitted:
+                self._release()
+            if background is not None:
+                background._release()
+            raise
+        # Cancellation cannot release either permit before real completion.
+        # No operation is replayed or its transaction split across threads.
+        future.add_done_callback(lambda item: self._finished(item, background))
+        wrapped = asyncio.wrap_future(future)
+        wrapped.add_done_callback(lambda item: item.exception() if not item.cancelled() else None)
+        try:
+            return await asyncio.shield(wrapped)
+        except asyncio.CancelledError:
+            # A queued operation can still be prevented. Running work keeps both
+            # permits until its concurrent future actually completes.
+            future.cancel()
+            raise
+
+    def _finished(self, future, background=None):
+        self._release()
+        if background is not None:
+            background._release()
+
+    async def run_settled(self, operation, *args, **kwargs):
+        return await settled(self.run, operation, *args, **kwargs)
+
+    async def drain(self):
+        waiting = [super().drain()]
+        if self._background is not None:
+            waiting.append(self._background.drain())
+        await asyncio.gather(*waiting)
+
+    def close(self):
+        super().close()
+        if self._background is not None:
+            self._background.close()
         self.executor.shutdown(wait=False, cancel_futures=True)
