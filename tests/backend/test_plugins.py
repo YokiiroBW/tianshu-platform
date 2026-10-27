@@ -7,12 +7,13 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import uuid
 import zipfile
 
 from aiohttp import web
 
-from services.platform.contracts import Fault
+from services.platform.contracts import Fault, digest
 from services.platform.plugins import PluginManager
 from services.platform.plugins.process import RemoteError
 from services.platform.plugins.scheduler import next_run
@@ -395,6 +396,76 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         await self.host.scheduler.tick(current["next_run"] + 10000)
         self.assertEqual(
             self.host.repository.state(instance["id"], "get", {"key": "count"})["value"], 1
+        )
+
+    async def schedule_pair(self):
+        for name in ("count-a", "count-b"):
+            await self.host.scheduler.manage(
+                self.instance["id"],
+                "schedule.put",
+                {
+                    "schedule_id": name,
+                    "action": "increment",
+                    "input": {},
+                    "expected_revision": None,
+                    "trigger": {
+                        "kind": "interval",
+                        "seconds": 60,
+                        "timezone": "UTC",
+                        "misfire": "coalesce",
+                        "overlap": "queue_one",
+                    },
+                },
+            )
+        return self.host.repository.list("schedules")
+
+    async def test_failed_schedule_keeps_due_and_does_not_starve_later_schedule(self):
+        first, second = await self.schedule_pair()
+        intent = "schedule:" + digest([first["id"], first["next_run"], first["revision"]])
+        invoke = self.host.executions.invoke
+
+        async def unavailable(identifier, action, value, key, principal):
+            if key == intent:
+                raise Fault("capability_unavailable", 409)
+            return await invoke(identifier, action, value, key, principal)
+
+        now = max(first["next_run"], second["next_run"]) + 1
+        with patch.object(self.host.executions, "invoke", unavailable):
+            await self.host.scheduler.tick(now)
+        self.assertEqual(self.host.repository.get("schedules", first["id"]), first)
+        progressed = self.host.repository.get("schedules", second["id"])
+        self.assertEqual((await self.settled(progressed["last_invocation"]))["result"], 1)
+        await self.host.scheduler.tick(now)
+        retried = self.host.repository.get("schedules", first["id"])
+        result = await self.settled(retried["last_invocation"])
+        self.assertEqual(result["intent_key"], intent)
+        self.assertEqual(result["result"], 2)
+        self.assertEqual(len(self.host.repository.calls()), 2)
+
+    async def test_schedule_receipt_save_failure_reuses_accepted_intent_on_retry(self):
+        first, second = await self.schedule_pair()
+        put = self.host.repository.put
+
+        def unavailable(kind, document, *args, **kwargs):
+            if kind == "schedules" and document["id"] == first["id"]:
+                raise OSError("isolated schedule write failure")
+            return put(kind, document, *args, **kwargs)
+
+        now = max(first["next_run"], second["next_run"]) + 1
+        with patch.object(self.host.repository, "put", unavailable):
+            await self.host.scheduler.tick(now)
+        self.assertEqual(self.host.repository.get("schedules", first["id"]), first)
+        calls = self.host.repository.calls()
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            self.assertEqual((await self.settled(call["id"]))["execution"], "succeeded")
+        await self.host.scheduler.tick(now)
+        retried = self.host.repository.get("schedules", first["id"])
+        self.assertIn(retried["last_invocation"], {call["id"] for call in calls})
+        self.assertEqual(len(self.host.repository.calls()), 2)
+        self.assertEqual(
+            self.host.repository.state(self.instance["id"], "get", {"key": "count"})["value"],
+            2,
         )
 
     async def test_write_response_loss_is_reconciled_without_resubmission(self):

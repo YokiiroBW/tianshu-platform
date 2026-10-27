@@ -3,9 +3,10 @@
 import asyncio
 import copy
 import json
+import threading
 from .backends import database as bind_database
 import uuid
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 
 from .contracts import Fault, canonical, digest, require
 from .transport import core_settings, management_call
@@ -31,7 +32,8 @@ class RoleRuntime:
         self.database = bind_database(
             getattr(platform, "storage_runtime", None), "roles", self.path
         )
-        self.lock = asyncio.Lock()
+        self._actor_locks = {}
+        self._web_lock = threading.RLock()
         if self.config is None:
             return
         require(
@@ -128,7 +130,25 @@ class RoleRuntime:
     def _entry_id(self, actor, source_id):
         return "role-" + digest([actor, source_id])[:32]
 
+    @asynccontextmanager
+    async def _actor_lock(self, actor):
+        # Count owners and waiters before the first await. A cancelled waiter
+        # cannot remove a lock that another request still owns or is awaiting.
+        entry = self._actor_locks.setdefault(actor, [asyncio.Lock(), 0])
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                yield
+        finally:
+            entry[1] -= 1
+            if not entry[1]:
+                self._actor_locks.pop(actor)
+
     def _install_web(self, row):
+        with self._web_lock:
+            self._install_web_locked(row)
+
+    def _install_web_locked(self, row):
         if not row["enabled"] or row["state"] != "active":
             return
         web = self.p.settings.get("web")
@@ -158,6 +178,10 @@ class RoleRuntime:
             self.console.input_entries.append(new_id)
 
     def _remove_web(self, actor):
+        with self._web_lock:
+            self._remove_web_locked(actor)
+
+    def _remove_web_locked(self, actor):
         web = getattr(self, "console", None)
         if web is None or web.config is None:
             return
@@ -194,17 +218,17 @@ class RoleRuntime:
                 "enabled": enabled,
                 "legacy": row["legacy"],
             }
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         try:
             answer = await self._remote(settings, "/internal/v1/role-runtime/authorize", row[key])
         except Fault as error:
             if cancelling and error.code == "version_conflict":
                 row.pop(key)
                 row["cancel_epoch"] += 1
-                await self.p.local_work.run(self._put, row)
+                await self.p.local_work.run_settled(self._put, row)
             raise
         row["knowledge_version"] = answer["version"]
-        await self.p.local_work.run(self._put, row)
+        await self.p.local_work.run_settled(self._put, row)
 
     def _provider(self, row):
         if not row["enabled"] or "dialogue" not in row["capabilities"]:
@@ -284,7 +308,7 @@ class RoleRuntime:
                     503,
                 )
             row["stage"] = "complete"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "start":
             await self.p.local_work.run(self._provider, row)
             answer = await self._remote(
@@ -295,7 +319,7 @@ class RoleRuntime:
             row["companion_version"] = answer["version"]
             row["profile_revision"] = answer["profile_revision"]
             row["stage"] = "core_paused"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "core_paused":
             answer = await self._remote(
                 memory,
@@ -310,12 +334,12 @@ class RoleRuntime:
             )
             row["memory_version"] = answer["version"]
             row["stage"] = "memory_applied"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "memory_applied":
             await self._knowledge_apply(row, enabled=row["enabled"])
             await self.p.local_work.run(self._provider, row)
             row["stage"] = "provider_checked"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "provider_checked":
             if row["enabled"]:
                 answer = await self._remote(
@@ -325,10 +349,10 @@ class RoleRuntime:
                 )
                 row["companion_version"] = answer["version"]
             row["stage"] = "complete"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "complete":
             row["state"] = "active" if row["enabled"] else "disabled"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
             self._install_web(row)
         return row
 
@@ -376,7 +400,7 @@ class RoleRuntime:
                     "capabilities": current["capabilities"],
                 }
                 row["stage"] = "cancel_core"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "cancel_core":
             try:
                 answer = await self._remote(
@@ -386,13 +410,13 @@ class RoleRuntime:
                 if error.code == "version_conflict":
                     row["cancel_epoch"] += 1
                     row["stage"] = "cancel_reconcile"
-                    await self.p.local_work.run(self._put, row)
+                    await self.p.local_work.run_settled(self._put, row)
                     raise Fault("dependency_unavailable", 503) from None
                 raise
             row["companion_version"] = answer["version"]
             row["profile_revision"] = answer["profile_revision"]
             row["stage"] = "cancel_memory_prepare"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "cancel_memory_prepare":
             status = await self._remote(
                 memory,
@@ -407,7 +431,7 @@ class RoleRuntime:
                 "legacy": row["legacy"],
             }
             row["stage"] = "cancel_memory"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "cancel_memory":
             try:
                 answer = await self._remote(
@@ -417,33 +441,45 @@ class RoleRuntime:
                 if error.code == "version_conflict":
                     row["cancel_epoch"] += 1
                     row["stage"] = "cancel_memory_prepare"
-                    await self.p.local_work.run(self._put, row)
+                    await self.p.local_work.run_settled(self._put, row)
                     raise Fault("dependency_unavailable", 503) from None
                 raise
             row["memory_version"] = answer["version"]
             row["stage"] = "cancel_knowledge"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "cancel_knowledge":
             await self._knowledge_apply(row, enabled=False, cancelling=True)
             row["stage"] = "complete"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "complete":
             row["state"] = "disabled"
-            await self.p.local_work.run(self._put, row)
+            await self.p.local_work.run_settled(self._put, row)
         return row
 
     async def resume_pending(self):
         if self.config is None or not self.config["enabled"]:
             return
-        async with self.lock:
-            rows = await self.p.local_work.run(self.directory)
-            for row in rows:
-                if row["state"] != "pending":
-                    continue
-                try:
-                    await self._resume(row)
-                except Fault as error:
-                    await self.p.local_work.run(self._record_error, row, error)
+        rows = await self.p.local_work.run(self.directory)
+        actors = [row["actor_id"] for row in rows if row["state"] == "pending"]
+        pending = iter(actors)
+
+        async def worker():
+            for actor in pending:
+                async with self._actor_lock(actor):
+                    # A web apply/cancel may have advanced this role while its
+                    # background turn waited. Never resume the directory snapshot.
+                    row = await self.p.local_work.run(self.get, actor)
+                    if row is None or row["state"] != "pending":
+                        continue
+                    try:
+                        await self._resume(row)
+                    except Fault as error:
+                        await self.p.local_work.run_settled(self._record_error, row, error)
+
+        # Reuse the host's local-operation admission budget; do not create one
+        # task per persisted role or introduce a second configurable scheduler.
+        count = min(len(actors), getattr(self.p.local_work, "capacity", 1))
+        await asyncio.gather(*(worker() for _ in range(count)))
 
     def _record_error(self, row, error):
         # A pre-apply conflict has changed no peer. A new intent can fix stale
@@ -686,9 +722,17 @@ class RoleRuntime:
                 "default_provider_revision": providers["default"].get("provider_revision"),
                 "capabilities": ["dialogue", "memory.read", "memory.write"],
             }
-        async with self.lock:
+        require(isinstance(body, dict), "invalid_input", 400)
+        actor = body.get("actor_id")
+        if name == "apply" and actor is None:
+            try:
+                client = str(uuid.UUID(body["client_id"]))
+            except (KeyError, ValueError, TypeError, AttributeError):
+                raise Fault("invalid_input", 400) from None
+            actor = "actor:role-" + client.replace("-", "")
+        require(isinstance(actor, str), "invalid_input", 400)
+        async with self._actor_lock(actor):
             if name == "apply":
-                require(isinstance(body, dict), "invalid_input", 400)
                 if (
                     body.get("actor_id") is not None
                     and body.get("expected_version") == 0
@@ -707,9 +751,9 @@ class RoleRuntime:
                         "forbidden",
                         403,
                     )
-                row = await self.p.local_work.run(self._begin, body)
+                row = await self.p.local_work.run_settled(self._begin, body)
             elif name == "cancel":
-                row = await self.p.local_work.run(self._begin_cancel, body)
+                row = await self.p.local_work.run_settled(self._begin_cancel, body)
             else:
                 require(
                     isinstance(body, dict) and set(body) == {"actor_id", "client_id"},
@@ -722,7 +766,7 @@ class RoleRuntime:
                 try:
                     row = await self._resume(row)
                 except Fault as error:
-                    await self.p.local_work.run(self._record_error, row, error)
+                    await self.p.local_work.run_settled(self._record_error, row, error)
             require(
                 await self.p.local_work.run(console.session_valid, session), "session_expired", 401
             )

@@ -25,7 +25,7 @@ from services.platform.media.accounts import Accounts
 from services.platform.media.music.audio import lossless_flac, number, probe, record
 from services.platform.media.music.decoding import encrypted_format
 from services.platform.media.music.quality import quality_rank, verify_quality
-from services.platform.media.music.downloads import settled
+from services.platform.local_work import settled
 from services.platform.media.music.runtime import Music
 from services.platform.media.music.storage import component, stem
 from services.platform.media.music.transfer import Transfer, cdn_url, media_url

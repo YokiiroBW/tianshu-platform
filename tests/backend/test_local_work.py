@@ -9,6 +9,76 @@ from services.platform.local_work import LocalWork
 
 
 class LocalWorkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_settled_cancellation_keeps_capacity_until_the_one_write_finishes(self):
+        work = LocalWork(workers=1, capacity=1)
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+
+        def operation():
+            calls.append("write")
+            entered.set()
+            release.wait(5)
+
+        owner = asyncio.create_task(work.run_settled(operation))
+        follower = None
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+            owner.cancel("first cancellation")
+            await asyncio.sleep(0)
+            owner.cancel("second cancellation")
+            await asyncio.sleep(0)
+            self.assertFalse(owner.done())
+            self.assertEqual(work.active, 1)
+            follower = asyncio.create_task(work.run(calls.append, "next"))
+            await asyncio.sleep(0)
+            self.assertFalse(follower.done())
+            self.assertEqual(calls, ["write"])
+            release.set()
+            with self.assertRaises(asyncio.CancelledError) as result:
+                await owner
+            self.assertEqual(result.exception.args, ("first cancellation",))
+            await follower
+            self.assertEqual(calls, ["write", "next"])
+            self.assertEqual(work.active, 0)
+        finally:
+            release.set()
+            await asyncio.gather(
+                *[task for task in (owner, follower) if task], return_exceptions=True
+            )
+            work.close()
+
+    async def test_settled_keeps_operation_error_or_the_callers_existing_cancellation(self):
+        work = LocalWork()
+        entered, release = threading.Event(), threading.Event()
+        failure = ValueError("local operation failed")
+
+        def operation(wait=False):
+            if wait:
+                entered.set()
+                release.wait(5)
+            raise failure
+
+        task = None
+        try:
+            with self.assertRaises(ValueError) as result:
+                await work.run_settled(operation)
+            self.assertIs(result.exception, failure)
+            task = asyncio.create_task(work.run_settled(operation, True))
+            self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+            task.cancel("cancelled write")
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            release.set()
+            with self.assertRaises(asyncio.CancelledError) as cancelled:
+                await task
+            self.assertEqual(cancelled.exception.args, ("cancelled write",))
+            self.assertEqual(work.active, 0)
+        finally:
+            release.set()
+            if task:
+                await asyncio.gather(task, return_exceptions=True)
+            work.close()
+
     async def test_default_limit_waits_without_blocking_loop_or_replaying_work(self):
         work = LocalWork()
         release, four_running = threading.Event(), threading.Event()

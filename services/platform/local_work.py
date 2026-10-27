@@ -10,6 +10,28 @@ from functools import partial
 from .contracts import Fault
 
 
+async def settled(local, operation, *args, **kwargs):
+    """Retain the caller's resource ownership until its local operation really ends."""
+    task = asyncio.create_task(local(operation, *args, **kwargs))
+    cancelled = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as error:
+            if task.cancelled():
+                raise
+            if cancelled is None:
+                cancelled = error
+        except Exception:
+            if cancelled is not None:
+                raise cancelled from None
+            raise
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
 class LocalWork:
     def __init__(self, workers=4, capacity=16):
         self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="platform-local")
@@ -92,6 +114,11 @@ class LocalWork:
             # keeps its slot until the executor's completion callback fires.
             future.cancel()
             raise
+
+    async def run_settled(self, operation, *args, **kwargs):
+        # Used only where cancellation must not release a domain lock while a
+        # previously accepted synchronous write is still running. Never replay.
+        return await settled(self.run, operation, *args, **kwargs)
 
     def _finished(self, future):
         with self.lock:

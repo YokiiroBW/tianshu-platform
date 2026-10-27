@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from ...contracts import Fault, require
+from ...local_work import settled
 from ..destination import safe_path
 from ..video_storage import sync_file
 from .audio import cover, lossless_flac, probe, record, write_tags
@@ -16,27 +17,6 @@ from .storage import AudioStorage
 from .lyrics_text import render as render_lyrics, sidecars as lyric_sidecars
 from .transfer import Transfer
 from .request_control import Deferred
-
-
-async def settled(local, operation, *args):
-    """Keep filesystem ownership until the executor has actually stopped after cancellation."""
-    task = asyncio.create_task(local(operation, *args))
-    cancelled = False
-    while True:
-        try:
-            result = await asyncio.shield(task)
-            break
-        except asyncio.CancelledError:
-            cancelled = True
-            if task.cancelled():
-                raise
-        except Exception:
-            if cancelled:
-                raise asyncio.CancelledError from None
-            raise
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
 
 
 class Downloads:

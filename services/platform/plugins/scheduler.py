@@ -132,37 +132,46 @@ class Scheduler:
         now = time.time() if now is None else now
         repo = self.host.repository
         for schedule in await self.host.local(repo.list, "schedules"):
-            if not schedule["enabled"] or schedule["next_run"] > now and not schedule["pending"]:
+            try:
+                await self._tick_schedule(schedule, now)
+            except (Fault, OSError, ValueError, KeyError):
+                # Keep this schedule's durable due/receipt for its next retry,
+                # while unrelated schedules still get their turn this tick.
                 continue
-            instance = await self.host.instance(schedule["instance_id"])
-            if instance["desired_state"] != "enabled":
-                continue
-            call = (
-                await self.host.local(repo.call, schedule["last_invocation"])
-                if schedule["last_invocation"]
-                else None
-            )
-            busy = call and call["execution"] in {"accepted", "running"}
-            due = schedule["next_run"]
-            trigger = schedule["trigger"]
-            if schedule["next_run"] <= now:
-                schedule["next_run"] = next_run(trigger, now)
-            if busy:
-                schedule["pending"] = trigger["overlap"] == "queue_one"
-            else:
-                # skip ignores ticks missed while stopped; coalesce issues one current intent.
-                tolerance = trigger.get("seconds", 60)
-                if schedule["pending"] or trigger["misfire"] == "coalesce" or now - due < tolerance:
-                    result = await self.host.executions.invoke(
-                        instance["id"],
-                        schedule["action"],
-                        schedule["input"],
-                        "schedule:" + digest([schedule["id"], due, schedule["revision"]]),
-                        "automation:" + instance["id"],
-                    )
-                    schedule["last_invocation"] = result["id"]
-                schedule["pending"] = False
-            await self.host.local(repo.put, "schedules", schedule)
+
+    async def _tick_schedule(self, schedule, now):
+        repo = self.host.repository
+        if not schedule["enabled"] or schedule["next_run"] > now and not schedule["pending"]:
+            return
+        instance = await self.host.instance(schedule["instance_id"])
+        if instance["desired_state"] != "enabled":
+            return
+        call = (
+            await self.host.local(repo.call, schedule["last_invocation"])
+            if schedule["last_invocation"]
+            else None
+        )
+        busy = call and call["execution"] in {"accepted", "running"}
+        due = schedule["next_run"]
+        trigger = schedule["trigger"]
+        if schedule["next_run"] <= now:
+            schedule["next_run"] = next_run(trigger, now)
+        if busy:
+            schedule["pending"] = trigger["overlap"] == "queue_one"
+        else:
+            # skip ignores ticks missed while stopped; coalesce issues one current intent.
+            tolerance = trigger.get("seconds", 60)
+            if schedule["pending"] or trigger["misfire"] == "coalesce" or now - due < tolerance:
+                result = await self.host.executions.invoke(
+                    instance["id"],
+                    schedule["action"],
+                    schedule["input"],
+                    "schedule:" + digest([schedule["id"], due, schedule["revision"]]),
+                    "automation:" + instance["id"],
+                )
+                schedule["last_invocation"] = result["id"]
+            schedule["pending"] = False
+        await self.host.local(repo.put, "schedules", schedule)
 
     async def run(self):
         while True:

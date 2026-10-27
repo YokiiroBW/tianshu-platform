@@ -28,6 +28,8 @@ class LocalWork:
     async def run(self, function, *args):
         return function(*args)
 
+    run_settled = run
+
 
 class Catalog:
     def view(self):
