@@ -15,6 +15,7 @@ from source_fixtures import core_fixture, input_request
 import test_bot_adapters as adapter_fixtures
 from services.platform.candidate_protocol import CandidateProtocol
 from services.platform.contracts import Fault, canonical, digest, utc
+from services.platform import group_policy
 from services.platform.participation.protocol import MANIFEST, PACKAGE, candidate_ref
 from services.platform.server import create_app
 
@@ -52,7 +53,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
             pending=None,
             last_error=None,
             last_checked_at=None,
-            group_policy=dict(observe=True, mode="blacklist", list=[], actor_id="actor:a"),
+            group_policy=dict(version=2, default=group_policy.rule("active", "actor:a"), groups={}),
             private_policy=dict(observe=True, mode="observe_only", list=[], actor_id=None),
         )
         self.manager.catalog.put(self.row)
@@ -437,11 +438,32 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_configuration_change_invalidates_candidate_without_archiving_again(self):
         candidate = await self.capture()
+        self.row["group_policy"]["default"]["mode"] = "reply"
         self.row["revision"] += 1
         self.manager.catalog.put(self.row)
         with self.assertRaises(Fault):
             await self.part.route(bearer("COMPANION"), "decision", self.decision(candidate))
         self.assertEqual(self.core_calls, [])
+
+    async def test_host_without_claim_support_does_not_create_candidate_or_dispatch(self):
+        original = self.plugin
+
+        async def no_claim(row, path, body):
+            answer = await original(row, path, body)
+            if path.endswith("/capabilities"):
+                answer["claim_supported"] = False
+            return answer
+
+        self.platform.bot_adapters._plugin = no_claim
+        event = self.event()
+        proof = self.manager.record(self.row, event)
+        await self.part.observe(self.row, event, proof)
+        with closing(self.platform.bots._db()) as db:
+            self.assertEqual(
+                db.execute("SELECT count(*) FROM participation_candidates").fetchone()[0], 0
+            )
+        self.assertEqual(self.core_calls, [])
+        self.assertEqual(self.part.last_error, "ordinary_claim_unavailable")
 
     async def test_legacy_send_has_the_same_atomic_registration_binding(self):
         candidate = await self.engage()
@@ -613,7 +635,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.acked, ["ordinary"])
         self.assertEqual(self.core_calls, [])
-        self.row["group_policy"]["mode"] = "observe_only"
+        self.row["group_policy"]["default"]["mode"] = "observe"
         self.manager.catalog.put(self.row)
         await self.manager._process_batch(
             self.row,

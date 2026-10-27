@@ -4,9 +4,10 @@ from contextlib import closing
 
 from ..bot_observation import decision
 from ..contracts import canonical, digest, epoch, require, utc
+from .. import group_policy
 
 
-def configuration(platform, row, actor, host_generation):
+def configuration(platform, row, actor, host_generation, group_id):
     role = platform.role_runtime.get(actor)
     if role is not None:
         require(platform.role_runtime.active(actor), "scope_changed", 409)
@@ -18,10 +19,9 @@ def configuration(platform, row, actor, host_generation):
     generation = digest(
         [
             row["id"],
-            row["revision"],
-            row["host_revision"],
+            group_policy.revision(row, group_id),
             row["archive_epoch"],
-            row["group_policy"],
+            group_policy.effective(row["group_policy"], group_id),
             role,
             platform.bot_adapters.config.get("actors", []),
         ]
@@ -30,7 +30,7 @@ def configuration(platform, row, actor, host_generation):
         "platform_generation": "observation:" + generation,
         "host_generation": host_generation,
         "role_version": version,
-        "reply_policy_revision": row["host_revision"],
+        "reply_policy_revision": group_policy.revision(row, group_id),
     }
 
 
@@ -58,7 +58,7 @@ def check(application, record):
         and row["account_id"] == native["self_id"]
         and {"nonebot": "nonebot2", "onebot": "nonebot2", "astrbot": "astrbot"}[row["adapter"]]
         == native["framework"]["name"]
-        and row["group_policy"]["actor_id"] == candidate["actor_id"]
+        and p.bot_observation.actor(row, event["conversation_id"]) == candidate["actor_id"]
         and event["mentioned"] is False
         and event["content_state"] == "text"
         and event["conversation_id"] == "group:" + native["group_id"]
@@ -70,11 +70,21 @@ def check(application, record):
         "scope_changed",
         409,
     )
-    verdict = decision(row["group_policy"], native["group_id"], False, "group")
-    require(verdict["observe"] and verdict["reply_permitted"], "scope_changed", 409)
+    verdict = decision(row["group_policy"], native["group_id"], False, "group", event["text"])
+    require(
+        verdict["proactive_permitted"]
+        and not verdict["reply_triggered"]
+        and p.bot_observation.same_capture_policy(row, event),
+        "scope_changed",
+        409,
+    )
     require(
         configuration(
-            p, row, candidate["actor_id"], "observation-policy:" + str(row["host_revision"])
+            p,
+            row,
+            candidate["actor_id"],
+            candidate["configuration"]["host_generation"],
+            native["group_id"],
         )
         == candidate["configuration"],
         "scope_changed",
@@ -94,7 +104,7 @@ def check(application, record):
         and source["author"] == event["account_id"]
         and source["event_id"] == event["event_id"]
         and source["digest"] == proof["source_digest"] == digest(event)
-        and source["epoch"] == proof["scope_version"] == row["host_revision"]
+        and source["epoch"] == proof["scope_version"] == event["scope_revision"]
         and source["archive_epoch"] == proof["archive_epoch"] == row["archive_epoch"],
         "scope_changed",
         409,

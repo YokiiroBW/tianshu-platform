@@ -135,6 +135,35 @@ class ModelFunctionsTests(unittest.IsolatedAsyncioTestCase):
         self.platform.auth.principals["companion_background"]["actions"].remove("config.select")
         await post("select", {**body, "turn_id": "turn:next"}, credential, 403)
 
+    async def test_participation_background_selection_has_no_fabricated_person(self):
+        body = dict(
+            turn_id="participation:actual",
+            actor_id="actor:a",
+            person_id=None,
+            audience="group",
+            conversation_id="qq-group:actual-native-frame",
+            caller_service="companion_background",
+            workload="companion.text",
+            function_id="participation",
+        )
+        header = {"Authorization": "Bearer " + os.environ["TS_FUNCTION_BACKGROUND"]}
+        path = self.url + "/internal/v1/provider-self-service/select"
+        async with self.client.post(path, json=body, headers=header) as response:
+            answer = await response.json()
+            self.assertEqual(response.status, 200, answer)
+        self.assertEqual(answer["caller_service"], "companion_background")
+        for changes, credential in [
+            ({"audience": "self_private"}, header),
+            ({"function_id": "writing"}, header),
+            ({"caller_service": "companion"}, {"Authorization": bearer("COMPANION")}),
+        ]:
+            async with self.client.post(
+                path, json={**body, **changes, "turn_id": "candidate:negative"}, headers=credential
+            ) as response:
+                self.assertEqual(
+                    response.status, 400 if changes.get("function_id") == "writing" else 403
+                )
+
     def selection(self, function=None, turn=None):
         body = dict(
             turn_id=turn or "turn:" + uuid.uuid4().hex,
@@ -158,7 +187,7 @@ class ModelFunctionsTests(unittest.IsolatedAsyncioTestCase):
         return runtime
 
     async def test_defaults_persistence_reset_conflict_and_invalidated_revision(self):
-        self.assertEqual(6, len(self.catalog.view()["functions"]))
+        self.assertEqual(7, len(self.catalog.view()["functions"]))
         body = self.binding()
         first = self.catalog.functions.set_binding(**body)
         self.assertEqual(first, self.catalog.functions.set_binding(**body))

@@ -19,10 +19,14 @@ class Origins:
         self.store, self.auth, self.contracts, self.clock = store, auth, contracts, clock
         # A read-only browser delegation keeps its real web account/channel.
         self.read_channels = read_channels or {}
+        self.read_guards = {}
 
     def scope_channel(self, entry, entry_id):
         channel = self.read_channels.get(entry_id)
         if channel is not None and entry == self.auth.entries.get(entry_id):
+            guard = self.read_guards.get(entry_id)
+            if guard is not None:
+                guard()
             return canonical(channel)
         return channel_key(entry)
 

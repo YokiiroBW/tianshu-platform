@@ -1,4 +1,11 @@
-export type Group = { id: string; label: string; conversation_id: string };
+export type Group = {
+  id: string;
+  label: string;
+  conversation_id: string | null;
+  mode?: string;
+  pending?: boolean;
+  unavailable?: string | null;
+};
 export type EvidenceRecord = {
   locator: string;
   stored_content_sha256: string;

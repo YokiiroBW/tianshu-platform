@@ -10,6 +10,7 @@ FUNCTIONS = (
     ("search", "网页搜索", "搜索资料、阅读网页与整理来源", False),
     ("writing", "日常与日记", "角色日常、生活经历与日记生成", True),
     ("memory", "记忆整理", "记忆提取、摘要与归纳", True),
+    ("participation", "群聊参与", "按角色兴趣与近期话题判断普通群聊参与", True),
 )
 FUNCTION_IDS = frozenset(item[0] for item in FUNCTIONS)
 

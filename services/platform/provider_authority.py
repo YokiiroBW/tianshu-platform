@@ -42,8 +42,18 @@ class ProviderAuthority:
             "forbidden",
             403,
         )
-        for field in ("turn_id", "actor_id", "person_id", "conversation_id"):
+        participation = body.get("function_id") == "participation"
+        require(
+            not participation
+            or body["caller_service"] == "companion_background"
+            and body["audience"] == "group",
+            "forbidden",
+            403,
+        )
+        for field in ("turn_id", "actor_id", "conversation_id"):
             self.platform.contracts.check("common#id", body[field])
+        if body["person_id"] is not None or not participation:
+            self.platform.contracts.check("common#id", body["person_id"])
         require(body["audience"] in {"group", "self_private"}, "invalid_input", 400)
         self._identity(header, "config.select", body["caller_service"])
         function_id = validate_function(body.get("function_id", "chat"))

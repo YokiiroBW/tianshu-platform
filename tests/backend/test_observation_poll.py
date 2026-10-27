@@ -215,7 +215,9 @@ class ObservationPollTests(unittest.IsolatedAsyncioTestCase):
     async def test_close_settles_started_sdk_write_as_unknown_and_drains_owner(self):
         entered, stopped = asyncio.Event(), asyncio.Event()
         acknowledgements, sends = [], []
-        self.manager._reply_page = lambda _: [{"connection_id": "bot:fixture"}]
+        self.manager._reply_page = lambda _: [
+            {"connection_id": "bot:fixture", "conversation": "group:20002"}
+        ]
         self.manager._reply_enabled = self.manager.reply_connection_active = lambda _: True
         delivery = dict(reply_id="reply:fixture", attempt_id="attempt:fixture")
         self.platform.bots = SimpleNamespace(

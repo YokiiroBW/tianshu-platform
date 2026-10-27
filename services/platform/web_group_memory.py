@@ -113,6 +113,7 @@ class GroupMemory:
         self.memory = memory
         self.p = memory.platform
         self.config = self.p.settings.get("web_group_memory")
+        self.observed = {}
         self.chat = CandidateProtocol(
             self.p.contracts.root, "chat-history/candidate-v1", CHAT_MANIFEST, response_limit=131072
         )
@@ -132,12 +133,24 @@ class GroupMemory:
         )
 
     def _group(self, group_id, actor, version):
-        require(
-            self.config is not None and self.config.get("enabled", False),
-            "group_memory_not_configured",
-            503,
-        )
-        group = next((g for g in self.config["groups"] if g["id"] == group_id), None)
+        group = self.observed.get(group_id)
+        if group is not None:
+            from .observed_groups import guard
+
+            require(group["actor_id"] == actor, "forbidden", 403)
+            require(
+                group.get("entry_id") and group["conversation_id"],
+                group.get("unavailable", "memory_identity_not_ready"),
+                503,
+            )
+            guard(self.memory, group)
+        else:
+            require(
+                self.config is not None and self.config.get("enabled", False),
+                "group_memory_not_configured",
+                503,
+            )
+            group = next((g for g in self.config["groups"] if g["id"] == group_id), None)
         require(group is not None, "not_found", 404)
         self.memory.role_choice(actor, version)
         with self.p.store.connect() as db:
@@ -164,10 +177,28 @@ class GroupMemory:
                         continue
                     raise
                 items.append({key: group[key] for key in ("id", "label", "conversation_id")})
+        existing = {item["id"] for item in items}
+        for group in self.observed.values():
+            if group["actor_id"] == actor and group["id"] not in existing:
+                items.append(
+                    {
+                        key: group.get(key)
+                        for key in (
+                            "id",
+                            "label",
+                            "conversation_id",
+                            "mode",
+                            "pending",
+                            "unavailable",
+                            "policy_version",
+                        )
+                    }
+                )
         return {
-            "available": bool(self.config and self.config.get("enabled", False)),
+            "available": bool(items or self.config and self.config.get("enabled", False)),
             "groups": items,
             "chat_configured": bool(self.config and self.config.get("chat")),
+            "configure_url": "#/settings/3",
         }
 
     async def _call(self, peer, path, request, *, limit):
@@ -206,13 +237,33 @@ class GroupMemory:
             raise Fault("dependency_unavailable", 503) from None
 
     async def _chat(self, operation, request):
-        peer = self.config.get("chat")
+        peer = (self.config or {}).get("chat")
         require(peer is not None, "chat_not_configured", 503)
         self.chat.check(operation.replace("-", "_") + "_request", request)
         answer = await self._call(peer, "/internal/evidence/" + operation, request, limit=131072)
         self.chat.response(operation.replace("-", "_") + "_response", answer)
         require(answer["channel"] == request["channel"], "invalid_upstream", 502)
         return answer
+
+    def _chat_registration(self, group, actor, version):
+        require((self.config or {}).get("chat") is not None, "chat_not_configured", 503)
+        if "owner_id" not in group:
+            return group
+        matches = []
+        for candidate in (self.config or {}).get("groups", []):
+            if candidate["conversation_id"] != group["conversation_id"]:
+                continue
+            try:
+                verified, _ = self._group(candidate["id"], actor, version)
+            except Fault:
+                continue
+            matches.append(verified)
+        require(len(matches) == 1, "chat_group_not_registered", 503)
+        return matches[0]
+
+    async def _group_stats(self, group, actor, version, request):
+        registered = await self.p.local_work.run(self._chat_registration, group, actor, version)
+        return await self._chat("group-stats", {**request, "channel": registered["chat_channel"]})
 
     async def _topics(self, request):
         self.topics.check("request", request)
@@ -313,6 +364,14 @@ class GroupMemory:
         common = {"role_id", "role_version", "group_id"}
         if name == "groups":
             require(set(body) == {"role_id", "role_version"}, "invalid_input", 400)
+            await self.p.local_work.run(self.memory.role_choice, actor, version)
+            from .observed_groups import prepare
+
+            groups = await prepare(self.memory, actor)
+            self.observed = {
+                key: item for key, item in self.observed.items() if item["actor_id"] != actor
+            }
+            self.observed.update({item["id"]: item for item in groups})
             return await self.p.local_work.run(self.directory, actor, version)
         group, entry = await self.p.local_work.run(
             self._group, body.get("group_id"), actor, version
@@ -362,7 +421,7 @@ class GroupMemory:
                     "cursor": None,
                 }
                 stats, topics, records = await asyncio.gather(
-                    self._part(self._chat("group-stats", stats_request)),
+                    self._part(self._group_stats(group, actor, version, stats_request)),
                     self._part(self._topics(topic_request)),
                     self._part(
                         self.memory._read(
@@ -421,6 +480,8 @@ class GroupMemory:
                 }
             elif name == "group-history":
                 require(set(body) == common | {"filters", "cursor", "limit"}, "invalid_input", 400)
+                group = await self.p.local_work.run(self._chat_registration, group, actor, version)
+                channel = group["chat_channel"]
                 result = await self._chat(
                     "search",
                     {
@@ -468,6 +529,8 @@ class GroupMemory:
                 require(
                     set(body) == common | {"locator", "stored_content_sha256"}, "invalid_input", 400
                 )
+                group = await self.p.local_work.run(self._chat_registration, group, actor, version)
+                channel = group["chat_channel"]
                 result = await self._chat(
                     "read-locator",
                     {

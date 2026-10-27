@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from services.platform.bot_adapter_catalog import BotAdapterCatalog
 from services.platform.bot_observation import BotObservation, decision
+from services.platform import group_policy
 from services.platform.contracts import Contracts, Fault
 from services.platform.local_work import LocalWork
 
@@ -353,7 +354,10 @@ class ObservationTests(unittest.TestCase):
             self.assertEqual((error.exception.code, error.exception.status), ("scope_changed", 409))
 
     def test_decision_empty_lists_and_trigger(self):
-        assert decision(policy(), "20002", True, "group") == {
+        assert {
+            key: decision(policy(), "20002", True, "group")[key]
+            for key in ("observe", "reply_permitted", "reply_triggered")
+        } == {
             "observe": True,
             "reply_permitted": False,
             "reply_triggered": False,
@@ -401,7 +405,7 @@ class ObservationTests(unittest.TestCase):
             result["private_policy"],
             policy(observe=False, mode="whitelist", names=["30003"], actor="actor:a"),
         )
-        self.assertEqual(result["group_policy"], self.row["group_policy"])
+        self.assertEqual(result["group_policy"], group_policy.normalize(self.row["group_policy"]))
         self.assertEqual(result["observation_epoch"], self.row["observation_epoch"])
         self.assertEqual(asyncio.run(self.private_route(request))["connection"], result)
         with self.assertRaises(Fault) as raised:
@@ -421,7 +425,7 @@ class ObservationTests(unittest.TestCase):
         )["connection"]
         self.assertEqual(removed["private_policy"]["list"], ["40004"])
         self.assertEqual(removed["private_policy"]["actor_id"], "actor:a")
-        self.assertEqual(removed["group_policy"], self.row["group_policy"])
+        self.assertEqual(removed["group_policy"], group_policy.normalize(self.row["group_policy"]))
 
     def test_private_access_observe_only_preserves_existing_default_role(self):
         request = self.private_request(current=policy(names=["40004"], actor="actor:a"), actor=None)
@@ -434,7 +438,7 @@ class ObservationTests(unittest.TestCase):
             result["private_policy"],
             policy(mode="whitelist", names=["30003"], actor="actor:a"),
         )
-        self.assertEqual(result["group_policy"], self.row["group_policy"])
+        self.assertEqual(result["group_policy"], group_policy.normalize(self.row["group_policy"]))
 
     def test_private_access_blacklist_preserves_other_blocks_and_default_role(self):
         request = self.private_request(

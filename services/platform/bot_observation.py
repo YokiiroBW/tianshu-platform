@@ -12,8 +12,9 @@ from contextlib import closing
 from datetime import datetime
 
 from .auth import secret
-from .contracts import Fault, digest, require, utc
+from .contracts import Fault, canonical, digest, loads, require, utc
 from .transport import core_settings
+from . import group_policy
 
 PREFIX = "/api/web/bot-observation/"
 ID = re.compile(r"^[1-9][0-9]*$")
@@ -56,8 +57,10 @@ def _default():
     return {"observe": True, "mode": "observe_only", "list": [], "actor_id": None}
 
 
-def decision(policy, target, mentioned, kind):
+def decision(policy, target, mentioned, kind, text=""):
     """Pure policy: observation, reply permission, and trigger stay distinct."""
+    if kind == "group":
+        return group_policy.decision(policy, target, mentioned, text)
     observed = policy["observe"]
     mode = policy["mode"]
     permitted = (mode == "whitelist" and target in policy["list"]) or (
@@ -65,8 +68,8 @@ def decision(policy, target, mentioned, kind):
     )
     return {
         "observe": observed,
-        "reply_permitted": bool(permitted),
-        "reply_triggered": bool(permitted and (kind == "private" or mentioned)),
+        "reply_permitted": bool(observed and permitted),
+        "reply_triggered": bool(observed and permitted and (kind == "private" or mentioned)),
     }
 
 
@@ -115,14 +118,18 @@ class BotObservation:
                     );
                     CREATE TABLE IF NOT EXISTS reply_connections (
                         connection_id TEXT PRIMARY KEY, observation_id TEXT NOT NULL,
-                        conversation TEXT NOT NULL, actor_id TEXT NOT NULL,
-                        UNIQUE(observation_id,conversation,actor_id)
+                        conversation TEXT NOT NULL, actor_id TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS observation_group_policies (
+                        observation_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                        document TEXT NOT NULL, PRIMARY KEY(observation_id,revision)
                     );
                     CREATE TABLE IF NOT EXISTS reply_authors (
                         connection_id TEXT NOT NULL, author TEXT NOT NULL,
                         PRIMARY KEY(connection_id,author)
                     );
                 """)
+                self._migrate_reply_generations(db)
             with closing(self._db()) as db:
                 for reply in db.execute("SELECT * FROM reply_connections"):
                     authors = [
@@ -140,6 +147,43 @@ class BotObservation:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("PRAGMA journal_mode=WAL")
         return db
+
+    def _migrate_reply_generations(self, db):
+        # Preserve every historical native/Core mapping; only connection_id is
+        # unique. A new policy generation must coexist with the old receipt.
+        if self.database.backend == "sqlite":
+            indexes = db.execute("PRAGMA index_list(reply_connections)").fetchall()
+            for index in indexes:
+                columns = [r[2] for r in db.execute('PRAGMA index_info("' + index[1] + '")')]
+                if index[2] and columns == ["observation_id", "conversation", "actor_id"]:
+                    with closing(
+                        sqlite3.connect(
+                            self.path + ".pre-group-modes-" + uuid.uuid4().hex + ".sqlite"
+                        )
+                    ) as backup:
+                        db.backup(backup)
+                    with db:
+                        db.execute(
+                            "ALTER TABLE reply_connections RENAME TO reply_connections_legacy"
+                        )
+                        db.execute(
+                            "CREATE TABLE reply_connections (connection_id TEXT PRIMARY KEY, observation_id TEXT NOT NULL, conversation TEXT NOT NULL, actor_id TEXT NOT NULL)"
+                        )
+                        db.execute(
+                            "INSERT INTO reply_connections SELECT * FROM reply_connections_legacy"
+                        )
+                        db.execute("DROP TABLE reply_connections_legacy")
+                    break
+        else:
+            rows = db.native(
+                "SELECT c.conname,array_agg(a.attname ORDER BY k.ord) FROM pg_constraint c CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY k(num,ord) JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.num WHERE c.conrelid='reply_connections'::regclass AND c.contype='u' GROUP BY c.conname"
+            ).fetchall()
+            for name, columns in rows:
+                if list(columns) == ["observation_id", "conversation", "actor_id"]:
+                    from .postgres import quote
+
+                    with db:
+                        db.native("ALTER TABLE reply_connections DROP CONSTRAINT " + quote(name))
 
     async def _local(self, operation, *args):
         # Keep ownership of this operation through cancellation. LocalWork's
@@ -230,15 +274,98 @@ class BotObservation:
         expected = self._reply_connection_id(row, reply["conversation"], reply["actor_id"])
         return (
             reply["connection_id"] == expected
-            and policy["observe"]
+            and decision(policy, target, False, kind)["observe"]
             and decision(policy, target, False, kind)["reply_permitted"]
-            and policy["actor_id"] == reply["actor_id"]
+            and self.actor(row, reply["conversation"]) == reply["actor_id"]
         )
 
     def _reply_connection_id(self, row, conversation, actor_id):
         # A policy revision gets a new delivery scope. Old queued replies cannot
         # become sendable after an allow/deny list or mode change.
-        return "bot:" + digest([row["id"], row["host_revision"], conversation, actor_id])[:32]
+        revision = (
+            group_policy.revision(row, conversation)
+            if conversation.startswith("group:")
+            else row["host_revision"]
+        )
+        return "bot:" + digest([row["id"], revision, conversation, actor_id])[:32]
+
+    @staticmethod
+    def actor(row, conversation):
+        return (
+            group_policy.effective(row["group_policy"], conversation)["actor_id"]
+            if conversation.startswith("group:")
+            else row["private_policy"]["actor_id"]
+        )
+
+    def event_decision(self, row, event):
+        kind, target = event["conversation_id"].split(":", 1)
+        return decision(row[kind + "_policy"], target, event["mentioned"], kind, event["text"])
+
+    def reply_input_allowed(self, slot, body, *, participation=None, observation=None):
+        rows = [
+            row
+            for row in self.rows()
+            if row["instance_id"] == slot["platform_id"] and row["account_id"] == slot["self_id"]
+        ]
+        if not rows:
+            return True
+        if len(rows) != 1:
+            return False
+        row = rows[0]
+        conversation = body["conversation_id"]
+        if row["pending"] or not row["enabled"] or not row["read_enabled"]:
+            return False
+        mentioned = body["self_id"] in body.get("message_context", {}).get("mentioned_accounts", [])
+        if observation is not None:
+            if body != self.reply_body(
+                body["connection_id"], observation
+            ) or not self.same_capture_policy(row, observation):
+                return False
+            ref = self._source_ref(
+                row["instance_id"],
+                row["account_id"],
+                conversation,
+                body["account_id"],
+                body["event_id"],
+            )
+            with closing(self._db()) as db:
+                source = db.execute(
+                    "SELECT digest FROM sources WHERE source_ref=? AND connection_id=?",
+                    (ref, row["id"]),
+                ).fetchone()
+            if source is None or source[0] != digest(observation):
+                return False
+            mentioned = observation["mentioned"]
+        verdict = self.event_decision(
+            row, dict(conversation_id=conversation, mentioned=mentioned, text=body["text"])
+        )
+        return verdict["observe"] and (
+            verdict["reply_triggered"]
+            if participation is None
+            else verdict.get("proactive_permitted") is True
+        )
+
+    def captured_group_policy(self, row, event):
+        with closing(self._db()) as db:
+            saved = db.execute(
+                "SELECT document FROM observation_group_policies WHERE observation_id=? AND revision=?",
+                (row["id"], event["scope_revision"]),
+            ).fetchone()
+        if saved:
+            return loads(saved[0])
+        return row["group_policy"] if event["scope_revision"] == row["host_revision"] else None
+
+    def same_capture_policy(self, row, event):
+        conversation = event["conversation_id"]
+        if conversation.startswith("private:"):
+            return event["scope_revision"] == row["host_revision"]
+        captured = self.captured_group_policy(row, event)
+        return bool(
+            captured is not None
+            and event["scope_revision"] >= group_policy.revision(row, conversation)
+            and group_policy.effective(captured, conversation)
+            == group_policy.effective(row["group_policy"], conversation)
+        )
 
     @staticmethod
     def _observation_channel(binding_id, conversation):
@@ -387,9 +514,9 @@ class BotObservation:
             if (
                 reply["connection_id"]
                 != self._reply_connection_id(row, reply["conversation"], reply["actor_id"])
-                or not policy["observe"]
+                or not decision(policy, target, False, kind)["observe"]
                 or not decision(policy, target, False, kind)["reply_permitted"]
-                or policy["actor_id"] != reply["actor_id"]
+                or self.actor(row, reply["conversation"]) != reply["actor_id"]
             ):
                 with closing(self.p.bots._db()) as db:
                     active = db.execute(
@@ -433,6 +560,10 @@ class BotObservation:
         }
         value["host_pending"] = row.get("host_pending", 0)
         value["host_dropped"] = row.get("host_dropped", 0)
+        value["group_policy"] = group_policy.copy_policy(row["group_policy"])
+        value["group_policy_version"] = row.get("group_policy_version")
+        value["ordinary_claim_available"] = row.get("ordinary_claim_available", False)
+        value["pending"] = row.get("pending") is not None
         return value
 
     def _gate(self, console, session):
@@ -498,10 +629,14 @@ class BotObservation:
         if path == PREFIX + "view":
             code = self.p.bots._web_code(console, session)
             available = self.catalog is not None and code != "operator_not_authorized"
+            consumer = (
+                await self.p.participation.consumer_status() if available and self.rows() else None
+            )
             return {
                 "available": available,
                 "unlocked": available and code == "ready",
                 "connections": [self._project(row) for row in self.rows()] if available else [],
+                "participation": consumer,
             }
         self._gate(console, session)
         if path == PREFIX + "create":
@@ -573,6 +708,9 @@ class BotObservation:
             "adapter_incompatible",
             502,
         )
+        row["group_policy_version"] = result.get("group_policy_version")
+        row["ordinary_claim_available"] = result.get("ordinary_claim_available") is True
+        require(row["group_policy_version"] == 2, "adapter_incompatible", 502)
 
     async def create(self, body, session):
         key = body["client_id"]
@@ -635,7 +773,9 @@ class BotObservation:
             host_pending=0,
             host_dropped=0,
             pending={"request_id": key, "enabled": True},
-            group_policy=_default(),
+            group_policy=group_policy.default(),
+            group_default_revision=1,
+            group_revisions={},
             private_policy=_default(),
         )
         await self._capabilities(row)
@@ -700,7 +840,7 @@ class BotObservation:
             {
                 "id": row["id"],
                 "expected_revision": body["expected_revision"],
-                "group_policy": row["group_policy"],
+                "group_policy": group_policy.normalize(row["group_policy"]),
                 "private_policy": private,
                 "client_id": body["client_id"],
             },
@@ -720,19 +860,42 @@ class BotObservation:
             "version_conflict",
             409,
         )
-        group, private = _policy(body["group_policy"]), _policy(body["private_policy"])
+        group, private = (
+            group_policy.validate(body["group_policy"], saving=True),
+            _policy(body["private_policy"]),
+        )
+        # A pause does not revoke the owner-attested historical role binding.
+        group = group_policy.copy_policy(group)
+        previous = group_policy.normalize(row["group_policy"])
+        if group["default"]["mode"] == "disabled" and group["default"]["actor_id"] is None:
+            group["default"]["actor_id"] = previous["default"]["actor_id"]
+        for target, rule in group["groups"].items():
+            if rule["mode"] == "disabled" and rule["actor_id"] is None:
+                rule["actor_id"] = group_policy.effective(previous, target)["actor_id"]
         actors = {
             a["id"] for a in self.adapters.config["actors"] + self.p.role_runtime.active_actors()
         }
-        for policy in (group, private):
+        for policy in [group["default"], *group["groups"].values(), private]:
             require(policy["actor_id"] is None or policy["actor_id"] in actors, "forbidden", 403)
-            require(
-                policy["mode"] == "observe_only" or policy["actor_id"] is not None,
-                "invalid_input",
-                400,
-            )
-        old_observe = (row["group_policy"]["observe"], row["private_policy"]["observe"])
-        new_observe = (group["observe"], private["observe"])
+        require(
+            private["mode"] == "observe_only" or private["actor_id"] is not None,
+            "invalid_input",
+            400,
+        )
+        with closing(self._db()) as db:
+            known = [
+                r[0].split(":", 1)[1]
+                for r in db.execute(
+                    "SELECT DISTINCT conversation FROM discovered WHERE connection_id=? AND conversation LIKE 'group:%'",
+                    (row["id"],),
+                )
+            ]
+        group_policy.advance(row, row["group_policy"], group, known)
+        old_observe = (
+            group_policy.observing(row["group_policy"]),
+            row["private_policy"]["observe"],
+        )
+        new_observe = (group_policy.observing(group), private["observe"])
         if old_observe != new_observe:
             row["observation_epoch"] += 1
         row["group_policy"], row["private_policy"] = group, private
@@ -763,6 +926,12 @@ class BotObservation:
         if not body["read_enabled"]:
             row["archive_epoch"] += 1
         row["read_enabled"] = body["read_enabled"]
+        row["group_default_revision"] = row["host_revision"] + 1
+        row["group_revisions"] = {
+            key: row["host_revision"] + 1
+            for key in set(row.get("group_revisions", {}))
+            | set(group_policy.normalize(row["group_policy"])["groups"])
+        }
         row["revision"] += 1
         row["host_revision"] += 1
         row["state"] = "unknown"
@@ -771,7 +940,7 @@ class BotObservation:
             "enabled": body["read_enabled"]
             and any(
                 (
-                    row["group_policy"]["observe"],
+                    group_policy.observing(row["group_policy"]),
                     row["private_policy"]["observe"],
                 )
             ),
@@ -789,9 +958,17 @@ class BotObservation:
                 (
                     row["id"],
                     row["host_revision"],
-                    int(row["group_policy"]["observe"]),
+                    int(group_policy.observing(row["group_policy"])),
                     int(row["private_policy"]["observe"]),
                     row["archive_epoch"],
+                ),
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO observation_group_policies VALUES(?,?,?)",
+                (
+                    row["id"],
+                    row["host_revision"],
+                    canonical(group_policy.normalize(row["group_policy"])),
                 ),
             )
         request = {
@@ -799,7 +976,9 @@ class BotObservation:
             "account_id": row["account_id"],
             "revision": row["host_revision"],
             "enabled": row["pending"]["enabled"],
-            "group_policy": {k: row["group_policy"][k] for k in ("observe", "mode", "list")},
+            "group_policy": group_policy.normalize(row["group_policy"]),
+            "group_revisions": row.get("group_revisions", {}),
+            "group_default_revision": row.get("group_default_revision", row["host_revision"]),
             "private_policy": {k: row["private_policy"][k] for k in ("observe", "mode", "list")},
         }
         try:
@@ -809,7 +988,15 @@ class BotObservation:
                 result
                 == {
                     k: request[k]
-                    for k in ("account_id", "revision", "enabled", "group_policy", "private_policy")
+                    for k in (
+                        "account_id",
+                        "revision",
+                        "enabled",
+                        "group_policy",
+                        "private_policy",
+                        "group_revisions",
+                        "group_default_revision",
+                    )
                 },
                 "adapter_incompatible",
                 502,
@@ -892,6 +1079,20 @@ class BotObservation:
                 (row["id"], event["scope_revision"]),
             ).fetchone()
         require(version is not None and version[kind + "_observe"], "scope_changed", 409)
+        if kind == "group":
+            captured = self.captured_group_policy(row, event)
+            with closing(self._db()) as db:
+                first_v2 = db.execute(
+                    "SELECT min(revision) FROM observation_group_policies WHERE observation_id=?",
+                    (row["id"],),
+                ).fetchone()[0]
+            require(
+                (captured is None and (first_v2 is None or event["scope_revision"] < first_v2))
+                or captured is not None
+                and group_policy.effective(captured, conversation)["mode"] != "disabled",
+                "scope_changed",
+                409,
+            )
         _qq(event.get("account_id"))
         require(
             event["account_id"] != row["account_id"]
@@ -1158,15 +1359,15 @@ class BotObservation:
         conversation = event["conversation_id"]
         kind, target = conversation.split(":", 1)
         policy = row[kind + "_policy"]
-        verdict = decision(policy, target, event["mentioned"], kind)
+        verdict = decision(policy, target, event["mentioned"], kind, event["text"])
         if (
             not reply_claimed
-            or event["scope_revision"] != row["host_revision"]
+            or not self.same_capture_policy(row, event)
             or event["content_state"] != "text"
             or not verdict["reply_triggered"]
         ):
             return True
-        actor = policy["actor_id"]
+        actor = self.actor(row, conversation)
         require(actor is not None, "scope_changed", 409)
         if not await self._local(self._reply_role_active, actor):
             return True
@@ -1175,12 +1376,11 @@ class BotObservation:
         if (
             current is None
             or current["pending"]
-            or current["host_revision"] != row["host_revision"]
             or not await self._local(self.reply_connection_active, conn)
         ):
             return True
         body = self.reply_body(conn, event)
-        outcome = await self.p.bots.event("Bearer " + token, body)
+        outcome = await self.p.bots.event("Bearer " + token, body, observation=event)
         if outcome["state"] == "accepted":
             return True
         if outcome["state"] == "unknown":
@@ -1310,7 +1510,9 @@ class BotObservation:
                         {
                             "connection_id": conn,
                             "account_id": current["account_id"],
-                            "policy_revision": current["host_revision"],
+                            "policy_revision": group_policy.revision(current, reply["conversation"])
+                            if reply["conversation"].startswith("group:")
+                            else current["host_revision"],
                             "delivery": delivery,
                         },
                     )
@@ -1409,7 +1611,15 @@ class BotObservation:
                         if row and row["pending"]:
                             await self._apply(row)
                         row = await self._local(self.get, snapshot["id"])
-                if row is None or row["pending"] or not row["enabled"]:
+                if (
+                    row is None
+                    or row["pending"]
+                    or not row["enabled"]
+                    or not (
+                        group_policy.observing(row["group_policy"])
+                        or row["private_policy"]["observe"]
+                    )
+                ):
                     continue
                 try:
                     result = await self._plugin(
@@ -1458,6 +1668,13 @@ class BotObservation:
                 if current is None or current["revision"] != row["revision"] or current["pending"]:
                     break
                 event = item["event"]
+                # Stop at the entrance, before archive, source preparation or
+                # any consumer. ACK old pending items so enabling never replays
+                # a message received while this conversation was disabled.
+                verdict = self.event_decision(current, event)
+                if not verdict["observe"] or not self.same_capture_policy(current, event):
+                    acknowledged.append(item["id"])
+                    continue
                 source = await self._local(self.record, current, event)
                 receipt = await self._companion({**source, "event": event})
                 require(
@@ -1473,10 +1690,22 @@ class BotObservation:
                     current = await self._local(self.get, row["id"])
                     if current is None or current["pending"]:
                         break
-                    if await self._reply_event(current, event, item.get("reply_claimed") is True):
+                    if not self.event_decision(current, event)[
+                        "observe"
+                    ] or not self.same_capture_policy(current, event):
+                        acknowledged.append(item["id"])
+                        continue
+                    if not verdict["reply_triggered"] or await self._reply_event(
+                        current, event, item.get("reply_claimed") is True
+                    ):
                         acknowledged.append(item["id"])
                 participation = getattr(self.p, "participation", None)
-                if participation is not None:
+                if (
+                    participation is not None
+                    and verdict.get("proactive_permitted")
+                    and not verdict["reply_triggered"]
+                    and current.get("ordinary_claim_available") is not False
+                ):
                     await participation.observe(current, event, source)
                 if index % 4 == 0:
                     await self._deliver_replies(row)

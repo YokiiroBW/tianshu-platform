@@ -245,13 +245,44 @@ class Bots:
             return manager is not None and manager.reply_connection_active(row["id"])
         manager = getattr(self.p, "bot_adapters", None)
         if manager is None or manager.catalog is None or not row["slot_id"].startswith("adapter:"):
-            return True
+            return self._observed_reply_allowed(row)
         item = manager.catalog.get(row["id"])
         return (
             item is not None
             and item["enabled"]
             and not item["pending"]
             and item["state"] in {"ready", "degraded"}
+            and self._observed_reply_allowed(row)
+        )
+
+    def _observed_reply_allowed(self, row):
+        manager = getattr(self.p, "bot_observation", None)
+        if manager is None or manager.catalog is None:
+            return True
+        slot, entries = self._slot(row)
+        owners = [
+            item
+            for item in manager.rows()
+            if item["instance_id"] == slot["platform_id"] and item["account_id"] == slot["self_id"]
+        ]
+        if not owners:
+            return True
+        if len(owners) != 1:
+            return False
+        owner = owners[0]
+        conversation = entries[0]["channel"]["channel_conversation_id"]
+        if not conversation.startswith(("group:", "private:")):
+            return False
+        verdict = manager.event_decision(
+            owner, dict(conversation_id=conversation, mentioned=False, text="")
+        )
+        return bool(
+            owner["enabled"]
+            and not owner["pending"]
+            and owner["read_enabled"]
+            and verdict["observe"]
+            and verdict["reply_permitted"]
+            and manager.actor(owner, conversation) in loads(row["actor_ids"])
         )
 
     def _authenticate(self, db, header, connection_id, *, settlement=False):
@@ -495,7 +526,7 @@ class Bots:
             db.commit()
         return {"state": "online", "observed_at": utc(at)}
 
-    async def event(self, header, body, *, participation=None):
+    async def event(self, header, body, *, participation=None, observation=None):
         version = body.get("schema_version")
         base_fields = {
             "schema_version",
@@ -582,7 +613,7 @@ class Bots:
         epoch(body["sent_at"])
         semantic = digest(body)
         admission = await self.p.local_work.run(
-            self._admit_event, header, body, semantic, participation
+            self._admit_event, header, body, semantic, participation, observation
         )
         if "prior" in admission:
             if admission["prior"]["state"] == "accepted":
@@ -670,14 +701,23 @@ class Bots:
             "outcomes": result,
         }
 
-    def _admit_event(self, header, body, semantic, participation=None):
+    def _admit_event(self, header, body, semantic, participation=None, observation=None):
         with self._managed_guard():
-            return self._admit_event_guarded(header, body, semantic, participation)
+            return self._admit_event_guarded(header, body, semantic, participation, observation)
 
-    def _admit_event_guarded(self, header, body, semantic, participation=None):
+    def _admit_event_guarded(self, header, body, semantic, participation=None, observation=None):
         with closing(self._db()) as db:
             db.execute("BEGIN IMMEDIATE")
             row, slot, entries = self._authenticate(db, header, body["connection_id"])
+            manager = getattr(self.p, "bot_observation", None)
+            if manager is not None and manager.catalog is not None:
+                require(
+                    manager.reply_input_allowed(
+                        slot, body, participation=participation, observation=observation
+                    ),
+                    "forbidden",
+                    403,
+                )
             require(
                 body["platform_id"] == slot["platform_id"] and body["self_id"] == slot["self_id"],
                 "forbidden",

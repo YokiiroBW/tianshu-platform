@@ -17,6 +17,9 @@ from aiohttp import web
 
 from fixtures import ENV, start_http
 from services.platform.contracts import canonical
+from services.platform import group_policy
+from services.platform.bot_adapter_catalog import BotAdapterCatalog
+from services.platform.bot_observation import BotObservation
 from services.platform.origins import channel_key
 from services.platform.server import create_app
 from services.platform.service import Platform
@@ -372,3 +375,68 @@ class GroupMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer["stats"]["state"], "unavailable")
         self.assertEqual(answer["topics"]["state"], "unavailable")
         self.assertEqual(answer["records"]["state"], "available")
+
+    async def test_observed_group_uses_core_frame_and_real_web_origin_without_static_chat_configuration(
+        self,
+    ):
+        self.p.bot_adapters.catalog = BotAdapterCatalog(self.root / "observed-catalog")
+        self.p.bot_observation = BotObservation(self.p)
+        owner = self.p.bot_observation
+        row = dict(
+            kind="observation",
+            id="obs:directory",
+            name="实际观察账号",
+            instance_id="sdk:actual",
+            account_id="42000",
+            group_policy=dict(
+                version=2,
+                default=group_policy.rule("observe", "actor:a"),
+                groups={"42": group_policy.rule("observe", "actor:a")},
+            ),
+            private_policy=dict(observe=False, mode="observe_only", list=[], actor_id=None),
+            read_enabled=True,
+            enabled=True,
+            pending=None,
+            state="ready",
+            host_revision=1,
+            revision=1,
+            archive_epoch=1,
+        )
+        owner.catalog.put(row)
+        self.p.role_runtime.console.memory.groups.config = None
+
+        async def core(operation, request):
+            self.assertEqual(operation, "learning-frame")
+            self.assertEqual(request["channel"], owner.segment_channel(row, "group:42", "actor:a"))
+            self.assertIsNone(request["delivery_channel"])
+            return dict(
+                schema_version=1,
+                valid=True,
+                frame=dict(
+                    actor_id="actor:a", audience="group", conversation_id="conversation:group-a"
+                ),
+                channel=request["channel"],
+                delivery_channel=None,
+            )
+
+        with patch.object(self.p.bot_adapters, "_core", side_effect=core):
+            directory = await self.call("groups")
+        self.assertEqual(len(directory["groups"]), 1)
+        group = directory["groups"][0]
+        self.assertEqual(
+            (group["mode"], group["conversation_id"]), ("observe", "conversation:group-a")
+        )
+        answer = await self.call("group-insights", dict(group_id=group["id"], window="7d"))
+        self.assertEqual(answer["stats"]["state"], "unavailable")
+        self.assertEqual(answer["stats"]["code"], "chat_not_configured")
+        self.assertEqual(
+            (answer["topics"]["state"], answer["records"]["state"]), ("available", "available")
+        )
+        # Disabling new work keeps historical read authority; an actor change
+        # does not let the old delegated origin keep reading the new role.
+        row["group_policy"]["groups"]["42"]["mode"] = "disabled"
+        owner.catalog.put(row)
+        await self.call("group-insights", dict(group_id=group["id"], window="7d"))
+        row["group_policy"]["groups"]["42"]["actor_id"] = "actor:b"
+        owner.catalog.put(row)
+        await self.call("group-insights", dict(group_id=group["id"], window="7d"), 409)

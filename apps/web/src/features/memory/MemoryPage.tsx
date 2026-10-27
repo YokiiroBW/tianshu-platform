@@ -415,6 +415,7 @@ export default function MemoryPage({
           读取身份与范围。网页无需填写服务地址、账号映射或令牌。
         </p>
         <p>状态码：{state.code}</p>
+        {groupsOnly && <a href="#/settings/3">查看观察群与四态配置</a>}
       </StatePanel>
     );
 

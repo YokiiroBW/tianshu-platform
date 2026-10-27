@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from fixtures import ENV, bearer
 from services.platform.contracts import Fault, utc
+from services.platform import group_policy
 from services.platform.service import Platform
 from source_fixtures import SOURCE_DOCS, core_fixture, input_request
 from test_bot_observation import policy
@@ -118,7 +119,7 @@ class SegmentMappingTests(unittest.IsolatedAsyncioTestCase):
 
     def event(self, native="native:1"):
         return dict(
-            schema_version=1,
+            schema_version=3,
             connection_id=self.connection,
             platform_id="sdk:segment",
             self_id="42",
@@ -130,6 +131,9 @@ class SegmentMappingTests(unittest.IsolatedAsyncioTestCase):
             account_id="7",
             sent_at=utc(self.now),
             text="Synthetic source",
+            nickname=None,
+            group_card=None,
+            message_context={"reply_ids": [], "mentioned_accounts": ["42"]},
         )
 
     def archive(self, event):
@@ -138,7 +142,7 @@ class SegmentMappingTests(unittest.IsolatedAsyncioTestCase):
             {
                 key: value
                 for key, value in dict(
-                    event, schema_version=2, scope_revision=1, content_state="text", mentioned=True
+                    event, schema_version=4, scope_revision=1, content_state="text", mentioned=True
                 ).items()
                 if key not in {"connection_id", "thread_id"}
             },
@@ -164,6 +168,80 @@ class SegmentMappingTests(unittest.IsolatedAsyncioTestCase):
 
     def resolve(self, request):
         return self.manager.verify(bearer("MEMORY"), request)
+
+    async def test_managed_plain_message_stops_before_event_source_and_core_but_real_trigger_is_allowed(
+        self,
+    ):
+        event = {**self.event(), "message_context": {"reply_ids": [], "mentioned_accounts": []}}
+        with self.assertRaises(Fault) as error:
+            await self.platform.bots.event("Bearer " + self.token, event)
+        self.assertEqual(error.exception.status, 403)
+        self.assertEqual(self.ingests, [])
+        with closing(self.platform.bots._db()) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM events").fetchone()[0], 0)
+        await self.accepted()
+
+    async def test_generation_migration_retains_real_old_admission_resolve(self):
+        _, _, _, request = await self.accepted()
+        before = self.resolve(request)
+        with closing(self.manager._db()) as db, db:
+            db.execute("ALTER TABLE reply_connections RENAME TO temporary_replies")
+            db.execute(
+                "CREATE TABLE reply_connections(connection_id TEXT PRIMARY KEY,observation_id TEXT NOT NULL,conversation TEXT NOT NULL,actor_id TEXT NOT NULL,UNIQUE(observation_id,conversation,actor_id))"
+            )
+            db.execute("INSERT INTO reply_connections SELECT * FROM temporary_replies")
+            db.execute("DROP TABLE temporary_replies")
+        from services.platform.bot_observation import BotObservation
+
+        self.manager = self.platform.bot_observation = BotObservation(self.platform)
+        changed = group_policy.normalize(self.row["group_policy"])
+        changed["groups"]["999"] = group_policy.rule("reply", "actor:a", ["new"])
+        group_policy.advance(self.row, self.row["group_policy"], changed)
+        self.row.update(group_policy=changed, host_revision=2, revision=2)
+        self.manager.catalog.put(self.row)
+        self.manager._prepare_reply_scope(self.row, "group:999", "7", "actor:a")
+        self.assertEqual(self.resolve(request), before)
+        with closing(self.manager._db()) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM reply_connections").fetchone()[0], 2)
+
+    async def test_processing_http_checks_actual_service_and_preserves_ordered_item_outcomes(self):
+        import aiohttp
+        from fixtures import start_http
+        from services.platform.server import create_app
+
+        self.platform.auth.principals["companion"]["actions"].append("observation.verify")
+        runner, url = await start_http(create_app(self.platform))
+        try:
+            async with aiohttp.ClientSession() as client:
+                frame = dict(
+                    instance_id="sdk:segment",
+                    self_id="42",
+                    conversation_id="group:999",
+                    actor_id="actor:a",
+                )
+                request = dict(
+                    schema_version=1,
+                    request_id="processing:actual-http",
+                    frames=[frame, {**frame, "actor_id": "actor:other"}],
+                )
+                async with client.post(
+                    url + "/internal/v2/observation-source/processing",
+                    json=request,
+                    headers={"Authorization": bearer("COMPANION")},
+                ) as response:
+                    answer = await response.json()
+                    self.assertEqual(response.status, 200, answer)
+                self.assertEqual(answer["request_id"], request["request_id"])
+                self.assertTrue(answer["frames"][0]["processing_enabled"])
+                self.assertEqual(answer["frames"][1]["code"], "actor_changed")
+                async with client.post(
+                    url + "/internal/v2/observation-source/processing",
+                    json=request,
+                    headers={"Authorization": bearer("CONNECTOR")},
+                ) as response:
+                    self.assertEqual(response.status, 403)
+        finally:
+            await runner.cleanup()
 
     async def test_real_native_mapping_uses_receipt_and_alias_before_ingest(self):
         event, proof, admission, request = await self.accepted()

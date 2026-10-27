@@ -4,6 +4,7 @@ import { Archive, RefreshCw, UsersRound, UserRound } from "lucide-react";
 import { StatusRail } from "../../components/StatusRail";
 import { webFetch } from "../../app/sessionTransport";
 import { requestId } from "../../app/requestId";
+import GroupPolicyEditor, { type GroupPolicy } from "./GroupPolicyEditor";
 import {
   adapterPost,
   type AdapterKind,
@@ -31,13 +32,21 @@ type Connection = {
   read_enabled: boolean;
   host_pending: number;
   host_dropped: number;
-  group_policy: Policy;
+  group_policy: GroupPolicy;
   private_policy: Policy;
+  pending: boolean;
+  group_policy_version: number | null;
+  ordinary_claim_available: boolean;
 };
 type View = {
   available: boolean;
   unlocked: boolean;
   connections: Connection[];
+  participation?: {
+    available: boolean;
+    reason: string | null;
+    last_error: string | null;
+  } | null;
 };
 type Found = {
   conversation: string;
@@ -240,7 +249,7 @@ export function BotObservationPanel({
 }) {
   const [view, setView] = useState<View | null>(null);
   const [selected, setSelected] = useState("");
-  const [group, setGroup] = useState<Policy | null>(null);
+  const [group, setGroup] = useState<GroupPolicy | null>(null);
   const [privatePolicy, setPrivate] = useState<Policy | null>(null);
   const [probe, setProbe] = useState<AdapterProbe | null>(null);
   const [adapter, setAdapter] = useState<AdapterKind>("astrbot");
@@ -412,7 +421,22 @@ export function BotObservationPanel({
 
   function addToList(conversation: string) {
     const [kind, id] = conversation.split(":");
-    const value = kind === "group" ? group : privatePolicy;
+    if (kind === "group") {
+      if (group)
+        setGroup({
+          ...group,
+          groups: {
+            ...group.groups,
+            [id]: group.groups[id] ?? {
+              ...group.default,
+              keywords: [...group.default.keywords],
+            },
+          },
+        });
+      setNotice("已展开该群配置。选择状态和群角色后保存。");
+      return;
+    }
+    const value = privatePolicy;
     if (!value) return;
     const updated = {
       ...value,
@@ -421,8 +445,7 @@ export function BotObservationPanel({
         ...new Set([...(value.mode === "whitelist" ? value.list : []), id]),
       ],
     };
-    if (kind === "group") setGroup(updated);
-    else setPrivate(updated);
+    setPrivate(updated);
     setNotice(
       "已加入待保存白名单。选择默认回复角色后点击“保存群聊与私聊策略”。",
     );
@@ -669,14 +692,30 @@ export function BotObservationPanel({
             {error && <p role="alert">{error}</p>}
             {notice && <p role="status">{notice}</p>}
             <div className="bot-observation-policies">
-              <PolicyEditor
-                title="群聊"
-                kind="group"
+              <GroupPolicyEditor
                 value={group}
                 actors={actors}
                 disabled={!unlocked || busy}
                 onChange={setGroup}
               />
+              <p role="status">
+                主机群策略能力：
+                {current.group_policy_version === 2
+                  ? "支持四态"
+                  : "尚未确认支持四态，请更新主机插件"}
+                ；普通消息领取：
+                {current.ordinary_claim_available
+                  ? "主机已支持"
+                  : "主机未报告能力，主动参与不可用"}
+                。参与消费者：
+                {view.participation?.available
+                  ? "已接通"
+                  : (view.participation?.reason ?? "尚未确认")}
+                {view.participation?.last_error
+                  ? `（${view.participation.last_error}）`
+                  : ""}
+                。
+              </p>
               <PolicyEditor
                 title="私聊"
                 kind="private"
@@ -738,7 +777,9 @@ export function BotObservationPanel({
                     disabled={busy || !unlocked}
                     onClick={() => addToList(item.conversation)}
                   >
-                    加入回复白名单
+                    {item.conversation.startsWith("group:")
+                      ? "配置此群状态"
+                      : "加入回复白名单"}
                   </button>
                   <button
                     className="button"

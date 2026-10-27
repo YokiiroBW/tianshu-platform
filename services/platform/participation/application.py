@@ -67,19 +67,29 @@ class Participation:
             from ..bot_observation import decision
 
             target = event["conversation_id"].split(":", 1)[1]
-            verdict = decision(row["group_policy"], target, False, "group")
-            actor = row["group_policy"]["actor_id"]
-            if not actor or not verdict["observe"] or not verdict["reply_permitted"]:
+            verdict = decision(row["group_policy"], target, False, "group", event["text"])
+            actor = self.p.bot_observation.actor(row, event["conversation_id"])
+            if (
+                not actor
+                or not verdict["proactive_permitted"]
+                or verdict["reply_triggered"]
+                or not self.p.bot_observation.same_capture_policy(row, event)
+            ):
                 return
-            capabilities = await self.rpc(row, "capabilities", {"account_id": row["account_id"]})
+            capabilities = await self.rpc(
+                row, "capabilities", {"account_id": row["account_id"], "group_id": target}
+            )
             require(
                 capabilities.get("available") is True
                 and capabilities.get("manifest_sha256") == MANIFEST,
                 "dependency_unavailable",
                 503,
             )
+            if capabilities.get("claim_supported") is not True:
+                self.last_error = "ordinary_claim_unavailable"
+                return
             configuration = await self.p.local_work.run(
-                current.configuration, self.p, row, actor, capabilities["host_generation"]
+                current.configuration, self.p, row, actor, capabilities["host_generation"], target
             )
             now = self.p.origins.clock()
             candidate = {
@@ -129,13 +139,32 @@ class Participation:
         except (Fault, OSError, sqlite3.Error, ValueError, TypeError, KeyError) as error:
             self.last_error = error.code if isinstance(error, Fault) else "dependency_unavailable"
 
+    async def consumer_status(self):
+        try:
+            value = await self.p.bot_adapters._core("participation-status", {})
+            require(
+                set(value) == {"consumer", "available", "reason", "last_error"}
+                and value["consumer"] == "integrated"
+                and type(value["available"]) is bool,
+                "dependency_unavailable",
+                503,
+            )
+            return value
+        except (Fault, OSError, ValueError, KeyError, TypeError):
+            return dict(
+                consumer="unavailable",
+                available=False,
+                reason="consumer_unavailable",
+                last_error=None,
+            )
+
     async def route(self, header, operation, body):
         self.guard(header)
         if operation == "status":
             require(not body, "invalid_input", 400)
             return {
                 "state": "available" if self.available() else "not_configured",
-                "consumer": "not_integrated",
+                "consumer": await self.consumer_status(),
                 "last_error": self.last_error,
             }
         if operation == "candidates":

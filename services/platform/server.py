@@ -45,6 +45,7 @@ BOT_PATHS = frozenset(
 )
 REPLY_STATUS = "/internal/v1/conversation/reply-status"
 OBSERVATION_VERIFY = "/internal/v2/observation-source/verify"
+OBSERVATION_PROCESSING = "/internal/v2/observation-source/processing"
 OBSERVATION_ADMIN_STATUS = "/internal/v2/observation-admin/status"
 OBSERVATION_ADMIN_ENROLL = "/internal/v2/observation-admin/enroll-default"
 # The two probes are recognised here, inside the serving boundary and ahead of the static
@@ -250,6 +251,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
             bot_call = platform.bots.config is not None and request.path in BOT_PATHS
             observation_call = platform.bot_observation.catalog is not None and request.path in {
                 OBSERVATION_VERIFY,
+                OBSERVATION_PROCESSING,
                 OBSERVATION_ADMIN_STATUS,
                 OBSERVATION_ADMIN_ENROLL,
             }
@@ -301,7 +303,14 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 )
             elif observation_call:
                 require(
-                    len(raw) <= (32768 if request.path == OBSERVATION_ADMIN_ENROLL else 4096),
+                    len(raw)
+                    <= (
+                        65536
+                        if request.path == OBSERVATION_PROCESSING
+                        else 32768
+                        if request.path == OBSERVATION_ADMIN_ENROLL
+                        else 4096
+                    ),
                     "budget_exceeded",
                     413,
                 )
@@ -586,6 +595,14 @@ def create_app(platform, probe=None, *, console=None, public=False):
             )
         )
 
+    async def observation_processing(request):
+        from .observation_processing import processing
+
+        result = await platform.local_work.run(
+            processing, platform.bot_observation, request.headers["Authorization"], request[BODY]
+        )
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
     async def qq_admin_check(request):
         return web.json_response(
             await platform.local_work.run(
@@ -869,6 +886,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
         app.router.add_post(QQ_ADMIN_CHECK, qq_admin_check)
         if platform.bot_observation.catalog is not None:
             app.router.add_post(OBSERVATION_VERIFY, observation_verify)
+            app.router.add_post(OBSERVATION_PROCESSING, observation_processing)
             app.router.add_post(OBSERVATION_ADMIN_STATUS, observation_admin_status)
             app.router.add_post(OBSERVATION_ADMIN_ENROLL, observation_admin_enroll)
         app.router.add_post("/internal/v1/conversation/send", send)

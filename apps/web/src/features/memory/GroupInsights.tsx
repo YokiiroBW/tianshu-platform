@@ -244,6 +244,7 @@ export default function GroupInsights({
         <p>
           当前没有登记可读取的群。完成连接后，这里会显示实际互动、热度、已整理话题和群画像。
         </p>
+        <a href="#/settings/3">配置观察群与群状态</a>
       </StatePanel>
     );
   return (
@@ -251,6 +252,7 @@ export default function GroupInsights({
       <section className="panel">
         <div className="section-heading">
           <h2>群记忆</h2>
+          <a href="#/settings/3">配置群状态</a>
           <button
             className="button"
             disabled={busy || !groupId}
@@ -273,6 +275,11 @@ export default function GroupInsights({
               {groups.map((g) => (
                 <option key={g.id} value={g.id}>
                   {g.label}
+                  {g.mode
+                    ? ` · ${{ disabled: "停用", observe: "仅观察", reply: "启用回复", active: "主动" }[g.mode] ?? g.mode}`
+                    : ""}
+                  {g.pending ? " · 待主机确认" : ""}
+                  {g.unavailable ? " · 尚未接通" : ""}
                 </option>
               ))}
             </select>

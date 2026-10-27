@@ -3,6 +3,7 @@
 from contextlib import closing
 
 from .contracts import canonical, digest, loads, require
+from . import group_policy
 
 
 def _authority(row, conversation, actor):
@@ -10,7 +11,11 @@ def _authority(row, conversation, actor):
     require(not row["pending"], "dependency_unavailable", 503)
     require(row["read_enabled"], "scope_changed", 409)
     policy = row[conversation.split(":", 1)[0] + "_policy"]
-    configured = policy["actor_id"]
+    configured = (
+        group_policy.effective(policy, conversation)["actor_id"]
+        if conversation.startswith("group:")
+        else policy["actor_id"]
+    )
     require(configured is not None and actor in (None, configured), "forbidden", 403)
     # Pausing observation or denying replies does not revoke the historical
     # archive. Only current read authority and the explicit actor binding apply.
