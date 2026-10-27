@@ -164,9 +164,11 @@ class FlowGraphHttpTests(unittest.IsolatedAsyncioTestCase):
         reader.assert_not_called()
 
     async def test_expired_session_cannot_receive_an_inflight_result(self):
+        recorded = event()
+
         async def reader(**kwargs):
             self.console.sessions.clear()
-            return {"events": [event()], "complete": True}
+            return {"events": [recorded], "complete": True}
 
         self.console.flow_graph.event_reader = reader
         await self.post("flow-graph/traces", {"minutes": 5}, expected=401)
