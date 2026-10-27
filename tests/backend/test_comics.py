@@ -6,6 +6,7 @@ import unittest
 import uuid
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from book_fixtures import LiveConsole
 from comic_fixtures import ComicSite, page_bytes
@@ -339,6 +340,34 @@ class ComicTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(Fault) as failure:
             Accounts(self.repo)
         self.assertEqual(failure.exception.code, "media_credentials_unavailable")
+
+    async def test_subscription_view_keeps_first_match_missing_rows_and_public_order(self):
+        rows = [
+            {"comic_id": "b", "metadata": {"title": "First B"}, "downloaded": 3, "private": "x"},
+            {"comic_id": "b", "metadata": {"title": "Later B"}, "downloaded": 9},
+            {"comic_id": "a", "metadata": {"title": "A"}, "downloaded": 2},
+        ]
+        subscriptions = [
+            {"comic_id": "b", "state": "paused"},
+            {"comic_id": "missing", "state": "active"},
+            {"comic_id": "a", "state": "active"},
+            {"comic_id": "b", "state": "active"},
+        ]
+        records = {"comic": rows, "comic_subscription": subscriptions}
+        with patch.object(self.repo, "list", side_effect=records.__getitem__):
+            result = await self.call("view")
+        actual = result["subscriptions"]
+        self.assertEqual([item["comic_id"] for item in actual], ["b", "missing", "a", "b"])
+        self.assertEqual([item["state"] for item in actual], [s["state"] for s in subscriptions])
+        self.assertEqual(actual[0]["comic"]["metadata"]["title"], "First B")
+        self.assertEqual(actual[3]["comic"], actual[0]["comic"])
+        self.assertTrue(all(value is None for value in actual[1]["comic"].values()))
+        self.assertEqual(actual[2]["comic"]["metadata"]["title"], "A")
+        self.assertNotIn("private", actual[0]["comic"])
+        self.assertEqual(
+            result["counts"], {"comics": 3, "subscriptions": 4, "downloaded_chapters": 14}
+        )
+        self.assertNotIn("comic", subscriptions[0])
 
     async def test_catalogue_only_source_is_filtered_and_marked(self):
         self.site.no_search = True

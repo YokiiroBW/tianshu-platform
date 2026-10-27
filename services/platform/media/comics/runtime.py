@@ -61,15 +61,16 @@ class Comics:
         settings = await self.media.local(self.settings.public)
         rows = await self.media.local(self.repo.list, "comic")
         subscriptions = await self.media.local(self.repo.list, "comic_subscription")
+        lookup = {}
+        for comic in rows:
+            lookup.setdefault(comic["comic_id"], comic)
         return {
             "settings": settings,
             "configured": bool(settings["connections"].get("suwayomi", {}).get("url")),
             "subscriptions": [
                 {
                     **s,
-                    "comic": public_comic(
-                        next((c for c in rows if c["comic_id"] == s["comic_id"]), {})
-                    ),
+                    "comic": public_comic(lookup.get(s["comic_id"], {})),
                 }
                 for s in subscriptions
             ],
