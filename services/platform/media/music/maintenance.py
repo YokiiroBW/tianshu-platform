@@ -213,36 +213,57 @@ class Maintenance:
                 for raw in db.execute("SELECT body FROM documents WHERE kind='music_playlist'")
                 if (row := json.loads(raw[0]))["state"] == "active" and row.get("auto_download")
             }
-            due, seen = [], set()
-            for raw in db.execute(
-                "SELECT body FROM jobs WHERE "
-                + VISIBLE
-                + " AND state='completed' AND json_extract(body,'$.media_kind')='audio' AND json_extract(body,'$.audio_operation') IS NULL ORDER BY id"
-            ).fetchall():
-                job = json.loads(raw[0])
-                requests = [
-                    self.repo._document(db, "music_request", key)
+            members = {key: set(row["entries"]) for key, row in playlists.items()}
+            jobs = [
+                json.loads(raw[0])
+                for raw in db.execute(
+                    "SELECT body FROM jobs WHERE "
+                    + VISIBLE
+                    + " AND state='completed' AND json_extract(body,'$.media_kind')='audio' AND json_extract(body,'$.audio_operation') IS NULL ORDER BY id"
+                ).fetchall()
+            ]
+            requests = self.repo._documents(
+                db, "music_request", [key for job in jobs for key in job.get("request_ids", [])]
+            )
+            jobs = [
+                job
+                for job in jobs
+                if any(
+                    (request := requests.get(key))
+                    and request["source_id"] in members.get(request["playlist_id"], ())
                     for key in job.get("request_ids", [])
-                ]
-                if not any(
-                    request
-                    and request["playlist_id"] in playlists
-                    and request["source_id"] in playlists[request["playlist_id"]]["entries"]
-                    for request in requests
-                ):
-                    continue
-                key, recording = self.key(job, db)
+                )
+            ]
+            reads = self.music.library.catalog.reads(
+                db, recordings=[job["recording_id"] for job in jobs]
+            )
+            candidates = [
+                (
+                    digest(
+                        {
+                            "recording": reads.resolve(job["recording_id"]),
+                            "directory": job["destination_directory"],
+                        }
+                    ),
+                    job,
+                )
+                for job in jobs
+            ]
+            checks = self.repo._documents(db, CHECK, [key for key, _ in candidates])
+            due, seen = [], set()
+            for key, job in candidates:
+                recording = reads.resolve(job["recording_id"])
                 if key in seen:
                     continue
                 seen.add(key)
-                artifact = self.music.library.catalog.file(recording, db=db)
+                artifact = reads.file(recording)
                 if (
                     not artifact
                     or artifact.get("missing")
                     or artifact["directory"] != job["destination_directory"]
                 ):
                     continue
-                row = self.repo._document(db, CHECK, key)
+                row = checks.get(key)
                 if row is None:
                     if not settings["enabled"]:
                         continue

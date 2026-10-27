@@ -393,32 +393,41 @@ class AudioStorage:
                 self.repo.put("music_retired_file", key, {**retired, "state": "cleaned"})
 
     def export_related(self, job):
-        playlists = set()
-        for key in job.get("request_ids", []):
-            request = self.repo.get("music_request", key)
-            if request:
-                playlists.add(request["playlist_id"])
-        exports = [
-            p
-            for p in self.repo.list("music_export")
-            if p["directory"] == job["destination_directory"]
-        ]
         with self.repo.transaction() as db:
+            requests = self.repo._documents(db, "music_request", job.get("request_ids", []))
+            playlists = {row["playlist_id"] for row in requests.values()}
+            exports = [
+                json.loads(raw[0])
+                for raw in db.execute("SELECT body FROM documents WHERE kind='music_export'")
+            ]
+            exports = [p for p in exports if p["directory"] == job["destination_directory"]]
             if job.get("recording_id"):
                 catalog = self.music.library.catalog
-                target = catalog.resolve(job["recording_id"], db)
-                bindings = {}
+                subscriptions = self.repo._documents(
+                    db, "music_playlist", [p["playlist_id"] for p in exports]
+                )
+                source_keys = {
+                    identity: [
+                        source_key(playlist["provider"], source)
+                        for source in dict.fromkeys(playlist["entries"])
+                    ]
+                    for identity, playlist in subscriptions.items()
+                    if identity not in playlists
+                }
+                reads = catalog.reads(
+                    db,
+                    recordings=[job["recording_id"]],
+                    sources=[key for keys in source_keys.values() for key in keys],
+                    with_files=False,
+                )
+                target = reads.resolve(job["recording_id"])
                 for exported in exports:
                     identity = exported["playlist_id"]
                     if identity in playlists:
                         continue
-                    playlist = self.repo._document(db, "music_playlist", identity)
-                    for source in dict.fromkeys((playlist or {}).get("entries", [])):
-                        key = source_key(playlist["provider"], source)
-                        if key not in bindings:
-                            binding = catalog.source(key, db=db)
-                            bindings[key] = binding["recording_id"] if binding else None
-                        if bindings[key] == target:
+                    for key in source_keys.get(identity, []):
+                        binding = reads.source(key)
+                        if binding and binding["recording_id"] == target:
                             playlists.add(identity)
                             break
                 for identity in playlists:

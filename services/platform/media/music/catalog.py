@@ -106,6 +106,66 @@ def source_key(provider, identity, private_scope=""):
     return digest({"provider": provider, "id": identity, "private_scope": private_scope})
 
 
+def _resolve(identity, document):
+    seen = set()
+    while identity:
+        require(identity not in seen and len(seen) < 32, "music_identity_conflict", 409)
+        seen.add(identity)
+        row = document(identity)
+        require(row is not None, "music_recording_missing", 409)
+        if not row.get("merged_into"):
+            return identity
+        identity = row["merged_into"]
+    return None
+
+
+def _file(artifact):
+    return {**artifact, "quality": normalized_quality(artifact["quality"])} if artifact else None
+
+
+class CatalogReads:
+    """A batch projection used only within one transaction's catalogue read phase.
+
+    No state survives the operation, and callers do not use it across identity/file mutations.
+    Alias traversal has the same missing/cycle/depth checks as individual catalogue reads.
+    """
+
+    def __init__(self, catalog, db, *, recordings=(), sources=(), with_files=True):
+        repo = catalog.repo
+        self.sources = repo._documents(db, "music_source", sources)
+        roots = set(recordings) | {row["recording_id"] for row in self.sources.values()}
+        documents, frontier = {}, roots
+        for _ in range(32):
+            if not frontier:
+                break
+            rows = repo._documents(db, "music_recording", frontier)
+            documents.update((identity, rows.get(identity)) for identity in frontier)
+            frontier = {
+                row["merged_into"]
+                for row in rows.values()
+                if row.get("merged_into") and row["merged_into"] not in documents
+            }
+        self.resolved = {identity: _resolve(identity, documents.get) for identity in roots}
+        canonical = set(self.resolved.values())
+        self.resolved.update((identity, identity) for identity in canonical)
+        self.files = {
+            identity: _file(row)
+            for identity, row in (
+                repo._documents(db, "music_library_file", canonical) if with_files else {}
+            ).items()
+        }
+
+    def resolve(self, identity):
+        return self.resolved[identity]
+
+    def source(self, key):
+        row = self.sources.get(key)
+        return {**row, "recording_id": self.resolve(row["recording_id"])} if row else None
+
+    def file(self, identity):
+        return self.files.get(self.resolve(identity))
+
+
 class Catalog:
     def __init__(self, repo):
         self.repo = repo
@@ -119,16 +179,10 @@ class Catalog:
         return current["library_id"]
 
     def resolve(self, identity, db):
-        seen = set()
-        while identity:
-            require(identity not in seen and len(seen) < 32, "music_identity_conflict", 409)
-            seen.add(identity)
-            row = self.repo._document(db, "music_recording", identity)
-            require(row is not None, "music_recording_missing", 409)
-            if not row.get("merged_into"):
-                return identity
-            identity = row["merged_into"]
-        return None
+        return _resolve(identity, lambda key: self.repo._document(db, "music_recording", key))
+
+    def reads(self, db, *, recordings=(), sources=(), with_files=True):
+        return CatalogReads(self, db, recordings=recordings, sources=sources, with_files=with_files)
 
     def register(self, provider, track, db, *, private_scope=""):
         self.root_id(db)
@@ -232,7 +286,8 @@ class Catalog:
         with self.repo.transaction() as db:
             target = self.resolve(identity, db)
             index = self.repo._document(db, "music_source_index", target) or {"keys": []}
-            rows = [self.source(key, db=db) for key in index["keys"]]
+            reads = self.reads(db, sources=index["keys"], with_files=False)
+            rows = [reads.source(key) for key in index["keys"]]
             return [
                 row["metadata"]
                 for row in rows
@@ -244,9 +299,7 @@ class Catalog:
             with self.repo.transaction() as transaction:
                 return self.file(identity, db=transaction)
         artifact = self.repo._document(db, "music_library_file", self.resolve(identity, db))
-        return (
-            {**artifact, "quality": normalized_quality(artifact["quality"])} if artifact else None
-        )
+        return _file(artifact)
 
     def content_file(self, content_id, directory):
         with self.repo.transaction() as db:
@@ -354,10 +407,11 @@ class Catalog:
                 "AND json_extract(body,'$.merged_into') IS NULL ORDER BY id LIMIT ? OFFSET ?",
                 (limit + 1, offset),
             ).fetchall()
+            page = [json.loads(raw[0]) for raw in rows[:limit]]
+            reads = self.reads(db, recordings=[row["recording_id"] for row in page])
             items = []
-            for raw in rows[:limit]:
-                row = json.loads(raw[0])
-                artifact = self.file(row["recording_id"], db=db)
+            for row in page:
+                artifact = reads.file(row["recording_id"])
                 items.append(
                     {**row, "file": artifact if artifact and not artifact.get("missing") else None}
                 )

@@ -331,7 +331,7 @@ class Platform:
         # The native snapshot HTTP port stays closed unless the deployment explicitly opens it.
         self.native_config_http = settings.get("native_config_http", False)
         self.store = Store(settings["database_path"], runtime=self.storage_runtime)
-        WebAccount(settings, runtime=self.storage_runtime)
+        account = WebAccount(settings, runtime=self.storage_runtime)
         group_reads = settings.get("web_group_memory") or {}
         self.origins = Origins(
             self.store,
@@ -447,7 +447,7 @@ class Platform:
                 else "degraded"
             ),
             config_problem=self.contract_problem,
-            account_check=lambda: WebAccount(settings, runtime=self.storage_runtime).read(),
+            account_check=account.read,
             backend_check=self.storage_runtime.probe
             if self.storage_runtime.backend == "postgresql"
             else None,

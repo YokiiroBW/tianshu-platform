@@ -161,6 +161,62 @@ class MusicRequestControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 3)
         self.assertNotIn("private-fixture", str(cache.values))
 
+    async def test_slow_metadata_key_does_not_block_another_key_or_cached_answer(self):
+        cache = MetadataCache()
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def slow():
+            calls.append("slow")
+            entered.set()
+            await release.wait()
+            return {"track": "slow"}
+
+        async def fast():
+            calls.append("fast")
+            return {"track": "fast"}
+
+        await cache.read("search", {}, "fast", fast)
+        owner = asyncio.create_task(cache.read("search", {}, "slow", slow))
+        try:
+            await entered.wait()
+            duplicate = asyncio.create_task(cache.read("search", {}, "slow", slow))
+            cached = await asyncio.wait_for(cache.read("search", {}, "fast", fast), 0.2)
+            other = await asyncio.wait_for(cache.read("search", {}, "other", fast), 0.2)
+            self.assertEqual(cached, other)
+            self.assertFalse(duplicate.done())
+        finally:
+            release.set()
+        self.assertEqual(await owner, await duplicate)
+        self.assertEqual(calls.count("slow"), 1)
+        self.assertEqual(calls.count("fast"), 2)
+        self.assertEqual(cache.locks, {})
+
+    async def test_cancelled_metadata_owner_and_waiter_release_per_key_locks(self):
+        cache = MetadataCache()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def held():
+            entered.set()
+            await release.wait()
+            return "ready"
+
+        owner = asyncio.create_task(cache.read("search", {}, "same", held))
+        await entered.wait()
+        waiter = asyncio.create_task(cache.read("search", {}, "same", held))
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await waiter
+        self.assertEqual(len(cache.locks), 1)
+        owner.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await owner
+        self.assertEqual(cache.locks, {})
+        release.set()
+        self.assertEqual(await cache.read("search", {}, "same", held), "ready")
+        self.assertEqual(cache.locks, {})
+
     def test_retry_after_date_and_invalid_values(self):
         self.assertEqual(retry_after("Thu, 01 Jan 1970 01:00:00 GMT", 1800), 1800)
         self.assertEqual(retry_after("NaN", 0), 0)

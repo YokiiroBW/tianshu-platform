@@ -298,9 +298,8 @@ class Probe:
     owner is held until the underlying check *really* finishes, not merely until the caller's wait
     expires: cancelling a wait does not cancel a thread, and a second pass started on top of a
     still-running first one is exactly how a read-only probe turns into an unbounded pile of
-    concurrent work. A caller that arrives while a check is in flight gets the unexpired cache if
-    there is one and the closed `not_verified` document otherwise - never a queued wait, and never
-    a timeout that quietly replaces a good answer with a worse one.
+    concurrent work. Concurrent readers share that pass and its original deadline. Their overlap
+    must not itself report an unverified deployment, and a late reader never extends the budget.
     """
 
     def __init__(
@@ -311,6 +310,8 @@ class Probe:
         self.budget = budget
         self.cache_seconds = cache_seconds
         self._inflight = False
+        self._worker = None
+        self._deadline = None
         self._cached = None
         self._cached_at = None
         # When the check that is currently in flight started. A result is a fact about the moment it
@@ -332,20 +333,26 @@ class Probe:
         cached = self._fresh()
         if cached is not None:
             return cached
-        if self._inflight:
-            # One real check is already running and has not finished. This caller neither queues
-            # behind it nor starts a second one: "not verified right now" is the honest answer, and
-            # it is the only one that stays inside the budget without adding work.
-            return self._document(dict.fromkeys(CHECK_KEYS, "not_verified"))
-        self._inflight = True
-        self._started_at = self.clock()
         loop = asyncio.get_running_loop()
-        worker = loop.run_in_executor(None, self.evaluate)
-        worker.add_done_callback(self._settle)
+        if not self._inflight:
+            self._inflight = True
+            self._started_at = self.clock()
+            self._deadline = loop.time() + self.budget
+            try:
+                self._worker = loop.run_in_executor(None, self.evaluate)
+            except BaseException:
+                self._inflight = False
+                self._started_at = self._deadline = None
+                raise
+            self._worker.add_done_callback(self._settle)
+        worker = self._worker
+        remaining = self._deadline - loop.time() if self._deadline is not None else 0
+        if worker is None or remaining <= 0:
+            return self._document(dict.fromkeys(CHECK_KEYS, "not_verified"))
         try:
-            # Shielded on purpose: the budget bounds *this* answer, and the check itself is left to
-            # finish so that ownership is released by the work rather than by the timeout.
-            document = await asyncio.wait_for(asyncio.shield(worker), self.budget)
+            # Shield each reader independently. A reader's cancellation or the common deadline
+            # cannot cancel the check, release its ownership, or invalidate another reader.
+            document = await asyncio.wait_for(asyncio.shield(worker), remaining)
         except (TimeoutError, asyncio.TimeoutError):
             return self._document(dict.fromkeys(CHECK_KEYS, "not_verified"))
         return document
@@ -361,6 +368,7 @@ class Probe:
         """
         started_at, self._started_at = self._started_at, None
         self._inflight = False
+        self._worker = self._deadline = None
         if worker.cancelled():
             return
         error = worker.exception()

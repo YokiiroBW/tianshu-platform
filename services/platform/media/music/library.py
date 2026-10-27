@@ -278,15 +278,26 @@ class MusicLibrary:
 
     def install_snapshot(self, account, identity, snapshot, current, db):
         self.check_account(account, db)
+        bindings = {}
+        previous_tracks = self.repo._documents(
+            db,
+            "music_track",
+            [
+                account["account_id"] + ":track:" + track["source_id"]
+                for track in snapshot["tracks"]
+            ],
+        )
         for track in snapshot["tracks"]:
             track = {**track, "provider": account["provider"]}
             if track.get("availability") == "known":
-                track.update(self.catalog.register(account["provider"], track, db))
+                binding = self.catalog.register(account["provider"], track, db)
+                bindings[track["source_id"]] = binding
+                track.update(binding)
             track_id = account["account_id"] + ":track:" + track["source_id"]
-            previous = self.repo._document(db, "music_track", track_id)
+            previous = previous_tracks.get(track_id)
             if previous and track["availability"] == "unavailable":
                 track = {**previous, "availability": "unavailable"}
-            self.repo.put("music_track", track_id, track, db=db)
+            previous_tracks[track_id] = self.repo.put("music_track", track_id, track, db=db)
         now = self.repo.clock()
         result = self.repo.put(
             "music_playlist",
@@ -312,7 +323,7 @@ class MusicLibrary:
             db=db,
         )
         if result["auto_download"]:
-            enqueue_playlist(self, identity, db)
+            enqueue_playlist(self, identity, db, bindings=bindings)
         mark_dirty(self.repo, db, identity)
         return {"playlist": summary(result)}
 
@@ -367,17 +378,38 @@ class MusicLibrary:
         )
         return {"playlist": summary(row)}
 
-    def source_track(self, playlist, source, db):
-        track = self.repo._document(db, "music_track", playlist["account_id"] + ":track:" + source)
-        binding = self.catalog.source(source_key(playlist["provider"], source), db=db)
-        if binding:
-            track = {**track, "recording_id": binding["recording_id"]}
-            metadata = binding["metadata"]
-            if metadata.get("metadata_enriched"):
-                # Keep the remote snapshot and its member IDs intact. Display and
-                # export the same hash-confirmed metadata used to tag the archive.
-                track.update({k: metadata[k] for k in ENRICHED_FIELDS if metadata.get(k)})
-        return track
+    def _tracks(self, playlist, entries, db):
+        """One page/export read phase; reuse bindings, aliases, files and jobs per transaction."""
+        track_keys = {source: playlist["account_id"] + ":track:" + source for source in entries}
+        tracks = self.repo._documents(db, "music_track", track_keys.values())
+        source_keys = {source: source_key(playlist["provider"], source) for source in entries}
+        reads = self.catalog.reads(db, sources=source_keys.values())
+        settings = self.repo._document(db, "music_settings", "library") or {}
+        mapping = (
+            self.repo._document(db, "music_playlist_jobs", playlist["playlist_id"]) or {}
+        ).get("jobs", {})
+        # These projections historically include a playlist's recorded terminal job even after
+        # it leaves the task list. Keep that reference semantics while batching the lookup.
+        jobs = self.repo._jobs(
+            db, [mapping[source] for source in entries if source in mapping], include_deleted=True
+        )
+        result = []
+        for source in entries:
+            track = tracks.get(track_keys[source])
+            binding = reads.source(source_keys[source])
+            artifact = None
+            if binding:
+                track = {**track, "recording_id": binding["recording_id"]}
+                metadata = binding["metadata"]
+                if metadata.get("metadata_enriched"):
+                    track.update({k: metadata[k] for k in ENRICHED_FIELDS if metadata.get(k)})
+                artifact = reads.file(binding["recording_id"])
+            if artifact and (
+                artifact.get("missing") or artifact["directory"] != settings.get("directory")
+            ):
+                artifact = None
+            result.append((track, artifact, jobs.get(mapping.get(source))))
+        return result
 
     def detail(self, identity, offset, limit=100):
         require(type(offset) is int and offset >= 0, "invalid_input", 400)
@@ -385,16 +417,9 @@ class MusicLibrary:
             row = self.repo._document(db, "music_playlist", identity)
             require(row is not None, "not_found", 404)
             tracks = []
-            mapping = (self.repo._document(db, "music_playlist_jobs", identity) or {}).get(
-                "jobs", {}
-            )
-            for index, source in enumerate(row["entries"][offset : offset + limit], offset):
-                track = self.source_track(row, source, db)
-                job_row = db.execute(
-                    "SELECT body FROM jobs WHERE id=?", (mapping.get(source, ""),)
-                ).fetchone()
-                job = json.loads(job_row[0]) if job_row else None
-                artifact = self.artifact(track, row["provider"], db)
+            for index, (track, artifact, job) in enumerate(
+                self._tracks(row, row["entries"][offset : offset + limit], db), offset
+            ):
                 audio = next(
                     (f for f in (artifact or {}).get("files", []) if f["kind"] == "audio"), None
                 )
@@ -436,18 +461,6 @@ class MusicLibrary:
                 "more": offset + len(tracks) < len(row["entries"]),
             }
 
-    def artifact(self, track, provider, db):
-        binding = self.catalog.source(source_key(provider, track["source_id"]), db=db)
-        artifact = self.catalog.file(binding["recording_id"], db=db) if binding else None
-        settings = self.repo._document(db, "music_settings", "library") or {}
-        return (
-            artifact
-            if artifact
-            and not artifact.get("missing")
-            and artifact["directory"] == settings.get("directory")
-            else None
-        )
-
     def downloads(self, body, db):
         row = self.repo._document(db, "music_playlist", body["playlist_id"])
         require(row and row.get("state") != "removed", "not_found", 404)
@@ -476,26 +489,21 @@ class MusicLibrary:
         with self.repo.transaction() as db:
             playlist = self.repo._document(db, "music_playlist", identity)
             require(playlist is not None, "not_found", 404)
-            mapping = (self.repo._document(db, "music_playlist_jobs", identity) or {}).get(
-                "jobs", {}
-            )
             tracks = []
-            for index, source in enumerate(playlist["entries"]):
-                track = self.source_track(playlist, source, db)
-                row = db.execute(
-                    "SELECT body FROM jobs WHERE id=?", (mapping.get(source, ""),)
-                ).fetchone()
+            for index, (track, artifact, job) in enumerate(
+                self._tracks(playlist, playlist["entries"], db)
+            ):
                 tracks.append(
                     {
-                        "source_id": source,
+                        "source_id": playlist["entries"][index],
                         "position": index + 1,
                         "title": track["title"],
                         "artists": track["artists"],
                         "album": track["album"],
                         "provider": playlist["provider"],
                         "recording_id": track.get("recording_id"),
-                        "artifact": self.artifact(track, playlist["provider"], db),
-                        "job": json.loads(row[0]) if row else None,
+                        "artifact": artifact,
+                        "job": job,
                     }
                 )
             return playlist, tracks

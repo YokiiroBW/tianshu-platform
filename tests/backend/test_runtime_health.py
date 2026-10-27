@@ -468,12 +468,16 @@ class ReadinessTests(ProbeTestCase):
                     "SELECT 1 FROM sqlite_master WHERE name='download_sources'"
                 ).fetchone()
             )
-        before = path.read_bytes()
-        response, document = await self.probe(READY)
-        self.assertEqual(response.status, 200, document)
-        self.assertEqual(document["checks"]["sidecars"], "ok")
-        self.assertEqual(document["status"], "ready")
-        self.assertEqual(path.read_bytes(), before)
+        # Live media pumps write on their first tick. Hold the fixture's writer reservation so
+        # only the probe can affect the observed bytes; SQLite still permits real ro readers.
+        # This also proves the probe does not need a media writer/advisory transaction.
+        with self.platform.media.repo.transaction():
+            before = path.read_bytes()
+            response, document = await self.probe(READY)
+            self.assertEqual(response.status, 200, document)
+            self.assertEqual(document["checks"]["sidecars"], "ok")
+            self.assertEqual(document["status"], "ready")
+            self.assertEqual(path.read_bytes(), before)
 
     async def test_current_bot_delivery_queue_is_ready(self):
         self.settings["principals"]["health-bot"] = {
@@ -588,7 +592,7 @@ class ReadinessTests(ProbeTestCase):
         self.assertEqual(set(document["checks"].values()), {"not_verified"})
 
     async def test_a_second_caller_never_starts_a_second_check(self):
-        """Concurrent probes share one pass, and none of them queues behind it."""
+        """Healthy concurrent observers share one pass and all receive its real result."""
         await self.boot()
         probe = runtime_health.Probe(self.platform.health, budget=2.0, cache_seconds=0.0)
         started = threading.Event()
@@ -612,16 +616,77 @@ class ReadinessTests(ProbeTestCase):
         probe.evaluate = slow
         owner = asyncio.ensure_future(probe.ready())
         self.assertTrue(await asyncio.to_thread(started.wait, 5))
-        # Two more callers arrive while the one real check is still running. Neither starts work of
-        # its own and neither waits for the owner: both answer from the closed document.
-        others = [await probe.ready(), await probe.ready()]
-        for document in others:
-            self.assertEqual(document["status"], "not_ready")
-            self.assertEqual(set(document["checks"].values()), {"not_verified"})
+        others = [asyncio.create_task(probe.ready()), asyncio.create_task(probe.ready())]
+        await asyncio.sleep(0)
+        self.assertTrue(all(not task.done() for task in others))
         self.assertEqual(running["most"], 1)
         release.set()
         self.assertEqual((await owner)["status"], "ready")
+        for document in await asyncio.gather(*others):
+            self.assertEqual(document["status"], "ready")
+            self.assertTrue(set(document["checks"].values()) <= {"ok", "not_configured"})
         self.assertEqual(running["most"], 1)
+
+    async def test_overlapping_https_probes_share_real_check_success_and_failure(self):
+        await self.boot()
+        real = runtime_health.Probe.evaluate
+        for failed in (False, True):
+            started, release = threading.Event(), threading.Event()
+            calls = []
+
+            def held(probe):
+                calls.append(True)
+                started.set()
+                release.wait(10)
+                document = real(probe)
+                if failed:
+                    document["checks"]["store"] = "failed"
+                    return probe._document(document["checks"])
+                return document
+
+            # The prior success cache expires before this round. Patch only the read check;
+            # both requests still use the real TLS, token boundary and shared server Probe.
+            await asyncio.sleep(1.05)
+            with patch.object(runtime_health.Probe, "evaluate", held):
+                owner = asyncio.create_task(self.probe(READY))
+                try:
+                    self.assertTrue(await asyncio.to_thread(started.wait, 5))
+                    other = asyncio.create_task(self.probe(READY))
+                    await asyncio.sleep(0.03)
+                    self.assertFalse(other.done())
+                finally:
+                    release.set()
+                responses = await asyncio.gather(owner, other)
+            self.assertEqual(len(calls), 1)
+            for response, document in responses:
+                self.assertEqual(response.status, 503 if failed else 200)
+                self.assertEqual(document["checks"]["store"], "failed" if failed else "ok")
+
+    async def test_a_late_reader_shares_the_original_deadline(self):
+        await self.boot()
+        probe = runtime_health.Probe(self.platform.health, budget=0.18, cache_seconds=0.0)
+        started, release = threading.Event(), threading.Event()
+        real = probe.evaluate
+
+        def held():
+            started.set()
+            release.wait(10)
+            return real()
+
+        probe.evaluate = held
+        owner = asyncio.create_task(probe.ready())
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 5))
+            await asyncio.sleep(0.12)
+            joined = asyncio.get_running_loop().time()
+            other = await probe.ready()
+            elapsed = asyncio.get_running_loop().time() - joined
+            self.assertLess(elapsed, 0.13)
+            self.assertEqual(other["status"], "not_ready")
+            self.assertEqual((await owner)["status"], "not_ready")
+            self.assertTrue(probe._inflight)
+        finally:
+            release.set()
 
     async def test_a_timeout_does_not_overwrite_a_fresh_green_with_an_unknown(self):
         """A cached answer is never replaced by the not_verified document a timeout produced."""
@@ -663,7 +728,7 @@ class ReadinessTests(ProbeTestCase):
     async def test_repeated_cancellation_never_piles_up_checks(self):
         """Cancelling the wait does not cancel the work, so ownership must outlive the waiter."""
         await self.boot()
-        probe = runtime_health.Probe(self.platform.health, budget=2.0, cache_seconds=0.0)
+        probe = runtime_health.Probe(self.platform.health, budget=0.15, cache_seconds=0.0)
         release = threading.Event()
         real = probe.evaluate
         running = {"now": 0, "most": 0}
@@ -695,12 +760,11 @@ class ReadinessTests(ProbeTestCase):
                 with self.assertRaises(asyncio.CancelledError):
                     await owner
                 self.assertTrue(probe._inflight)
-                # Every later caller answers from the closed document and starts nothing, however
-                # many times this is repeated.
-                document = await probe.ready()
-                self.assertEqual(document["status"], "not_ready")
-                self.assertEqual(set(document["checks"].values()), {"not_verified"})
                 self.assertEqual(running["most"], 1)
+            # With every reader gone the work still owns its permit until it really ends.
+            document = await probe.ready()
+            self.assertEqual(document["status"], "not_ready")
+            self.assertEqual(set(document["checks"].values()), {"not_verified"})
         finally:
             release.set()
         for _ in range(500):

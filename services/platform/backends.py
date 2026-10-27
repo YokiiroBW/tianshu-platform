@@ -70,13 +70,6 @@ class PlatformRuntime:
                 connection = handle.connect(read_only=True, timeout=0.25)
                 try:
                     check_schema(connection)
-                    if (
-                        connection.execute(
-                            "SELECT version FROM _ts_schema_metadata WHERE id=1"
-                        ).fetchone()
-                        is None
-                    ):
-                        return "failed"
                 finally:
                     connection.close()
         except (OSError, sqlite3.Error):
@@ -124,13 +117,6 @@ class ReadOnlyRuntime:
                 )
                 try:
                     check_schema(connection)
-                    if (
-                        connection.execute(
-                            "SELECT version FROM _ts_schema_metadata WHERE id=1"
-                        ).fetchone()
-                        is None
-                    ):
-                        return "failed"
                 finally:
                     connection.close()
         except (OSError, sqlite3.Error):

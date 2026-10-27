@@ -75,24 +75,21 @@ def _columns(connection, table):
 
 
 def check_schema(connection):
-    """A ready schema cannot silently recreate missing historical business tables."""
-    present = {
-        row[0]
-        for row in connection.native(
-            "SELECT relname FROM pg_class WHERE relnamespace=current_schema()::regnamespace "
-            "AND relkind IN ('r','p')"
-        )
-    }
-    if "_ts_schema_metadata" not in present:
-        raise StorageError("platform_schema_incomplete")
-    row = connection.native("SELECT table_names FROM _ts_schema_metadata WHERE id=1").fetchone()
+    """Check the manifest row and actual tables in one read-only schema snapshot."""
+    row = connection.native(
+        "SELECT m.table_names,(SELECT json_agg(c.relname)::text FROM pg_class c "
+        "WHERE c.relnamespace=current_schema()::regnamespace AND c.relkind IN ('r','p')) "
+        ",m.version FROM _ts_schema_metadata m WHERE m.id=1"
+    ).fetchone()
     try:
         required = json.loads(row[0]) if row else None
+        present = set(json.loads(row[1])) if row and row[1] else set()
     except (TypeError, ValueError):
         raise StorageError("platform_schema_incomplete") from None
     if (
         not isinstance(required, list)
         or any(not isinstance(name, str) or not IDENTIFIER.fullmatch(name) for name in required)
+        or "_ts_schema_metadata" not in present
         or not set(required) <= present
     ):
         raise StorageError("platform_schema_incomplete")

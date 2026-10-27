@@ -3,7 +3,7 @@
 import json
 
 from ...contracts import digest, require
-from ..repository import VISIBLE
+from ..repository import READ_BATCH_SIZE, VISIBLE
 from .quality import policy, minimum_level, quality_rank
 from .catalog import Catalog, lookup_key, album_identity
 
@@ -25,7 +25,26 @@ def acquisition_request(request):
     }
 
 
-def enqueue_playlist(library, identity, db, *, manual=False):
+def _recording_jobs(db, recordings, directory):
+    recordings = list(dict.fromkeys(recordings))
+    result = {}
+    for start in range(0, len(recordings), READ_BATCH_SIZE):
+        batch = recordings[start : start + READ_BATCH_SIZE]
+        placeholders = ",".join("?" for _ in batch)
+        for raw in db.execute(
+            "SELECT body FROM jobs WHERE "
+            + VISIBLE
+            + " AND json_extract(body,'$.media_kind')='audio' "
+            f"AND json_extract(body,'$.recording_id') IN ({placeholders}) "
+            "AND json_extract(body,'$.destination_directory')=? ORDER BY created,id",
+            (*batch, directory),
+        ):
+            job = json.loads(raw[0])
+            result.setdefault(job["recording_id"], job)
+    return result
+
+
+def enqueue_playlist(library, identity, db, *, manual=False, bindings=None):
     repo = library.repo
     playlist = repo._document(db, "music_playlist", identity)
     require(playlist is not None, "not_found", 404)
@@ -38,14 +57,33 @@ def enqueue_playlist(library, identity, db, *, manual=False):
     library_id = catalog.root_id(db)
     previous = (repo._document(db, "music_playlist_jobs", identity) or {}).get("jobs", {})
     mapping = {source: previous[source] for source in playlist["entries"] if source in previous}
-    queued, unavailable = 0, 0
-    for source in dict.fromkeys(playlist["entries"]):
-        track = repo._document(db, "music_track", playlist["account_id"] + ":track:" + source)
-        if not track or track["availability"] != "known":
-            unavailable += 1
-            continue
-        binding = catalog.register(account["provider"], track, db)
-        recording_id = binding["recording_id"]
+    entries = list(dict.fromkeys(playlist["entries"]))
+    tracks = repo._documents(
+        db, "music_track", [playlist["account_id"] + ":track:" + source for source in entries]
+    )
+    requests = repo._documents(
+        db,
+        "music_request",
+        [digest({"playlist": identity, "source": source}) for source in entries],
+    )
+    prepared = []
+    for source in entries:
+        track = tracks.get(playlist["account_id"] + ":track:" + source)
+        if track and track["availability"] == "known":
+            # A subscription refresh just registered these exact tracks in this transaction.
+            # Reuse that work; manual queuing still runs the normal registration rules.
+            binding = (bindings or {}).get(source) or catalog.register(
+                account["provider"], track, db
+            )
+            prepared.append((source, track, binding))
+    # Registration can merge earlier aliases. Read their final canonical identities only after
+    # that phase, before selecting the same oldest visible job as the individual lookup did.
+    reads = catalog.reads(db, recordings=[binding["recording_id"] for _, _, binding in prepared])
+    jobs = _recording_jobs(db, reads.resolved.values(), settings["directory"])
+    queued = 0
+    unavailable = len(entries) - len(prepared)
+    for source, track, binding in prepared:
+        recording_id = reads.resolve(binding["recording_id"])
         key = digest(
             {"library": library_id, "recording": recording_id, "root": settings["directory"]}
         )
@@ -61,7 +99,7 @@ def enqueue_playlist(library, identity, db, *, manual=False):
             "quality": quality,
             "track": {k: v for k, v in track.items() if k != "revision"},
         }
-        previous_request = repo._document(db, "music_request", request_id)
+        previous_request = requests.get(request_id)
         changed = (
             previous_request is None
             or {k: v for k, v in previous_request.items() if k != "revision"} != request
@@ -71,16 +109,9 @@ def enqueue_playlist(library, identity, db, *, manual=False):
         needs_check = previous_request is None or acquisition_request(
             previous_request
         ) != acquisition_request(request)
-        existing = db.execute(
-            "SELECT body FROM jobs WHERE "
-            + VISIBLE
-            + " AND json_extract(body,'$.media_kind')='audio' "
-            "AND json_extract(body,'$.recording_id')=? "
-            "AND json_extract(body,'$.destination_directory')=? ORDER BY created,id LIMIT 1",
-            (recording_id, settings["directory"]),
-        ).fetchone()
+        existing = jobs.get(recording_id)
         job = (
-            json.loads(existing[0])
+            existing
             if existing
             else repo.enqueue(
                 {
@@ -106,7 +137,7 @@ def enqueue_playlist(library, identity, db, *, manual=False):
             )
         )
         if previous_request is None and existing and job["state"] == "completed":
-            artifact = catalog.file(recording_id, db=db)
+            artifact = reads.file(recording_id)
             if artifact and quality_rank(artifact["quality"])[0] >= minimum_level(quality):
                 needs_check = False
         request_ids = list(dict.fromkeys([*job.get("request_ids", []), request_id]))
@@ -148,6 +179,7 @@ def enqueue_playlist(library, identity, db, *, manual=False):
             )
         if updates:
             job = repo.update_job(job["job_id"], updates, db=db)
+        jobs[recording_id] = job
         queued += job["state"] == "queued"
         mapping[source] = job["job_id"]
     repo.put("music_playlist_jobs", identity, {"jobs": mapping}, db=db)

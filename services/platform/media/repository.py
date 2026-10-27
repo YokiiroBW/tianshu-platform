@@ -43,6 +43,7 @@ OVERVIEW_STATES = {
     "cancelled": ("cancelled",),
 }
 VISIBLE = "id NOT IN (SELECT id FROM documents WHERE kind='deleted_job')"
+READ_BATCH_SIZE = 256
 SUBSCRIPTIONS = frozenset(
     {"subscription", "book_subscription", "comic_subscription", "music_playlist"}
 )
@@ -126,6 +127,35 @@ class Repository:
             "SELECT body FROM documents WHERE kind=? AND id=?", (kind, identity)
         ).fetchone()
         return self.payloads.read(kind, json.loads(row[0])) if row else None
+
+    def _documents(self, db, kind, identities):
+        """Fetch a transaction's selected documents without one round trip per identity."""
+        identities = list(dict.fromkeys(identities))
+        result = {}
+        for start in range(0, len(identities), READ_BATCH_SIZE):
+            batch = identities[start : start + READ_BATCH_SIZE]
+            placeholders = ",".join("?" for _ in batch)
+            rows = db.execute(
+                f"SELECT id,body FROM documents WHERE kind=? AND id IN ({placeholders})",
+                (kind, *batch),
+            )
+            result.update((row[0], self.payloads.read(kind, json.loads(row[1]))) for row in rows)
+        return result
+
+    def _jobs(self, db, identities, *, include_deleted=False):
+        """Selected jobs in the caller's transaction, with the usual visibility predicate."""
+        identities = list(dict.fromkeys(identities))
+        result = {}
+        for start in range(0, len(identities), READ_BATCH_SIZE):
+            batch = identities[start : start + READ_BATCH_SIZE]
+            placeholders = ",".join("?" for _ in batch)
+            rows = db.execute(
+                f"SELECT id,body FROM jobs WHERE id IN ({placeholders})"
+                + ("" if include_deleted else " AND " + VISIBLE),
+                batch,
+            )
+            result.update((row[0], json.loads(row[1])) for row in rows)
+        return result
 
     def get(self, kind, identity):
         with self.transaction() as db:

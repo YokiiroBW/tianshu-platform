@@ -14,15 +14,21 @@ class Resolver:
         self.music, self.repo = music, music.media.repo
 
     def requests(self, job):
-        current = self.repo.job(job["job_id"])
-        requests = [self.repo.get("music_request", key) for key in current.get("request_ids", [])]
-        policies = []
-        for request in requests:
-            if request:
-                playlist = self.repo.get("music_playlist", request["playlist_id"])
-                if playlist and request["source_id"] in playlist["entries"]:
-                    policies.append(playlist.get("quality", request["quality"]))
-        return aggregate(policies or [job["quality"]]), current.get("request_version", 0)
+        # One consistent acquisition view, rather than a new connection/advisory lock per
+        # request and per playlist. The worker still rechecks its version before completion.
+        with self.repo.transaction() as db:
+            current = self.repo._jobs(db, [job["job_id"]]).get(job["job_id"])
+            requests = self.repo._documents(db, "music_request", current.get("request_ids", []))
+            playlists = self.repo._documents(
+                db, "music_playlist", [row["playlist_id"] for row in requests.values()]
+            )
+            members = {key: set(row["entries"]) for key, row in playlists.items()}
+            policies = [
+                playlists[row["playlist_id"]].get("quality", row["quality"])
+                for row in requests.values()
+                if row["source_id"] in members.get(row["playlist_id"], set())
+            ]
+            return aggregate(policies or [job["quality"]]), current.get("request_version", 0)
 
     def bind(self, provider, track, recording_id):
         catalog = self.music.library.catalog
