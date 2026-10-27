@@ -48,15 +48,25 @@ class MusicQueryBatchTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await foundation.MusicFoundationTests.asyncSetUp(self)
         if self.postgresql:
-            runtime = backends.start(
+            # Only the explicit disposable target may be used by this fixture. Deployment
+            # overrides must not replace its URL/namespace or attach an unrelated Redis.
+            with patch.dict(
+                os.environ,
                 {
-                    "database_path": str(self.repo.database),
-                    "storage_backends": {
-                        "postgresql_url": os.environ["TS231_TEST_POSTGRES"],
-                        "namespace": "ts380_" + uuid.uuid4().hex,
-                    },
-                }
-            )
+                    "TIANSHU_POSTGRES_URL": "",
+                    "TIANSHU_REDIS_URL": "",
+                    "TIANSHU_STORAGE_NAMESPACE": "",
+                },
+            ):
+                runtime = backends.start(
+                    {
+                        "database_path": str(self.repo.database),
+                        "storage_backends": {
+                            "postgresql_url": os.environ["TS231_TEST_POSTGRES"],
+                            "namespace": "ts380_" + uuid.uuid4().hex,
+                        },
+                    }
+                )
             self.addCleanup(runtime.close)
             self.repo = self.media.repo = Repository(self.repo.database, runtime=runtime)
             self.accounts = self.media.accounts = Accounts(self.repo)
