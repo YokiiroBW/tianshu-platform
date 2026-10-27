@@ -45,6 +45,7 @@ CHECK_VALUES = ("ok", "failed", "not_configured", "not_verified", "non_durable")
 # capability; `not_verified` means this product could not establish the fact read-only, which must
 # never be reported as reachable.
 BLOCKING = ("failed", "not_verified", "non_durable")
+_UNCHECKED_BACKEND = object()
 
 BUDGET_SECONDS = 2.0
 CACHE_SECONDS = 1.0
@@ -392,13 +393,19 @@ class Probe:
             "config": "failed" if inputs.config_problem else "ok",
             "contract": self._contract(),
             "store": self._store(),
-            "sidecars": self._sidecars(),
-            "web_static": self._static(),
-            "tls": self._tls(),
-            "credentials": self._credentials(),
-            "logging": self._logging(),
-            "runtime": self._runtime(),
         }
+        checks.update(
+            {
+                # The native backend already checks every registered schema, including
+                # sidecars. Reuse that round's verdict instead of querying them twice.
+                "sidecars": self._sidecars(backend_state=checks["store"]),
+                "web_static": self._static(),
+                "tls": self._tls(),
+                "credentials": self._credentials(),
+                "logging": self._logging(),
+                "runtime": self._runtime(),
+            }
+        )
         return self._document(checks)
 
     def _contract(self):
@@ -423,11 +430,15 @@ class Probe:
         # first-boot distinction belongs to preflight, which is allowed to say so instead.
         return "ok" if state == "ok" else "failed"
 
-    def _sidecar_states(self):
+    def _sidecar_states(self, *, backend_state=_UNCHECKED_BACKEND):
         """One read-only state per enabled sidecar, so preflight can tell "not yet" from "wrong"."""
         states = []
         if self.inputs.backend_check is not None:
-            states.append(self.inputs.backend_check())
+            states.append(
+                self.inputs.backend_check()
+                if backend_state is _UNCHECKED_BACKEND
+                else backend_state
+            )
         else:
             for path, kind in self.inputs.sidecars:
                 table = SIDECAR_TABLES.get(kind)
@@ -449,10 +460,14 @@ class Probe:
             return "failed"
         return "ok"
 
-    def _sidecars(self):
+    def _sidecars(self, *, backend_state=_UNCHECKED_BACKEND):
         if not self.inputs.sidecars:
             return "not_configured"
-        return "ok" if all(state == "ok" for state in self._sidecar_states()) else "failed"
+        return (
+            "ok"
+            if all(state == "ok" for state in self._sidecar_states(backend_state=backend_state))
+            else "failed"
+        )
 
     def _static(self):
         if self.inputs.web_static_directory is None:
@@ -581,7 +596,7 @@ def preflight(settings, *, credential_names=(), credential_present=None, validat
     # Sidecars are created by the same boot as the authority store, so a deployment that has not
     # booted yet simply has none. A sidecar that exists with a schema this build cannot read is a
     # different fact and is reported as such.
-    sidecar_states = probe._sidecar_states()
+    sidecar_states = probe._sidecar_states(backend_state=checks["store"])
     if not sidecar_states:
         checks["sidecars"] = "not_configured"
     elif all(state == "missing" for state in sidecar_states):

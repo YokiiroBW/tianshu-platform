@@ -1325,6 +1325,86 @@ class PreflightTests(ProbeTestCase):
 class ProbeUnitTests(unittest.TestCase):
     """Checks that need no server: the closed vocabulary and the honest unknowns."""
 
+    def test_each_evaluation_reuses_one_native_backend_verdict_without_cross_round_cache(self):
+        states = iter(("ok", "failed"))
+        calls = []
+
+        def backend():
+            calls.append(True)
+            return next(states)
+
+        inputs = runtime_health.HealthInputs(
+            mode="local_rehearsal",
+            sidecars=(("unused-sqlite-path", "web-inputs"),),
+            backend_check=backend,
+            log_state=lambda: ("durable", None),
+            runtime_state=lambda: "running",
+        )
+        probe = runtime_health.Probe(inputs)
+        for count, state in enumerate(("ok", "failed"), 1):
+            document = probe.evaluate()
+            self.assertEqual(len(calls), count)
+            self.assertEqual(document["checks"]["store"], state)
+            self.assertEqual(document["checks"]["sidecars"], state)
+            self.assertEqual(set(document["checks"]), set(runtime_health.CHECK_KEYS))
+            self.assertEqual(document["status"], "ready" if state == "ok" else "not_ready")
+
+    def test_reused_backend_ok_does_not_bypass_the_independent_account_check(self):
+        calls = []
+
+        def backend():
+            calls.append(True)
+            return "ok"
+
+        def account():
+            raise OSError("synthetic account ledger unavailable")
+
+        inputs = runtime_health.HealthInputs(
+            mode="local_rehearsal",
+            sidecars=(("unused-sqlite-path", "web-inputs"),),
+            backend_check=backend,
+            web_account_enabled=True,
+            account_check=account,
+        )
+        document = runtime_health.Probe(inputs).evaluate()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(document["checks"]["store"], "ok")
+        self.assertEqual(document["checks"]["sidecars"], "failed")
+        self.assertEqual(document["status"], "not_ready")
+
+    def test_independent_sidecar_inspection_still_checks_the_native_backend(self):
+        calls = []
+
+        def backend():
+            calls.append(True)
+            return "failed"
+
+        inputs = runtime_health.HealthInputs(mode="local_rehearsal", backend_check=backend)
+        self.assertEqual(runtime_health.Probe(inputs)._sidecar_states(), ["failed"])
+        self.assertEqual(len(calls), 1)
+
+    def test_preflight_reuses_the_actual_readonly_backend_verdict_once(self):
+        from services.platform import backends
+
+        calls = []
+
+        class ReadonlyBackend:
+            def probe(self):
+                calls.append(True)
+                return "failed"
+
+        with (
+            patch.object(backends, "inspect", return_value={"postgresql": "ok", "state": "active"}),
+            patch.object(backends, "readonly", return_value=ReadonlyBackend()),
+        ):
+            document = runtime_health.preflight(
+                {"mode": "local_rehearsal", "database_path": "unused"}
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(document["checks"]["store"], "failed")
+        self.assertEqual(document["checks"]["sidecars"], "failed")
+        self.assertEqual(document["status"], "not_ready")
+
     def test_the_check_vocabulary_is_closed(self):
         self.assertEqual(len(runtime_health.CHECK_KEYS), 9)
         self.assertEqual(len(set(runtime_health.CHECK_KEYS)), 9)
