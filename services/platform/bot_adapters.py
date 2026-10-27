@@ -54,9 +54,14 @@ def _client_id(value):
 
 
 class BotAdapters:
-    def __init__(self, platform):
+    def __init__(self, platform, *, adapter_clients=None):
         self.p = platform
         self.core_session_factory = getattr(platform, "client_factories", {}).get("companion")
+        self.adapter_clients = dict(adapter_clients or {})
+        for connection_id, factory in self.adapter_clients.items():
+            _id(connection_id)
+            require(callable(factory), "invalid_input", 400)
+        self.owned_adapter_instances = {}
         self.config = platform.settings.get("bot_adapter_self_service")
         self.catalog = (
             BotAdapterCatalog(
@@ -85,6 +90,12 @@ class BotAdapters:
                     row["enabled"] = False
                     row["pending"] = {"desired": True, "request_id": row["last_request_id"]}
                     self.catalog.put(row)
+
+    def bind_owned_adapter(self, instance_id, session_factory):
+        """Bind a host-owned SDK identity, including its future conversation rows."""
+        _id(instance_id)
+        require(callable(session_factory), "invalid_input", 400)
+        self.owned_adapter_instances[instance_id] = session_factory
 
     def _row_lock(self, row_id):
         _id(row_id)
@@ -270,12 +281,25 @@ class BotAdapters:
         async with self._row_lock(body["id"]):
             return {"connection": self._project(await self.change(operation, body))}
 
-    async def _call(self, address, key, pins, ca_pem, path, payload, *, core=False, ca_file=None):
+    async def _call(
+        self,
+        address,
+        key,
+        pins,
+        ca_pem,
+        path,
+        payload,
+        *,
+        core=False,
+        ca_file=None,
+        session_factory=None,
+    ):
         # Match the host RPC's bounded inline-media request allowance.
         media_paths = {RPC + "/messages/send", RPC + "/observation/messages/send"}
         limit = 45 * 1024 * 1024 if not core and path in media_paths else 65536
         require(len(json.dumps(payload).encode()) <= limit, "invalid_input", 400)
-        session_factory = self.core_session_factory if core else None
+        if session_factory is None and core:
+            session_factory = self.core_session_factory
         connector = None
         if session_factory is None:
             tls = ssl.create_default_context(cafile=ca_file, cadata=ca_pem)
@@ -339,14 +363,26 @@ class BotAdapters:
             ) from None
 
     async def _plugin(self, row, path, payload):
-        current = await reviewed_pins(row["address"], self.config["allowed_cidrs"])
-        require(current == row["pins"], "external_target_changed", 503)
-        assert_pins(row["address"], row["pins"], self.config["allowed_cidrs"])
+        # Only an explicitly owned connection can use a local module. All other
+        # SDKs retain the original DNS/pin/TLS checks, even at the same address.
+        factory = self.adapter_clients.get(row["id"])
+        if factory is None:
+            factory = self.owned_adapter_instances.get(row.get("instance_id"))
+        if factory is None:
+            current = await reviewed_pins(row["address"], self.config["allowed_cidrs"])
+            require(current == row["pins"], "external_target_changed", 503)
+            assert_pins(row["address"], row["pins"], self.config["allowed_cidrs"])
         if path == "/messages/send":
             # This is the final synchronous admission point before starting the SDK RPC.
             require(self._live(row), "connection_disabled", 409)
         return await self._call(
-            row["address"], row["access_key"], row["pins"], row["ca_pem"], RPC + path, payload
+            row["address"],
+            row["access_key"],
+            row["pins"],
+            row["ca_pem"],
+            RPC + path,
+            payload,
+            **({"session_factory": factory} if factory is not None else {}),
         )
 
     async def _core(self, path, payload):

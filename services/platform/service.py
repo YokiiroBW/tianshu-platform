@@ -296,7 +296,7 @@ def validate_settings(settings, *, runtime=None):
 
 
 class Platform:
-    def __init__(self, settings, *, clock=time.time, internal_clients=None):
+    def __init__(self, settings, *, clock=time.time, internal_clients=None, adapter_clients=None):
         # A pending PG binding is already authoritative: probes refuse it, and only
         # normal startup may resume migration. Validation then uses actual PG handles.
         require(isinstance(settings, dict), "invalid_input", 400)
@@ -319,14 +319,14 @@ class Platform:
                 self.contracts, self.auth = validate_settings(
                     settings, runtime=self.storage_runtime
                 )
-            self._assemble(settings, clock)
+            self._assemble(settings, clock, adapter_clients=adapter_clients)
         except BaseException:
             if hasattr(self, "local_work"):
                 self.local_work.close()
             self.storage_runtime.close()
             raise
 
-    def _assemble(self, settings, clock):
+    def _assemble(self, settings, clock, *, adapter_clients=None):
         # The native snapshot HTTP port stays closed unless the deployment explicitly opens it.
         self.native_config_http = settings.get("native_config_http", False)
         self.store = Store(settings["database_path"], runtime=self.storage_runtime)
@@ -405,7 +405,7 @@ class Platform:
         self.role_runtime = RoleRuntime(self)
         from .bot_adapters import BotAdapters
 
-        self.bot_adapters = BotAdapters(self)
+        self.bot_adapters = BotAdapters(self, adapter_clients=adapter_clients)
         from .bot_observation import BotObservation
 
         self.bot_observation = BotObservation(self)

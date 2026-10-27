@@ -955,6 +955,9 @@ def create_app(platform, probe=None, *, console=None, public=False, trusted_loca
     app.router.add_route("*", "/{path:.*}", console.handle)
 
     async def close_local_work(app):
+        # Cancelled HTTP/background waiters may leave their accepted database
+        # work running. Cleanup contexts have stopped its producers by now.
+        await platform.local_work.drain()
         platform.close()
 
     if not public:
