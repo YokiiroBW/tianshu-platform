@@ -1,6 +1,7 @@
 """Composition root for the two published endpoints and trusted local adapter ports."""
 
 import hmac
+import sqlite3
 import time
 from pathlib import Path
 
@@ -85,14 +86,14 @@ def registered_credentials(settings, *, include_setup=True):
     return tuple(sorted(names))
 
 
-def credential_present(settings, name):
+def credential_present(settings, name, *, runtime=None):
     """The one-use installation token may be removed after the account is committed."""
     try:
-        account = WebAccount(settings)
+        account = WebAccount(settings, runtime=runtime)
         if account.config is not None and account.config.get("setup_token_env") == name:
             if account.read() is not None:
                 return True
-    except Fault:
+    except (Fault, sqlite3.Error):
         return False
     return secret(name) is not None
 
@@ -436,7 +437,9 @@ class Platform:
         self.health = runtime_health.health_inputs(
             settings,
             credential_names=self.other_credentials,
-            credential_present=lambda name: credential_present(settings, name),
+            credential_present=lambda name: credential_present(
+                settings, name, runtime=self.storage_runtime
+            ),
             log_state=log_state,
             runtime_state=lambda: (
                 self._runtime_state

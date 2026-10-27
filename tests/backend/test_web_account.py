@@ -111,6 +111,62 @@ class AccountStorageTests(unittest.TestCase):
             self.assertTrue(credential_present(self.settings, "TS_SETUP_TOKEN"))
         self.assertIn("TS_SETUP_TOKEN", registered_credentials(self.settings))
 
+    def test_health_credentials_reuse_owned_runtime_and_recheck_secrets(self):
+        platform = Platform(self.settings)
+        self.addCleanup(platform.close)
+        probe = Probe(platform.health)
+        with (
+            patch(
+                "services.platform.web_account.readonly",
+                side_effect=AssertionError("health must reuse the owned storage runtime"),
+            ),
+            patch("services.platform.service.WebAccount", wraps=WebAccount) as account_factory,
+        ):
+            self.assertEqual(probe._credentials(), "ok")
+            self.assertEqual(account_factory.call_count, len(platform.other_credentials))
+            self.assertTrue(
+                all(
+                    call.kwargs["runtime"] is platform.storage_runtime
+                    for call in account_factory.call_args_list
+                )
+            )
+            with patch.dict(os.environ, {"TS012_ADMIN": ""}):
+                self.assertEqual(probe._credentials(), "failed")
+            self.assertEqual(probe._credentials(), "ok")
+
+    def test_owned_runtime_preserves_committed_setup_and_account_failure_checks(self):
+        platform = Platform(self.settings)
+        self.addCleanup(platform.close)
+        account = WebAccount(self.settings, runtime=platform.storage_runtime)
+        account.create("chosen-owner", password_hash(NEW_PASSWORD))
+        with (
+            patch.dict(os.environ, {"TS_SETUP_TOKEN": ""}),
+            patch(
+                "services.platform.web_account.readonly",
+                side_effect=AssertionError("health must reuse the owned storage runtime"),
+            ),
+        ):
+            self.assertTrue(platform.health.credential_present("TS_SETUP_TOKEN"))
+            self.assertEqual(Probe(platform.health)._credentials(), "ok")
+            account.path.unlink()
+            self.assertFalse(platform.health.credential_present("TS_SETUP_TOKEN"))
+            self.assertEqual(Probe(platform.health)._credentials(), "failed")
+
+    def test_credential_without_owned_runtime_keeps_readonly_inspection(self):
+        from services.platform import web_account
+
+        with patch.object(web_account, "readonly", wraps=web_account.readonly) as readonly:
+            self.assertTrue(credential_present(self.settings, "TS012_ADMIN"))
+        readonly.assert_called_once_with(self.settings)
+
+    def test_closed_owned_runtime_never_reports_credentials_ready(self):
+        platform = Platform(self.settings)
+        self.addCleanup(platform.close)
+        self.assertEqual(Probe(platform.health)._credentials(), "ok")
+        platform.storage_runtime.close()
+        self.assertFalse(platform.health.credential_present("TS012_ADMIN"))
+        self.assertEqual(Probe(platform.health)._credentials(), "failed")
+
     def test_removing_opt_in_never_restores_the_deployment_password(self):
         self.settings["web_account"] = {"mode": "claim"}
         self.settings["web"].update(
