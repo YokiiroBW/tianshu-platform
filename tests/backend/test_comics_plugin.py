@@ -3,9 +3,11 @@
 import asyncio
 import copy
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 import uuid
 
 from aiohttp import web
@@ -18,6 +20,7 @@ from services.platform.media.comics.plugin import (
 )
 from services.platform.plugins import PluginManager
 from services.platform.plugins.ports import capability as host_capability
+from services.platform.media.runtime import Media
 
 
 class FileRoles:
@@ -225,7 +228,7 @@ class ComicRuntimeClientTests(unittest.IsolatedAsyncioTestCase):
             await Pending("unused", startup_timeout=0.01).start(str(uuid.uuid4()))
         self.assertEqual(error.exception.code, "comic_file_runtime_unavailable")
 
-    async def test_only_runtime_socket_is_configurable(self):
+    async def test_only_fixed_binding_configuration_is_accepted(self):
         self.assertIsNone(configuration({}))
         self.assertEqual(
             configuration({"plugins": {"comic_files": {"runtime_socket": "/run/comic.sock"}}}),
@@ -235,6 +238,83 @@ class ComicRuntimeClientTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(Fault):
                 configuration({"plugins": {"comic_files": value}})
 
+
+class ComicFileDefaultsTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.defaults = {
+            "import_directory": "/media/comics/input",
+            "import_socket": "/run/tianshu/comics/inputs/source.sock",
+            "publisher_socket": "/run/tianshu/comics/publisher/publisher.sock",
+        }
+        self.settings = {
+            "database_path": str(Path(self.temp.name) / "platform.sqlite"),
+            "plugins": {
+                "comic_files": {
+                    "runtime_socket": "/run/tianshu/comics/control.sock",
+                    "defaults": self.defaults,
+                }
+            },
+        }
+        self.media = Media(self.settings, clock=time.time, local=asyncio.to_thread)
+        self.addAsyncCleanup(self.media.close)
+
+    async def test_fresh_read_uses_binding_defaults_without_writing_the_database(self):
+        config = self.media.comics.settings.read()
+        self.assertEqual({name: config[name] for name in self.defaults}, self.defaults)
+        self.assertEqual(config["revision"], 0)
+        self.assertIsNone(self.media.repo.get("comic_settings", "library"))
+        reader = self.media.comics.imports.access()
+        self.assertEqual(reader.directory, self.defaults["import_directory"])
+        self.assertEqual(reader.socket, self.defaults["import_socket"])
+
+    async def test_original_first_save_inherits_defaults_then_saved_row_remains_authoritative(self):
+        # The container's POSIX paths are deliberately not opened on Windows.
+        # Only the original settings producer's absolute-path check needs POSIX semantics.
+        with patch("services.platform.media.comics.settings.Path", PurePosixPath):
+            with self.media.repo.transaction() as db:
+                self.media.comics.settings.save({"interval_seconds": 7200}, db)
+        saved = self.media.repo.get("comic_settings", "library")
+        self.assertEqual({name: saved[name] for name in self.defaults}, self.defaults)
+        self.defaults["import_socket"] = "/run/replaced.sock"
+        restarted = Media(self.settings, clock=time.time, local=asyncio.to_thread)
+        self.addAsyncCleanup(restarted.close)
+        self.assertEqual(restarted.comics.settings.read(), saved)
+
+    async def test_existing_row_with_empty_or_absent_sockets_is_not_overlaid(self):
+        old = {
+            "interval_seconds": 9000,
+            "import_directory": "/existing/input",
+            "publisher_socket": "",
+            "connections": {},
+            "targets": {},
+        }
+        saved = self.media.repo.put("comic_settings", "library", old)
+        self.assertEqual(self.media.comics.settings.read(), saved)
+        self.assertNotIn("import_socket", self.media.comics.settings.read())
+        self.assertEqual(self.media.repo.get("comic_settings", "library"), saved)
+
+    async def test_default_group_must_be_complete_and_cannot_alias_control_socket(self):
+        for value in (
+            {"import_socket": "/run/a.sock"},
+            {**self.defaults, "publisher_socket": "relative"},
+            {**self.defaults, "publisher_socket": "/run/tianshu/comics/control.sock"},
+        ):
+            with self.assertRaises(Fault):
+                configuration(
+                    {
+                        "plugins": {
+                            "comic_files": {
+                                "runtime_socket": "/run/tianshu/comics/control.sock",
+                                "defaults": value,
+                            }
+                        }
+                    }
+                )
+
+
+class ComicUnixControlTests(unittest.IsolatedAsyncioTestCase):
     @unittest.skipUnless(os.name == "posix", "aiohttp Unix server requires POSIX event loop")
     async def test_actual_unix_control_body_status_and_response_boundaries(self):
         with tempfile.TemporaryDirectory() as directory:

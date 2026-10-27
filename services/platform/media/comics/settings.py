@@ -11,8 +11,9 @@ CONNECTIONS = ("suwayomi", "komga", "assetlibrary")
 
 
 class Settings:
-    def __init__(self, media):
+    def __init__(self, media, *, file_defaults=None):
         self.media, self.repo = media, media.repo
+        self.file_defaults = dict(file_defaults or {})
 
     def read(self, db=None):
         value = (
@@ -20,12 +21,15 @@ class Settings:
             if db is not None
             else self.repo.get("comic_settings", "library")
         )
-        return value or {
+        if value is not None:
+            return value
+        return {
             "revision": 0,
             "interval_seconds": 21600,
             "import_directory": "",
             "connections": {},
             "targets": {},
+            **self.file_defaults,
         }
 
     def public(self, value=None):

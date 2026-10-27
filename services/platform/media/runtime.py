@@ -165,7 +165,12 @@ class Media:
         )
         self.accounts = Accounts(self.repo)
         self.books = Books(self)
-        self.comics = Comics(self)
+        from .comics.plugin import configuration as comic_file_configuration
+
+        comic_files = comic_file_configuration(settings)
+        self.comics = Comics(
+            self, file_defaults=comic_files.get("defaults") if comic_files else None
+        )
         self.worker = Worker(self)
         if self.config is None:
             return

@@ -21,9 +21,9 @@ from .suwayomi import Suwayomi
 
 
 class Comics:
-    def __init__(self, media):
+    def __init__(self, media, *, file_defaults=None):
         self.media, self.repo = media, media.repo
-        self.settings = Settings(media)
+        self.settings = Settings(media, file_defaults=file_defaults)
         self.catalog = Catalog(self)
         self.health = SourceHealth(self)
         self.engine = Suwayomi(lambda: self.settings.remote_connection("suwayomi"))

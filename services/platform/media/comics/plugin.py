@@ -26,12 +26,34 @@ def configuration(settings):
         return None
     require(
         isinstance(value, dict)
-        and set(value) == {"runtime_socket"}
+        and {"runtime_socket"} <= set(value) <= {"runtime_socket", "defaults"}
         and isinstance(value["runtime_socket"], str)
-        and PurePosixPath(value["runtime_socket"]).is_absolute(),
+        and PurePosixPath(value["runtime_socket"]).is_absolute()
+        and not any(ord(c) < 32 for c in value["runtime_socket"]),
         "invalid_input",
         400,
     )
+    if "defaults" in value:
+        defaults = value["defaults"]
+        require(
+            isinstance(defaults, dict)
+            and set(defaults) == {"import_directory", "import_socket", "publisher_socket"}
+            and all(
+                isinstance(path, str)
+                and len(path) <= 4096
+                and PurePosixPath(path).is_absolute()
+                and not any(ord(c) < 32 for c in path)
+                for path in defaults.values()
+            ),
+            "invalid_input",
+            400,
+        )
+        require(
+            len({value["runtime_socket"], defaults["import_socket"], defaults["publisher_socket"]})
+            == 3,
+            "invalid_input",
+            400,
+        )
     return value
 
 

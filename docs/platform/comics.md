@@ -49,10 +49,25 @@ AS侧保留现有Documents库和真实原生根。其目录链需要read/search�
 统一容器可以通过既有插件宿主管理这两个文件角色，用户无需再部署独立的 inputs/publisher 容器。Platform 设置增加：
 
 ```json
-{"plugins": {"comic_files": {"runtime_socket": "/run/tianshu/comics-control.sock"}}}
+{
+  "plugins": {
+    "comic_files": {
+      "runtime_socket": "/run/tianshu/comics/control.sock",
+      "defaults": {
+        "import_directory": "/media/comics/input",
+        "import_socket": "/run/tianshu/comics/inputs/source.sock",
+        "publisher_socket": "/run/tianshu/comics/publisher/publisher.sock"
+      }
+    }
+  }
+}
 ```
 
 首次配置后，原 PluginManager 按正常安装流程创建 `tianshu.comics-files` 内置包及一个默认启用实例。配置、启停、实例修订与卸载均沿用原插件台账和界面；后续停用或卸载不会在重启时被自动开启。已有启用实例重启时恢复同一实例，不另建漫画队列。没有这项配置时，不自动安装辅助插件，旧本地/外置 socket 入口仍可继续使用。
+
+`defaults` 是成组可选的首次安装值，必须同时提供上面三个绝对 POSIX 路径。它仅在原 `comic_settings/library` 完全不存在时参与 `Settings.read`，读默认值不写数据库；首次在原漫画设置页保存时，由原 `Settings.save` 和回执/CAS落账。已存在任何设置行时不叠加默认值，即使其中socket为空或未含字段也不会覆盖。仅配置 `runtime_socket` 的旧形式保留。现有漫画和下载任务中的输入/目标快照也不改；迁移已有安装应让原设置生产者与helper沿用一致路径，不能靠这组默认值替换旧快照。
+
+统一运行时在新临时目录 `/run/tianshu/comics/inputs` 和 `publisher` 上准备root:10001、01770权限，helper自行创建原0660 socket与lock。仅父目录0755会使降权后的helper无法绑定；不因此为NAS目录加写权、递归改ACL或给运行时加CHOWN/DAC_OVERRIDE。
 
 插件自身不接受命令、目录、UID 或 socket 配置，也不启动通用 shell。它仅在生命周期中通过 `comics.files` 能力请求受信运行时启动/停止固定的 `comic-inputs` 与 `comic-publisher`；正式内置包来源也会复核，上传同名包不能获得这项控制。`status` 是纯读动作，动作/模型调用不能启动或停止文件角色。
 
