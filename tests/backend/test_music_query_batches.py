@@ -68,6 +68,7 @@ class MusicQueryBatchTests(unittest.IsolatedAsyncioTestCase):
                     }
                 )
             self.addCleanup(runtime.close)
+            self.assertEqual(runtime.backend, "postgresql")
             self.repo = self.media.repo = Repository(self.repo.database, runtime=runtime)
             self.accounts = self.media.accounts = Accounts(self.repo)
             self.music = Music(self.media)
