@@ -28,6 +28,44 @@ from services.platform.web_console import WebConsole
 
 
 class InfrastructureControlTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quiesce_waits_for_claimed_request_but_preserves_executor_and_queued_intent(self):
+        await self.inventory()
+        entered, release = asyncio.Event(), asyncio.Event()
+        invoke = self.control.client.invoke
+
+        async def held(node_id, operation, params):
+            if operation == "operation.submit":
+                entered.set()
+                await release.wait()
+            return await invoke(node_id, operation, params)
+
+        draining = None
+        with patch.object(self.control.client, "invoke", held):
+            first = await self.post("action", self.action())
+            try:
+                await asyncio.wait_for(entered.wait(), 3)
+                second = await self.post("action", self.action("stack.stop"))
+                runtime = self.platform.infrastructure
+                with patch.object(runtime.executor, "close") as close:
+                    draining = asyncio.create_task(runtime.quiesce())
+                    await asyncio.sleep(0.05)
+                    self.assertFalse(draining.done())
+                    close.assert_not_called()
+                    self.assertEqual(
+                        await self.platform.local_work.run(lambda: "callback"), "callback"
+                    )
+                    release.set()
+                    await draining
+                    close.assert_not_called()
+                self.assertEqual(state_read(self.root)["submits"], 1)
+                queued = self.control.repo.get(second["operation"]["operation_id"])
+                self.assertEqual(queued["document"]["state"], "queued")
+                self.assertIsNotNone(self.control.repo.get(first["operation"]["operation_id"]))
+            finally:
+                release.set()
+                if draining:
+                    await draining
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="ts206-http-")
         self.addCleanup(self.temp.cleanup)

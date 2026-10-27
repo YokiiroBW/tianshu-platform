@@ -56,6 +56,7 @@ def _client_id(value):
 class BotAdapters:
     def __init__(self, platform):
         self.p = platform
+        self.core_session_factory = getattr(platform, "client_factories", {}).get("companion")
         self.config = platform.settings.get("bot_adapter_self_service")
         self.catalog = (
             BotAdapterCatalog(
@@ -274,15 +275,19 @@ class BotAdapters:
         media_paths = {RPC + "/messages/send", RPC + "/observation/messages/send"}
         limit = 45 * 1024 * 1024 if not core and path in media_paths else 65536
         require(len(json.dumps(payload).encode()) <= limit, "invalid_input", 400)
-        tls = ssl.create_default_context(cafile=ca_file, cadata=ca_pem)
-        connector = (
-            aiohttp.TCPConnector(resolver=PinnedResolver(pins), ssl=tls)
-            if pins
-            else aiohttp.TCPConnector(ssl=tls)
-        )
+        session_factory = self.core_session_factory if core else None
+        connector = None
+        if session_factory is None:
+            tls = ssl.create_default_context(cafile=ca_file, cadata=ca_pem)
+            connector = (
+                aiohttp.TCPConnector(resolver=PinnedResolver(pins), ssl=tls)
+                if pins
+                else aiohttp.TCPConnector(ssl=tls)
+            )
         try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=TIMEOUT), trust_env=False, connector=connector
+            options = {"connector": connector} if session_factory is None else {}
+            async with (session_factory or aiohttp.ClientSession)(
+                timeout=aiohttp.ClientTimeout(total=TIMEOUT), trust_env=False, **options
             ) as client:
                 async with client.post(
                     address.rstrip("/") + path,

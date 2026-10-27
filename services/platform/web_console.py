@@ -86,7 +86,20 @@ MEDIA_PREFIX = "/api/web/media/"
 
 
 class WebConsole:
-    def __init__(self, platform, access=None):
+    def __init__(self, platform, access=None, *, internal_clients=None):
+        from .transport import client_factories
+
+        self.internal_clients = (
+            platform.internal_clients if internal_clients is None else internal_clients
+        )
+        self.client_factories = (
+            platform.client_factories
+            if internal_clients is None
+            else client_factories(internal_clients)
+        )
+        companion = self.client_factories["companion"]
+        memory = self.client_factories["memory"]
+        knowledge = self.client_factories["knowledge"]
         self.access = access or WebAccess(platform.settings)
         self.access_settings = WebAccessSettings(self, self.access)
         self.platform = platform
@@ -182,12 +195,14 @@ class WebConsole:
             "invalid_input",
             400,
         )
-        self.dialogue = WebDialogue(platform)
+        self.dialogue = WebDialogue(platform, session_factory=companion)
         self.sender = WebSender(platform)
         self.dialogue.input_entries = self.input_entries
         self.sender.input_entries = self.input_entries
         self.models = WebModels(platform, self)
-        self.providers = ProviderManagement(platform, self)
+        self.providers = ProviderManagement(
+            platform, self, session_factory=self.client_factories["gateway"]
+        )
         self.external = WebExternal(platform, self)
         # Device control carries its own unlock; it is never derived from model management.
         self.home = Home(platform, self)
@@ -203,23 +218,23 @@ class WebConsole:
         self.personas = WebPersonas(
             configured=platform.settings.get("web_personas") is not None,
             rule=platform.personas,
-            reader=platform.persona_reader(),
+            reader=platform.persona_reader(session_factory=companion),
             authorised=self.persona_read_authorised,
             session_valid=self.session_valid,
             authority=lambda: self.authority()[0],
             run_local=platform.local_work.run,
         )
         self.persona_author = WebPersonaAuthor(self, self.personas)
-        self.knowledge = WebReader("knowledge", platform, self)
-        self.life = WebReader("life", platform, self)
-        self.life_management = WebLifeManagement(platform, self)
+        self.knowledge = WebReader("knowledge", platform, self, session_factory=knowledge)
+        self.life = WebReader("life", platform, self, session_factory=companion)
+        self.life_management = WebLifeManagement(platform, self, session_factory=companion)
         self.skills = WebSkills(self.life_management)
-        self.content = WebContent(platform, self)
-        self.memory_links = WebMemoryLinks(platform, self)
+        self.content = WebContent(platform, self, session_factory=knowledge)
+        self.memory_links = WebMemoryLinks(platform, self, session_factory=memory)
         self.people_life = WebPeopleLife(platform, self)
         self.weather = WebWeather(platform, self)
         self.memory_retrieval = MemoryRetrieval(platform, self)
-        self.memory = WebMemory(platform, self)
+        self.memory = WebMemory(platform, self, session_factory=memory)
         self.role_runtime = platform.role_runtime
         self.qq_admin = platform.qq_admin
         from .media.web import WebMedia

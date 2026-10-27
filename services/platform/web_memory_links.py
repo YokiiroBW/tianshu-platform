@@ -22,8 +22,9 @@ PREFIX = "/api/web/memory-links/"
 
 
 class WebMemoryLinks:
-    def __init__(self, platform, console):
+    def __init__(self, platform, console, *, session_factory=None):
         self.p, self.console = platform, console
+        self.session_factory = session_factory
         platform.sources.association_consent = self.observe
 
     def _target(self, db, actor, account):
@@ -257,14 +258,16 @@ class WebMemoryLinks:
         require(token is not None, "dependency_unavailable", 503)
         try:
             async with (
-                aiohttp.ClientSession(
+                (self.session_factory or aiohttp.ClientSession)(
                     trust_env=False, timeout=aiohttp.ClientTimeout(total=10)
                 ) as client,
                 client.post(
                     config["base_url"].rstrip("/") + "/internal/v1/memory/context/association",
                     json=payload,
                     headers={"Authorization": "Bearer " + token},
-                    ssl=ssl.create_default_context(cafile=config.get("ca_file")),
+                    ssl=None
+                    if self.session_factory
+                    else ssl.create_default_context(cafile=config.get("ca_file")),
                     allow_redirects=False,
                 ) as response,
             ):

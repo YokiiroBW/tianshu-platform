@@ -1,4 +1,4 @@
-"""Deployment-fixed HTTPS only; environment secrets never cross JSON boundaries."""
+"""Deployment-fixed clients; an explicit host may bind first-party module sessions."""
 
 import asyncio
 import re
@@ -19,7 +19,15 @@ class CoreFault(Fault):
         self.document = document
 
 
-async def management_call(settings, path, payload):
+def client_factories(internal_clients):
+    """Bind known module identities once; absent injection retains real HTTPS clients."""
+    return {
+        name: internal_clients.session_factory(name) if internal_clients is not None else None
+        for name in ("companion", "memory", "knowledge", "gateway")
+    }
+
+
+async def management_call(settings, path, payload, *, session_factory=None):
     """Fixed role/life management ports over the registered owner's HTTPS identity."""
     require(
         path
@@ -34,9 +42,9 @@ async def management_call(settings, path, payload):
     _, timeout = core_settings(settings)
     token = secret(settings["token_env"])
     require(token is not None, "dependency_unavailable", 503)
-    tls = ssl.create_default_context(cafile=settings.get("ca_file"))
+    tls = None if session_factory else ssl.create_default_context(cafile=settings.get("ca_file"))
     try:
-        async with aiohttp.ClientSession(
+        async with (session_factory or aiohttp.ClientSession)(
             timeout=aiohttp.ClientTimeout(total=timeout),
             trust_env=False,
         ) as session:
@@ -73,7 +81,7 @@ async def management_call(settings, path, payload):
         raise Fault("dependency_unavailable", 503) from None
 
 
-async def core_web_call(settings, path, payload, contracts, schema):
+async def core_web_call(settings, path, payload, contracts, schema, *, session_factory=None):
     require(
         path in {"web-snapshot", "cancel", "ingest-actors", "ingest-receipt"}, "invalid_input", 400
     )
@@ -84,8 +92,10 @@ async def core_web_call(settings, path, payload, contracts, schema):
     await diagnostics.outbound("started")
     sent = False
     try:
-        tls = ssl.create_default_context(cafile=settings.get("ca_file"))
-        async with aiohttp.ClientSession(
+        tls = (
+            None if session_factory else ssl.create_default_context(cafile=settings.get("ca_file"))
+        )
+        async with (session_factory or aiohttp.ClientSession)(
             timeout=aiohttp.ClientTimeout(total=timeout), trust_env=False
         ) as session:
             sent = True
@@ -194,10 +204,15 @@ def core_settings(settings):
     return settings["base_url"].rstrip("/") + "/internal/v1/conversation/ingest-actors", timeout
 
 
-async def core_post(settings, ingest, contracts=None):
+async def core_post(settings, ingest, contracts=None, *, session_factory=None):
     if contracts is not None:
         return await core_web_call(
-            settings, "ingest-actors", ingest, contracts, "sources#fanout_response"
+            settings,
+            "ingest-actors",
+            ingest,
+            contracts,
+            "sources#fanout_response",
+            session_factory=session_factory,
         )
     url, timeout = core_settings(settings)
     token = secret(settings["token_env"])
@@ -206,8 +221,10 @@ async def core_post(settings, ingest, contracts=None):
     await diagnostics.outbound("started")
     sent = False
     try:
-        tls = ssl.create_default_context(cafile=settings.get("ca_file"))
-        async with aiohttp.ClientSession(
+        tls = (
+            None if session_factory else ssl.create_default_context(cafile=settings.get("ca_file"))
+        )
+        async with (session_factory or aiohttp.ClientSession)(
             timeout=aiohttp.ClientTimeout(total=timeout), trust_env=False
         ) as session:
             sent = True

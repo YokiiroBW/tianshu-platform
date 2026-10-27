@@ -47,8 +47,8 @@ def validate_memory_binding(settings, auth):
 
 
 class WebMemory(WebReader):
-    def __init__(self, platform, console):
-        super().__init__("memory", platform, console)
+    def __init__(self, platform, console, *, session_factory=None):
+        super().__init__("memory", platform, console, session_factory=session_factory)
         from .web_group_memory import GroupMemory
 
         self.groups = GroupMemory(self)
@@ -291,9 +291,15 @@ class WebMemory(WebReader):
     async def _read(self, name, request):
         base = self.config["base_url"].rstrip("/")
         try:
-            context = ssl.create_default_context(cafile=self.config.get("ca_file"))
+            context = (
+                None
+                if self.session_factory
+                else ssl.create_default_context(cafile=self.config.get("ca_file"))
+            )
             async with asyncio.timeout(self.config.get("timeout_seconds", 10)):
-                async with aiohttp.ClientSession(trust_env=False) as client:
+                async with (self.session_factory or aiohttp.ClientSession)(
+                    trust_env=False
+                ) as client:
                     async with client.post(
                         base + "/internal/v1/memory/browser/" + name,
                         json=request,

@@ -168,8 +168,9 @@ def _cursor(value):
 
 
 class WebReader:
-    def __init__(self, name, platform, console):
+    def __init__(self, name, platform, console, *, session_factory=None):
         self.name, self.platform, self.console = name, platform, console
+        self.session_factory = session_factory
         self.config = platform.settings.get("web_" + name)
         self.last = None
         self.slots = asyncio.Semaphore(4)
@@ -528,9 +529,15 @@ class WebReader:
             else "/internal/v1/life-read/" + name
         )
         try:
-            context = ssl.create_default_context(cafile=self.config.get("ca_file"))
+            context = (
+                None
+                if self.session_factory
+                else ssl.create_default_context(cafile=self.config.get("ca_file"))
+            )
             async with asyncio.timeout(self.config.get("timeout_seconds", READ_TIMEOUT)):
-                async with aiohttp.ClientSession(trust_env=False) as client:
+                async with (self.session_factory or aiohttp.ClientSession)(
+                    trust_env=False
+                ) as client:
                     async with client.post(
                         base + path,
                         json=payload,

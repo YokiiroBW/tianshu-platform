@@ -55,6 +55,17 @@ class Control:
         await asyncio.gather(*tasks, return_exceptions=True)
         self.jobs.clear()
 
+    async def quiesce(self):
+        self.started = False
+        if self.pump:
+            self.pump.cancel()
+            await asyncio.gather(self.pump, return_exceptions=True)
+        while self.jobs:
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tuple(self.jobs.values())),
+                return_exceptions=True,
+            )
+
     async def changed(self, node_id):
         tasks = [task for key, task in self.jobs.items() if key[0] == node_id]
         for task in tasks:

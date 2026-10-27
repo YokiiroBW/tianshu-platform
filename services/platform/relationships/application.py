@@ -17,6 +17,7 @@ class Relationships:
                 self.config["memory"],
                 Contract(self.config["candidate_schema_path"]),
                 platform.other_credentials,
+                session_factory=getattr(platform, "client_factories", {}).get("memory"),
             )
             if self.config and self.config["enabled"]
             else None

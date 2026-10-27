@@ -76,7 +76,7 @@ class WebPersonaAuthor:
                 async with client.slots:
                     self._guard(session, action, target)
                     token = client.credential()
-                    async with aiohttp.ClientSession(
+                    async with (client.session_factory or aiohttp.ClientSession)(
                         timeout=aiohttp.ClientTimeout(total=client.timeout), trust_env=False
                     ) as http:
                         async with http.post(

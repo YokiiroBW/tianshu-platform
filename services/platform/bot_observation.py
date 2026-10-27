@@ -1728,7 +1728,7 @@ class BotObservation:
         except (Fault, OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
             await self._observe_failure(row, exc)
 
-    async def close(self):
+    async def quiesce(self):
         self._closed = True
         async with self._pump_lock:
             batches = list(self._batches.values())
@@ -1743,3 +1743,6 @@ class BotObservation:
                 self._local_tasks.difference_update(tasks)
             self._batches.clear()
             self._reply_cursors.clear()
+
+    async def close(self):
+        await self.quiesce()

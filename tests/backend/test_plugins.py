@@ -398,6 +398,38 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             self.host.repository.state(instance["id"], "get", {"key": "count"})["value"], 1
         )
 
+    async def test_quiesce_drains_accepted_action_and_child_without_closing_worker(self):
+        source = package(
+            self.root / "quiesce-source",
+            version="1.1.0",
+            code=CODE.replace(
+                "await asyncio.sleep(60)\n        return {}",
+                "await asyncio.sleep(.15)\n"
+                "        return await call.ctx.actions.invoke('increment', {}, "
+                "intent_key=call.intent_key+':child')",
+            ),
+        )
+        await self.install(source)
+        current = await self.host.instance(self.instance["id"])
+        await self.host.upgrade(current["id"], "1.1.0", current["revision"])
+        call = await self.host.executions.invoke(current["id"], "wait", {}, "drain-parent", "admin")
+        for _ in range(100):
+            if self.host.repository.call(call["id"])["checkpoint"]:
+                break
+            await asyncio.sleep(0.01)
+        self.assertIsNotNone(self.host.repository.call(call["id"])["checkpoint"])
+        process = self.host.workers[current["id"]][0]
+        await self.host.quiesce()
+        self.assertTrue(self.host.scheduler_task.done())
+        self.assertIs(self.host.workers[current["id"]][0], process)
+        result = self.host.repository.call(call["id"])
+        self.assertEqual(result["execution"], "succeeded")
+        child = self.host.repository.call(result["result"]["invocation_id"])
+        self.assertEqual(child["execution"], "succeeded")
+        self.assertEqual(child["result"], 1)
+        self.assertFalse(self.host.executions.running)
+        self.assertTrue(self.host.started)
+
     async def schedule_pair(self):
         for name in ("count-a", "count-b"):
             await self.host.scheduler.manage(

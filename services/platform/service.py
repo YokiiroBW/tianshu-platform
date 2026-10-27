@@ -296,11 +296,15 @@ def validate_settings(settings, *, runtime=None):
 
 
 class Platform:
-    def __init__(self, settings, *, clock=time.time):
+    def __init__(self, settings, *, clock=time.time, internal_clients=None):
         # A pending PG binding is already authoritative: probes refuse it, and only
         # normal startup may resume migration. Validation then uses actual PG handles.
         require(isinstance(settings, dict), "invalid_input", 400)
         require(set(settings) <= SETTINGS_KEYS, "invalid_input", 400)
+        from .transport import client_factories
+
+        self.internal_clients = internal_clients
+        self.client_factories = client_factories(internal_clients)
         require(
             isinstance(settings.get("database_path"), str) and bool(settings["database_path"]),
             "invalid_input",
@@ -339,7 +343,15 @@ class Platform:
             if group_reads.get("enabled", False)
             else None,
         )
-        self.sources = Sources(self.store, self.auth, self.contracts, self.origins, settings, clock)
+        self.sources = Sources(
+            self.store,
+            self.auth,
+            self.contracts,
+            self.origins,
+            settings,
+            clock,
+            session_factory=self.client_factories["companion"],
+        )
         self.origins.input_entries = self.sources.entries
         self.settings = settings
         from .memory_proofs import MemoryProofs
@@ -513,7 +525,7 @@ class Platform:
         self.local_work.close()
         self.storage_runtime.close()
 
-    def persona_reader(self):
+    def persona_reader(self, *, session_factory=None):
         """The one upstream client this deployment's page may read through, or `None`.
 
         The page's dependency is this client and nothing else: it is built here, where the verified
@@ -528,4 +540,5 @@ class Platform:
             self.persona_connections[connection_id],
             self.personas["candidate"],
             reserved=self.other_credentials,
+            session_factory=session_factory or self.client_factories["companion"],
         )

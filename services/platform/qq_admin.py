@@ -77,6 +77,7 @@ def validate_profiles_configuration(settings, other_credentials):
 
 
 async def observe_alias(platform, body):
+    session_factory = getattr(platform, "client_factories", {}).get("memory")
     c = platform.settings.get("qq_alias_memory")
     if (
         c is None
@@ -102,8 +103,8 @@ async def observe_alias(platform, body):
         "observed_at": body["sent_at"],
     }
     try:
-        context = ssl.create_default_context(cafile=c.get("ca_file"))
-        async with aiohttp.ClientSession(trust_env=False) as client:
+        context = None if session_factory else ssl.create_default_context(cafile=c.get("ca_file"))
+        async with (session_factory or aiohttp.ClientSession)(trust_env=False) as client:
             async with client.post(
                 c["base_url"].rstrip("/") + "/internal/v1/identity/qq-alias",
                 json=payload,
@@ -159,6 +160,7 @@ def _scope_list(value, prefix):
 class QQAdmin:
     def __init__(self, platform):
         self.p = platform
+        self.session_factory = getattr(platform, "client_factories", {}).get("memory")
         self.profiles_config = platform.settings.get("web_qq_profiles")
         self.path = str(platform.settings["database_path"]) + ".qq-admin.sqlite"
         self.database = bind_database(
@@ -381,8 +383,12 @@ class QQAdmin:
         require(token is not None, "dependency_unavailable", 503)
         request_id = "qq-profile:" + uuid.uuid4().hex
         try:
-            context = ssl.create_default_context(cafile=c.get("ca_file"))
-            async with aiohttp.ClientSession(trust_env=False) as client:
+            context = (
+                None
+                if self.session_factory
+                else ssl.create_default_context(cafile=c.get("ca_file"))
+            )
+            async with (self.session_factory or aiohttp.ClientSession)(trust_env=False) as client:
                 async with client.post(
                     c["base_url"].rstrip("/") + "/internal/v1/identity/qq-profiles",
                     json={"schema_version": 1, "request_id": request_id, **body},

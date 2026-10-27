@@ -28,8 +28,9 @@ RESPONSES = {
 
 
 class WebContent:
-    def __init__(self, platform, console):
+    def __init__(self, platform, console, *, session_factory=None):
         self.p, self.console = platform, console
+        self.session_factory = session_factory
 
     @asynccontextmanager
     async def principal(self, actor, request_id, session):
@@ -62,10 +63,14 @@ class WebContent:
         require(operation in set(RESPONSES) | {"original", "upload"}, "invalid_input", 400)
         config, token = self.config()
         target = "uploads/" + upload_id if operation == "upload" else operation
-        tls = ssl.create_default_context(cafile=config.get("ca_file"))
+        tls = (
+            None
+            if self.session_factory
+            else ssl.create_default_context(cafile=config.get("ca_file"))
+        )
         try:
             async with (
-                aiohttp.ClientSession(
+                (self.session_factory or aiohttp.ClientSession)(
                     trust_env=False, timeout=aiohttp.ClientTimeout(total=30)
                 ) as client,
                 client.request(

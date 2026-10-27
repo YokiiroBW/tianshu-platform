@@ -33,6 +33,22 @@ from web_fixtures import PASSWORD
 
 
 class MediaRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quiesce_stops_producers_without_closing_source_client_or_ledger(self):
+        import asyncio
+
+        await self.media.connector.start()
+        session = self.media.connector.session
+        self.media.background.start("quiesce-loop", asyncio.Event().wait)
+        await self.media.quiesce()
+        self.assertFalse(self.media.background.tasks)
+        self.assertIs(self.media.connector.session, session)
+        self.assertFalse(session.closed)
+        resolved = await self.media.connector.resolve(BV, with_formats=False)
+        self.assertEqual(resolved["video"]["bvid"], BV)
+        self.assertIsInstance(self.media.repo.list("subscription"), list)
+        await self.media.close()
+        self.assertTrue(session.closed)
+
     async def test_runtime_health_detects_a_stopped_media_background_loop(self):
         import asyncio
 

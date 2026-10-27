@@ -14,9 +14,10 @@ from .sources_current import CurrentReads
 
 
 class Sources:
-    def __init__(self, store, auth, contracts, origins, settings, clock):
+    def __init__(self, store, auth, contracts, origins, settings, clock, *, session_factory=None):
         self.store, self.auth, self.contracts = store, auth, contracts
         self.origins, self.clock = origins, clock
+        self.session_factory = session_factory
         self.association_consent = None
         self.entries = copy.deepcopy(settings.get("input_entries", {}))
         self.core = copy.deepcopy(settings.get("core"))
@@ -790,7 +791,9 @@ class Sources:
                 error = Fault("dependency_unavailable", 503)
             error.source_not_started = True
             raise error
-        response = await core_post(self.core, ingest, self.contracts)
+        response = await core_post(
+            self.core, ingest, self.contracts, session_factory=self.session_factory
+        )
         await self.store.run_local(self._confirm_dispatch, header, ticket, response)
         return response
 
@@ -808,7 +811,9 @@ class Sources:
         )
         ingest = prepared["ingest"]
         require(epoch(ingest["command"]["deadline_at"]) > self.clock(), "timeout", 408)
-        response = await core_post(self.core, ingest, self.contracts)
+        response = await core_post(
+            self.core, ingest, self.contracts, session_factory=self.session_factory
+        )
         await self.store.run_local(self._confirm_dispatch, header, prepared["ticket"], response)
         return response
 

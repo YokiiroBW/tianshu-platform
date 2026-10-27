@@ -21,8 +21,9 @@ def timestamp(value):
 
 
 class Client:
-    def __init__(self, config, contract, reserved):
+    def __init__(self, config, contract, reserved, *, session_factory=None):
         self.config, self.contract, self.reserved = config, contract, reserved
+        self.session_factory = session_factory
 
     def credential(self):
         token = secret(self.config["token_env"])
@@ -39,10 +40,14 @@ class Client:
     async def call(self, operation, payload):
         field = "history" if operation == "history" else "projection"
         token = self.credential()
-        tls = ssl.create_default_context(cafile=self.config.get("ca_file"))
+        tls = (
+            None
+            if self.session_factory
+            else ssl.create_default_context(cafile=self.config.get("ca_file"))
+        )
         sent = False
         try:
-            async with aiohttp.ClientSession(
+            async with (self.session_factory or aiohttp.ClientSession)(
                 trust_env=False,
                 timeout=aiohttp.ClientTimeout(total=self.config.get("timeout_seconds", 5)),
             ) as client:

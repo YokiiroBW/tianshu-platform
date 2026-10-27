@@ -9,6 +9,38 @@ from services.platform.local_work import LocalWork
 
 
 class LocalWorkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_drain_waits_for_running_cancelled_work_and_keeps_callback_admission(self):
+        work = LocalWork(workers=2, capacity=2)
+        entered, release = threading.Event(), threading.Event()
+
+        def operation():
+            entered.set()
+            release.wait(5)
+
+        owner = asyncio.create_task(work.run(operation))
+        draining = None
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+            owner.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await owner
+            draining = asyncio.create_task(work.drain())
+            await asyncio.sleep(0)
+            self.assertFalse(draining.done())
+            self.assertEqual(await work.run(lambda: "callback"), "callback")
+            self.assertFalse(draining.done())
+            release.set()
+            await draining
+            self.assertEqual(work.active, 0)
+            self.assertEqual(await work.run(lambda: "still open"), "still open")
+            self.assertFalse(work._idle_waiters)
+        finally:
+            release.set()
+            await asyncio.gather(
+                *[task for task in (owner, draining) if task], return_exceptions=True
+            )
+            work.close()
+
     async def test_settled_cancellation_keeps_capacity_until_the_one_write_finishes(self):
         work = LocalWork(workers=1, capacity=1)
         entered, release = threading.Event(), threading.Event()

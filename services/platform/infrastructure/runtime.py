@@ -84,6 +84,22 @@ class Infrastructure:
         await self.control.start()
         self.pump = asyncio.create_task(self._pump(), name="infrastructure-pump")
 
+    async def quiesce(self):
+        self.started = False
+        if self.pump:
+            self.pump.cancel()
+            await asyncio.gather(self.pump, return_exceptions=True)
+        await self.control.quiesce()
+        tasks = [self.catalog_job] if self.catalog_job else []
+        tasks.extend(item[1] for item in self.jobs.values())
+        tasks.extend(self.log_jobs.values())
+        await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+        while self.pending_local:
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tuple(self.pending_local)),
+                return_exceptions=True,
+            )
+
     async def close(self):
         self.started = False
         await self.control.close()

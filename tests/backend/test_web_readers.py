@@ -354,7 +354,8 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
             "state": "queued",
         }
 
-        async def accepted(*args):
+        async def accepted(*args, session_factory=None):
+            self.assertIsNone(session_factory)
             self.assertEqual(len(self.calls), 1, "actor read must precede management")
             return receipt
 
@@ -372,7 +373,8 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(error.exception.status, 404)
                 remote.assert_not_called()
 
-        async def revoked(*args):
+        async def revoked(*args, session_factory=None):
+            self.assertIsNone(session_factory)
             self.principal["actions"].remove("life.read")
             return receipt
 

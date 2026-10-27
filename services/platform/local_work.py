@@ -40,6 +40,7 @@ class LocalWork:
         self.closed = False
         self.lock = threading.Lock()
         self._waiters = deque()
+        self._idle_waiters = set()
 
     @staticmethod
     def _wake(waiter):
@@ -124,6 +125,23 @@ class LocalWork:
         with self.lock:
             self.active -= 1
             self._wake_next()
+            if not self.active:
+                for waiter in self._idle_waiters:
+                    self._notify(waiter)
+
+    async def drain(self):
+        """Wait for accepted local work without closing callback admission or the store."""
+        while True:
+            with self.lock:
+                if not self.active:
+                    return
+                waiter = asyncio.get_running_loop().create_future()
+                self._idle_waiters.add(waiter)
+            try:
+                await waiter
+            finally:
+                with self.lock:
+                    self._idle_waiters.discard(waiter)
 
     def close(self):
         with self.lock:

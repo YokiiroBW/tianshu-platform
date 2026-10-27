@@ -73,6 +73,8 @@ class PluginManager:
             settings.get("plugins", {}).get("package_directory", str(anchor) + ".plugins")
         )
         self.workers, self.locks, self.background = {}, defaultdict(asyncio.Lock), set()
+        self.installations = set()
+        self.scheduler_task = None
         self.operations_lock = asyncio.Lock()
         self.installation_lock = asyncio.Lock()
         self.owner_busy = False
@@ -150,7 +152,7 @@ class PluginManager:
                     pass
         if self.comic_files is not None:
             await self.ensure_comic_plugin()
-        self.spawn(self.scheduler.run())
+        self.scheduler_task = self.spawn(self.scheduler.run())
 
     def spawn(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -162,6 +164,16 @@ class PluginManager:
         if not self.started:
             await self.start()
         require(self.started and not self.closing, "plugin_host_busy", 409)
+
+    async def quiesce(self):
+        # The host has stopped new root ingress. Existing invocations retain
+        # their worker, callbacks and child-job admission while they settle.
+        if self.scheduler_task:
+            self.scheduler_task.cancel()
+            await asyncio.gather(self.scheduler_task, return_exceptions=True)
+        while self.executions.running or self.installations:
+            tasks = set(self.executions.running.values()) | self.installations
+            await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
 
     async def close(self):
         self.closing = True
@@ -219,6 +231,8 @@ class PluginManager:
             }
             await self.local(self.repository.put, "operations", operation)
             task = self.spawn(self._install(operation, source))
+            self.installations.add(task)
+            task.add_done_callback(self.installations.discard)
         if wait:
             await task
         return operation

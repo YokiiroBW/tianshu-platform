@@ -27,6 +27,7 @@ def is_placeholder_actor(actor_id, role):
 class RoleRuntime:
     def __init__(self, platform):
         self.p = platform
+        self.client_factories = getattr(platform, "client_factories", {})
         self.config = platform.settings.get("role_runtime")
         self.path = platform.store.path + ".roles.sqlite"
         self.database = bind_database(
@@ -196,7 +197,21 @@ class RoleRuntime:
 
     async def _remote(self, settings, path, payload):
         # Kept as the coordinator's fault-injection seam for durable-stage tests.
-        return await management_call(settings, path, payload)
+        target = next(
+            (
+                name
+                for name, config in (
+                    ("companion", self.p.settings.get("core")),
+                    ("memory", self.config.get("memory")),
+                    ("knowledge", self.config.get("knowledge")),
+                )
+                if settings is config
+            ),
+            None,
+        )
+        return await management_call(
+            settings, path, payload, session_factory=self.client_factories.get(target)
+        )
 
     async def _knowledge_apply(self, row, *, enabled, cancelling=False):
         """Synchronize the independent original owner's existing RoleGrants journal."""

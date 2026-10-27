@@ -110,8 +110,9 @@ async def prove(document):
 class PersonaClient:
     """One registered connection: address, credential variable, CA, timeout and the candidate."""
 
-    def __init__(self, connection_id, entry, candidate, reserved=()):
+    def __init__(self, connection_id, entry, candidate, reserved=(), *, session_factory=None):
         self.connection_id = connection_id
+        self.session_factory = session_factory
         self.base_url = entry["base_url"].rstrip("/")
         self.token_env = entry["token_env"]
         self.ca_file = entry.get("ca_file")
@@ -140,6 +141,8 @@ class PersonaClient:
         return value
 
     def _tls(self):
+        if self.session_factory is not None:
+            return None
         try:
             return ssl.create_default_context(cafile=self.ca_file)
         except (OSError, ssl.SSLError):
@@ -173,7 +176,7 @@ class PersonaClient:
                     token = self.credential()
                     sent = True
                     await diagnostics.outbound("started")
-                    async with aiohttp.ClientSession(
+                    async with (self.session_factory or aiohttp.ClientSession)(
                         timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=False
                     ) as session:
                         async with session.post(

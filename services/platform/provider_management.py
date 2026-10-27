@@ -80,7 +80,8 @@ def _client_id(body):
 
 
 class ProviderManagement:
-    def __init__(self, platform, console):
+    def __init__(self, platform, console, *, session_factory=None):
+        self.session_factory = session_factory
         self.platform = platform
         self.console = console
         self.catalog = platform.provider_catalog
@@ -311,11 +312,14 @@ class ProviderManagement:
             body["payload"] = payload
         try:
             timeout = aiohttp.ClientTimeout(total=20)
-            async with aiohttp.ClientSession(
+            options = (
+                {"cookie_jar": aiohttp.DummyCookieJar()} if self.session_factory is None else {}
+            )
+            async with (self.session_factory or aiohttp.ClientSession)(
                 timeout=timeout,
                 trust_env=False,
-                cookie_jar=aiohttp.DummyCookieJar(),
                 auto_decompress=False,
+                **options,
             ) as client:
                 async with client.post(
                     config["gateway_url"] + "/internal/v1/provider-self-service/" + operation,

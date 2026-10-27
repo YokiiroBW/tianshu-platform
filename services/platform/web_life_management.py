@@ -12,8 +12,9 @@ from .transport import CoreFault, management_call
 
 
 class WebLifeManagement:
-    def __init__(self, platform, console):
+    def __init__(self, platform, console, *, session_factory=None):
         self.p, self.console = platform, console
+        self.session_factory = session_factory
 
     def available(self):
         principal = self.p.auth.principals.get(self.console.config["principal"], {})
@@ -185,8 +186,12 @@ class WebLifeManagement:
             else 1024 * 1024
         )
         try:
-            tls = ssl.create_default_context(cafile=config.get("ca_file"))
-            async with aiohttp.ClientSession(
+            tls = (
+                None
+                if self.session_factory
+                else ssl.create_default_context(cafile=config.get("ca_file"))
+            )
+            async with (self.session_factory or aiohttp.ClientSession)(
                 trust_env=False,
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as client:
@@ -480,6 +485,7 @@ class WebLifeManagement:
             self.p.settings["core"],
             "/internal/v1/life-generation/retry",
             body,
+            session_factory=self.session_factory,
         )
         await self.p.local_work.run(self.guard, session)
         await self.console.life.route("/api/web/life/today", actor, session)

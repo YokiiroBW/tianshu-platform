@@ -28,6 +28,7 @@ from .service_credentials import PATH as SERVICE_CREDENTIALS
 from .web_console import CONSOLE_AUTH
 
 PLATFORM = web.AppKey("platform", object)
+BACKGROUND = web.AppKey("platform_background", dict)
 BODY = web.RequestKey("body", dict)
 DELIVERY_MUTATION_STARTED = web.RequestKey("delivery_mutation_started", Event)
 NATIVE_SNAPSHOT = "/internal/v1/model-config/native/snapshot"
@@ -79,7 +80,36 @@ def create_console(platform):
     return WebConsole(platform)
 
 
-def create_app(platform, probe=None, *, console=None, public=False):
+async def quiesce(app):
+    """Stop root producers while keeping callback routes, clients and stores available.
+
+    The host stops external root admission first and owns the total shutdown
+    deadline. Its later exchange drain precedes normal AppRunner cleanup.
+    """
+    state = app[BACKGROUND]
+    if state["task"] is None:
+
+        async def stop():
+            results = await asyncio.gather(
+                *(operation() for operation in reversed(state["stops"])),
+                return_exceptions=True,
+            )
+            await app[PLATFORM].local_work.drain()
+            errors = [result for result in results if isinstance(result, BaseException)]
+            if errors:
+                raise BaseExceptionGroup("Platform background quiesce failed", errors)
+
+        state["task"] = asyncio.create_task(stop())
+    await asyncio.shield(state["task"])
+
+
+async def _stop_pumps(tasks):
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def create_app(platform, probe=None, *, console=None, public=False, trusted_local=None):
     console = console or create_console(platform)
     require(not public or console.access.current is not None, "invalid_input", 400)
     native_open = platform.native_config_http is True
@@ -347,6 +377,10 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 )
                 if console.access.current["mode"] == "https":
                     require(request.secure)
+            elif trusted_local is not None and trusted_local(request):
+                # Only explicit host ownership attests a local call. Neither a
+                # header nor an origin can assert it, including on the public UI.
+                pass
             elif platform.auth.mode == "local_rehearsal":
                 require(request.remote and ipaddress.ip_address(request.remote).is_loopback)
             else:
@@ -764,10 +798,12 @@ def create_app(platform, probe=None, *, console=None, public=False):
 
     app = web.Application(middlewares=[boundary], client_max_size=45 * 1024 * 1024)
     app[PLATFORM] = platform
+    app[BACKGROUND] = {"stops": [], "task": None}
     if not public and hasattr(platform, "plugins"):
 
         async def plugin_context(app):
             await platform.plugins.start()
+            app[BACKGROUND]["stops"].append(platform.plugins.quiesce)
             try:
                 yield
             finally:
@@ -779,6 +815,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
 
         async def infrastructure_context(app):
             await infrastructure.start()
+            app[BACKGROUND]["stops"].append(infrastructure.quiesce)
             try:
                 yield
             finally:
@@ -789,6 +826,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
 
         async def media_context(app):
             await platform.media.start()
+            app[BACKGROUND]["stops"].append(platform.media.quiesce)
             try:
                 yield
             finally:
@@ -822,6 +860,12 @@ def create_app(platform, probe=None, *, console=None, public=False):
                 asyncio.create_task(pump_adapters()),
                 asyncio.create_task(pump_observations()),
             ]
+
+            async def stop():
+                await _stop_pumps(tasks)
+                await platform.bot_observation.quiesce()
+
+            app[BACKGROUND]["stops"].append(stop)
             try:
                 yield
             finally:
@@ -847,6 +891,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                     await asyncio.sleep(2)
 
             task = asyncio.create_task(pump())
+            app[BACKGROUND]["stops"].append(lambda: _stop_pumps([task]))
             try:
                 yield
             finally:
@@ -863,6 +908,7 @@ def create_app(platform, probe=None, *, console=None, public=False):
                     await asyncio.sleep(5)
 
             task = asyncio.create_task(pump())
+            app[BACKGROUND]["stops"].append(lambda: _stop_pumps([task]))
             try:
                 yield
             finally:

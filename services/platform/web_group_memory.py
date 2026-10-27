@@ -201,13 +201,15 @@ class GroupMemory:
             "configure_url": "#/settings/3",
         }
 
-    async def _call(self, peer, path, request, *, limit):
+    async def _call(self, peer, path, request, *, limit, session_factory=None):
         _, timeout = core_settings(peer)
         token = secret(peer["token_env"])
         require(token is not None, "dependency_unavailable", 503)
         try:
-            tls = ssl.create_default_context(cafile=peer.get("ca_file"))
-            async with aiohttp.ClientSession(
+            tls = (
+                None if session_factory else ssl.create_default_context(cafile=peer.get("ca_file"))
+            )
+            async with (session_factory or aiohttp.ClientSession)(
                 timeout=aiohttp.ClientTimeout(total=timeout), trust_env=False
             ) as client:
                 async with client.post(
@@ -272,7 +274,13 @@ class GroupMemory:
             for key, value in self.memory.config.items()
             if key in {"base_url", "token_env", "timeout_seconds", "ca_file"}
         }
-        answer = await self._call(peer, "/internal/v1/memory/browser/topics", request, limit=262144)
+        answer = await self._call(
+            peer,
+            "/internal/v1/memory/browser/topics",
+            request,
+            limit=262144,
+            session_factory=self.memory.session_factory,
+        )
         self.topics.response("response", answer)
         require(
             all(answer[key] == request[key] for key in ("scope", "request_id", "subject")),
@@ -311,7 +319,11 @@ class GroupMemory:
                     request = {**base, "mapping_id": mapping, "items": batch}
                     self.archive.check("request", request)
                     answer = await self._call(
-                        peer, "/internal/v1/memory/browser/archive-check", request, limit=262144
+                        peer,
+                        "/internal/v1/memory/browser/archive-check",
+                        request,
+                        limit=262144,
+                        session_factory=self.memory.session_factory,
                     )
                     self.archive.response("response", answer)
                     require(

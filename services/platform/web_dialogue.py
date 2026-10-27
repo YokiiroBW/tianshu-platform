@@ -13,8 +13,9 @@ from .transport import CoreFault, core_web_call
 
 
 class WebDialogue:
-    def __init__(self, platform):
+    def __init__(self, platform, *, session_factory=None):
         self.p = platform
+        self.session_factory = session_factory
         self.input_entries = list(platform.settings.get("web", {}).get("input_entries", []))
         self.path = platform.store.path + ".web-inputs.sqlite"
         self.database = bind_database(
@@ -133,6 +134,7 @@ class WebDialogue:
             query,
             self.p.contracts,
             "web-conversation#snapshot_response",
+            session_factory=self.session_factory,
         )
         require(
             result["request_id"] == query["query"]["request_id"]
@@ -309,6 +311,7 @@ class WebDialogue:
             request,
             self.p.contracts,
             "conversation#cancel_response",
+            session_factory=self.session_factory,
         )
 
     def _check_origin(self, reference):

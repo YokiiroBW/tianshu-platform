@@ -222,6 +222,11 @@ class Media:
                 "worker_" + str(index), self.worker.pump, index, ("video", "audio")
             )
 
+    async def quiesce(self):
+        # Existing loops settle their cancellation/lease receipts. Their clients
+        # and ledger remain available to in-flight HTTP callbacks until close.
+        await self.background.close()
+
     async def close(self):
         if self.config is None:
             await self.background.close()
