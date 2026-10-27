@@ -131,6 +131,28 @@ class OwnedAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.finished.is_set())
         self.assertFalse(self.exchange._calls)
 
+    async def test_owned_instance_rebases_persisted_network_alias_without_rewriting_row(self):
+        self.adapters.bind_owned_adapter(
+            "owned-sdk-instance",
+            self.exchange.session_factory("onebot"),
+            origin="http://onebot.internal:18765",
+        )
+        row = {
+            **self.row,
+            "id": "persisted-private-row",
+            "instance_id": "owned-sdk-instance",
+            "address": "http://192.0.2.10:18765",
+        }
+        before = dict(row)
+        with patch(
+            "services.platform.bot_adapters.reviewed_pins",
+            side_effect=AssertionError("owned SDK must not contact the persisted network alias"),
+        ):
+            result = await self.adapters._plugin(row, "/capabilities", {})
+        self.assertTrue(result["received"])
+        self.assertEqual(row, before)
+        self.assertEqual(len(self.requests), 1)
+
     async def test_final_app_cleanup_waits_for_cancelled_waiters_database_write(self):
         runner = web.AppRunner(create_app(self.p), access_log=None)
         await runner.setup()

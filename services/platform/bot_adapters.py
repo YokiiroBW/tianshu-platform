@@ -91,11 +91,13 @@ class BotAdapters:
                     row["pending"] = {"desired": True, "request_id": row["last_request_id"]}
                     self.catalog.put(row)
 
-    def bind_owned_adapter(self, instance_id, session_factory):
+    def bind_owned_adapter(self, instance_id, session_factory, *, origin=None):
         """Bind a host-owned SDK identity, including its future conversation rows."""
         _id(instance_id)
         require(callable(session_factory), "invalid_input", 400)
-        self.owned_adapter_instances[instance_id] = session_factory
+        if origin is not None:
+            origin = _url(origin, "home", True)
+        self.owned_adapter_instances[instance_id] = (session_factory, origin)
 
     def _row_lock(self, row_id):
         _id(row_id)
@@ -366,8 +368,13 @@ class BotAdapters:
         # Only an explicitly owned connection can use a local module. All other
         # SDKs retain the original DNS/pin/TLS checks, even at the same address.
         factory = self.adapter_clients.get(row["id"])
+        address = row["address"]
         if factory is None:
-            factory = self.owned_adapter_instances.get(row.get("instance_id"))
+            binding = self.owned_adapter_instances.get(row.get("instance_id"))
+            if binding is not None:
+                factory, origin = binding
+                if origin is not None:
+                    address = origin
         if factory is None:
             current = await reviewed_pins(row["address"], self.config["allowed_cidrs"])
             require(current == row["pins"], "external_target_changed", 503)
@@ -376,7 +383,7 @@ class BotAdapters:
             # This is the final synchronous admission point before starting the SDK RPC.
             require(self._live(row), "connection_disabled", 409)
         return await self._call(
-            row["address"],
+            address,
             row["access_key"],
             row["pins"],
             row["ca_pem"],
