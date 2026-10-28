@@ -32,7 +32,9 @@ class GroupModesTests(unittest.IsolatedAsyncioTestCase):
         self.p.bots = SimpleNamespace(slots={}, config=None)
         self.p.sources = SimpleNamespace(entries={})
         self.row["group_policy"] = dict(
-            version=2, default=group_policy.rule("observe", "actor:a"), groups={}
+            version=2,
+            default=group_policy.rule("disabled", "actor:a"),
+            groups={"20002": group_policy.rule("observe", "actor:a")},
         )
         self.row.update(group_default_revision=1, group_revisions={})
         self.owner.catalog.put(self.row)
@@ -40,9 +42,9 @@ class GroupModesTests(unittest.IsolatedAsyncioTestCase):
     def test_legacy_mapping_never_enables_active_and_private_stop_is_first(self):
         for old, expected, special in [
             (fixtures.policy(observe=False), "disabled", "disabled"),
-            (fixtures.policy(), "observe", "observe"),
-            (fixtures.policy(mode="whitelist", names=["7"]), "observe", "reply"),
-            (fixtures.policy(mode="blacklist", names=["7"]), "reply", "observe"),
+            (fixtures.policy(), "disabled", "disabled"),
+            (fixtures.policy(mode="whitelist", names=["7"]), "disabled", "reply"),
+            (fixtures.policy(mode="blacklist", names=["7"]), "disabled", "observe"),
         ]:
             with self.subTest(old=old):
                 new = group_policy.normalize(old)
@@ -78,7 +80,9 @@ class GroupModesTests(unittest.IsolatedAsyncioTestCase):
                 saving=True,
             )
         literal = dict(
-            version=2, default=group_policy.rule("reply", "actor:a", ["[a].*"]), groups={}
+            version=2,
+            default=group_policy.rule("disabled"),
+            groups={"7": group_policy.rule("reply", "actor:a", ["[a].*"])},
         )
         self.assertFalse(group_policy.decision(literal, "7", False, "aaaa")["reply_triggered"])
         self.assertTrue(
@@ -119,7 +123,9 @@ class GroupModesTests(unittest.IsolatedAsyncioTestCase):
             ("active", True, "ask", (1, 1, 0)),
         ]:
             with self.subTest(mode=mode, mentioned=mentioned, text=text):
-                self.row["group_policy"]["default"] = group_policy.rule(mode, "actor:a", ["关键词"])
+                self.row["group_policy"]["groups"]["20002"] = group_policy.rule(
+                    mode, "actor:a", ["关键词"]
+                )
                 self.owner.catalog.put(self.row)
                 event = {
                     **self.event(native=mode + str(mentioned) + str(len(text))),
@@ -175,12 +181,13 @@ class GroupModesTests(unittest.IsolatedAsyncioTestCase):
             record.assert_not_called()
 
     async def test_all_disabled_account_is_idle_after_apply_and_old_host_is_incompatible(self):
-        self.row["group_policy"]["default"]["mode"] = "disabled"
+        self.row["group_policy"]["groups"] = {}
         self.row["private_policy"]["observe"] = False
         self.owner.catalog.put(self.row)
         with patch.object(self.owner, "_plugin", AsyncMock()) as peer:
             await self.owner.pump_once()
-            peer.assert_not_awaited()
+            self.assertFalse(any(call.args[1] == "poll" for call in peer.await_args_list))
+            await self.owner.groups.close()
         with patch.object(
             self.owner,
             "_plugin",
@@ -207,7 +214,7 @@ class GroupModesTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(current(self.owner, frame)["processing_enabled"])
         stopped = copy.deepcopy(self.row)
-        stopped["group_policy"]["default"]["mode"] = "disabled"
+        stopped["group_policy"]["groups"]["20002"]["mode"] = "disabled"
         self.owner.catalog.put(stopped)
         self.assertEqual(
             (current(self.owner, frame)["mode"], current(self.owner, frame)["code"]),
@@ -218,14 +225,16 @@ class GroupModesTests(unittest.IsolatedAsyncioTestCase):
                 "Bearer memory", dict(operation="segment", **frame, sources=[source])
             )["valid"]
         )
-        stopped["group_policy"]["default"] = group_policy.rule("observe")
+        stopped["group_policy"]["groups"]["20002"] = group_policy.rule("observe")
         self.owner.catalog.put(stopped)
         self.assertEqual(current(self.owner, frame)["code"], "actor_unbound")
-        stopped["group_policy"]["default"] = group_policy.rule("observe", "actor:b")
+        stopped["group_policy"]["groups"]["20002"] = group_policy.rule("observe", "actor:b")
         self.owner.catalog.put(stopped)
         self.assertEqual(current(self.owner, frame)["code"], "actor_changed")
 
     def test_processing_channel_resolves_actual_owner_and_batch_keeps_each_result(self):
+        self.row["group_policy"]["groups"]["99"] = group_policy.rule("observe", "actor:a")
+        self.owner.catalog.put(self.row)
         channel = self.owner.segment_channel(self.row, "group:20002", "actor:a")
         frame = dict(channel=channel, actor_id="actor:a")
         other = dict(

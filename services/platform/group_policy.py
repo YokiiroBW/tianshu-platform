@@ -54,10 +54,14 @@ def validate(value, *, saving=False):
 
 
 def normalize(value):
-    """Read persisted old policies deterministically; never infer an active mode."""
+    """Only explicitly configured groups collect content; retain historical ownership."""
     require(isinstance(value, dict), "invalid_input", 400)
     if value.get("version") == 2:
-        return validate(value)
+        result = validate(value)
+        if result["default"]["mode"] != "disabled":
+            result = copy.deepcopy(result)
+            result["default"]["mode"] = "disabled"
+        return result
     require(set(value) == {"observe", "mode", "list", "actor_id"}, "invalid_input", 400)
     require(
         type(value["observe"]) is bool
@@ -77,14 +81,13 @@ def normalize(value):
     actor = value["actor_id"]
     if not value["observe"]:
         return {"version": 2, "default": rule("disabled", actor), "groups": {}}
-    default = "reply" if value["mode"] == "blacklist" else "observe"
     other = "reply" if value["mode"] == "whitelist" else "observe"
     groups = (
         {}
         if value["mode"] == "observe_only"
         else {key: rule(other, actor) for key in value["list"]}
     )
-    return validate({"version": 2, "default": rule(default, actor), "groups": groups})
+    return validate({"version": 2, "default": rule("disabled", actor), "groups": groups})
 
 
 def effective(value, group):
@@ -93,7 +96,9 @@ def effective(value, group):
     policy = value if value.get("version") == 2 else normalize(value)
     target = group.removeprefix("group:")
     require(GROUP_ID.fullmatch(target), "invalid_input", 400)
-    return policy["groups"].get(target, policy["default"])
+    if target in policy["groups"]:
+        return policy["groups"][target]
+    return {**policy["default"], "mode": "disabled"}
 
 
 def decision(value, group, mentioned=False, text=""):
@@ -114,13 +119,11 @@ def decision(value, group, mentioned=False, text=""):
 
 def observing(value):
     policy = normalize(value)
-    return any(
-        item["mode"] != "disabled" for item in [policy["default"], *policy["groups"].values()]
-    )
+    return any(item["mode"] != "disabled" for item in policy["groups"].values())
 
 
 def default():
-    return {"version": 2, "default": rule(), "groups": {}}
+    return {"version": 2, "default": rule("disabled"), "groups": {}}
 
 
 def copy_policy(value):

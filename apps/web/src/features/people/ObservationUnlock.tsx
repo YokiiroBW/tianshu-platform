@@ -4,9 +4,15 @@ import { integrationPost, readFailure } from "../../app/integrationApi";
 export function ObservationUnlock({
   csrf,
   onUnlocked,
+  title = "解锁会话来源与回复管理",
+  description = "身份目录仍可查看。会话观察沿用机器人管理的密码验证。",
+  buttonLabel = "解锁用户会话",
 }: {
   csrf: string;
   onUnlocked: () => void;
+  title?: string;
+  description?: string;
+  buttonLabel?: string;
 }) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -42,8 +48,8 @@ export function ObservationUnlock({
     >
       <LockKeyhole size={20} aria-hidden="true" />
       <div>
-        <strong>解锁会话来源与回复管理</strong>
-        <p>身份目录仍可查看。会话观察沿用机器人管理的密码验证。</p>
+        <strong>{title}</strong>
+        <p>{description}</p>
         <div className="people-unlock-controls">
           <label className="people-field">
             管理员密码
@@ -57,7 +63,7 @@ export function ObservationUnlock({
             />
           </label>
           <button className="button" disabled={busy || !password}>
-            解锁用户会话
+            {buttonLabel}
           </button>
         </div>
         {error && <p role="alert">{error}</p>}

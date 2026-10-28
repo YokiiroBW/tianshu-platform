@@ -4,7 +4,7 @@ import { Archive, RefreshCw, UsersRound, UserRound } from "lucide-react";
 import { StatusRail } from "../../components/StatusRail";
 import { webFetch } from "../../app/sessionTransport";
 import { requestId } from "../../app/requestId";
-import GroupPolicyEditor, { type GroupPolicy } from "./GroupPolicyEditor";
+import { type GroupPolicy } from "./GroupPolicyEditor";
 import {
   adapterPost,
   type AdapterKind,
@@ -323,7 +323,9 @@ export function BotObservationPanel({
       setKey("");
       setProbe(result);
       setAccount(result.accounts[0]?.id ?? "");
-      setNotice("已检测在线账号。保存后默认观察群聊和私聊，不主动回复。");
+      setNotice(
+        "已检测在线账号。新群默认停用，仅登记基础资料；私聊按原策略观察。",
+      );
     });
   }
 
@@ -348,7 +350,7 @@ export function BotObservationPanel({
       setProbe(null);
       setNotice(
         receipt.connection.state === "ready"
-          ? "账号观察已启用，群聊和私聊均为仅观察。"
+          ? "账号已接入。新群仅登记基础资料，可在群画像页开启；私聊仅观察。"
           : "保存已提交，但插件状态待核对；请刷新后检查积压。",
       );
     });
@@ -422,18 +424,7 @@ export function BotObservationPanel({
   function addToList(conversation: string) {
     const [kind, id] = conversation.split(":");
     if (kind === "group") {
-      if (group)
-        setGroup({
-          ...group,
-          groups: {
-            ...group.groups,
-            [id]: group.groups[id] ?? {
-              ...group.default,
-              keywords: [...group.default.keywords],
-            },
-          },
-        });
-      setNotice("已展开该群配置。选择状态和群角色后保存。");
+      window.location.hash = "#/memory/1";
       return;
     }
     const value = privatePolicy;
@@ -446,9 +437,7 @@ export function BotObservationPanel({
       ],
     };
     setPrivate(updated);
-    setNotice(
-      "已加入待保存白名单。选择默认回复角色后点击“保存群聊与私聊策略”。",
-    );
+    setNotice("已加入待保存白名单。选择默认回复角色后点击“保存私聊策略”。");
   }
 
   async function setHistory(readEnabled: boolean) {
@@ -497,7 +486,7 @@ export function BotObservationPanel({
         </button>
       </div>
       <p className="bot-observation-intro">
-        新连接默认观察已接入账号收到的群聊和私聊并自动建档，默认不搭话。
+        新连接收到群消息时仅登记基础资料。群聊默认停用，可在群画像页逐群开启；私聊默认仅观察。
         天枢仅控制自己的回复，宿主中的其他插件仍可能独立回复。旧精确范围连接不会自动升级。
       </p>
       {error && (
@@ -605,7 +594,7 @@ export function BotObservationPanel({
                 </select>
               </label>
               <button className="button" disabled={busy || !account}>
-                保存并默认仅观察
+                保存账号连接
               </button>
             </form>
           )}
@@ -692,12 +681,11 @@ export function BotObservationPanel({
             {error && <p role="alert">{error}</p>}
             {notice && <p role="status">{notice}</p>}
             <div className="bot-observation-policies">
-              <GroupPolicyEditor
-                value={group}
-                actors={actors}
-                disabled={!unlocked || busy}
-                onChange={setGroup}
-              />
+              <p>
+                群聊状态、负责角色和回复关键词已移至
+                <a href="#/memory/1">用户 → 群画像</a>
+                。未单独配置的群仅登记基础资料，默认停用。
+              </p>
               <p role="status">
                 主机群策略能力：
                 {current.group_policy_version === 2
@@ -732,7 +720,7 @@ export function BotObservationPanel({
                 disabled={!unlocked || busy || current.state === "unknown"}
                 onClick={() => void savePolicy()}
               >
-                保存群聊与私聊策略
+                保存私聊策略
               </button>
             </div>
           </DetailCard>

@@ -358,12 +358,14 @@ class ObservationTests(unittest.TestCase):
             key: decision(policy(), "20002", True, "group")[key]
             for key in ("observe", "reply_permitted", "reply_triggered")
         } == {
-            "observe": True,
+            "observe": False,
             "reply_permitted": False,
             "reply_triggered": False,
         }
         assert not decision(policy(mode="whitelist"), "20002", True, "group")["reply_permitted"]
-        assert decision(policy(mode="blacklist"), "20002", True, "group")["reply_triggered"]
+        assert decision(policy(mode="whitelist", names=["20002"]), "20002", True, "group")[
+            "reply_triggered"
+        ]
         assert not decision(policy(mode="blacklist"), "20002", False, "group")["reply_triggered"]
         assert decision(policy(mode="blacklist"), "30003", False, "private")["reply_triggered"]
 

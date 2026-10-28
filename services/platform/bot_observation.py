@@ -88,6 +88,9 @@ class BotObservation:
         self.database = bind_database(
             getattr(platform, "storage_runtime", None), "bot_observations", self.path
         )
+        from .group_directory import GroupDirectory
+
+        self.groups = GroupDirectory(self)
         if self.catalog:
             with closing(self._db()) as db:
                 db.executescript("""
@@ -635,6 +638,8 @@ class BotObservation:
 
     async def route(self, console, path, body, session):
         require(isinstance(body, dict), "invalid_input", 400)
+        if path == PREFIX + "groups":
+            return await self._local(self.groups.view, console, session, body)
         if path == PREFIX + "view":
             code = self.p.bots._web_code(console, session)
             available = self.catalog is not None and code != "operator_not_authorized"
@@ -648,6 +653,16 @@ class BotObservation:
                 "participation": consumer,
             }
         self._gate(console, session)
+        if path == PREFIX + "group-policy":
+            async with self.lock:
+                row = await self.groups.change(body)
+                entries = await self._local(self.groups.entries)
+                group = next(
+                    item
+                    for item in entries
+                    if item["owner_id"] == row["id"] and item["group_id"] == body["group_id"]
+                )
+                return {"connection": self._project(row), "group": group}
         if path == PREFIX + "create":
             require(
                 set(body) == {"draft_id", "account_id", "name", "client_id"}, "invalid_input", 400
@@ -1608,6 +1623,7 @@ class BotObservation:
                 row = await self._local(self.get, snapshot["id"])
                 if row is None:
                     continue
+                self.groups.schedule(row)
                 if row["pending"]:
                     # Management routes use this same policy lock. Do not race
                     # a newer configure/rebind while the pump applies an intent.
@@ -1731,6 +1747,7 @@ class BotObservation:
     async def quiesce(self):
         self._closed = True
         async with self._pump_lock:
+            await self.groups.close()
             batches = list(self._batches.values())
             for task in batches:
                 task.cancel()

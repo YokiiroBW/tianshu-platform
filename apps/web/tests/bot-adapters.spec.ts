@@ -216,11 +216,9 @@ test("account observation is the default entry without conversation, author or a
     .fill("synthetic-plugin-key-1234567890");
   await observation.getByRole("button", { name: "检测在线账号" }).click();
   await observation.getByLabel("账号观察名称").fill("默认观察");
-  await observation.getByRole("button", { name: "保存并默认仅观察" }).click();
+  await observation.getByRole("button", { name: "保存账号连接" }).click();
   await expect(
-    observation
-      .getByRole("dialog")
-      .getByText("账号观察已启用", { exact: false }),
+    observation.getByRole("dialog").getByText("账号已接入", { exact: false }),
   ).toBeVisible();
   expect(createBody).toMatchObject({
     account_id: account.id,
@@ -351,7 +349,7 @@ test("observation cards render connected, archive, error and locked states", asy
     .getByRole("button", { name: "群聊与私聊策略", exact: true })
     .click();
   await expect(
-    observation.getByRole("group", { name: "逐群状态" }),
+    observation.getByRole("link", { name: "用户 → 群画像" }),
   ).toBeVisible();
   await expect(
     observation.getByRole("group", { name: "私聊策略" }),
@@ -382,7 +380,7 @@ test("observation cards render connected, archive, error and locked states", asy
     .getByRole("button", { name: "群聊与私聊策略", exact: true })
     .click();
   await expect(
-    observation.getByRole("button", { name: "保存群聊与私聊策略" }),
+    observation.getByRole("button", { name: "保存私聊策略" }),
   ).toBeDisabled();
   expect(
     await page.evaluate(
@@ -392,123 +390,6 @@ test("observation cards render connected, archive, error and locked states", asy
   await observation.screenshot({
     path: testInfo.outputPath("observation-locked-error.png"),
   });
-});
-
-test("group four modes keep other groups and show real capability and pending state", async ({
-  page,
-}) => {
-  await signedIn(page);
-  let group = {
-    version: 2,
-    default: {
-      mode: "observe",
-      actor_id: null as string | null,
-      keywords: [] as string[],
-    },
-    groups: {
-      "111": {
-        mode: "observe",
-        actor_id: "xiaotian",
-        keywords: [] as string[],
-      },
-      "222": { mode: "reply", actor_id: "xiaotian", keywords: ["保留"] },
-    },
-  };
-  let saved = false;
-  await page.route("**/api/web/bot-adapters/*", (route) =>
-    json(route, {
-      available: true,
-      unlocked: true,
-      actors: [actor],
-      connections: [],
-    }),
-  );
-  const row = () => ({
-    id: "obs:four",
-    name: "逐群账号",
-    adapter: "nonebot",
-    account_id: account.id,
-    instance_id: "sdk:four",
-    enabled: true,
-    revision: saved ? 3 : 2,
-    host_revision: saved ? 3 : 2,
-    state: saved ? "unknown" : "ready",
-    last_error: saved ? "adapter_incompatible" : null,
-    last_checked_at: null,
-    read_enabled: true,
-    host_pending: 0,
-    host_dropped: 0,
-    group_policy: group,
-    private_policy: {
-      observe: true,
-      mode: "observe_only",
-      list: [],
-      actor_id: null,
-    },
-    pending: saved,
-    group_policy_version: 1,
-    ordinary_claim_available: false,
-  });
-  await page.route("**/api/web/bot-observation/*", (route) => {
-    const op = new URL(route.request().url()).pathname.split("/").pop();
-    if (op === "view")
-      return json(route, {
-        available: true,
-        unlocked: true,
-        connections: [row()],
-        participation: {
-          available: false,
-          reason: "background_not_configured",
-          last_error: null,
-        },
-      });
-    if (op === "policy") {
-      const body = route.request().postDataJSON();
-      group = body.group_policy;
-      saved = true;
-      return json(route, { connection: row() });
-    }
-    throw new Error(`Unexpected ${op}`);
-  });
-  await page.goto("/#/settings/3");
-  const observation = page.getByRole("region", {
-    name: "账号级观察与回复策略",
-  });
-  await observation
-    .getByRole("button", { name: "群聊与私聊策略", exact: true })
-    .click();
-  const mode = observation.getByLabel("群 111状态", { exact: true });
-  await expect(mode.locator("option")).toHaveText([
-    "停用",
-    "仅观察",
-    "启用回复",
-    "主动",
-  ]);
-  await mode.selectOption("active");
-  await observation
-    .getByLabel("群 111关键词", { exact: true })
-    .fill("字面关键词\n[原文].*");
-  await observation.getByRole("button", { name: "保存群聊与私聊策略" }).click();
-  expect(group.groups["111"]).toEqual({
-    mode: "active",
-    actor_id: "xiaotian",
-    keywords: ["字面关键词", "[原文].*"],
-  });
-  expect(group.groups["222"]).toEqual({
-    mode: "reply",
-    actor_id: "xiaotian",
-    keywords: ["保留"],
-  });
-  await expect(observation.getByText(/尚未确认支持四态/)).toBeVisible();
-  await expect(observation.getByText(/主机未报告能力/)).toBeVisible();
-  await expect(
-    observation.getByRole("alert").filter({ hasText: "adapter_incompatible" }),
-  ).toBeVisible();
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-  ).toBe(true);
 });
 
 async function fillWizard(page: Page) {

@@ -210,6 +210,70 @@ async function mockApi(
       dialogue: { available: false, code: "model_not_configured", model: "" },
     }),
   );
+  let revision = 1;
+  const rules: Record<
+    string,
+    { mode: string; actor_id: string; keywords: string[] }
+  > = {
+    "20001": { mode: "observe", actor_id: "actor:a", keywords: [] },
+    "20002": { mode: "observe", actor_id: "actor:a", keywords: [] },
+  };
+  const directoryGroup = (index: number) => {
+    const source = GROUPS[index],
+      groupId = String(20001 + index),
+      rule = rules[groupId];
+    return {
+      id: `directory-${index}`,
+      owner_id: "obs:ui",
+      owner_name: "合成 BOT",
+      account_id: "90001",
+      group_id: groupId,
+      name: source.label,
+      member_count: 10,
+      max_member_count: 200,
+      first_seen_at: 1792418400,
+      last_seen_at: 1792504799,
+      revision,
+      rule,
+      pending: false,
+      read_enabled: true,
+      has_archive: true,
+      state: "ready",
+      ordinary_claim_available: true,
+      memory_group_id:
+        rule.actor_id === "actor:b" ? ROLE_B_GROUP.id : source.id,
+    };
+  };
+  await page.route("**/api/web/bot-observation/*", async (route) => {
+    const path = new URL(route.request().url()).pathname.split("/").at(-1);
+    if (path === "groups")
+      return answer(route, {
+        available: true,
+        unlocked: true,
+        actors: ROLES,
+        groups: GROUPS.map((_, index) => directoryGroup(index)),
+        next_cursor: null,
+      });
+    if (path === "group-policy") {
+      const body = route.request().postDataJSON();
+      rules[body.group_id] = body.rule;
+      revision++;
+      return answer(route, {
+        group: directoryGroup(Number(body.group_id) - 20001),
+        connection: {
+          pending: false,
+          state: "ready",
+          revision,
+          group_policy: {
+            version: 2,
+            default: { mode: "disabled", actor_id: null, keywords: [] },
+            groups: rules,
+          },
+        },
+      });
+    }
+    throw new Error(`Unexpected directory operation ${path}`);
+  });
   await page.route("**/api/web/memory/*", async (route) => {
     const path = new URL(route.request().url()).pathname.split("/").at(-1)!;
     if (path === "state")
@@ -272,7 +336,9 @@ test("group heat, explicit interaction evidence, person topics and zoom remain s
 }, testInfo) => {
   const sent = await mockApi(page);
   await page.goto("/#/memory/1");
-  await expect(page.getByLabel("群选择")).toHaveValue("group-a");
+  await expect(
+    page.locator(".group-directory-list button[aria-pressed=true]"),
+  ).toContainText("甲群");
   await expect(page.locator(".group-metrics")).toContainText("6 条已扫描消息");
   await expect(page.locator(".group-metrics")).toContainText("2 位实际作者");
   await expect(page.getByText(/互动结构不可解析 1 条/)).toBeVisible();
@@ -315,11 +381,9 @@ test("group heat, explicit interaction evidence, person topics and zoom remain s
   await expect(
     page.getByRole("heading", { name: "当前话题", exact: true }),
   ).toBeVisible();
-  const selection = page
-    .locator("article.group-selection")
-    .filter({
-      has: page.getByRole("heading", { name: "当前话题", exact: true }),
-    });
+  const selection = page.locator("article.group-selection").filter({
+    has: page.getByRole("heading", { name: "当前话题", exact: true }),
+  });
   await expect(selection).toContainText("person:reader-a、person:reader-b");
   await selection.getByText("查看原归属依据", { exact: true }).click();
   await expect(selection).toContainText("人物 person:reader-a");
@@ -429,15 +493,18 @@ test("a late old-group response cannot replace the newly selected group", async 
   try {
     await page.goto("/#/memory/1");
     await entered.promise;
-    await page.getByLabel("群选择", { exact: true }).selectOption("group-b");
+    await page
+      .locator(".group-directory-list")
+      .getByRole("button", { name: /乙群/ })
+      .click();
     await expect(
       page.getByText("角色甲 / 乙群 当前群画像", { exact: true }),
     ).toBeVisible();
     release.resolve();
     await finished.promise;
-    await expect(page.getByLabel("群选择", { exact: true })).toHaveValue(
-      "group-b",
-    );
+    await expect(
+      page.locator(".group-directory-list button[aria-pressed=true]"),
+    ).toContainText("乙群");
     await expect(
       page.getByText("角色甲 / 乙群 当前群画像", { exact: true }),
     ).toBeVisible();
@@ -472,17 +539,16 @@ test("a late old-role response cannot populate a remounted group view", async ({
   try {
     await page.goto("/#/memory/1");
     await entered.promise;
-    await page
-      .getByLabel("查看哪位角色的记忆", { exact: true })
-      .selectOption("actor:b");
+    await page.getByLabel("此群角色", { exact: true }).selectOption("actor:b");
+    await page.getByRole("button", { name: "保存此群状态" }).click();
     await expect(
       page.getByText("角色乙 / 甲群（角色乙） 当前群画像", { exact: true }),
     ).toBeVisible();
     release.resolve();
     await finished.promise;
-    await expect(
-      page.getByLabel("查看哪位角色的记忆", { exact: true }),
-    ).toHaveValue("actor:b");
+    await expect(page.getByLabel("此群角色", { exact: true })).toHaveValue(
+      "actor:b",
+    );
     await expect(
       page.getByText("角色乙 / 甲群（角色乙） 当前群画像", { exact: true }),
     ).toBeVisible();

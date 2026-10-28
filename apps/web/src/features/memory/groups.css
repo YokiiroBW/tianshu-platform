@@ -128,3 +128,113 @@
     min-width: 25rem;
   }
 }
+.group-directory-page {
+  display: grid;
+  gap: 18px;
+}
+.group-directory-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(360px, 2fr);
+  gap: 18px;
+  align-items: start;
+}
+.group-directory-list > label {
+  display: grid;
+  gap: 8px;
+}
+.group-directory-list input {
+  width: 100%;
+}
+.group-directory-list ul {
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+.group-directory-list li > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+  padding: 14px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.group-directory-list li > button[aria-pressed="true"] {
+  background: var(--color-selection);
+  border-color: var(--color-accent);
+}
+.group-directory-list li > button > span:first-of-type {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.group-directory-list small {
+  color: var(--color-muted);
+  overflow-wrap: anywhere;
+}
+.group-directory-mode {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.group-directory-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.group-directory-facts dt {
+  color: var(--color-muted);
+  font-size: 13px;
+}
+.group-directory-facts dd {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+.group-directory-detail .group-rule-editor {
+  margin: 20px 0;
+}
+@media (max-width: 900px) {
+  .group-directory-layout {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 480px) {
+  .group-directory-facts {
+    grid-template-columns: 1fr;
+  }
+  .group-directory-mode {
+    white-space: normal;
+    max-width: 80px;
+  }
+}
+
+.group-directory-list input,
+.group-rule-editor select,
+.group-rule-editor textarea {
+  min-width: 0;
+  width: 100%;
+  min-height: var(--control-height);
+  padding: var(--space-2);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-input);
+  font: inherit;
+}
+.group-rule-editor {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  padding: 16px;
+  min-width: 0;
+}
+.group-rule-editor label {
+  display: grid;
+  gap: 6px;
+}

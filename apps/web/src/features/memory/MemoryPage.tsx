@@ -13,7 +13,6 @@ import {
   saveRolePreference,
 } from "../../app/rolePreference";
 import "./memory.css";
-import GroupInsights from "./GroupInsights";
 
 type SubjectKey =
   | { kind: "person"; person_id: string }
@@ -96,13 +95,7 @@ function roleReason(code: string | null) {
 }
 
 /** A scoped, read-only view; no approval/forget controls are exposed to a service reader. */
-export default function MemoryPage({
-  section,
-  groupsOnly = false,
-}: {
-  section: number;
-  groupsOnly?: boolean;
-}) {
+export default function MemoryPage({ section }: { section: number }) {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
   const storageKey = `tianshu-memory-role:${encodeURIComponent(session?.username || csrf)}`;
@@ -121,9 +114,7 @@ export default function MemoryPage({
   const current = useRef<AbortController | null>(null);
   const generation = useRef(0);
   const role = state?.roles.find((item) => item.id === roleId);
-  const visibleSubjects = groupsOnly
-    ? subjects.filter((item) => item.subject.kind === "group")
-    : subjects;
+  const visibleSubjects = subjects;
 
   function clearResults() {
     generation.current++;
@@ -302,15 +293,13 @@ export default function MemoryPage({
   useEffect(() => {
     if (!state) return;
     clearResults();
-    if (groupsOnly) return;
     if (!state?.available || !role?.available) return;
     if (section === 1) void listSubjects();
     else if (section === 3) void listRecords(null);
-  }, [state, roleId, section, csrf, groupsOnly]);
+  }, [state, roleId, section, csrf]);
 
   useEffect(() => {
     const selection = roleRequest();
-    if (groupsOnly) return;
     if (!csrf || !state?.available || !selection) return;
     let pending: AbortController | null = null;
     const verify = async (resumed = false) => {
@@ -361,7 +350,7 @@ export default function MemoryPage({
       document.removeEventListener("visibilitychange", visible);
       pending?.abort();
     };
-  }, [csrf, state?.available, role?.id, role?.version, section, groupsOnly]);
+  }, [csrf, state?.available, role?.id, role?.version, section]);
 
   function choose(row: SubjectKey) {
     generation.current++;
@@ -415,7 +404,6 @@ export default function MemoryPage({
           读取身份与范围。网页无需填写服务地址、账号映射或令牌。
         </p>
         <p>状态码：{state.code}</p>
-        {groupsOnly && <a href="#/settings/3">查看观察群与四态配置</a>}
       </StatePanel>
     );
 
@@ -487,19 +475,6 @@ export default function MemoryPage({
       </div>
     );
 
-  if (groupsOnly)
-    return (
-      <div className="memory-page">
-        {rolePicker}
-        <GroupInsights
-          key={`${role.id}:${role.version}`}
-          roleId={role.id}
-          roleVersion={role.version}
-          csrf={csrf}
-        />
-      </div>
-    );
-
   return (
     <div className="memory-page">
       {rolePicker}
@@ -552,16 +527,12 @@ export default function MemoryPage({
       {section === 1 && (
         <div className="memory-columns">
           <section className="panel">
-            <h2>{groupsOnly ? "群画像" : "人物与群"}</h2>
+            <h2>人物与群</h2>
             {visibleSubjects.length === 0 && !busy && !error ? (
               <StatePanel
                 kind="empty"
                 title={
-                  groupsOnly
-                    ? "暂无可见群画像"
-                    : subjectsCursor
-                      ? "本页没有可见人物或群"
-                      : "没有可见人物或群"
+                  subjectsCursor ? "本页没有可见人物或群" : "没有可见人物或群"
                 }
               >
                 <p>
@@ -601,7 +572,7 @@ export default function MemoryPage({
                 disabled={busy}
                 onClick={() => void listSubjects(subjectsCursor)}
               >
-                {groupsOnly ? "继续读取群画像" : "继续读取人物与群"}
+                继续读取人物与群
               </button>
             )}
           </section>
@@ -618,9 +589,7 @@ export default function MemoryPage({
               />
             ) : (
               <p className="muted">
-                {groupsOnly
-                  ? "选择群后查看当前角色可读取的群画像。用户身份与个人画像请在用户档案中查看。"
-                  : "选择人物或群后读取当前可见的共享画像。不会显示对方私有记忆。"}
+                选择人物或群后读取当前可见的共享画像。不会显示对方私有记忆。
               </p>
             )}
           </section>

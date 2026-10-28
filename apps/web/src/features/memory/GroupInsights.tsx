@@ -42,12 +42,13 @@ export default function GroupInsights({
   roleId,
   roleVersion,
   csrf,
+  fixedGroupId,
 }: {
   roleId: string;
   roleVersion: number;
   csrf: string;
+  fixedGroupId: string;
 }) {
-  const [groups, setGroups] = useState<Group[]>([]);
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [groupId, setGroupId] = useState("");
   const [window, setWindow] = useState("7d");
@@ -64,8 +65,6 @@ export default function GroupInsights({
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const controller = useRef<AbortController | null>(null);
-  const selection = useRef("");
-  selection.current = groupId;
   const base = { role_id: roleId, role_version: roleVersion };
 
   function clear() {
@@ -119,16 +118,14 @@ export default function GroupInsights({
         }>("memory/groups", base, csrf, guard.signal);
         if (guard.signal.aborted) return;
         setConfigured(result.available);
-        setGroups(result.groups);
-        const current = selection.current;
+        const current = fixedGroupId;
         if (!result.groups.some((g) => g.id === current)) {
           clear();
-          setGroupId(result.groups[0]?.id ?? "");
-        }
+          setGroupId("");
+        } else setGroupId(current);
       } catch (cause) {
         if (!guard.signal.aborted) {
           clear();
-          setGroups([]);
           setGroupId("");
           setError(readFailure(cause));
         }
@@ -150,7 +147,7 @@ export default function GroupInsights({
       globalThis.window.clearInterval(timer);
       document.removeEventListener("visibilitychange", visible);
     };
-  }, [roleId, roleVersion, csrf]);
+  }, [roleId, roleVersion, csrf, fixedGroupId]);
 
   useEffect(() => {
     clear();
@@ -240,11 +237,8 @@ export default function GroupInsights({
 
   if (configured === false)
     return (
-      <StatePanel kind="unconfigured" title="群记忆尚未接入">
-        <p>
-          当前没有登记可读取的群。完成连接后，这里会显示实际互动、热度、已整理话题和群画像。
-        </p>
-        <a href="#/settings/3">配置观察群与群状态</a>
+      <StatePanel kind="unconfigured" title="该群内容暂不可读取">
+        <p>当前角色尚无此群的可读取内容，基础档案和群状态仍可在上方查看。</p>
       </StatePanel>
     );
   return (
@@ -252,7 +246,6 @@ export default function GroupInsights({
       <section className="panel">
         <div className="section-heading">
           <h2>群记忆</h2>
-          <a href="#/settings/3">配置群状态</a>
           <button
             className="button"
             disabled={busy || !groupId}
@@ -262,28 +255,6 @@ export default function GroupInsights({
           </button>
         </div>
         <div className="group-toolbar">
-          <label>
-            群{" "}
-            <select
-              aria-label="群选择"
-              value={groupId}
-              onChange={(e) => {
-                clear();
-                setGroupId(e.target.value);
-              }}
-            >
-              {groups.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.label}
-                  {g.mode
-                    ? ` · ${{ disabled: "停用", observe: "仅观察", reply: "启用回复", active: "主动" }[g.mode] ?? g.mode}`
-                    : ""}
-                  {g.pending ? " · 待主机确认" : ""}
-                  {g.unavailable ? " · 尚未接通" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
           <label>
             统计窗口{" "}
             <select
@@ -298,7 +269,7 @@ export default function GroupInsights({
           </label>
         </div>
         {configured === null && !error && <p>正在读取当前授权群…</p>}
-        {configured && !groups.length && <p>该角色当前没有可读取的群。</p>}
+        {configured && !groupId && <p>当前角色没有此群的可读取内容。</p>}
         {data && (
           <p className="muted">
             {new Date(data.window.start_timestamp * 1000).toLocaleString()} —{" "}
