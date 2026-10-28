@@ -232,7 +232,7 @@ test("actor memory shows distinct interest history, corrects and forgets with st
     if (name === "forget" && writes.length === 2)
       return route.fulfill({
         status: 503,
-        json: { code: "dependency_unavailable" },
+        json: { code: "unknown", execution_state: "unknown", retryable: false },
       });
     forgotten = true;
     return route.fulfill({ json: { state: "withdrawn" } });
@@ -289,7 +289,7 @@ test("actor memory shows distinct interest history, corrects and forgets with st
   await page.getByRole("button", { name: "查看详情与更正范围" }).click();
   await page.getByRole("button", { name: "忘记此记忆及派生内容" }).click();
   await expect(
-    page.getByRole("alert").filter({ hasText: "dependency_unavailable" }),
+    page.getByRole("alert").filter({ hasText: "写入结果尚未确认" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "忘记此记忆及派生内容" }).click();
   await expect(page.getByText("当前筛选下没有可展示的记录。")).toBeVisible();

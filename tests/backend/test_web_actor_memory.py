@@ -1,6 +1,7 @@
 """Real browser sessions and owner HTTP transport with a declared synthetic Memory peer."""
 
 import os
+import asyncio
 import json
 import tempfile
 import unittest
@@ -47,6 +48,9 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.revoke = False
         self.wrong_actor = False
         self.impact_changed = False
+        self.unknown_write = False
+        self.write_delay = 0
+        self.wrong_ref = False
         peer = web.Application()
         peer.router.add_post("/internal/v1/actor-self-memory/operate", self.peer)
         self.peer_runner, peer_url = await start_http(peer)
@@ -89,6 +93,19 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
         body = await request.json()
         self.p.actor_memory_authority.protocol.check("request", body)
         self.calls.append(body)
+        if self.unknown_write and body["operation"] == "forget_memory":
+            return web.json_response(
+                {
+                    "schema_version": 1,
+                    "request_id": body["request_id"],
+                    "code": "unknown",
+                    "retryable": False,
+                    "execution": "unknown",
+                },
+                status=503,
+            )
+        if self.write_delay and body["operation"] == "forget_memory":
+            await asyncio.sleep(self.write_delay)
         if self.revoke:
             self.role["capabilities"] = []
             self.p.role_runtime._put(self.role)
@@ -127,7 +144,7 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
                 "command": "forget_memory",
                 "idempotency_key": body["idempotency_key"],
                 "state": "withdrawn",
-                "ref": body["ref"],
+                "ref": {**body["ref"], "revision": body["ref"]["revision"] + 1},
                 "domain_version": 5,
             }
         elif body["operation"] == "get_episode":
@@ -149,6 +166,8 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
             answer["episode"] = episode
         if self.wrong_actor:
             answer["actor_id"] = "actor:b"
+        if self.wrong_ref and body["operation"] == "forget_memory":
+            answer["ref"]["id"] = "derived:other"
         return web.json_response(answer)
 
     async def post(self, name, body, status=200, *, csrf=True):
@@ -216,6 +235,29 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
             "impact", {"ref": {"kind": "derived", "id": "derived:synthetic", "revision": 1}}, 409
         )
         self.assertEqual(result["code"], "version_conflict")
+
+    async def test_owner_unknown_write_and_network_timeout_preserve_uncertainty(self):
+        body = {
+            "ref": {"kind": "derived", "id": "derived:synthetic", "revision": 1},
+            "client_id": "stable-write-key",
+            "expected_domain_version": 4,
+        }
+        self.unknown_write = True
+        unknown = await self.post("forget", body, 503)
+        self.assertEqual(unknown["code"], "unknown")
+        self.assertEqual(unknown["execution_state"], "unknown")
+        self.unknown_write = False
+        self.write_delay = 0.1
+        self.p.role_runtime.config["memory"]["timeout_seconds"] = 0.02
+        timeout = await self.post("forget", body, 503)
+        self.assertEqual(timeout["execution_state"], "unknown")
+        self.assertFalse(timeout["retryable"])
+        self.write_delay = 0
+        self.p.role_runtime.config["memory"]["timeout_seconds"] = 10
+        await self.post("forget", body)
+        self.assertEqual([row["idempotency_key"] for row in self.calls], ["stable-write-key"] * 3)
+        self.wrong_ref = True
+        await self.post("forget", body, 502)
 
     async def test_episode_projects_coverage_without_internal_source_authority(self):
         answer = await self.post(

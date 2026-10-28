@@ -7,6 +7,7 @@ import aiohttp
 
 from .auth import secret
 from .contracts import Fault, loads, require
+from .transport import CoreFault
 
 
 class WebActorMemory:
@@ -108,6 +109,7 @@ class WebActorMemory:
         return answer
 
     async def call(self, request):
+        writing = request["operation"] in {"revise_memory", "forget_memory"}
         protocol = self.p.actor_memory_authority.protocol
         protocol.check("request", request)
         config = self.p.role_runtime.config["memory"]
@@ -141,6 +143,25 @@ class WebActorMemory:
                         raise Fault("invalid_upstream", 502) from None
                     if response.status != 200:
                         require(isinstance(answer, dict), "invalid_upstream", 502)
+                        if answer.get("code") == "unknown":
+                            require(
+                                writing
+                                and response.status == 503
+                                and answer.get("schema_version") == 1
+                                and answer.get("request_id") == request["request_id"]
+                                and answer.get("execution") == "unknown"
+                                and answer.get("retryable") is False,
+                                "invalid_upstream",
+                                502,
+                            )
+                            raise CoreFault(
+                                {
+                                    "code": "unknown",
+                                    "execution_state": "unknown",
+                                    "retryable": False,
+                                },
+                                503,
+                            )
                         require(
                             answer.get("code")
                             in {
@@ -208,6 +229,22 @@ class WebActorMemory:
                             "version_conflict",
                             409,
                         )
+                    if request["operation"] == "forget_memory":
+                        require(
+                            all(answer["ref"][key] == request["ref"][key] for key in ("kind", "id"))
+                            and answer["ref"]["revision"] == request["ref"]["revision"] + 1,
+                            "invalid_upstream",
+                            502,
+                        )
                     return answer
         except (aiohttp.ClientError, ssl.SSLError, OSError, TimeoutError):
+            if writing:
+                raise CoreFault(
+                    {
+                        "code": "dependency_unavailable",
+                        "execution_state": "unknown",
+                        "retryable": False,
+                    },
+                    503,
+                ) from None
             raise Fault("dependency_unavailable", 503) from None

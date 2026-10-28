@@ -13,6 +13,7 @@ const descriptions: Record<string, string> = {
   config_invalid: "插件配置不完整或不符合要求，请检查必填项与密钥。",
   capability_unavailable: "当前宿主尚未提供此操作需要的能力。",
   outcome_unknown: "外部操作结果尚未确认，请核对原任务。",
+  unknown: "操作结果尚未确认，请读取当前版本后核对。",
   plugin_store_unavailable: "插件数据或加密密钥不可用，请核对完整备份。",
   web_not_configured: "网页登录尚未启用。",
   not_configured: "这个连接尚未由部署端配置。",
