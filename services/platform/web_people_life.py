@@ -70,6 +70,13 @@ class WebPeopleLife:
                 )
         return {"available": True, "items": items}
 
+    async def _recheck(self, body, session, action, entry, scope):
+        await self.p.local_work.run(self.p.qq_admin.check_access, self.console, session, action)
+        _, current, current_scope = await self.p.local_work.run(
+            self.target, body["actor_id"], body["qq_id"], body["conversation"]
+        )
+        require(current == entry and current_scope == scope, "scope_changed", 409)
+
     async def route(self, name, body, session):
         require(
             name in {"view", "subscription", "state"} and isinstance(body, dict), "not_found", 404
@@ -136,10 +143,9 @@ class WebPeopleLife:
                 "value": value,
             }
             self.p.contracts.check("life-runtime#manage_request", request)
+            # The control read yields to the owner. Recheck the original authority
+            # and destination before using the service identity for a write.
+            await self._recheck(body, session, action, entry, scope)
             result = await self.console.life_management._call("manage", request, management=True)
-        await self.p.local_work.run(self.p.qq_admin.check_access, self.console, session, action)
-        _, current, current_scope = await self.p.local_work.run(
-            self.target, body["actor_id"], body["qq_id"], body["conversation"]
-        )
-        require(current == entry and current_scope == scope, "scope_changed", 409)
+        await self._recheck(body, session, action, entry, scope)
         return result

@@ -4,6 +4,7 @@ export async function webFetch(input: string, init?: RequestInit) {
   const response = await fetch(input, init);
   if (
     !init?.signal?.aborted &&
+    (!response.ok || input === "/api/web/session") &&
     response.headers.get("content-type")?.includes("application/json")
   ) {
     const result = await response

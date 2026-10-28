@@ -169,6 +169,7 @@ class WebLifeManagement:
         # expands them by 4/3; retain the complete response or reject explicitly.
         image_backend = path.startswith("image-backend/")
         skills = path.startswith("skills/")
+        mutating = path in {"manage", "conversation/ensure", "image-backend/manage", "skills/manage"}
         image_request = path == "manage" and payload.get("operation") == "image.request"
         assisted = (path == "image-backend/compile" and payload.get("assist_model") is True) or (
             path == "image-backend/manage"
@@ -225,11 +226,24 @@ class WebLifeManagement:
                                 "budget_exceeded",
                                 "unsupported_operation",
                                 "timeout",
+                                "result_unknown",
                                 "too_many_requests",
                             },
                             "invalid_upstream",
                             502,
                         )
+                        execution = answer.get("execution_state")
+                        if execution is not None:
+                            require(
+                                execution in {"unknown", "not_started"}
+                                and answer.get("request_id")
+                                == payload.get("query", payload)["request_id"],
+                                "invalid_upstream",
+                                502,
+                            )
+                            raise CoreFault(
+                                {"code": code, "execution_state": execution}, response.status
+                            )
                         raise Fault(code, response.status)
                     if binary:
                         content_type = response.content_type
@@ -278,7 +292,7 @@ class WebLifeManagement:
                             item["credential_ref"] = None
                     return answer
         except (aiohttp.ClientError, ssl.SSLError, OSError, TimeoutError):
-            if image_request:
+            if mutating:
                 raise CoreFault(
                     {"code": "dependency_unavailable", "execution_state": "unknown"}, 503
                 ) from None
