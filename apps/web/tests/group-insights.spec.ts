@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
+import { sharedProvenance } from "./fixtures/memory-records";
 
 import {
   ROLES,
@@ -243,6 +244,30 @@ test("group heat, explicit interaction evidence, person topics and zoom remain s
     path: testInfo.outputPath(`group-insights-${testInfo.project.name}.png`),
     fullPage: true,
   });
+});
+
+test("group portrait shows organization metadata while keeping group evidence scoped", async ({
+  page,
+}) => {
+  const sent = await mockApi(page, async (route, seen) => {
+    if (seen.path !== "group-insights") return false;
+    const value = insights(seen.body);
+    value.records.data.items[0] = {
+      ...value.records.data.items[0],
+      provenance: sharedProvenance,
+    } as (typeof value.records.data.items)[0];
+    await answer(route, value);
+    return true;
+  });
+  await page.goto("/#/memory/1");
+  const record = page.locator(".memory-records > li");
+  await expect(record).toContainText("已更新 1 条既有记忆");
+  await record.getByText("查看整理依据", { exact: true }).click();
+  await expect(record).toContainText("本条未附可展示的原话摘录。");
+  await expect(record).toContainText("关联了 2 条已有记忆");
+  expect(sent.find((row) => row.path === "group-insights")?.body).toMatchObject(
+    { role_id: "actor:a", group_id: "group-a" },
+  );
 });
 
 test("history next page retains the submitted filters rather than unsent form edits", async ({

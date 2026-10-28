@@ -11,9 +11,13 @@ import type { manage_response, Records, Resource } from "./runtimeTypes";
 export function useLifeResource<K extends keyof Records & Resource>(
   access: LifeAccess,
   resource: K,
-  objectId: string | null = null,
-  chapterView?: "current" | "published",
+  options: {
+    objectId?: string | null;
+    chapterView?: "current" | "published";
+    refreshMs?: number;
+  } = {},
 ) {
+  const { objectId = null, chapterView, refreshMs } = options;
   const [items, setItems] = useState<Records[K][]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -21,6 +25,7 @@ export function useLifeResource<K extends keyof Records & Resource>(
   const [epoch, setEpoch] = useState(0);
   const current = useRef<AbortController | null>(null);
   const identity = useRef("");
+  const pendingRead = useRef(false);
   const [visiblePage, setVisiblePage] = useState(!document.hidden);
   useEffect(() => {
     function visibility() {
@@ -74,6 +79,7 @@ export function useLifeResource<K extends keyof Records & Resource>(
       return;
     }
     setLoading(true);
+    pendingRead.current = true;
     void readLife(access, resource, control.signal, objectId, null, chapterView)
       .then((result) => {
         if (!control.signal.aborted) {
@@ -87,7 +93,10 @@ export function useLifeResource<K extends keyof Records & Resource>(
         }
       })
       .finally(() => {
-        if (!control.signal.aborted) setLoading(false);
+        if (current.current === control) {
+          pendingRead.current = false;
+          if (!control.signal.aborted) setLoading(false);
+        }
       });
     return () => control.abort();
   }, [
@@ -99,10 +108,26 @@ export function useLifeResource<K extends keyof Records & Resource>(
     epoch,
     visiblePage,
   ]);
+  useEffect(() => {
+    if (!refreshMs || !access.actor || !access.csrf || !visiblePage) return;
+    const timer = window.setInterval(() => {
+      if (!pendingRead.current && !document.hidden) setEpoch((old) => old + 1);
+    }, refreshMs);
+    return () => window.clearInterval(timer);
+  }, [
+    access.actor,
+    access.csrf,
+    resource,
+    objectId,
+    chapterView,
+    refreshMs,
+    visiblePage,
+  ]);
   async function more() {
     if (!cursor || loading) return;
     const control = current.current ?? new AbortController();
     setLoading(true);
+    pendingRead.current = true;
     setError("");
     try {
       const answer = await readLife(
@@ -120,7 +145,10 @@ export function useLifeResource<K extends keyof Records & Resource>(
     } catch (cause) {
       if (!control.signal.aborted) failed(cause);
     } finally {
-      if (!control.signal.aborted) setLoading(false);
+      if (current.current === control) {
+        pendingRead.current = false;
+        if (!control.signal.aborted) setLoading(false);
+      }
     }
   }
   const visible =

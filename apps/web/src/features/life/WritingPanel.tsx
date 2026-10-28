@@ -195,7 +195,10 @@ function WorkChapters({
   );
 }
 function CurrentChapter({ access, id }: { access: LifeAccess; id: string }) {
-  const records = useLifeResource(access, "chapter", id, "current");
+  const records = useLifeResource(access, "chapter", {
+    objectId: id,
+    chapterView: "current",
+  });
   const chapter = records.items[0];
   useEffect(() => {
     if (!chapter || !["generating", "queued"].includes(chapter.state)) return;

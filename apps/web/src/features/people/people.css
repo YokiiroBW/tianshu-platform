@@ -599,21 +599,6 @@
   color: var(--color-blue);
   border-color: var(--color-line);
 }
-.people-memory-unit p {
-  font-size: 14px;
-  line-height: 1.9;
-  color: var(--color-text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.people-memory-unit .detail-card {
-  font-size: 11px;
-  color: var(--color-muted);
-  margin-top: 8px;
-}
-.people-memory-unit .detail-card-trigger {
-  cursor: pointer;
-}
 .people-private-note {
   display: flex;
   align-items: start;

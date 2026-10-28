@@ -269,6 +269,14 @@ test("review shows existing memories and actual progress, then clears a source w
   await page.goto("/#/memory/3");
   const review = page.getByRole("region", { name: "记忆回顾" });
   await expect(
+    review
+      .locator("section")
+      .filter({
+        has: page.getByRole("heading", { name: "尚未结束的约定", exact: true }),
+      })
+      .getByText(/约定期限：/),
+  ).toBeVisible();
+  await expect(
     review.getByText("约定日期已过，完成情况仍需确认。", { exact: true }),
   ).toBeVisible();
   await expect(review.getByText("已完成", { exact: true })).toHaveCount(0);

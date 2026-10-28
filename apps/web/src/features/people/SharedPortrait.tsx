@@ -1,4 +1,4 @@
-import { DetailCard } from "../../components/DetailCard";
+import MemoryRecords from "../memory/MemoryRecords";
 import { useEffect, useRef, useState } from "react";
 import { Brain, RefreshCw, LockKeyhole } from "lucide-react";
 import { useMemoryReadScope } from "./useMemoryReadScope";
@@ -10,16 +10,6 @@ import {
   type RecordGroup,
   dateText,
 } from "./types";
-const categories: Record<string, string> = {
-  profile: "人物画像",
-  preference: "偏好",
-  preferences: "偏好",
-  fact: "事实",
-  identity: "身份",
-  relationship: "关系",
-  interest: "兴趣",
-  habit: "习惯",
-};
 export function SharedPortrait({
   person,
   role,
@@ -158,63 +148,18 @@ export function SharedPortrait({
         </div>
       )}
       <div className="people-memory-records">
-        {records.map((group) => (
-          <article key={group.semantic_group_id} className="people-info-card">
-            <span className="people-chip">
-              {categories[group.category] || group.category}
-            </span>
-            {group.units.map((unit) => (
-              <div className="people-memory-unit" key={unit.record_id}>
-                <p>{unit.statement}</p>
-                {[
-                  unit.conditions,
-                  unit.negations,
-                  unit.valid_time,
-                  unit.uncertainty,
-                  unit.reality,
-                ].some(
-                  (value) =>
-                    value != null &&
-                    JSON.stringify(value) !== "{}" &&
-                    JSON.stringify(value) !== "[]",
-                ) && (
-                  <DetailCard title="查看事实的适用条件">
-                    <dl>
-                      {[
-                        ["条件", unit.conditions],
-                        ["否定", unit.negations],
-                        ["有效时间", unit.valid_time],
-                        ["不确定性", unit.uncertainty],
-                        ["现实依据", unit.reality],
-                      ]
-                        .filter(([, value]) => value != null)
-                        .map(([name, value]) => (
-                          <div key={String(name)}>
-                            <dt>{String(name)}</dt>
-                            <dd>
-                              {typeof value === "string"
-                                ? value
-                                : JSON.stringify(value)}
-                            </dd>
-                          </div>
-                        ))}
-                    </dl>
-                  </DetailCard>
-                )}
-              </div>
-            ))}
-          </article>
-        ))}
+        {(records.length > 0 || cursor) && (
+          <MemoryRecords
+            scope="当前角色可读的共享画像"
+            records={records}
+            cursor={cursor}
+            busy={busy}
+            error={error}
+            more={() => void read(cursor)}
+            moreLabel="加载更多画像记录"
+          />
+        )}
       </div>
-      {cursor && (
-        <button
-          className="button"
-          disabled={busy}
-          onClick={() => void read(cursor)}
-        >
-          加载更多画像记录
-        </button>
-      )}
       {verifiedAt && (
         <p className="people-footnote">核验于 {dateText(verifiedAt)}</p>
       )}

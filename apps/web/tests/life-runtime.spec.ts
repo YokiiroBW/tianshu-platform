@@ -5,6 +5,11 @@ import { test, expect, type Page } from "@playwright/test";
 async function runtimeFixture(page: Page) {
   const writes: Record<string, any>[] = [];
   const errors: string[] = [];
+  const live = {
+    activity: "正在阅读",
+    stateReads: 0,
+    concerns: [] as Record<string, any>[],
+  };
   page.on("pageerror", (error) => errors.push(error.message));
   const activities = [
     { id: "activity:a", title: "续读上册", next_due_at: 1791104400 },
@@ -80,6 +85,7 @@ async function runtimeFixture(page: Page) {
     else if (path === "life/diaries")
       value = { items: [], next_after: null, fictional: true };
     else if (path === "life/runtime/read") {
+      if (body.resource === "state") live.stateReads++;
       if (body.after)
         return route.fulfill({ status: 403, json: { code: "scope_changed" } });
       value = {
@@ -94,14 +100,16 @@ async function runtimeFixture(page: Page) {
               ? [
                   {
                     actor_id: body.actor_id,
-                    activity: "正在阅读",
+                    activity: live.activity,
                     mood: "calm",
                     timezone: "Asia/Shanghai",
                     outfit_ref: null,
                     changed_at: 1791104400,
                   },
                 ]
-              : [],
+              : body.resource === "open_work"
+                ? live.concerns
+                : [],
         next_cursor: body.resource === "activities" ? "page:2" : null,
         fictional: true,
       };
@@ -132,8 +140,95 @@ async function runtimeFixture(page: Page) {
   await expect(
     page.getByRole("heading", { name: "活动与进度", exact: true }),
   ).toBeVisible();
-  return { writes, errors };
+  return { writes, errors, live };
 }
+
+test("live life state refreshes only while visible and concern deadlines save through existing operations", async ({
+  page,
+}, info) => {
+  await page.clock.install({ time: new Date("2026-10-29T04:00:00Z") });
+  const fixture = await runtimeFixture(page);
+  const current = page
+    .locator(".life-runtime-grid > section")
+    .filter({ has: page.getByRole("heading", { name: "此刻", exact: true }) });
+  await expect(current).toContainText("正在阅读");
+  fixture.live.activity = "正在整理阅读笔记";
+  await page.clock.fastForward(15001);
+  await expect(current).toContainText("正在整理阅读笔记");
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  const reads = fixture.live.stateReads;
+  await page.clock.fastForward(30001);
+  expect(fixture.live.stateReads).toBe(reads);
+  fixture.live.activity = "准备午餐";
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: false,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(current).toContainText("准备午餐");
+  fixture.live.concerns = [
+    {
+      id: "concern:fixture",
+      version: 4,
+      title: "周末还书",
+      goal: "归还借阅的书",
+      state: "open",
+      scope: null,
+      sources: [],
+      fragments: [],
+      next_due_at: 1793404800,
+      expires_at: 1793491200,
+      result_refs: [],
+      actor_id: "actor:fixture",
+      intent_valid: true,
+      updated_at: 1793232000,
+    },
+  ];
+  await page.getByRole("button", { name: "刷新关注", exact: true }).click();
+  const record = page.locator(".life-record").filter({ hasText: "周末还书" });
+  await expect(record).toContainText("下一次跟进：");
+  await expect(record).toContainText("有效至：");
+  await record.getByRole("button", { name: "继续记录", exact: true }).click();
+  await expect(
+    page.getByLabel("下次跟进时间（本机时区）", { exact: true }),
+  ).not.toHaveValue("");
+  await page
+    .getByLabel("下次跟进时间（本机时区）", { exact: true })
+    .fill("2026-11-02T18:00");
+  await page.getByLabel("关注有效期（本机时区）", { exact: true }).fill("");
+  await page.getByRole("button", { name: "保存关注", exact: true }).click();
+  await expect(page.getByRole("dialog").getByRole("alert")).toBeVisible();
+  await page.getByRole("button", { name: "保存关注", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(fixture.writes[0]).toEqual(fixture.writes[1]);
+  expect(fixture.writes[1]).toMatchObject({
+    operation: "concern.save",
+    expected_version: 4,
+    value: {
+      id: "concern:fixture",
+      next_due_at: Date.parse("2026-11-02T18:00:00+08:00") / 1000,
+      expires_at: null,
+    },
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: info.outputPath("life-alignment.png"),
+    fullPage: true,
+  });
+  expect(fixture.errors).toEqual([]);
+});
 
 test("actor memory shows distinct interest history, corrects and forgets with stable retries", async ({
   page,
@@ -312,12 +407,14 @@ test("activity editing clears dates, uncertain retries reuse identity, and revok
   const first = page.locator(".life-record").filter({ hasText: "续读上册" });
   const second = page.locator(".life-record").filter({ hasText: "整理书架" });
   await first.getByRole("button", { name: "编辑进度", exact: true }).click();
-  await expect(page.getByLabel("下一步时间", { exact: true })).not.toHaveValue(
-    "",
-  );
+  await expect(
+    page.getByLabel("下一步时间（本机时区）", { exact: true }),
+  ).not.toHaveValue("");
   await page.keyboard.press("Escape");
   await second.getByRole("button", { name: "编辑进度", exact: true }).click();
-  await expect(page.getByLabel("下一步时间", { exact: true })).toHaveValue("");
+  await expect(
+    page.getByLabel("下一步时间（本机时区）", { exact: true }),
+  ).toHaveValue("");
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "新增活动", exact: true }).click();
   await expect(page.getByLabel("活动名称", { exact: true })).toHaveValue("");

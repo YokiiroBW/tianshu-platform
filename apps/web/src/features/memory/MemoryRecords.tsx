@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { StatePanel } from "../../components/StatePanel";
+import { DetailCard } from "../../components/DetailCard";
 import "./memoryTimeline.css";
 
 type Provenance = {
@@ -24,16 +25,33 @@ type Provenance = {
 
 export type RecordGroup = {
   semantic_group_id: string;
-  category: string;
-  field_key: string | null;
-  item_key: string | null;
-  units: { record_id: string; record_version: number; statement: string }[];
+  category?: string;
+  field_key?: string | null;
+  item_key?: string | null;
+  units: {
+    record_id: string;
+    record_version: number;
+    statement: string;
+    conditions?: unknown;
+    negations?: unknown;
+    valid_time?: unknown;
+    uncertainty?: unknown;
+    reality?: unknown;
+  }[];
   provenance?: Provenance;
 };
 
 const names: Record<string, string> = {
   summary: "经历与表达",
   portrait: "人物画像",
+  profile: "人物画像",
+  preference: "偏好",
+  preferences: "偏好",
+  fact: "事实",
+  identity: "身份",
+  relationship: "关系",
+  interest: "兴趣",
+  habit: "习惯",
   experience: "经历",
   thought: "想法",
   agreement: "约定",
@@ -67,13 +85,15 @@ export default function MemoryRecords({
   busy,
   error,
   more,
+  moreLabel = "继续读取记忆",
 }: {
   scope: string;
   records: RecordGroup[];
   cursor: string | null;
   busy: boolean;
   error: string;
-  more: () => void;
+  more?: () => void;
+  moreLabel?: string;
 }) {
   const [view, setView] = useState("all");
   if (busy && records.length === 0)
@@ -130,7 +150,7 @@ export default function MemoryRecords({
         ))}
       </div>
       <p className="muted">
-        按记忆所依据的原话时间排列{cursor ? "，可继续读取后续页" : ""}
+        已加载条目按依据时间排列{cursor ? "，可继续读取后续页" : ""}
         。画像是可修订的归纳。
       </p>
       {visible.length === 0 && !busy && (
@@ -148,7 +168,10 @@ export default function MemoryRecords({
                         ? "portrait"
                         : info.memory_kind || info.kind
                     ] || "记忆"
-                  : [group.category, group.field_key]
+                  : [
+                      names[group.category || ""] || group.category,
+                      group.field_key,
+                    ]
                       .filter(Boolean)
                       .join(" · ") || "记忆"}
               </h3>
@@ -172,6 +195,36 @@ export default function MemoryRecords({
                 {group.units.map((unit) => (
                   <li key={unit.record_id}>
                     <p>{unit.statement}</p>
+                    {[
+                      ["条件", unit.conditions],
+                      ["否定", unit.negations],
+                      ["有效时间", unit.valid_time],
+                      ["不确定性", unit.uncertainty],
+                      ["现实依据", unit.reality],
+                    ].some(([, value]) => hasValue(value)) && (
+                      <DetailCard title="查看事实的适用条件">
+                        <dl className="memory-fact-conditions">
+                          {[
+                            ["条件", unit.conditions],
+                            ["否定", unit.negations],
+                            ["有效时间", unit.valid_time],
+                            ["不确定性", unit.uncertainty],
+                            ["现实依据", unit.reality],
+                          ]
+                            .filter(([, value]) => hasValue(value))
+                            .map(([label, value]) => (
+                              <div key={String(label)}>
+                                <dt>{String(label)}</dt>
+                                <dd>
+                                  {typeof value === "string"
+                                    ? value
+                                    : JSON.stringify(value)}
+                                </dd>
+                              </div>
+                            ))}
+                        </dl>
+                      </DetailCard>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -185,7 +238,7 @@ export default function MemoryRecords({
                     </p>
                     <p>
                       直接依据 {info.source_count}{" "}
-                      份本人来源，整理时结合了对话上下文。
+                      份来源，整理时结合了对话上下文。
                     </p>
                     {!!info.replacement_count && (
                       <p>
@@ -215,7 +268,7 @@ export default function MemoryRecords({
                     ))}
                     {info.excerpts_truncated && <p>此处只展示部分直接来源。</p>}
                     {!info.source_excerpts.length && (
-                      <p>本条未附可展示的本人原话摘录。</p>
+                      <p>本条未附可展示的原话摘录。</p>
                     )}
                   </>
                 ) : (
@@ -232,11 +285,20 @@ export default function MemoryRecords({
           );
         })}
       </ul>
-      {cursor && (
+      {cursor && more && (
         <button className="button" disabled={busy} onClick={more}>
-          继续读取记忆
+          {moreLabel}
         </button>
       )}
     </>
+  );
+}
+
+function hasValue(value: unknown) {
+  return (
+    value != null &&
+    value !== "" &&
+    JSON.stringify(value) !== "{}" &&
+    JSON.stringify(value) !== "[]"
   );
 }

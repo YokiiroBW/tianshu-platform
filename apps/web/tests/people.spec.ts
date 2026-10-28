@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { createPeopleAccount, profiles, portrait } from "./fixtures/people";
+import { sharedProvenance } from "./fixtures/memory-records";
 
 async function fixture(
   page: Page,
@@ -133,6 +134,55 @@ async function fixture(
     overviewReads: () => overviewReads,
   };
 }
+
+test("shared portrait displays new provenance and retains fact conditions without private excerpts", async ({
+  page,
+}, info) => {
+  const state = await fixture(page);
+  await page.route("**/api/web/memory/records", (route) => {
+    const result = portrait("role:b");
+    return route.fulfill({
+      json: {
+        ...result,
+        items: result.items.map((item) => ({
+          ...item,
+          provenance: sharedProvenance,
+          units: item.units.map((unit) => ({
+            ...unit,
+            conditions: "仅在周末",
+            record_version: 2,
+          })),
+        })),
+      },
+    });
+  });
+  await page
+    .getByRole("complementary", { name: "用户目录" })
+    .getByRole("button")
+    .filter({ hasText: "QQ 10001" })
+    .click();
+  await page.getByRole("tab", { name: "画像与记忆", exact: true }).click();
+  const record = page.locator(".people-memory-records .memory-records > li");
+  await expect(record).toContainText("已更新 1 条既有记忆");
+  await page.getByRole("button", { name: "人物画像", exact: true }).click();
+  await expect(record).toHaveCount(1);
+  await record.getByText("查看整理依据", { exact: true }).click();
+  await expect(record).toContainText("本条未附可展示的原话摘录。");
+  await expect(record).toContainText("关联了 2 条已有记忆");
+  await record.getByRole("button", { name: "查看事实的适用条件" }).click();
+  await expect(page.getByRole("dialog")).toContainText("仅在周末");
+  await page.keyboard.press("Escape");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: info.outputPath("shared-memory.png"),
+    fullPage: true,
+  });
+  expect(state.errors).toEqual([]);
+});
 
 test("people directory keeps observed hi users and separates shared portrait from identity", async ({
   page,

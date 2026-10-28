@@ -34,6 +34,11 @@ function Entry({ item }: { item: ReviewEntry }) {
         {item.truncated && "…"}
       </p>
       {item.state && states[item.state] && <small>{states[item.state]}</small>}
+      {item.valid_until && (
+        <p className="muted">
+          约定期限：{new Date(item.valid_until).toLocaleString("zh-CN")}
+        </p>
+      )}
       {item.overdue && (
         <p className="muted">约定日期已过，完成情况仍需确认。</p>
       )}

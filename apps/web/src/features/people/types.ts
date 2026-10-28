@@ -1,3 +1,6 @@
+import type { RecordGroup } from "../memory/MemoryRecords";
+export type { RecordGroup } from "../memory/MemoryRecords";
+
 export type Role = {
   id: string;
   label: string;
@@ -63,22 +66,6 @@ export type FoundPage = {
 };
 export type Source = Found & { connection: Connection };
 export type Person = { qqId: string; profile?: Profile; sources: Source[] };
-export type RecordGroup = {
-  semantic_group_id: string;
-  category: string;
-  field_key: string;
-  item_key: string;
-  units: {
-    record_id: string;
-    record_version: number;
-    statement: string;
-    uncertainty: unknown;
-    conditions: unknown;
-    negations: unknown;
-    valid_time: unknown;
-    reality: unknown;
-  }[];
-};
 export type Records = {
   items: RecordGroup[];
   next_cursor: string | null;

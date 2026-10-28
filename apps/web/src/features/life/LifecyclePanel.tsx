@@ -8,7 +8,9 @@ import { showMood } from "./lifeLabels";
 import { LifeEvidence } from "./LifeEvidence";
 
 function time(value: number | null) {
-  return value ? new Date(value * 1000).toLocaleString("zh-CN") : "未安排";
+  return value !== null
+    ? new Date(value * 1000).toLocaleString("zh-CN")
+    : "未安排";
 }
 
 function localInputTime(value: number | null) {
@@ -26,9 +28,9 @@ const certaintyNames = {
 };
 
 export function LifecyclePanel({ access }: { access: LifeAccess }) {
-  const state = useLifeResource(access, "state"),
-    affect = useLifeResource(access, "affect"),
-    autonomy = useLifeResource(access, "autonomy");
+  const state = useLifeResource(access, "state", { refreshMs: 15000 }),
+    affect = useLifeResource(access, "affect", { refreshMs: 15000 }),
+    autonomy = useLifeResource(access, "autonomy", { refreshMs: 15000 });
   return (
     <div className="life-runtime-grid">
       <section className="panel">
@@ -161,7 +163,16 @@ function ActivityPanel({ access }: { access: LifeAccess }) {
   }
   return (
     <section className="panel">
-      <h3>活动与进度</h3>
+      <div className="section-heading">
+        <h3>活动与进度</h3>
+        <button
+          className="button"
+          disabled={records.loading}
+          onClick={records.refresh}
+        >
+          刷新活动
+        </button>
+      </div>
       <ResourceFeedback {...records} empty={!records.items.length} />
       <div className="life-records">
         {records.items.map((row) => (
@@ -299,7 +310,7 @@ function ActivityPanel({ access }: { access: LifeAccess }) {
               </select>
             </label>
             <label>
-              下一步时间
+              下一步时间（本机时区）
               <input
                 type="datetime-local"
                 value={due}
@@ -341,13 +352,17 @@ function ConcernsPanel({ access }: { access: LifeAccess }) {
   const [editing, setEditing] = useState<open_work_record | null>(null),
     [title, setTitle] = useState(""),
     [goal, setGoal] = useState(""),
-    [fragment, setFragment] = useState("");
+    [fragment, setFragment] = useState(""),
+    [due, setDue] = useState(""),
+    [expiry, setExpiry] = useState("");
   function clearDraft() {
     setEditing(null);
     setEditorOpen(false);
     setTitle("");
     setGoal("");
     setFragment("");
+    setDue("");
+    setExpiry("");
   }
 
   async function save(event: React.FormEvent) {
@@ -376,8 +391,8 @@ function ConcernsPanel({ access }: { access: LifeAccess }) {
         scope: editing?.scope ?? null,
         sources: editing?.sources ?? [],
         fragments,
-        next_due_at: editing?.next_due_at ?? null,
-        expires_at: editing?.expires_at ?? null,
+        next_due_at: due ? new Date(due).getTime() / 1000 : null,
+        expires_at: expiry ? new Date(expiry).getTime() / 1000 : null,
         result_refs: editing?.result_refs ?? [],
       },
       editing?.version ?? 0,
@@ -390,7 +405,16 @@ function ConcernsPanel({ access }: { access: LifeAccess }) {
   }
   return (
     <section className="panel">
-      <h3>近期关注与约定</h3>
+      <div className="section-heading">
+        <h3>近期关注与约定</h3>
+        <button
+          className="button"
+          disabled={records.loading}
+          onClick={records.refresh}
+        >
+          刷新关注
+        </button>
+      </div>
       <ResourceFeedback {...records} empty={!records.items.length} />
       {records.items.map((row) => (
         <article key={row.id} className="life-record">
@@ -399,6 +423,9 @@ function ConcernsPanel({ access }: { access: LifeAccess }) {
             <span className="status-pill">{showState(row.state)}</span>
           </header>
           <p>关注目标：{row.goal}</p>
+          <p className="muted">
+            下一次跟进：{time(row.next_due_at)} · 有效至：{time(row.expires_at)}
+          </p>
           <LifeEvidence sources={row.sources} />
           {row.fragments
             .filter((item) => item.valid)
@@ -422,6 +449,8 @@ function ConcernsPanel({ access }: { access: LifeAccess }) {
                 setTitle(row.title);
                 setGoal(row.goal);
                 setFragment("");
+                setDue(localInputTime(row.next_due_at));
+                setExpiry(localInputTime(row.expires_at));
               }}
             >
               继续记录
@@ -486,6 +515,24 @@ function ConcernsPanel({ access }: { access: LifeAccess }) {
               onChange={(e) => setFragment(e.target.value)}
             />
           </label>
+          <div className="life-form-row">
+            <label>
+              下次跟进时间（本机时区）
+              <input
+                type="datetime-local"
+                value={due}
+                onChange={(event) => setDue(event.target.value)}
+              />
+            </label>
+            <label>
+              关注有效期（本机时区）
+              <input
+                type="datetime-local"
+                value={expiry}
+                onChange={(event) => setExpiry(event.target.value)}
+              />
+            </label>
+          </div>
           <button className="button primary" disabled={action.busy}>
             保存关注
           </button>

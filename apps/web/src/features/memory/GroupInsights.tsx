@@ -3,6 +3,7 @@ import { integrationPost, readFailure } from "../../app/integrationApi";
 import { StatePanel } from "../../components/StatePanel";
 import { DetailCard } from "../../components/DetailCard";
 import GroupGraph from "./GroupGraph";
+import MemoryRecords from "./MemoryRecords";
 import type {
   EvidenceRecord,
   Group,
@@ -551,13 +552,13 @@ export default function GroupInsights({
             <section className="panel">
               <h2>当前群画像</h2>
               {records.items.length ? (
-                records.items.map((item) => (
-                  <div key={item.semantic_group_id}>
-                    {item.units.map((unit) => (
-                      <p key={unit.record_id}>{unit.statement}</p>
-                    ))}
-                  </div>
-                ))
+                <MemoryRecords
+                  scope="当前群共享画像"
+                  records={records.items}
+                  cursor={records.next_cursor}
+                  busy={busy}
+                  error={error}
+                />
               ) : (
                 <p>当前群范围暂无有效共享画像。</p>
               )}

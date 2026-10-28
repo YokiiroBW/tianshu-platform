@@ -98,10 +98,7 @@ export type TopicPage = {
   omitted_invalidated: boolean;
 };
 export type RecordPage = {
-  items: {
-    semantic_group_id: string;
-    units: { record_id: string; record_version: number; statement: string }[];
-  }[];
+  items: import("./MemoryRecords").RecordGroup[];
   next_cursor: string | null;
 };
 export type Part<T> =
