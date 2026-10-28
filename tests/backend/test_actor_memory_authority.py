@@ -87,10 +87,14 @@ class ActorMemoryAuthorityTests(unittest.IsolatedAsyncioTestCase):
         first = await self.post(self.request())
         self.assertIn("append_episode", first["allowed_operations"])
         self.assertIn("query", first["allowed_operations"])
+        self.assertIn("manage_list", first["allowed_operations"])
+        self.assertIn("forget_memory", first["allowed_operations"])
         self.role["capabilities"] = ["memory.read"]
         self.p.role_runtime._put(self.role)
         second = await self.post(self.request())
         self.assertNotIn("append_episode", second["allowed_operations"])
+        self.assertNotIn("forget_memory", second["allowed_operations"])
+        self.assertNotIn("maintain", second["allowed_operations"])
         self.assertNotEqual(first["policy_version"], second["policy_version"])
         self.role["enabled"] = False
         self.p.role_runtime._put(self.role)

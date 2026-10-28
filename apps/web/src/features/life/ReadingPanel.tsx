@@ -5,6 +5,7 @@ import { RuntimeFeedback, ResourceFeedback } from "./RuntimeFeedback";
 import { useDraftId, useLifeAction, useLifeResource } from "./useLifeRuntime";
 import { showState, type LifeAccess } from "./runtimeApi";
 import type { content_ref, reading_record } from "./runtimeTypes";
+import { LifeEvidence } from "./LifeEvidence";
 
 export function ReadingPanel({ access }: { access: LifeAccess }) {
   const records = useLifeResource(access, "reading"),
@@ -96,6 +97,7 @@ export function ReadingPanel({ access }: { access: LifeAccess }) {
                 ? item.coverage.map(rangeText).join("；")
                 : "尚未读取正文"}
             </p>
+            <LifeEvidence sources={item.content_ref.sources} />
             <div className="life-action-row">
               <button
                 className="button"

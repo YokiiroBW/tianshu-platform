@@ -18,14 +18,14 @@ LIFE_SHA256 = "a87e154d0745acb46b605747a5a7d3ffd6d07f48fd1071d1375352a756543038"
 RUNTIME_PACKAGES = {
     "reading-state/v1": "2dc05bb8658988a46e286de6ef283d49bfb286e45141a4d2cfc0501d79bf1ebb",
     "skills/v1": "0ad3a444e8bff26721c14664260d08b463feb3288a556364e1af35f3e277d0f2",
-    "life-runtime/v2": "85aff438f91cb96876e259204b5a198e2fedaead56db64a2265aa520a59ea7e3",
+    "life-runtime/v2": "6c032c558d107615a19e49f1bde1c76f7a5994b14c484476f7a71aeab555cadf",
     "image-backend/v1": "62e71dd2f42fb5b1376c439c362a555619da41cb7f7ae26d07acc1182b80ffbd",
-    "bot-delivery/v2.1": "768aaf25db41ada4bc4ac3768c9e4758b0753e362bd3c8be482881a9e530eb1a",
+    "bot-delivery/v2.1": "ee6b6ebcf2b46a53b8aff49ad4b7f3fd0bc1e0f5eaef0db8e4fbdb923c005350",
     "memory-context/v1": "aaf25b4446c3915d48e46c6f0f687a26b57f30ac1c4494085266a586f67953e8",
     "memory-context/v2": "ec39155651f4c2d09183ccba5735cc9b9fc8ab9854de546223a89a46ff020ac9",
     "memory-extraction/v1": "205239730bf6aa5ff320cf9f300ae9c301c15559c0147aecd1fe001e8bfe5b82",
     "context-history/v1": "5db7d9223a8c9bb69dd8046355ed0bc0fff1f963290adf43566b529493624e6e",
-    "knowledge-content/v1": "76a6572b6f24177a9154d9b6d7166ad65626d9bd9d6f806c344dec93e40beba2",
+    "knowledge-content/v1": "47b33825d5260f78106c881e454de02e807c4047c1d9aa9aa98e4abfa90c0201",
 }
 
 

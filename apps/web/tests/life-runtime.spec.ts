@@ -135,6 +135,171 @@ async function runtimeFixture(page: Page) {
   return { writes, errors };
 }
 
+test("actor memory shows distinct interest history, corrects and forgets with stable retries", async ({
+  page,
+}) => {
+  const fixture = await runtimeFixture(page);
+  let text = "角色喜欢夜间阅读",
+    revision = 1,
+    forgotten = false,
+    lists = 0;
+  const writes: Record<string, any>[] = [];
+  const ref = () => ({ kind: "derived", id: "derived:interest", revision });
+  await page.route("**/api/web/actor-memory/**", async (route) => {
+    const name = new URL(route.request().url()).pathname.split("/").pop();
+    const body = route.request().postDataJSON();
+    if (name === "list") {
+      lists++;
+      return route.fulfill({
+        json: {
+          actor_id: body.actor_id,
+          domain_version: revision,
+          next_cursor: null,
+          omitted: false,
+          items: forgotten
+            ? []
+            : [
+                {
+                  ref: ref(),
+                  kind: "preference",
+                  state: "active",
+                  text,
+                  episode_refs: [
+                    { episode_id: "episode:reading", revision: 1 },
+                  ],
+                  source_refs: [],
+                  recorded_at: "2026-10-28T04:00:00Z",
+                  occurred_at: null,
+                  expires_at: null,
+                  importance: "normal",
+                  retention: "long",
+                  interest: { topic: "阅读", stance: "like" },
+                  editable: true,
+                  forgotten: false,
+                },
+              ],
+        },
+      });
+    }
+    if (name === "interests")
+      return route.fulfill({
+        json: {
+          items: forgotten
+            ? []
+            : [
+                {
+                  ref: ref(),
+                  text,
+                  topic: "阅读",
+                  stance: "like",
+                  support_count: 2,
+                  source_refs: [],
+                  history: [
+                    {
+                      ref: { ...ref(), revision: 0 },
+                      stance: "curious",
+                      state: "superseded",
+                      recorded_at: "2026-10-27T04:00:00Z",
+                    },
+                  ],
+                  history_omitted: false,
+                },
+              ],
+          omitted: false,
+        },
+      });
+    if (name === "impact")
+      return route.fulfill({
+        json: {
+          ref: ref(),
+          domain_version: revision,
+          dependent_refs: [
+            { kind: "derived", id: "derived:reflection", revision: 1 },
+          ],
+          source_refs: [],
+          can_revise: true,
+          can_forget: true,
+          owner_originals_affected: false,
+          omitted: false,
+        },
+      });
+    writes.push(body);
+    if (name === "revise") {
+      text = body.value.text;
+      revision++;
+      return route.fulfill({ json: { state: "accepted" } });
+    }
+    if (name === "forget" && writes.length === 2)
+      return route.fulfill({
+        status: 503,
+        json: { code: "dependency_unavailable" },
+      });
+    forgotten = true;
+    return route.fulfill({ json: { state: "withdrawn" } });
+  });
+  await page.getByRole("tab", { name: "经历与记忆" }).click();
+  await expect(
+    page.getByRole("heading", { name: "角色自身记忆" }),
+  ).toBeVisible();
+  await expect(page.getByText("独立依据 2 项")).toBeVisible();
+  await page.getByText("兴趣变化（1）", { exact: true }).click();
+  await expect(page.getByText(/好奇 · 已被替代/)).toBeVisible();
+  await page.getByRole("button", { name: "查看详情与更正范围" }).click();
+  await expect(page.getByText(/derived:reflection/)).toBeVisible();
+  await page.screenshot({
+    path: test.info().outputPath("actor-memory.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "更正认识", exact: true }).click();
+  await page.getByLabel("更正后的认识").fill("角色现在更喜欢清晨阅读");
+  await page.getByRole("button", { name: "保存更正", exact: true }).click();
+  await expect(
+    page.getByText("更正已保存；原记录保留为替代历史。"),
+  ).toBeVisible();
+  await expect(
+    page.getByText("角色现在更喜欢清晨阅读", { exact: true }),
+  ).toHaveCount(2);
+  const beforeHidden = lists;
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(
+    page.getByText("角色现在更喜欢清晨阅读", { exact: true }),
+  ).toHaveCount(0);
+  expect(lists).toBe(beforeHidden);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: false,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(
+    page.getByText("角色现在更喜欢清晨阅读", { exact: true }),
+  ).toHaveCount(2);
+  expect(lists).toBeGreaterThan(beforeHidden);
+  await page.getByRole("button", { name: "查看详情与更正范围" }).click();
+  await page.getByRole("button", { name: "忘记此记忆及派生内容" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "dependency_unavailable" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "忘记此记忆及派生内容" }).click();
+  await expect(page.getByText("当前筛选下没有可展示的记录。")).toBeVisible();
+  expect(writes[2]).toEqual(writes[1]);
+  expect(writes[0].actor_id).toBe("actor:fixture");
+  expect(fixture.writes).toHaveLength(0);
+  expect(fixture.errors).toEqual([]);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});
+
 test("activity editing clears dates, uncertain retries reuse identity, and revoked pagination hides records", async ({
   page,
 }) => {
@@ -187,6 +352,163 @@ test("activity editing clears dates, uncertain retries reuse identity, and revok
     page.getByRole("button", { name: "继续读取活动", exact: true }),
   ).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
+});
+
+test("actor memory switches owners, shows actual partial coverage and imports one bounded page", async ({
+  page,
+}) => {
+  await runtimeFixture(page);
+  await page.route("**/api/web/life/actors", (route) =>
+    route.fulfill({
+      json: {
+        schema_version: 1,
+        fictional: true,
+        items: ["actor:fixture", "actor:second"].map((actor_id) => ({
+          actor_id,
+          label: actor_id,
+          actor_version: 1,
+          world_id: "world:fixture",
+          room_id: "room:fixture",
+        })),
+        next_after_actor_id: null,
+      },
+    }),
+  );
+  const imports: any[] = [];
+  await page.route("**/api/web/life/runtime/manage", (route) => {
+    const body = route.request().postDataJSON();
+    imports.push(body);
+    return route.fulfill({
+      json: {
+        operation: body.operation,
+        result: {
+          id: body.client_id,
+          version: 1,
+          state: "completed",
+          operation_ref: body.client_id,
+          next_cursor: null,
+          imported: 1,
+          skipped: 0,
+          complete: true,
+        },
+      },
+    });
+  });
+  await page.route("**/api/web/actor-memory/**", (route) => {
+    const body = route.request().postDataJSON(),
+      name = new URL(route.request().url()).pathname.split("/").pop();
+    const ref = {
+      kind: "episode",
+      id: `episode:${body.actor_id}`,
+      revision: 1,
+    };
+    if (name === "list")
+      return route.fulfill({
+        json: {
+          actor_id: body.actor_id,
+          domain_version: 1,
+          omitted: false,
+          next_cursor: null,
+          items: [
+            {
+              ref,
+              kind: "episode",
+              state: "active",
+              text: `${body.actor_id} 的独立阅读`,
+              episode_refs: [],
+              source_refs: [],
+              recorded_at: "2026-10-28T04:00:00Z",
+              occurred_at: "2026-10-28T03:00:00Z",
+              expires_at: null,
+              importance: "normal",
+              retention: "long",
+              interest: null,
+              editable: false,
+              forgotten: false,
+            },
+          ],
+        },
+      });
+    if (name === "interests")
+      return route.fulfill({ json: { items: [], omitted: false } });
+    if (name === "impact")
+      return route.fulfill({
+        json: {
+          ref,
+          domain_version: 1,
+          dependent_refs: [],
+          source_refs: [],
+          can_revise: false,
+          can_forget: true,
+          owner_originals_affected: false,
+          omitted: false,
+        },
+      });
+    return route.fulfill({
+      json: {
+        episode: {
+          fact: {
+            summary: "读过前两页",
+            provenance: "digital_action",
+            relation: "participant",
+            outcome: "completed",
+            occurred_at: "2026-10-28T03:00:00Z",
+            learned_at: "2026-10-28T04:00:00Z",
+            content_reads: [
+              {
+                content_ref: {
+                  producer: "knowledge",
+                  object_id: "text:partial",
+                  revision: "1",
+                  content_hash: "a".repeat(64),
+                },
+                coverage: [
+                  {
+                    unit: "pages",
+                    start: 0,
+                    end: 2,
+                    complete: false,
+                    gaps: ["range_truncated"],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+  await page.getByRole("button", { name: "重新读取角色", exact: true }).click();
+  await page.getByRole("tab", { name: "经历与记忆" }).click();
+  await expect(
+    page.getByText("actor:fixture 的独立阅读", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "选择角色", exact: true })
+    .selectOption("actor:second");
+  await expect(
+    page.getByText("actor:fixture 的独立阅读", { exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("tab", { name: "经历与记忆" }).click();
+  await expect(
+    page.getByText("actor:second 的独立阅读", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "查看详情与更正范围" }).click();
+  await expect(page.getByText(/实际数字行动 · 参与者 · 已完成/)).toBeVisible();
+  await expect(page.getByText(/0–2 页 · 部分读取/)).toBeVisible();
+  await page.getByText("导入已核验的历史经历", { exact: true }).click();
+  await page.getByRole("button", { name: "导入一批历史记录" }).click();
+  await expect(page.getByText(/本批已导入 1 项/)).toBeVisible();
+  expect(imports).toHaveLength(1);
+  expect(imports[0]).toMatchObject({
+    actor_id: "actor:second",
+    operation: "actor-memory.import",
+    expected_version: 0,
+    value: { owner: "activities", after: null, limit: 32 },
+  });
+  await expect(
+    page.getByRole("button", { name: "导入一批历史记录" }),
+  ).toBeDisabled();
 });
 
 test("incremental replies retain sent segments after uncertain cancellation and hide revoked history", async ({

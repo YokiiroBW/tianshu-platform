@@ -128,6 +128,21 @@ class RoleRuntime:
         principal = self.p.auth.principals[console.config["principal"]]
         require("role.manage" in principal["actions"], "forbidden", 403)
 
+    def managed_actor(self, console, session, actor, *, capabilities=()):
+        """Current operator ownership shared by Life and actor-memory management windows."""
+        self._gate(console, session)
+        role = self.get(actor)
+        require(
+            role
+            and role.get("operator") == console.config["principal"]
+            and role["state"] == "active"
+            and role["enabled"],
+            "forbidden",
+            403,
+        )
+        require(set(capabilities) <= set(role.get("capabilities", [])), "forbidden", 403)
+        return role
+
     def _entry_id(self, actor, source_id):
         return "role-" + digest([actor, source_id])[:32]
 

@@ -49,6 +49,8 @@ const descriptions: Record<string, string> = {
   version_conflict: "资料在读取期间发生变化，请重新读取列表。",
   project_conflict: "项目在读取期间发生变化，请重新读取。",
   stale_evidence: "资料来源已经变化，请重新读取。",
+  source_changed: "来源或记忆版本已经变化，请刷新后重试。",
+  source_withdrawn: "来源已经撤回，旧记忆不能继续使用。",
   invalid_cursor: "续读位置已经失效，请从第一页重新读取。",
   cursor_stale: "资料在分页期间发生变化，请从第一页重新读取。",
   scope_changed: "读取范围已经变化，请从第一页重新读取。",

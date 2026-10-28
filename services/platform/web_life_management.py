@@ -317,6 +317,15 @@ class WebLifeManagement:
                     400,
                 )
                 require(body["operation"] != "image.backend.configure", "invalid_input", 400)
+                memory_role = None
+                if body["operation"] == "actor-memory.import":
+                    memory_role = await self.p.local_work.run(
+                        self.p.role_runtime.managed_actor,
+                        self.console,
+                        session,
+                        actor,
+                        capabilities=("memory.read", "memory.write"),
+                    )
                 require(isinstance(body["value"], dict), "invalid_input", 400)
                 value = dict(body["value"])
                 if "scope" in value:
@@ -353,6 +362,15 @@ class WebLifeManagement:
                 self.p.contracts.check("life-runtime#manage_request", payload)
                 result = await self._call("manage", payload, management=True)
                 await self.p.local_work.run(self.guard, session)
+                if memory_role is not None:
+                    current = await self.p.local_work.run(
+                        self.p.role_runtime.managed_actor,
+                        self.console,
+                        session,
+                        actor,
+                        capabilities=("memory.read", "memory.write"),
+                    )
+                    require(current == memory_role, "version_conflict", 409)
                 return result
             selection = {"actor_id", "resource", "object_id", "expected_version", "limit", "after"}
             require(
@@ -378,11 +396,22 @@ class WebLifeManagement:
                 payload.update({key: body[key] for key in selection - {"actor_id"}})
                 if "chapter_view" in body:
                     payload["chapter_view"] = body["chapter_view"]
-                management_read = (
-                    body.get("chapter_view") == "current" or body["resource"] == "image_backend"
-                )
+                management_read = body.get("chapter_view") == "current" or body["resource"] in {
+                    "image_backend",
+                    "autonomy",
+                }
                 if management_read:
                     await self.p.local_work.run(self.guard, session)
+                autonomy_role = None
+                if body["resource"] == "autonomy":
+                    autonomy_role = await self.p.local_work.run(
+                        self.p.role_runtime.managed_actor,
+                        self.console,
+                        session,
+                        actor,
+                        capabilities=("memory.read",),
+                    )
+                    payload["scope"] = None
                 schema, path = "read_request", "read"
             elif name == "media":
                 payload.update(media_id=body["media_id"])
@@ -400,6 +429,15 @@ class WebLifeManagement:
             )
             if name == "read" and management_read:
                 await self.p.local_work.run(self.guard, session)
+                if autonomy_role is not None:
+                    current = await self.p.local_work.run(
+                        self.p.role_runtime.managed_actor,
+                        self.console,
+                        session,
+                        actor,
+                        capabilities=("memory.read",),
+                    )
+                    require(current == autonomy_role, "version_conflict", 409)
             return answer
 
     async def image_backend(self, name, body, session):

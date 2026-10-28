@@ -29,6 +29,7 @@ export type read_request = {
   actor_id: string;
   resource:
     | "state"
+    | "autonomy"
     | "activities"
     | "open_work"
     | "affect"
@@ -68,6 +69,10 @@ export type operation_result = {
   state: string;
   operation_ref: string;
   content_ref?: content_ref;
+  next_cursor?: string | null;
+  imported?: number;
+  skipped?: number;
+  complete?: boolean;
 };
 export type manage_response = {
   schema_version: 2;
@@ -75,6 +80,7 @@ export type manage_response = {
   actor_id: string;
   operation:
     | "concern.save"
+    | "actor-memory.import"
     | "concern.close"
     | "activity.save"
     | "activity.pause"
@@ -338,6 +344,22 @@ export type image_reference_record = {
 };
 export type Resource = read_request["resource"];
 export type Records = {
+  autonomy: {
+    id: string;
+    actor_id: string;
+    version: number;
+    enabled: boolean;
+    goal_id: string | null;
+    title: string | null;
+    reason: string | null;
+    state: string;
+    next_due_at: number | null;
+    updated_at: number | null;
+    current_step: activities_record["checkpoint"] | null;
+    step_state: string | null;
+    error_code: string | null;
+    sources: source_ref[];
+  };
   state: state_record;
   activities: activities_record;
   open_work: open_work_record;

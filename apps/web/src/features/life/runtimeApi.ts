@@ -127,6 +127,11 @@ export function originalContent(
   );
 }
 export const stateNames: Record<string, string> = {
+  idle: "暂无待执行目标",
+  preparing: "准备中",
+  submitted: "已提交执行",
+  interrupted: "执行中断",
+  tools_pending: "等待工具结果",
   planned: "计划",
   running: "进行中",
   paused: "已暂停",

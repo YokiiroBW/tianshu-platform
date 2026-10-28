@@ -5,6 +5,7 @@ import { ResourceFeedback, RuntimeFeedback } from "./RuntimeFeedback";
 import { showState, type LifeAccess } from "./runtimeApi";
 import type { activities_record, open_work_record } from "./runtimeTypes";
 import { showMood } from "./lifeLabels";
+import { LifeEvidence } from "./LifeEvidence";
 
 function time(value: number | null) {
   return value ? new Date(value * 1000).toLocaleString("zh-CN") : "未安排";
@@ -26,9 +27,43 @@ const certaintyNames = {
 
 export function LifecyclePanel({ access }: { access: LifeAccess }) {
   const state = useLifeResource(access, "state"),
-    affect = useLifeResource(access, "affect");
+    affect = useLifeResource(access, "affect"),
+    autonomy = useLifeResource(access, "autonomy");
   return (
     <div className="life-runtime-grid">
+      <section className="panel">
+        <h3>当前自主目标</h3>
+        <ResourceFeedback {...autonomy} empty={!autonomy.items.length} />
+        {autonomy.items.map((row) => (
+          <article key={row.id} className="life-record">
+            <header>
+              <strong>{row.title || "尚无已记录目标"}</strong>
+              <span className="status-pill">{showState(row.state)}</span>
+            </header>
+            <p>关注原因：{row.reason || "尚无已记录的选择原因"}</p>
+            <p>
+              {row.enabled ? "自主生活已启用" : "自主生活已停用"}
+              {row.step_state && ` · 执行步骤：${showState(row.step_state)}`}
+            </p>
+            {row.current_step && (
+              <p>
+                步骤 {row.current_step.step} ·{" "}
+                {row.current_step.note || "尚无步骤说明"}
+              </p>
+            )}
+            {row.error_code && (
+              <p role="status">当前执行反馈：{row.error_code}</p>
+            )}
+            <p className="muted">
+              下一步：{time(row.next_due_at)} · 更新：{time(row.updated_at)}
+            </p>
+            <LifeEvidence sources={row.sources} />
+          </article>
+        ))}
+        <button className="button" onClick={autonomy.refresh}>
+          刷新当前目标
+        </button>
+      </section>
       <section className="panel">
         <h3>此刻</h3>
         <ResourceFeedback {...state} empty={!state.items.length} />
@@ -144,6 +179,16 @@ function ActivityPanel({ access }: { access: LifeAccess }) {
                     .join("；") || "尚无"}
             </p>
             {row.resume_condition && <p>恢复条件：{row.resume_condition}</p>}
+            <p className="muted">
+              已记录步骤 {row.checkpoint.step} · 位置 {row.checkpoint.position}
+              {
+                { step: "步", characters: "字符", seconds: "秒", pages: "页" }[
+                  row.checkpoint.unit
+                ]
+              }
+              {" · "}开始：{time(row.started_at)} · 更新：{time(row.updated_at)}
+            </p>
+            <LifeEvidence sources={row.sources} />
             <small>
               下一步：{time(row.next_due_at)} · 版本 {row.version}
             </small>
@@ -353,13 +398,17 @@ function ConcernsPanel({ access }: { access: LifeAccess }) {
             <strong>{row.title}</strong>
             <span className="status-pill">{showState(row.state)}</span>
           </header>
-          <p>{row.goal}</p>
+          <p>关注目标：{row.goal}</p>
+          <LifeEvidence sources={row.sources} />
           {row.fragments
             .filter((item) => item.valid)
             .map((item) => (
-              <p key={item.id}>
-                {item.text} <small>· {certaintyNames[item.certainty]}</small>
-              </p>
+              <div key={item.id}>
+                <p>
+                  {item.text} <small>· {certaintyNames[item.certainty]}</small>
+                </p>
+                <LifeEvidence sources={item.sources} />
+              </div>
             ))}
           <small>
             {row.intent_valid ? "当前意图有效" : "意图已失效"} · 版本{" "}

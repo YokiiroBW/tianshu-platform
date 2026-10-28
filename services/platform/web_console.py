@@ -44,6 +44,7 @@ from .web_dialogue import WebDialogue
 from .web_external import WebExternal
 from .web_flow_graph import PREFIX as FLOW_GRAPH_PREFIX, WebFlowGraph
 from .web_life_management import WebLifeManagement
+from .web_actor_memory import WebActorMemory
 from .web_memory import WebMemory
 from .web_memory_links import WebMemoryLinks
 from .web_models import WebModels
@@ -229,6 +230,7 @@ class WebConsole:
         self.knowledge = WebReader("knowledge", platform, self, session_factory=knowledge)
         self.life = WebReader("life", platform, self, session_factory=companion)
         self.life_management = WebLifeManagement(platform, self, session_factory=companion)
+        self.actor_memory = WebActorMemory(platform, self, session_factory=memory)
         self.skills = WebSkills(self.life_management)
         self.content = WebContent(platform, self, session_factory=knowledge)
         self.memory_links = WebMemoryLinks(platform, self, session_factory=memory)
@@ -1005,6 +1007,11 @@ class WebConsole:
                     content_type=content_type,
                     headers={"Cache-Control": "no-store", "X-Content-SHA256": checksum},
                 )
+            return web.json_response(result, headers={"Cache-Control": "no-store"})
+        if request.path.startswith("/api/web/actor-memory/"):
+            result = await self.actor_memory.route(
+                request.path[len("/api/web/actor-memory/") :], body, session
+            )
             return web.json_response(result, headers={"Cache-Control": "no-store"})
         if request.path.startswith(KNOWLEDGE_PREFIX) or request.path.startswith(LIFE_PREFIX):
             reader = self.knowledge if request.path.startswith(KNOWLEDGE_PREFIX) else self.life

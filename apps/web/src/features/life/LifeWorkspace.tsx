@@ -3,9 +3,11 @@ import { LifecyclePanel } from "./LifecyclePanel";
 import { WardrobePanel } from "./WardrobePanel";
 import { ReadingPanel } from "./ReadingPanel";
 import { WritingPanel } from "./WritingPanel";
+import { ActorMemoryPanel } from "./ActorMemoryPanel";
 import type { LifeAccess } from "./runtimeApi";
 const tabs = [
   { id: "now", label: "活动与关注" },
+  { id: "memory", label: "经历与记忆" },
   { id: "wardrobe", label: "衣柜与相册" },
   { id: "reading", label: "原文与共读" },
   { id: "writing", label: "作品与原稿" },
@@ -40,6 +42,8 @@ export function LifeWorkspace({ access }: { access: LifeAccess }) {
       >
         {tab === "now" ? (
           <LifecyclePanel access={access} />
+        ) : tab === "memory" ? (
+          <ActorMemoryPanel access={access} />
         ) : tab === "wardrobe" ? (
           <WardrobePanel access={access} />
         ) : tab === "reading" ? (

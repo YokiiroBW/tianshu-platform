@@ -21,6 +21,15 @@ export function useLifeResource<K extends keyof Records & Resource>(
   const [epoch, setEpoch] = useState(0);
   const current = useRef<AbortController | null>(null);
   const identity = useRef("");
+  const [visiblePage, setVisiblePage] = useState(!document.hidden);
+  useEffect(() => {
+    function visibility() {
+      setVisiblePage(!document.hidden);
+      if (document.hidden) current.current?.abort();
+    }
+    document.addEventListener("visibilitychange", visibility);
+    return () => document.removeEventListener("visibilitychange", visibility);
+  }, []);
   function failed(cause: unknown) {
     if (
       cause instanceof IntegrationError &&
@@ -30,6 +39,8 @@ export function useLifeResource<K extends keyof Records & Resource>(
         "session_expired",
         "scope_changed",
         "stale_evidence",
+        "source_changed",
+        "source_withdrawn",
         "not_found",
         "upstream_forbidden",
         "operator_not_authorized",
@@ -58,7 +69,10 @@ export function useLifeResource<K extends keyof Records & Resource>(
       identity.current = key;
     }
     setError("");
-    if (!access.actor || !access.csrf) return;
+    if (!access.actor || !access.csrf || !visiblePage) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     void readLife(access, resource, control.signal, objectId, null, chapterView)
       .then((result) => {
@@ -76,7 +90,15 @@ export function useLifeResource<K extends keyof Records & Resource>(
         if (!control.signal.aborted) setLoading(false);
       });
     return () => control.abort();
-  }, [access.actor, access.csrf, resource, objectId, chapterView, epoch]);
+  }, [
+    access.actor,
+    access.csrf,
+    resource,
+    objectId,
+    chapterView,
+    epoch,
+    visiblePage,
+  ]);
   async function more() {
     if (!cursor || loading) return;
     const control = current.current ?? new AbortController();

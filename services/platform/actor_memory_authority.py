@@ -5,9 +5,18 @@ from .contracts import canonical, digest, require
 
 PATH = "/internal/v1/actor-self-memory/authority"
 PACKAGE = "actor-self-memory/candidate-v1"
-MANIFEST = "9ce5c9ba6ae4545c843d1eac584da2ba10ca85e8c7fb1127d5adcf1b761e5c25"
+MANIFEST = "34fec40dbf16ab0109026dd721873e238e5a6fecd86ad3d58495e99103d9b3e5"
 READ_OPERATIONS = frozenset(
-    {"get_episode", "check_episode", "get_receipt", "query", "check_memory"}
+    {
+        "get_episode",
+        "check_episode",
+        "get_receipt",
+        "query",
+        "check_memory",
+        "interests",
+        "manage_list",
+        "memory_impact",
+    }
 )
 WRITE_OPERATIONS = frozenset(
     {
@@ -16,6 +25,9 @@ WRITE_OPERATIONS = frozenset(
         "apply_source_revision",
         "append_derived",
         "withdraw_memory",
+        "revise_memory",
+        "forget_memory",
+        "maintain",
     }
 )
 

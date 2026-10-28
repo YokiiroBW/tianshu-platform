@@ -503,6 +503,10 @@ export default function MemoryPage({
   return (
     <div className="memory-page">
       {rolePicker}
+      <p className="muted">
+        这里是用户与群的记忆。角色自己的经历、兴趣与更正记录在
+        <a href="#/companion/1">角色生活</a>中单独查看。
+      </p>
       <section className="panel">
         <div className="section-heading">
           <h2>授权记忆范围</h2>
