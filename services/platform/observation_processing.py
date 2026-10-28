@@ -105,8 +105,15 @@ def current(owner, frame):
             if owner.catalog
             else []
         )
-        if len(managed) == 1 and managed[0].get("kind") != "observation":
-            row = managed[0]
+        kind, conversation_id = native["conversation_id"].split(":", 1)
+        candidates = [
+            row
+            for row in managed
+            if row.get("kind") != "observation"
+            and row.get("conversation") == {"kind": kind, "id": conversation_id}
+        ]
+        if len(candidates) == 1:
+            row = candidates[0]
             actor = row["actor_id"]
             allowed = (
                 row["enabled"]

@@ -44,12 +44,14 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             "allowed_cidrs": ["127.0.0.0/8"],
             "actors": [{"id": "actor:a", "label": "合成角色"}],
         }
+        self.settings["principals"]["companion"]["actions"].append("observation.verify")
         self.platform = Platform(self.settings)
         self.addAsyncCleanup(self._close)
         self.plugin_state = {}
         self.core_state = {}
         self.apply_calls = 0
         self.fail_next = False
+        self.fail_before_apply = False
         self.events = []
         self.acked = []
         self.sends = []
@@ -75,6 +77,11 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 )
             if route == "/bindings/apply":
                 self.apply_calls += 1
+                if self.fail_before_apply:
+                    self.fail_before_apply = False
+                    return web.json_response(
+                        {"code": "dependency_unavailable", "retryable": True}, status=503
+                    )
                 result = {key: body[key] for key in ("connection_id", "revision", "enabled")}
                 self.plugin_state[body["connection_id"]] = result
                 if self.fail_next:
@@ -275,7 +282,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([item["id"] for item in result["actors"]], ["actor:a", "actor:household"])
 
-    async def _draft(self, conversation_id="999"):
+    async def _draft(self, conversation_id="999", *, kind="group"):
         manager = self.platform.bot_adapters
         session = {}
         probe = await manager.probe(
@@ -292,16 +299,133 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             "draft_id": probe["draft_id"],
             "name": "合成插件",
             "account_id": "42",
-            "conversation": {"kind": "group", "id": conversation_id},
-            "allowed_authors": ["7"],
+            "conversation": {"kind": kind, "id": conversation_id},
+            "allowed_authors": [conversation_id] if kind == "private" else ["7"],
             "actor_id": "actor:a",
             "client_id": str(uuid.uuid4()),
         }
         return body, session
 
-    async def _created(self, conversation_id="999"):
-        body, session = await self._draft(conversation_id)
+    async def _created(self, conversation_id="999", *, kind="group"):
+        body, session = await self._draft(conversation_id, kind=kind)
         return await self.platform.bot_adapters.create(body, session), body
+
+    async def _processing_url(self):
+        runner, url = await start_http(create_app(self.platform))
+        self.addAsyncCleanup(runner.cleanup)
+        return url + "/internal/v2/observation-source/processing"
+
+    async def _processing_frames(self, url, frames):
+        request = {
+            "schema_version": 1,
+            "request_id": "processing:managed-conversations",
+            "frames": frames,
+        }
+        async with aiohttp.ClientSession(trust_env=False) as client:
+            async with client.post(
+                url, json=request, headers={"Authorization": bearer("COMPANION")}
+            ) as response:
+                answer = await response.json()
+                self.assertEqual(response.status, 200, answer)
+        self.assertEqual(answer["request_id"], request["request_id"])
+        self.assertEqual([item["frame"] for item in answer["frames"]], frames)
+        return answer["frames"]
+
+    def _processing_frame(self, row):
+        slot = self.platform.bots.slots["adapter:" + row["id"]]
+        channel = self.platform.sources.entries[slot["input_entry_ids"][0]]["channel"]
+        return {"channel": copy.deepcopy(channel), "actor_id": row["actor_id"]}
+
+    async def test_processing_http_selects_each_private_conversation_for_shared_account(self):
+        manager = self.platform.bot_adapters
+        rows = []
+        for conversation in ("910001", "910002"):
+            row, _ = await self._created(conversation, kind="private")
+            row = await manager.change(
+                "enable",
+                {
+                    "id": row["id"],
+                    "expected_revision": row["revision"],
+                    "client_id": str(uuid.uuid4()),
+                },
+            )
+            self.assertEqual(row["state"], "ready")
+            rows.append(row)
+        self.assertEqual(rows[0]["instance_id"], rows[1]["instance_id"])
+        self.assertEqual(rows[0]["account_id"], rows[1]["account_id"])
+        frames = [self._processing_frame(row) for row in rows]
+        url = await self._processing_url()
+        result = await self._processing_frames(url, frames)
+        self.assertEqual([item["processing_enabled"] for item in result], [True, True])
+        self.assertEqual([item["mode"] for item in result], ["reply", "reply"])
+        self.assertEqual([item["actor_id"] for item in result], ["actor:a", "actor:a"])
+        self.assertEqual([item["policy_version"] for item in result], [2, 2])
+
+        changed = [{**frames[0], "actor_id": "actor:other"}, frames[1]]
+        result = await self._processing_frames(url, changed)
+        self.assertEqual([item["processing_enabled"] for item in result], [False, True])
+
+        await manager.change(
+            "disable",
+            {
+                "id": rows[0]["id"],
+                "expected_revision": rows[0]["revision"],
+                "client_id": str(uuid.uuid4()),
+            },
+        )
+        result = await self._processing_frames(url, frames)
+        self.assertEqual([item["processing_enabled"] for item in result], [False, True])
+        self.assertEqual(result[0]["code"], "account_disabled")
+
+    async def test_processing_http_matches_conversation_kind_and_rejects_unknown_or_duplicate(self):
+        manager = self.platform.bot_adapters
+        group, _ = await self._created("910001")
+        group = await manager.change(
+            "enable",
+            {"id": group["id"], "expected_revision": 1, "client_id": str(uuid.uuid4())},
+        )
+        url = await self._processing_url()
+        unknown = {
+            "instance_id": group["instance_id"],
+            "self_id": group["account_id"],
+            "conversation_id": "private:910002",
+            "actor_id": "actor:a",
+        }
+        result = await self._processing_frames(url, [unknown])
+        self.assertFalse(result[0]["processing_enabled"])
+        self.assertEqual(result[0]["code"], "frame_unavailable")
+
+        private, _ = await self._created("910001", kind="private")
+        private = await manager.change(
+            "enable",
+            {"id": private["id"], "expected_revision": 1, "client_id": str(uuid.uuid4())},
+        )
+        frames = [self._processing_frame(row) for row in (group, private)]
+        result = await self._processing_frames(url, frames)
+        self.assertEqual([item["processing_enabled"] for item in result], [True, True])
+
+        # Real management permits a second disabled binding. It still makes the
+        # same native conversation ambiguous; no catalog/SQL result is injected.
+        duplicate, _ = await self._created("910001", kind="private")
+        self.assertEqual(duplicate["state"], "disabled")
+        result = await self._processing_frames(url, frames)
+        self.assertEqual([item["processing_enabled"] for item in result], [True, False])
+        self.assertEqual(result[1]["code"], "frame_unavailable")
+
+    async def test_processing_http_keeps_unconfirmed_managed_binding_disabled(self):
+        manager = self.platform.bot_adapters
+        row, _ = await self._created("910001", kind="private")
+        self.fail_before_apply = True
+        row = await manager.change(
+            "enable",
+            {"id": row["id"], "expected_revision": 1, "client_id": str(uuid.uuid4())},
+        )
+        self.assertEqual(row["state"], "unknown")
+        self.assertTrue(row["pending"])
+        url = await self._processing_url()
+        result = await self._processing_frames(url, [self._processing_frame(row)])
+        self.assertFalse(result[0]["processing_enabled"])
+        self.assertEqual(result[0]["code"], "policy_pending")
 
     async def test_media_send_transport_exceeds_control_request_limit(self):
         from services.platform.web_external_net import reviewed_pins

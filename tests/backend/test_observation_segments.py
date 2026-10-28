@@ -97,7 +97,7 @@ class SegmentMappingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.ingests = []
 
-        async def core_response(_settings, ingest, _contracts):
+        async def core_response(_settings, ingest, _contracts, *, session_factory=None):
             self.calls.append("ingest")
             authority = self.platform.sources.read(bearer("COMPANION"), input_request(ingest))
             response = core_fixture(ingest, authority, self.now)
