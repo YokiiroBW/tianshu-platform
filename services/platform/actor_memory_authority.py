@@ -5,7 +5,7 @@ from .contracts import canonical, digest, require
 
 PATH = "/internal/v1/actor-self-memory/authority"
 PACKAGE = "actor-self-memory/candidate-v1"
-MANIFEST = "bfec1bedaee06039e3f33bac8413ff49bb62a81515a664aae8ea704c6c09af33"
+MANIFEST = "9ce5c9ba6ae4545c843d1eac584da2ba10ca85e8c7fb1127d5adcf1b761e5c25"
 READ_OPERATIONS = frozenset(
     {"get_episode", "check_episode", "get_receipt", "query", "check_memory"}
 )
@@ -85,7 +85,12 @@ class ActorMemoryAuthority:
             audience = context["audience"]
             allowed = state == "enabled" and bool(READ_OPERATIONS.intersection(operations))
             verified = None
-            if allowed and audience["kind"] != "actor_only":
+            if audience["kind"] == "public":
+                # This grants a context check, never a claim that any source is public.
+                # Memory still intersects every basis with its current owner disclosure.
+                require(context["purpose"] in {"diary", "management"}, "forbidden", 403)
+                verified = context
+            elif allowed and audience["kind"] != "actor_only":
                 _, _, verified = p.origins.context(
                     db, audience["assertion_ref"], "companion", "memory", "dialogue"
                 )

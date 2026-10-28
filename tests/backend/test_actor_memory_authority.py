@@ -143,6 +143,47 @@ class ActorMemoryAuthorityTests(unittest.IsolatedAsyncioTestCase):
         self.p.auth.principals["memory"]["actions"].remove("actor.memory.authorize")
         await self.post(self.request(), 403)
 
+    async def test_public_context_is_role_read_only_and_has_no_fabricated_origin(self):
+        value = self.request(
+            "context_check", context={"purpose": "diary", "audience": {"kind": "public"}}
+        )
+        with patch.object(self.p.origins, "context", side_effect=AssertionError("no origin")):
+            first = await self.post(value)
+            self.assertTrue(first["allowed"])
+            self.assertEqual(first["context"], value["context"])
+            management = await self.post(
+                {**value, "context": {"purpose": "management", "audience": {"kind": "public"}}}
+            )
+            self.assertNotEqual(first["access_version"], management["access_version"])
+        await self.post({**value, "role_version": 8}, 409)
+        self.assertFalse((await self.post({**value, "actor_id": "actor:missing"}))["allowed"])
+        self.role["capabilities"] = ["memory.write"]
+        self.p.role_runtime._put(self.role)
+        self.assertFalse((await self.post(value))["allowed"])
+        self.role["capabilities"] = ["memory.read"]
+        self.role["enabled"] = False
+        self.p.role_runtime._put(self.role)
+        self.assertFalse((await self.post(value))["allowed"])
+
+    async def test_public_context_rejects_non_diary_purpose_and_origin_fields(self):
+        for purpose in ("dialogue", "plan", "proactive"):
+            await self.post(
+                self.request(
+                    "context_check", context={"purpose": purpose, "audience": {"kind": "public"}}
+                ),
+                400,
+            )
+        await self.post(
+            self.request(
+                "context_check",
+                context={
+                    "purpose": "diary",
+                    "audience": {"kind": "public", "person_id": "person:requester"},
+                },
+            ),
+            400,
+        )
+
     async def test_private_person_is_checked_and_contract_unavailable_is_local(self):
         entry = copy.deepcopy(self.p.auth.entries["chat-entry"])
         entry["audience"] = "self_private"

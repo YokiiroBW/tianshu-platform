@@ -175,153 +175,180 @@ test("project knowledge browses, pages, reads, searches and distinguishes an emp
   });
 });
 
-test("life reads last persisted state and only opens a published diary", async ({
-  page,
-}) => {
-  await session(page);
-  await page.route("**/api/web/weather/current", (route) =>
-    answer(route, {
-      revision: 0,
-      can_manage: false,
-      configured: false,
-      credential_configured: false,
-      host: null,
-      location: null,
-      server_time: 1790471000,
-      weather: null,
-      fetched_at: null,
-      stale: false,
-      code: "weather_not_configured",
-    }),
-  );
-  await page.route("**/api/web/life/*", (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path.endsWith("/state"))
-      return answer(route, {
-        available: true,
-        code: "ready",
-        peer: { configured: true, verified_at: null, code: "unverified" },
-      });
-    if (path.endsWith("/actors"))
-      return answer(route, {
-        schema_version: 1,
-        fictional: true,
-        items: [
-          {
-            actor_id: "actor-a",
-            actor_version: 2,
-            world_id: "world",
-            room_id: "room",
-          },
-        ],
-        next_after_actor_id: null,
-      });
-    if (path.endsWith("/today"))
-      return answer(route, {
-        schema_version: 1,
-        fictional: true,
-        actor_id: "actor-a",
-        day: "2026-09-27",
-        timezone: "Asia/Shanghai",
-        enabled: true,
-        observed_at: 1790471000,
-        state_basis: "last_persisted",
-        plan: {
-          plan_id: "plan-a",
-          version: 1,
-          state: "active",
-          generation_state: "unavailable",
-          generated_by: "baseline",
-          entries: [
+for (const mixed of [false, true]) {
+  test(`life reads last persisted state and only opens a published diary (${mixed ? "mixed" : "legacy"})`, async ({
+    page,
+  }) => {
+    const provenance = mixed
+      ? {
+          kind: "mixed",
+          source_kinds: ["digital_experience", "interpretation", "fictional"],
+          selection_complete: false,
+          timezone: "Asia/Shanghai",
+          occurred_from: "2026-09-26T16:00:00Z",
+          occurred_before: "2026-09-27T16:00:00Z",
+        }
+      : undefined;
+    await session(page);
+    await page.route("**/api/web/weather/current", (route) =>
+      answer(route, {
+        revision: 0,
+        can_manage: false,
+        configured: false,
+        credential_configured: false,
+        host: null,
+        location: null,
+        server_time: 1790471000,
+        weather: null,
+        fetched_at: null,
+        stale: false,
+        code: "weather_not_configured",
+      }),
+    );
+    await page.route("**/api/web/life/*", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/state"))
+        return answer(route, {
+          available: true,
+          code: "ready",
+          peer: { configured: true, verified_at: null, code: "unverified" },
+        });
+      if (path.endsWith("/actors"))
+        return answer(route, {
+          schema_version: 1,
+          fictional: true,
+          items: [
             {
-              phase_id: "phase-a",
-              minute: 0,
-              activity: "安静休息",
-              detail: null,
-              state: "current",
-              generation_state: "unavailable",
+              actor_id: "actor-a",
+              actor_version: 2,
+              world_id: "world",
+              room_id: "room",
             },
           ],
-          current_phase_id: "phase-a",
-        },
-      });
-    if (path.endsWith("/timeline"))
-      return answer(route, {
-        schema_version: 1,
-        fictional: true,
-        actor_id: "actor-a",
-        day: "2026-09-27",
-        state_basis: "last_persisted",
-        items: [],
-        next_after: null,
-      });
-    if (path.endsWith("/snapshot"))
-      return answer(route, {
-        schema_version: 1,
-        fictional: true,
-        actor_id: "actor-a",
-        actor_version: 2,
-        world_id: "world",
-        room_id: "room",
-        timezone: "Asia/Shanghai",
-        activity: null,
-        mood: "平静",
-        outfit_ref: null,
-        changed_at: 1790470000,
-        observed_at: 1790471000,
-        state_basis: "last_persisted",
-      });
-    if (path.endsWith("/diaries"))
-      return answer(route, {
-        schema_version: 1,
-        fictional: true,
-        actor_id: "actor-a",
-        items: [
-          {
-            diary_id: "diary-a",
-            actor_id: "actor-a",
-            day: "2026-09-27",
-            state: "draft",
-            version: 4,
-            published_revision_id: "revision-2",
-            captured: {
-              recipe_id: "daily",
-              recipe_version: 1,
-              material_version: "v1",
-            },
+          next_after_actor_id: null,
+        });
+      if (path.endsWith("/today"))
+        return answer(route, {
+          schema_version: 1,
+          fictional: true,
+          actor_id: "actor-a",
+          day: "2026-09-27",
+          timezone: "Asia/Shanghai",
+          enabled: true,
+          observed_at: 1790471000,
+          state_basis: "last_persisted",
+          plan: {
+            plan_id: "plan-a",
+            version: 1,
+            state: "active",
+            generation_state: "unavailable",
+            generated_by: "baseline",
+            entries: [
+              {
+                phase_id: "phase-a",
+                minute: 0,
+                activity: "安静休息",
+                detail: null,
+                state: "current",
+                generation_state: "unavailable",
+              },
+            ],
+            current_phase_id: "phase-a",
           },
-        ],
-        next_after: null,
-      });
-    if (path.endsWith("/revision"))
-      return answer(route, {
-        schema_version: 1,
-        fictional: true,
-        actor_id: "actor-a",
-        diary_id: "diary-a",
-        diary_version: 4,
-        revision_id: "revision-2",
-        content: "这是一篇已发布的日记。",
-        created_at: 1790470000,
-        captured: {
-          recipe_id: "daily",
-          recipe_version: 1,
-          material_version: "v1",
-          config_version: 3,
-        },
-      });
-    throw new Error(`unexpected ${path}`);
+        });
+      if (path.endsWith("/timeline"))
+        return answer(route, {
+          schema_version: 1,
+          fictional: true,
+          actor_id: "actor-a",
+          day: "2026-09-27",
+          state_basis: "last_persisted",
+          items: [],
+          next_after: null,
+        });
+      if (path.endsWith("/snapshot"))
+        return answer(route, {
+          schema_version: 1,
+          fictional: true,
+          actor_id: "actor-a",
+          actor_version: 2,
+          world_id: "world",
+          room_id: "room",
+          timezone: "Asia/Shanghai",
+          activity: null,
+          mood: "平静",
+          outfit_ref: null,
+          changed_at: 1790470000,
+          observed_at: 1790471000,
+          state_basis: "last_persisted",
+        });
+      if (path.endsWith("/diaries"))
+        return answer(route, {
+          schema_version: 1,
+          fictional: !mixed,
+          actor_id: "actor-a",
+          items: [
+            {
+              diary_id: "diary-a",
+              actor_id: "actor-a",
+              day: "2026-09-27",
+              state: "draft",
+              version: 4,
+              published_revision_id: "revision-2",
+              fictional: !mixed,
+              provenance,
+              captured: {
+                recipe_id: "daily",
+                recipe_version: 1,
+                material_version: "v1",
+              },
+            },
+          ],
+          next_after: null,
+        });
+      if (path.endsWith("/revision"))
+        return answer(route, {
+          schema_version: 1,
+          fictional: !mixed,
+          actor_id: "actor-a",
+          diary_id: "diary-a",
+          diary_version: 4,
+          revision_id: "revision-2",
+          content: "这是一篇已发布的日记。",
+          provenance,
+          created_at: 1790470000,
+          captured: {
+            recipe_id: "daily",
+            recipe_version: 1,
+            material_version: "v1",
+            config_version: 3,
+          },
+        });
+      throw new Error(`unexpected ${path}`);
+    });
+    await page.goto("/#/companion/1");
+    await expect(page.getByLabel("选择角色")).toHaveValue("actor-a");
+    await page.locator("#life-diaries > summary").click();
+    await expect(
+      page.getByRole("heading", { name: "已发布日记", exact: true }),
+    ).toBeVisible();
+    await page.locator(".life-list button").click();
+    await expect(page.getByText("这是一篇已发布的日记。")).toBeVisible();
+    await expect(page.locator(".life-revision")).toContainText("2026-09-27");
+    await expect(page.locator(".life-revision")).toContainText("虚构剧情");
+    if (mixed) {
+      await expect(page.locator(".life-revision")).toContainText(
+        "实际数字经历 · 主观理解 · 虚构剧情",
+      );
+      await expect(page.locator(".life-revision")).toContainText(
+        "材料未完整读取",
+      );
+      await expect(page.locator(".life-revision")).toContainText(
+        "2026-09-26T16:00:00Z",
+      );
+    }
   });
-  await page.goto("/#/companion/1");
-  await expect(page.getByLabel("选择角色")).toHaveValue("actor-a");
-  await page.locator("#life-diaries > summary").click();
-  await expect(
-    page.getByRole("heading", { name: "已发布日记", exact: true }),
-  ).toBeVisible();
-  await page.locator(".life-list button").click();
-  await expect(page.getByText("这是一篇已发布的日记。")).toBeVisible();
-  await expect(page.locator(".life-revision")).toContainText("2026-09-27");
-});
+}
 
 test("memory separates shared group portraits and own records", async ({
   page,

@@ -1,5 +1,6 @@
 """The browser reader boundary against real local TLS sockets and synthetic peer answers."""
 
+import copy
 import os
 import socket
 import ssl
@@ -192,6 +193,8 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
         body = await request.json()
         self.calls.append((request.path, body, request.headers.get("Authorization")))
         name = request.match_info["name"]
+        if hasattr(self, "life_reply"):
+            return web.json_response(self.life_reply)
         if name in {"today", "timeline"}:
             common = {
                 "schema_version": 1,
@@ -262,6 +265,119 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(life["items"], [])
         self.assertEqual(self.calls[-1][1], {"schema_version": 1, "limit": 20})
+
+    async def test_diary_sources_survive_transport_without_expanding_read_permission(self):
+        provenance = {
+            "kind": "mixed",
+            "source_kinds": ["digital_experience", "interpretation", "fictional"],
+            "selection_complete": False,
+            "timezone": "Asia/Shanghai",
+            "occurred_from": "2026-10-26T16:00:00Z",
+            "occurred_before": "2026-10-27T16:00:00Z",
+        }
+        row = {
+            "actor_id": "actor:a",
+            "diary_id": "diary:a",
+            "day": "2026-10-27",
+            "state": "published",
+            "version": 1,
+            "published_revision_id": "revision:a",
+            "fictional": False,
+            "provenance": provenance,
+            "captured": {
+                "recipe_id": "recipe:a",
+                "recipe_version": 1,
+                "material_version": "material:a",
+            },
+        }
+        body = {"actor_id": "actor:a", "limit": 20, "after": None}
+        self.life_reply = {
+            "schema_version": 1,
+            "fictional": False,
+            "actor_id": "actor:a",
+            "items": [row],
+            "next_after": None,
+        }
+        result = await self.life_reader.route("/api/web/life/diaries", body, {})
+        self.assertEqual(result["items"][0]["provenance"], provenance)
+        valid = copy.deepcopy(self.life_reply)
+        for mutate in (
+            lambda answer: answer.update(fictional=True),
+            lambda answer: answer["items"][0].pop("provenance"),
+            lambda answer: answer["items"][0].update(actor_id="actor:other"),
+            lambda answer: answer["items"][0]["provenance"].update(kind="digital"),
+            lambda answer: answer["items"][0].update(current_revision="private:draft"),
+        ):
+            self.life_reply = copy.deepcopy(valid)
+            mutate(self.life_reply)
+            with self.assertRaises(Fault) as error:
+                await self.life_reader.route("/api/web/life/diaries", body, {})
+            self.assertEqual(error.exception.code, "invalid_upstream")
+        self.life_reply = valid
+        self.principal["actions"].remove("life.read")
+        calls = len(self.calls)
+        with self.assertRaises(Fault):
+            await self.life_reader.route("/api/web/life/diaries", body, {})
+        self.assertEqual(len(self.calls), calls)
+        self.principal["actions"].append("life.read")
+        row.pop("provenance")
+        row["fictional"] = True
+        self.life_reply = {
+            "schema_version": 1,
+            "fictional": True,
+            "actor_id": "actor:a",
+            "items": [row],
+            "next_after": None,
+        }
+        self.assertTrue(
+            (await self.life_reader.route("/api/web/life/diaries", body, {}))["fictional"]
+        )
+
+    async def test_diary_revision_sources_and_published_identity_are_checked(self):
+        self.life_reply = {
+            "schema_version": 1,
+            "fictional": False,
+            "actor_id": "actor:a",
+            "diary_id": "diary:a",
+            "diary_version": 1,
+            "revision_id": "revision:a",
+            "content": "A digital reading experience.",
+            "created_at": 1793116800,
+            "captured": {
+                "recipe_id": "recipe:a",
+                "recipe_version": 1,
+                "material_version": "material:a",
+                "config_version": 1,
+            },
+            "provenance": {
+                "kind": "digital",
+                "source_kinds": ["observation", "interpretation"],
+                "selection_complete": True,
+                "timezone": "UTC",
+                "occurred_from": "2026-10-27T00:00:00Z",
+                "occurred_before": "2026-10-28T00:00:00Z",
+            },
+        }
+        body = {
+            "actor_id": "actor:a",
+            "diary_id": "diary:a",
+            "revision_id": "revision:a",
+            "expected_diary_version": 1,
+        }
+        result = await self.life_reader.route("/api/web/life/revision", body, {})
+        self.assertFalse(result["fictional"])
+        self.assertEqual(result["provenance"]["source_kinds"], ["observation", "interpretation"])
+        for field, value in (
+            ("revision_id", "draft:a"),
+            ("diary_version", 2),
+            ("actor_id", "actor:b"),
+        ):
+            original = self.life_reply[field]
+            self.life_reply[field] = value
+            with self.assertRaises(Fault) as error:
+                await self.life_reader.route("/api/web/life/revision", body, {})
+            self.assertEqual(error.exception.code, "invalid_upstream")
+            self.life_reply[field] = original
 
     async def test_life_today_and_timeline_use_bounded_reader_and_recheck_identity(self):
         today = await self.life_reader.route("/api/web/life/today", {"actor_id": "actor:a"}, {})

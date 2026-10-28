@@ -642,7 +642,12 @@ class WebReader:
                 )
         else:
             require(
-                answer.get("schema_version") == 1 and answer.get("fictional") is True,
+                answer.get("schema_version") == 1
+                and (
+                    type(answer.get("fictional")) is bool
+                    if name in {"diaries", "revision"}
+                    else answer.get("fictional") is True
+                ),
                 "invalid_upstream",
                 502,
             )
@@ -652,11 +657,18 @@ class WebReader:
                 require(answer.get("actor_id") == payload["actor_id"], "invalid_upstream", 502)
             if name == "snapshot":
                 require(answer.get("state_basis") == "last_persisted", "invalid_upstream", 502)
-            if name in {"today", "timeline"}:
+            if name in {"today", "timeline", "diaries", "revision"}:
                 try:
                     self.platform.contracts.check("life-read#" + name + "_response", answer)
                 except Fault:
                     raise Fault("invalid_upstream", 502) from None
+                if name == "diaries":
+                    require(
+                        all(item["actor_id"] == payload["actor_id"] for item in answer["items"])
+                        and len(answer["items"]) <= payload["limit"],
+                        "invalid_upstream",
+                        502,
+                    )
                 if name == "timeline":
                     require(
                         answer.get("day") == payload["day"]

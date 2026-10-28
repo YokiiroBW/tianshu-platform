@@ -44,6 +44,16 @@ type Snapshot = {
   state_basis: "last_persisted";
   fictional: true;
 };
+type DiaryProvenance = {
+  kind: "fictional" | "digital" | "mixed";
+  source_kinds: (
+    "digital_experience" | "observation" | "interpretation" | "fictional"
+  )[];
+  selection_complete: boolean;
+  timezone: string;
+  occurred_from: string;
+  occurred_before: string;
+};
 type Diary = {
   diary_id: string;
   actor_id: string;
@@ -51,6 +61,8 @@ type Diary = {
   state: string;
   version: number;
   published_revision_id: string;
+  fictional?: boolean;
+  provenance?: DiaryProvenance;
   captured: {
     recipe_id: string;
     recipe_version: number;
@@ -61,7 +73,7 @@ type Diaries = {
   actor_id: string;
   items: Diary[];
   next_after: { day: string; diary_id: string } | null;
-  fictional: true;
+  fictional: boolean;
 };
 type Revision = {
   diary_id: string;
@@ -76,8 +88,20 @@ type Revision = {
     material_version: string;
     config_version: number;
   };
-  fictional: true;
+  fictional: boolean;
+  provenance?: DiaryProvenance;
 };
+
+function diarySource(provenance?: DiaryProvenance) {
+  if (!provenance) return "虚构剧情";
+  const labels = {
+    digital_experience: "实际数字经历",
+    observation: "旁听记录",
+    interpretation: "主观理解",
+    fictional: "虚构剧情",
+  };
+  return provenance.source_kinds.map((kind) => labels[kind]).join(" · ");
+}
 
 function dateText(value: number) {
   return Number.isFinite(value)
@@ -91,7 +115,7 @@ function unavailableTitle(code: string) {
   return "角色生活尚未配置";
 }
 
-/** Read-only view of persisted fictional life and the published diary pointer. */
+/** Read-only persisted life and authorized published diary revisions. */
 export default function LifePage() {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
@@ -481,7 +505,9 @@ export default function LifePage() {
                           onClick={() => void readRevision(row)}
                         >
                           <strong>{row.day}</strong>
-                          <small>已发布 · 点击阅读</small>
+                          <small>
+                            已发布 · {diarySource(row.provenance)} · 点击阅读
+                          </small>
                         </button>
                       </li>
                     ))}
@@ -511,6 +537,19 @@ export default function LifePage() {
                       <p className="muted">{selected.day}</p>
                       <p>{revision.content}</p>
                       <small>正文记录于 {dateText(revision.created_at)}</small>
+                      <p className="muted">
+                        材料来源：{diarySource(revision.provenance)}
+                      </p>
+                      {revision.provenance && (
+                        <p className="muted">
+                          取材时间：{revision.provenance.occurred_from} 至{" "}
+                          {revision.provenance.occurred_before}
+                          （不含结束时刻）； 角色时区：
+                          {revision.provenance.timezone}。
+                          {!revision.provenance.selection_complete &&
+                            "材料未完整读取，本篇不代表该时段的全部经历。"}
+                        </p>
+                      )}
                     </article>
                   )
                 )}
