@@ -95,7 +95,7 @@
 .chat-timeline {
   display: grid;
   gap: var(--space-5);
-  max-height: 38rem;
+  align-content: start;
   overflow-y: auto;
   padding: var(--space-2);
   scrollbar-gutter: stable;

@@ -72,7 +72,7 @@
   display: grid;
   grid-template-columns: 295px minmax(0, 1fr);
   gap: 18px;
-  align-items: start;
+  align-items: stretch;
 }
 .people-directory,
 .people-detail-area {
@@ -83,7 +83,13 @@
   overflow: clip;
 }
 .people-directory {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   padding: 20px 14px;
+}
+.people-directory > :not(.people-list) {
+  flex-shrink: 0;
 }
 .people-directory-heading {
   display: flex;
@@ -159,11 +165,24 @@
   margin: 12px 5px 5px;
 }
 .people-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   gap: 5px;
   list-style: none;
   padding: 0;
   margin: 14px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+.people-list li {
+  flex-shrink: 0;
+}
+.people-list:focus-visible {
+  outline-offset: -3px;
 }
 .people-person {
   display: flex;
@@ -724,14 +743,16 @@
   }
   .people-layout {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 2fr);
     gap: 14px;
   }
   .people-directory {
     padding: 16px 12px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   .people-list {
-    max-height: 260px;
-    overflow: auto;
+    flex: 1 0 10rem;
   }
   .people-person-header {
     padding: 20px 16px;

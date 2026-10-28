@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { integrationPost, readFailure } from "../../app/integrationApi";
 import { StatePanel } from "../../components/StatePanel";
+import { DetailCard } from "../../components/DetailCard";
 import GroupGraph from "./GroupGraph";
 import type {
   EvidenceRecord,
@@ -43,11 +44,13 @@ export default function GroupInsights({
   roleVersion,
   csrf,
   fixedGroupId,
+  renderOverview,
 }: {
   roleId: string;
   roleVersion: number;
   csrf: string;
   fixedGroupId: string;
+  renderOverview: (controls: ReactNode, summary: ReactNode) => ReactNode;
 }) {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [groupId, setGroupId] = useState("");
@@ -56,6 +59,7 @@ export default function GroupInsights({
   const [search, setSearch] = useState<Search | null>(null);
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
+  const [topicsOpen, setTopicsOpen] = useState(false);
   const [keyword, setKeyword] = useState("");
   const [sender, setSender] = useState("");
   const [after, setAfter] = useState("");
@@ -73,6 +77,7 @@ export default function GroupInsights({
     setSearch(null);
     setEvidence(null);
     setSelectedTopic(null);
+    setTopicsOpen(false);
     setError("");
   }
   async function call<T>(path: string, body: object, signal: AbortSignal) {
@@ -213,6 +218,29 @@ export default function GroupInsights({
       setEvidence,
     );
   }
+  function moreTopics() {
+    if (!topics?.next_cursor || !data) return;
+    void run(
+      (signal) =>
+        call<TopicPage>(
+          "group-topics",
+          { cursor: topics.next_cursor, ...data.window },
+          signal,
+        ),
+      (value) =>
+        setData((old) =>
+          old
+            ? {
+                ...old,
+                topics: {
+                  state: "available",
+                  data: { ...value, items: [...topics.items, ...value.items] },
+                },
+              }
+            : old,
+        ),
+    );
+  }
   const stats = data?.stats.state === "available" ? data.stats.data : undefined;
   const topics =
     data?.topics.state === "available" ? data.topics.data : undefined;
@@ -235,31 +263,16 @@ export default function GroupInsights({
     ) ?? [],
   );
 
-  if (configured === false)
-    return (
-      <StatePanel kind="unconfigured" title="该群内容暂不可读取">
-        <p>当前角色尚无此群的可读取内容，基础档案和群状态仍可在上方查看。</p>
-      </StatePanel>
-    );
   return (
     <div className="group-workspace">
-      <section className="panel">
-        <div className="section-heading">
-          <h2>群记忆</h2>
-          <button
-            className="button"
-            disabled={busy || !groupId}
-            onClick={() => setRefresh((v) => v + 1)}
-          >
-            刷新当前群
-          </button>
-        </div>
-        <div className="group-toolbar">
+      {renderOverview(
+        <div className="group-toolbar group-statistics-controls">
           <label>
-            统计窗口{" "}
+            统计窗口
             <select
               aria-label="统计窗口"
               value={window}
+              disabled={busy || !groupId}
               onChange={(e) => setWindow(e.target.value)}
             >
               <option value="24h">最近 24 小时</option>
@@ -267,17 +280,62 @@ export default function GroupInsights({
               <option value="30d">最近 30 天</option>
             </select>
           </label>
-        </div>
-        {configured === null && !error && <p>正在读取当前授权群…</p>}
-        {configured && !groupId && <p>当前角色没有此群的可读取内容。</p>}
-        {data && (
-          <p className="muted">
-            {new Date(data.window.start_timestamp * 1000).toLocaleString()} —{" "}
-            {new Date(data.window.end_timestamp * 1000).toLocaleString()}
-            。原始聊天统计和已整理记忆分别显示。
-          </p>
-        )}
-      </section>
+          <button
+            className="button"
+            disabled={busy || !groupId}
+            onClick={() => setRefresh((v) => v + 1)}
+          >
+            刷新当前群
+          </button>
+        </div>,
+        <>
+          {configured === null && !error && (
+            <p className="muted">正在读取当前授权群…</p>
+          )}
+          {configured && !groupId && (
+            <p className="muted">当前角色没有此群的可读取内容。</p>
+          )}
+          {data && (
+            <>
+              <div className="group-metrics group-overview-metrics">
+                {stats && (
+                  <>
+                    <span>
+                      <strong>{stats.coverage.messages_scanned}</strong>{" "}
+                      条已扫描消息
+                    </span>
+                    <span>
+                      <strong>{stats.authors.length}</strong> 个发言账号
+                    </span>
+                    <span>
+                      <strong>{stats.coverage.broadcast_messages}</strong>{" "}
+                      条全体提醒
+                    </span>
+                  </>
+                )}
+                {topics && (
+                  <span>
+                    <strong>
+                      {allTopics.length}
+                      {topics.next_cursor ? "+" : ""}
+                    </strong>{" "}
+                    个已加载话题
+                  </span>
+                )}
+              </div>
+              <p className="muted group-window-range">
+                {new Date(data.window.start_timestamp * 1000).toLocaleString()}{" "}
+                — {new Date(data.window.end_timestamp * 1000).toLocaleString()}
+              </p>
+            </>
+          )}
+        </>,
+      )}
+      {configured === false && (
+        <StatePanel kind="unconfigured" title="该群内容暂不可读取">
+          <p>当前角色尚无此群的可读取内容，基础档案和群状态仍可在上方查看。</p>
+        </StatePanel>
+      )}
       {error && (
         <StatePanel kind="error" title="读取未完成">
           <p>{error}</p>
@@ -303,20 +361,7 @@ export default function GroupInsights({
           )}
           {stats && (
             <section className="panel">
-              <h2>群热度</h2>
-              <div className="group-metrics">
-                <span>
-                  <strong>{stats.coverage.messages_scanned}</strong>{" "}
-                  条已扫描消息
-                </span>
-                <span>
-                  <strong>{stats.authors.length}</strong> 位实际作者
-                </span>
-                <span>
-                  <strong>{stats.coverage.broadcast_messages}</strong>{" "}
-                  条全体提醒
-                </span>
-              </div>
+              <h2>群聊热度</h2>
               <p className="muted">
                 {stats.coverage.complete
                   ? "本次窗口内的归档扫描完整。"
@@ -394,15 +439,70 @@ export default function GroupInsights({
               topics={topics}
               evidence={showEvidence}
               selectTopic={setSelectedTopic}
+              actions={
+                <>
+                  <DetailCard
+                    title="话题明细"
+                    open={topicsOpen}
+                    onOpenChange={setTopicsOpen}
+                  >
+                    <p className="muted">
+                      当前已加载 {topics?.items.length ?? 0} 段、
+                      {allTopics.length} 个话题
+                      {topics?.next_cursor ? "，仍有后续内容" : ""}
+                      。这里只展示当前窗口已读取的整理结果。
+                    </p>
+                    <p className="muted">
+                      连线表示实际回复、@
+                      或话题归属；图中位置只用于排布，不代表亲密程度、语义距离或共同观点。图中最多绘制
+                      80 个话题，账号和人物身份保持各自归属。
+                    </p>
+                    {topics?.omitted_invalidated && (
+                      <p className="muted">已省略来源失效的话题。</p>
+                    )}
+                    {allTopics.length ? (
+                      <ul className="memory-list group-topic-details">
+                        {allTopics.map((item) => (
+                          <li key={item.key}>
+                            <button
+                              onClick={() => {
+                                setSelectedTopic(item.key);
+                                setTopicsOpen(false);
+                              }}
+                            >
+                              {item.summary}
+                              <small>
+                                {item.person_ids.join("、") || "未归属人物"}
+                              </small>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>当前窗口尚无已加载的话题。</p>
+                    )}
+                    {topics?.next_cursor && (
+                      <button
+                        className="button"
+                        disabled={busy}
+                        onClick={moreTopics}
+                      >
+                        继续加载话题
+                      </button>
+                    )}
+                  </DetailCard>
+                  {topics?.next_cursor && (
+                    <button
+                      className="button"
+                      disabled={busy}
+                      onClick={moreTopics}
+                    >
+                      继续加载话题
+                    </button>
+                  )}
+                </>
+              }
             />
-            {topics && (
-              <p className="muted">
-                当前已整理 {topics.items.length} 段、{allTopics.length}{" "}
-                个有效话题{topics.next_cursor ? "，仍有后续页" : ""}。
-                {topics.omitted_invalidated && "已省略来源失效的话题。"}
-                这里的覆盖不表示全部聊天都已整理。
-              </p>
-            )}
             {topic && (
               <article className="group-selection">
                 <h3>当前话题</h3>
@@ -445,52 +545,6 @@ export default function GroupInsights({
                   </ul>
                 </details>
               </article>
-            )}
-            <details>
-              <summary>话题明细</summary>
-              <ul className="memory-list">
-                {allTopics.map((t) => (
-                  <li key={t.key}>
-                    <button onClick={() => setSelectedTopic(t.key)}>
-                      {t.summary}
-                      <small>{t.person_ids.join("、")}</small>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </details>
-            {topics?.next_cursor && (
-              <button
-                className="button"
-                disabled={busy}
-                onClick={() =>
-                  void run(
-                    (signal) =>
-                      call<TopicPage>(
-                        "group-topics",
-                        { cursor: topics.next_cursor, ...data.window },
-                        signal,
-                      ),
-                    (value) =>
-                      setData((old) =>
-                        old
-                          ? {
-                              ...old,
-                              topics: {
-                                state: "available",
-                                data: {
-                                  ...value,
-                                  items: [...topics.items, ...value.items],
-                                },
-                              },
-                            }
-                          : old,
-                      ),
-                  )
-                }
-              >
-                继续读取窗口内话题
-              </button>
             )}
           </section>
           {records && (

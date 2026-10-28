@@ -59,7 +59,7 @@ export default function CompanionPage() {
 
   return (
     <section
-      className="chat-console glass"
+      className="chat-console glass scroll-page"
       aria-label="网页文字对话"
       aria-busy={busy}
     >

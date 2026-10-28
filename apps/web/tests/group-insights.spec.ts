@@ -1,40 +1,17 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
 
-// Browser interaction only. Chat SQL/TLS and Memory/Platform authority have separate evidence.
-// Copy this file to apps/web/tests/group-insights.spec.ts and use the existing desktop/mobile config.
-type Filters = {
-  keyword: string | null;
-  sender_id: string | null;
-  start_timestamp: number | null;
-  end_timestamp: number | null;
-};
-type Body = {
-  role_id: string;
-  role_version: number;
-  group_id?: string;
-  window?: string;
-  filters?: Filters;
-  cursor?: string | null;
-  limit?: number;
-  locator?: string;
-  stored_content_sha256?: string;
-};
+import {
+  ROLES,
+  GROUPS,
+  ROLE_B_GROUP,
+  HASH,
+  LOCATOR,
+  record,
+  insights,
+  type Body,
+} from "./fixtures/group-insights";
+
 type Seen = { path: string; body: Body };
-const ROLES = [
-  { id: "actor:a", label: "角色甲", version: 0, available: true, reason: null },
-  { id: "actor:b", label: "角色乙", version: 2, available: true, reason: null },
-];
-const GROUPS = [
-  { id: "group-a", label: "甲群", conversation_id: "conversation:a" },
-  { id: "group-b", label: "乙群", conversation_id: "conversation:b" },
-];
-const ROLE_B_GROUP = {
-  id: "group-role-b",
-  label: "甲群（角色乙）",
-  conversation_id: "conversation:a",
-};
-const HASH = "a".repeat(64);
-const LOCATOR = `audit-evidence:0:${"b".repeat(64)}:message-a:${HASH}`;
 
 async function answer(route: Route, value: unknown) {
   await route.fulfill({
@@ -42,158 +19,6 @@ async function answer(route: Route, value: unknown) {
     contentType: "application/json",
     body: JSON.stringify(value),
   });
-}
-
-function record(index = 1) {
-  return {
-    locator:
-      index === 1
-        ? LOCATOR
-        : `audit-evidence:0:${"b".repeat(64)}:message-${index}:${HASH}`,
-    stored_content_sha256: HASH,
-    sender_id: index === 1 ? "10001" : "10002",
-    timestamp: 1792472400 + index,
-    text: index === 1 ? "10001 当时的完整原话。" : "10002 随后的完整原话。",
-  };
-}
-
-function marker(body: Body) {
-  const group = [...GROUPS, ROLE_B_GROUP].find(
-    (item) => item.id === body.group_id,
-  )!;
-  return `${body.role_id === "actor:a" ? "角色甲" : "角色乙"} / ${group.label}`;
-}
-
-function summary(body: Body) {
-  return `${marker(body)}：读书讨论`;
-}
-function statement(body: Body) {
-  return `${marker(body)} 当前群画像`;
-}
-
-function insights(body: Body) {
-  const group = [...GROUPS, ROLE_B_GROUP].find(
-    (item) => item.id === body.group_id,
-  )!;
-  return {
-    group,
-    window: { start_timestamp: 1792418400, end_timestamp: 1792504799 },
-    stats: {
-      state: "available",
-      data: {
-        authors: [
-          { sender_id: "10001", messages: 4 },
-          { sender_id: "10002", messages: 2 },
-        ],
-        edges: [
-          {
-            from_sender_id: "10001",
-            to_sender_id: "10002",
-            reply_count: 2,
-            mention_count: 1,
-            interaction_count: 2,
-            evidence_locators: [LOCATOR],
-          },
-        ],
-        buckets: [
-          {
-            start_timestamp: 1792418400,
-            messages: 2,
-            active_senders: 1,
-            reply_messages: 0,
-            mention_messages: 0,
-            broadcast_messages: 0,
-          },
-          {
-            start_timestamp: 1792422000,
-            messages: 4,
-            active_senders: 2,
-            reply_messages: 2,
-            mention_messages: 1,
-            broadcast_messages: 1,
-          },
-        ],
-        coverage: {
-          messages_scanned: 6,
-          complete: true,
-          has_more: false,
-          unresolved_reply: 1,
-          unresolved_mention: 2,
-          broadcast_messages: 1,
-          relation_unavailable_messages: 1,
-        },
-      },
-    },
-    topics: {
-      state: "available",
-      data: {
-        items: [
-          {
-            segment_id: `segment:${body.role_id}:${group.id}`,
-            window_id: `window:${group.id}`,
-            recorded_at: "2026-10-20T10:00:00Z",
-            topics: [
-              {
-                topic_id: "topic:reading",
-                summary: summary(body),
-                person_ids: ["person:reader-a", "person:reader-b"],
-                member_refs: [
-                  {
-                    member_id: "material:human-a",
-                    role: "human",
-                    person_id: "person:reader-a",
-                    actor_id: null,
-                    observed_at: "2026-10-20T09:00:00Z",
-                    reality: "real",
-                  },
-                  {
-                    member_id: "reply:bot-a",
-                    role: "bot",
-                    person_id: null,
-                    actor_id: body.role_id,
-                    observed_at: "2026-10-20T09:01:00Z",
-                    reality: "real",
-                  },
-                ],
-                memory_refs: [
-                  {
-                    subject_person_id: "person:reader-a",
-                    record_id: "record:reading",
-                    record_version: 3,
-                  },
-                ],
-              },
-            ],
-            coverage: {
-              complete_new: true,
-              omitted_context: false,
-              result_person_count: 2,
-            },
-          },
-        ],
-        next_cursor: null,
-        omitted_invalidated: false,
-      },
-    },
-    records: {
-      state: "available",
-      data: {
-        items: [
-          {
-            semantic_group_id: `semantic:${group.id}`,
-            units: [
-              {
-                record_id: "record:reading",
-                record_version: 3,
-                statement: statement(body),
-              },
-            ],
-          },
-        ],
-        next_cursor: null,
-      },
-    },
-  };
 }
 
 async function mockApi(
@@ -251,7 +76,16 @@ async function mockApi(
         available: true,
         unlocked: true,
         actors: ROLES,
-        groups: GROUPS.map((_, index) => directoryGroup(index)),
+        groups:
+          route.request().postDataJSON().role_id === "actor:b"
+            ? [
+                {
+                  ...directoryGroup(0),
+                  rule: { ...rules["20001"], actor_id: "actor:b" },
+                  memory_group_id: ROLE_B_GROUP.id,
+                },
+              ]
+            : GROUPS.map((_, index) => directoryGroup(index)),
         next_cursor: null,
       });
     if (path === "group-policy") {
@@ -340,7 +174,7 @@ test("group heat, explicit interaction evidence, person topics and zoom remain s
     page.locator(".group-directory-list button[aria-pressed=true]"),
   ).toContainText("甲群");
   await expect(page.locator(".group-metrics")).toContainText("6 条已扫描消息");
-  await expect(page.locator(".group-metrics")).toContainText("2 位实际作者");
+  await expect(page.locator(".group-metrics")).toContainText("2 个发言账号");
   await expect(page.getByText(/互动结构不可解析 1 条/)).toBeVisible();
   await expect(page.locator(".group-heat-bucket")).toHaveCount(2);
   const interaction = page.getByRole("group", {
@@ -370,7 +204,7 @@ test("group heat, explicit interaction evidence, person topics and zoom remain s
   await page.getByRole("button", { name: "话题点云", exact: true }).click();
   const topics = page.getByRole("group", { name: "整理话题点云", exact: true });
   await expect(
-    topics.getByRole("button", { name: "人物 person:reader-a", exact: true }),
+    topics.getByRole("button", { name: "reader-a", exact: true }),
   ).toBeVisible();
   await expect(
     topics.getByRole("button", { name: "QQ 10001", exact: true }),
@@ -392,10 +226,10 @@ test("group heat, explicit interaction evidence, person topics and zoom remain s
   const zoom = page.getByLabel("图缩放", { exact: true });
   await zoom.focus();
   await zoom.press("End");
-  await expect(zoom).toHaveValue("2");
+  await expect(zoom).toHaveValue("3");
   await expect(topics.locator("g[transform]").first()).toHaveAttribute(
     "transform",
-    /scale\(2\)/,
+    /scale\(3\)/,
   );
   await page.getByRole("button", { name: "还原视图", exact: true }).click();
   await expect(zoom).toHaveValue("1");
@@ -470,6 +304,60 @@ test("history next page retains the submitted filters rather than unsent form ed
   ).toBe(true);
 });
 
+test("graph floats, pans, drags and zooms inside the independently scrolling detail pane", async ({
+  page,
+}, info) => {
+  test.skip(
+    info.project.name !== "desktop",
+    "Pointer interactions use the desktop canvas",
+  );
+  await mockApi(page);
+  await page.goto("/#/memory/1");
+  const canvas = page.getByRole("group", { name: "定向互动图", exact: true });
+  const node = canvas.getByRole("button", { name: "QQ 10001", exact: true });
+  await node.scrollIntoViewIfNeeded();
+  const first = await node.getAttribute("transform");
+  await expect.poll(() => node.getAttribute("transform")).not.toBe(first);
+  await page.getByRole("button", { name: "暂停浮动", exact: true }).click();
+  const paused = await node.getAttribute("transform");
+  const box = (await node.locator("circle").first().boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 70, box.y + 35, { steps: 8 });
+  await page.mouse.up();
+  await expect(node).not.toHaveAttribute("transform", paused!);
+  const view = canvas.locator(":scope > g");
+  const initialView = await view.getAttribute("transform");
+  const area = (await canvas.boundingBox())!;
+  await page.mouse.move(area.x + 20, area.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(area.x + 70, area.y + 45, { steps: 5 });
+  await page.mouse.up();
+  await expect(view).not.toHaveAttribute("transform", initialView!);
+  await page.mouse.wheel(0, -120);
+  await expect
+    .poll(async () =>
+      Number(await page.getByLabel("图缩放", { exact: true }).inputValue()),
+    )
+    .toBeGreaterThan(1);
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        page: document.documentElement.scrollHeight <= innerHeight + 1,
+        outer: document.querySelector(".page-content")!.scrollTop,
+        detail: document.querySelector(".group-directory-content")!.scrollTop,
+        list: document.querySelector(".group-directory-list ul")!.scrollTop,
+      })),
+    )
+    .toMatchObject({ page: true, outer: 0, list: 0 });
+  expect(
+    await page
+      .locator(".group-directory-content")
+      .evaluate((el) => el.scrollTop),
+  ).toBeGreaterThan(0);
+  await page.screenshot({ path: info.outputPath("graph-interaction.png") });
+});
+
 test("a late old-group response cannot replace the newly selected group", async ({
   page,
 }) => {
@@ -539,14 +427,13 @@ test("a late old-role response cannot populate a remounted group view", async ({
   try {
     await page.goto("/#/memory/1");
     await entered.promise;
-    await page.getByLabel("此群角色", { exact: true }).selectOption("actor:b");
-    await page.getByRole("button", { name: "保存此群状态" }).click();
+    await page.getByLabel("查看角色", { exact: true }).selectOption("actor:b");
     await expect(
       page.getByText("角色乙 / 甲群（角色乙） 当前群画像", { exact: true }),
     ).toBeVisible();
     release.resolve();
     await finished.promise;
-    await expect(page.getByLabel("此群角色", { exact: true })).toHaveValue(
+    await expect(page.getByLabel("查看角色", { exact: true })).toHaveValue(
       "actor:b",
     );
     await expect(

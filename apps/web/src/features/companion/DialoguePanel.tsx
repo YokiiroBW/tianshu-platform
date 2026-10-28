@@ -319,7 +319,11 @@ export function DialoguePanel({
               {error}
             </p>
           )}
-          <div className="chat-timeline" aria-label="对话记录">
+          <div
+            className="chat-timeline scroll-layout scroll-pane"
+            aria-label="对话记录"
+            tabIndex={0}
+          >
             {read?.state === "not_started" && (
               <p className="muted">
                 尚无已登记对话。发送第一条消息后，后台会建立会话。

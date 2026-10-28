@@ -321,7 +321,7 @@ export default function RoleManager() {
   }
 
   return (
-    <section className="role-page glass" aria-label="角色管理">
+    <section className="role-page glass scroll-page" aria-label="角色管理">
       <header className="role-header">
         <div>
           <p className="eyebrow">陪伴 · 独立运行角色</p>
@@ -355,8 +355,12 @@ export default function RoleManager() {
           )}
           {!view && !error && <p role="status">正在读取角色…</p>}
           {view && (
-            <div className="role-layout">
-              <aside className="role-list" aria-label="角色列表">
+            <div className="role-layout scroll-layout">
+              <aside
+                className="role-list scroll-pane"
+                aria-label="角色列表"
+                tabIndex={0}
+              >
                 <div className="role-list-top">
                   <input
                     aria-label="搜索角色"

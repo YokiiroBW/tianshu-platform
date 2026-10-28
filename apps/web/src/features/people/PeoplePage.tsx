@@ -56,82 +56,117 @@ export default function PeoplePage({ section }: { section: number }) {
     setProfiles([]);
     setDiscovery([]);
     setObservations(null);
-    setMemory(null);
     setSelected("");
     setProfileCursor(null);
     void (async () => {
-      const results = await Promise.allSettled([
-        integrationPost<MemoryState>(
+      try {
+        const state = await integrationPost<MemoryState>(
           "memory/state",
           {},
           csrf,
           controller.signal,
-        ),
-        integrationPost<Profiles>(
-          "qq-admin/profiles",
-          { limit: 100, after: null },
-          csrf,
-          controller.signal,
-        ),
-        integrationPost<Observations>(
-          "bot-observation/view",
-          {},
-          csrf,
-          controller.signal,
-        ),
-      ]);
-      if (controller.signal.aborted) return;
-      const [state, directory, accounts] = results;
-      const warnings: string[] = [];
-      if (state.status === "fulfilled") {
-        setMemory(state.value);
-        const remembered = readRolePreference(storageKey);
-        setRoleId(
-          state.value.roles.some((item) => item.id === remembered)
-            ? remembered!
-            : state.value.actor_id || state.value.roles[0]?.id || "",
-        );
-      } else warnings.push(`角色与记忆：${readFailure(state.reason)}`);
-      if (directory.status === "fulfilled") {
-        setProfiles(directory.value.items);
-        setProfileCursor(directory.value.next_cursor);
-      } else warnings.push(`身份目录：${readFailure(directory.reason)}`);
-      if (accounts.status === "fulfilled") {
-        setObservations(accounts.value);
-        const pages = await Promise.all(
-          accounts.value.connections
-            .filter((item) => accounts.value.unlocked && item.read_enabled)
-            .map(async (connection): Promise<Discovery> => {
-              try {
-                return {
-                  connectionId: connection.id,
-                  page: await integrationPost<FoundPage>(
-                    "bot-observation/discovered",
-                    { id: connection.id, limit: 100, cursor: null },
-                    csrf,
-                    controller.signal,
-                  ),
-                  error: "",
-                };
-              } catch (cause) {
-                return {
-                  connectionId: connection.id,
-                  page: { items: [], next_cursor: null },
-                  error: `${connection.name}：${readFailure(cause)}`,
-                };
-              }
-            }),
-        );
+        ).catch(async () => {
+          const directory = await integrationPost<{
+            actors: { id: string; label: string }[];
+          }>(
+            "bot-observation/groups",
+            { limit: 1, cursor: null, role_id: null },
+            csrf,
+            controller.signal,
+          );
+          return {
+            available: false,
+            code: "memory_unavailable",
+            actor_id: null,
+            roles: directory.actors.map((actor) => ({
+              ...actor,
+              version: 0,
+              available: false,
+              reason: "记忆服务暂不可用",
+            })),
+          } satisfies MemoryState;
+        });
         if (controller.signal.aborted) return;
-        setDiscovery(pages);
-      } else warnings.push(`会话观察：${readFailure(accounts.reason)}`);
-      if (!controller.signal.aborted) {
+        setMemory(state);
+        const remembered = readRolePreference(storageKey);
+        const chosen =
+          state.roles.find((item) => item.id === roleId)?.id ??
+          state.roles.find((item) => item.id === remembered)?.id ??
+          state.actor_id ??
+          state.roles[0]?.id ??
+          "";
+        if (chosen !== roleId) {
+          setRoleId(chosen);
+          return;
+        }
+        if (!chosen) return;
+        const results = await Promise.allSettled([
+          integrationPost<Profiles>(
+            "qq-admin/profiles",
+            { limit: 100, after: null, role_id: chosen },
+            csrf,
+            controller.signal,
+          ),
+          integrationPost<Observations>(
+            "bot-observation/view",
+            {},
+            csrf,
+            controller.signal,
+          ),
+        ]);
+        if (controller.signal.aborted) return;
+        const [directory, accounts] = results;
+        const warnings: string[] = [];
+        if (directory.status === "fulfilled") {
+          setProfiles(directory.value.items);
+          setProfileCursor(directory.value.next_cursor);
+        } else warnings.push("身份目录：" + readFailure(directory.reason));
+        if (accounts.status === "fulfilled") {
+          setObservations(accounts.value);
+          const pages = await Promise.all(
+            accounts.value.connections
+              .filter((item) => accounts.value.unlocked && item.read_enabled)
+              .map(async (connection): Promise<Discovery> => {
+                try {
+                  return {
+                    connectionId: connection.id,
+                    page: await integrationPost<FoundPage>(
+                      "bot-observation/discovered",
+                      {
+                        id: connection.id,
+                        limit: 100,
+                        cursor: null,
+                        role_id: chosen,
+                      },
+                      csrf,
+                      controller.signal,
+                    ),
+                    error: "",
+                  };
+                } catch (cause) {
+                  return {
+                    connectionId: connection.id,
+                    page: { items: [], next_cursor: null },
+                    error: connection.name + "：" + readFailure(cause),
+                  };
+                }
+              }),
+          );
+          if (controller.signal.aborted) return;
+          setDiscovery(pages);
+        } else warnings.push("会话观察：" + readFailure(accounts.reason));
         setErrors(warnings);
-        setBusy(false);
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          setMemory(null);
+          setErrors(["角色与记忆：" + readFailure(cause)]);
+        }
+      } finally {
+        if (!controller.signal.aborted) setBusy(false);
       }
     })();
     return () => controller.abort();
-  }, [csrf, storageKey, epoch, section]);
+  }, [csrf, storageKey, roleId, epoch, section]);
 
   const byId = new Map<string, Person>();
   for (const profile of profiles)
@@ -185,7 +220,7 @@ export default function PeoplePage({ section }: { section: number }) {
       if (profileCursor) {
         const result = await integrationPost<Profiles>(
           "qq-admin/profiles",
-          { limit: 100, after: profileCursor },
+          { limit: 100, after: profileCursor, role_id: roleId },
           csrf,
           controller.signal,
         );
@@ -209,6 +244,7 @@ export default function PeoplePage({ section }: { section: number }) {
                 id: source.connectionId,
                 limit: 100,
                 cursor: source.page.next_cursor,
+                role_id: roleId,
               },
               csrf,
               controller.signal,
@@ -251,7 +287,7 @@ export default function PeoplePage({ section }: { section: number }) {
       </StatePanel>
     );
   return (
-    <div className="people-page">
+    <div className="people-page scroll-page">
       <header className="people-toolbar">
         <div className="people-page-intro">
           <span className="people-icon-tile">
@@ -259,7 +295,7 @@ export default function PeoplePage({ section }: { section: number }) {
           </span>
           <div>
             <h2>认识的每一个人</h2>
-            <p>从一句问候开始，慢慢了解彼此。</p>
+            <p>查看当前角色认识和绑定的用户档案。</p>
           </div>
         </div>
         <label className="people-role">
@@ -268,6 +304,10 @@ export default function PeoplePage({ section }: { section: number }) {
             aria-label="查看角色"
             value={roleId}
             onChange={(event) => {
+              active.current?.abort();
+              setSelected("");
+              setProfiles([]);
+              setDiscovery([]);
               setRoleId(event.target.value);
               saveRolePreference(storageKey, event.target.value);
             }}
@@ -287,7 +327,7 @@ export default function PeoplePage({ section }: { section: number }) {
           onClick={() => setEpoch((value) => value + 1)}
         >
           <RefreshCw size={16} aria-hidden="true" />
-          刷新目录
+          刷新档案
         </button>
       </header>
       {(errors.length > 0 || discovery.some((item) => item.error)) && (
@@ -310,7 +350,7 @@ export default function PeoplePage({ section }: { section: number }) {
           />
         )}
       </>
-      <div className="people-layout">
+      <div className="people-layout scroll-layout">
         <aside
           className="people-directory"
           aria-label="用户目录"
@@ -362,7 +402,7 @@ export default function PeoplePage({ section }: { section: number }) {
                   : "还没有已登记或已观察到的用户。"}
             </p>
           )}
-          <ul className="people-list">
+          <ul className="people-list" aria-label="用户列表" tabIndex={0}>
             {visible.map((item) => (
               <li key={item.qqId}>
                 <button
@@ -412,7 +452,13 @@ export default function PeoplePage({ section }: { section: number }) {
             搜索与来源筛选覆盖已加载范围{hasMore ? "，可继续加载。" : "。"}
           </small>
         </aside>
-        <div className="people-detail-area">
+        <div
+          key={`${roleId}:${selected}`}
+          className="people-detail-area scroll-pane"
+          role="region"
+          aria-label="用户详情"
+          tabIndex={0}
+        >
           {person ? (
             <PersonDetail
               key={`${csrf}:${roleId}:${person.qqId}:${epoch}`}
@@ -435,7 +481,7 @@ export default function PeoplePage({ section }: { section: number }) {
               </span>
               <h3>每次相遇，都从这里开始</h3>
               <p>
-                选择左侧一位用户，查看身份、共享画像、收到的消息与回复权限。
+                选择当前角色目录中的一位用户，查看身份、共享画像、收到的消息与回复权限。
               </p>
               <small>
                 用户身份、消息归档和记忆画像分别记录；一句“hi”也足以出现在目录中。

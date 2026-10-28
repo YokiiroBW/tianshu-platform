@@ -21,7 +21,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
-  min-height: 34rem;
+  min-height: 0;
 }
 .role-list {
   border-right: 0;
@@ -142,6 +142,7 @@
     min-height: 0;
   }
   .role-list {
+    height: 100%;
     border-right: 0;
     padding-right: 0;
   }

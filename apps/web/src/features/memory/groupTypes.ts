@@ -1,3 +1,26 @@
+import type { GroupRule } from "../settings/GroupPolicyEditor";
+
+export type GroupEntry = {
+  id: string;
+  owner_id: string;
+  owner_name: string;
+  account_id: string;
+  group_id: string;
+  name: string | null;
+  member_count: number | null;
+  max_member_count: number | null;
+  first_seen_at: number | null;
+  last_seen_at: number | null;
+  revision: number;
+  rule: GroupRule;
+  pending: boolean;
+  read_enabled: boolean;
+  has_archive: boolean;
+  state: string;
+  ordinary_claim_available: boolean;
+  memory_group_id: string | null;
+};
+
 export type Group = {
   id: string;
   label: string;

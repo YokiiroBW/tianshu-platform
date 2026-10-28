@@ -118,6 +118,47 @@ class GroupDirectoryTests(unittest.TestCase):
         )
         self.assertEqual((fallback["mode"], fallback["actor_id"]), ("disabled", "actor:a"))
 
+    def test_role_filter_and_profile_targets_keep_other_bindings_out_of_pages(self):
+        self.row["known_groups"] = {
+            str(i): {**self.metadata, "group_id": str(i)} for i in (20001, 20002, 20003)
+        }
+        self.row["group_policy"]["groups"] = {
+            "20001": group_policy.rule("observe", "actor:b"),
+            "20002": group_policy.rule("observe", "actor:a"),
+        }
+        self.manager.catalog.put(self.row)
+        query = {"limit": 1, "cursor": None, "role_id": "actor:a"}
+        page = self.manager.groups.view(None, {}, query)
+        self.assertEqual([r["group_id"] for r in page["groups"]], ["20002"])
+        self.assertIsNone(page["next_cursor"])
+        self.assertEqual(
+            [
+                r["group_id"]
+                for r in self.manager.groups.view(None, {}, {**query, "role_id": None})["groups"]
+            ],
+            ["20003"],
+        )
+        with closing(self.manager._db()) as db, db:
+            db.executemany(
+                "INSERT INTO discovered VALUES(?,?,?,?,?,?)",
+                [
+                    (self.row["id"], "group:20001", "10010", 1, 1, 100),
+                    (self.row["id"], "group:20002", "10011", 1, 1, 100),
+                    (self.row["id"], "group:20002", "10012", 0, 1, 100),
+                ],
+            )
+        self.assertEqual(
+            self.manager.profile_targets("actor:a", ["10010", "10011", "10012"]),
+            {"10011": {("10001", "group:20002")}},
+        )
+        first = asyncio.run(self.manager.discovered({"id": self.row["id"], **query}))
+        self.assertEqual(first["items"], [])
+        self.assertIsNotNone(first["next_cursor"])
+        second = asyncio.run(
+            self.manager.discovered({"id": self.row["id"], **query, "cursor": first["next_cursor"]})
+        )
+        self.assertEqual([r["author"] for r in second["items"]], ["10011"])
+
     def test_metadata_network_does_not_block_other_account_poll_and_is_drained(self):
         second = copy.deepcopy(self.row)
         second.update(id="obs:second", account_id="10002")

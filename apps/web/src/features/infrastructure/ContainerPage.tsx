@@ -85,7 +85,7 @@ function Workspace({ view }: { view: InfrastructureView }) {
       </section>
     );
   return (
-    <div className="infra-workspace">
+    <div className="infra-workspace scroll-page scroll-layout">
       <div className="infra-heading">
         <div>
           <h2>Docker 容器</h2>
@@ -95,7 +95,7 @@ function Workspace({ view }: { view: InfrastructureView }) {
           节点连接
         </a>
       </div>
-      <div className="infra-docker-layout">
+      <div className="infra-docker-layout scroll-layout">
         <aside className="panel infra-pane infra-selector infra-docker-selector">
           <h3>运行节点</h3>
           <div
@@ -374,7 +374,7 @@ export default function ContainerPage() {
     );
   if (!query.data.configured) return <UnconfiguredInfrastructure />;
   return (
-    <>
+    <div className={mode === "containers" ? "scroll-page" : undefined}>
       {query.error && (
         <p className="infra-error" role="alert">
           {query.error}
@@ -401,6 +401,6 @@ export default function ContainerPage() {
       ) : (
         <StackWorkspace view={query.data} />
       )}
-    </>
+    </div>
   );
 }

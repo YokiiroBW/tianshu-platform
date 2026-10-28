@@ -1,9 +1,19 @@
 """Deployment settings, independent of AssetLibrary and Home Assistant configuration."""
 
+import re
 from pathlib import Path
 
 from ..contracts import require
 from ..external_catalog import ExternalCatalog
+
+
+def node_id(value):
+    require(
+        isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}", value),
+        "invalid_input",
+        400,
+    )
+    return value
 
 
 def executor_configuration(value):
@@ -45,6 +55,7 @@ def configuration(settings, *, runtime=None):
             "stale_after_seconds",
             "timeout_ms",
             "control",
+            "platform_node_id",
         },
         "invalid_input",
         400,
@@ -60,6 +71,8 @@ def configuration(settings, *, runtime=None):
         400,
     )
     result = {**value, "executor": executor_configuration(value["executor"])}
+    if "platform_node_id" in value:
+        result["platform_node_id"] = node_id(value["platform_node_id"])
     for name, default, minimum, maximum in (
         ("poll_interval_seconds", 30, 5, 3600),
         ("stale_after_seconds", 120, 10, 86400),

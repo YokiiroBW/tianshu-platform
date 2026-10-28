@@ -3,20 +3,12 @@
 import re
 
 from ..contracts import Fault, require
+from .config import node_id
 from .runtime import MAX_NODES, PREFIX
 
 HTTP_PREFIX = "/api/web/infrastructure/"
 STATES = {"created", "restarting", "running", "removing", "paused", "exited", "dead", "unknown"}
 HEALTH = {"healthy", "unhealthy", "starting", "none", "unknown"}
-
-
-def node_id(value):
-    require(
-        isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}", value),
-        "invalid_input",
-        400,
-    )
-    return value
 
 
 def container_id(value):
@@ -48,6 +40,9 @@ class WebInfrastructure:
             from .control_web import route
 
             result = await route(runtime.control, operation.removeprefix("control/"), body)
+        elif operation == "host":
+            require(body == {}, "invalid_input", 400)
+            result = await self.local(self._host)
         elif operation == "view":
             require(body == {}, "invalid_input", 400)
             if runtime is None:
@@ -99,6 +94,14 @@ class WebInfrastructure:
                 raise Fault("not_found", 404)
         await self.local(self._gate, session)
         return result
+
+    def _host(self):
+        # The deployment names its platform host explicitly; never pick an arbitrary node.
+        config = self.runtime.config if self.runtime else None
+        identity = config.get("platform_node_id") if config else None
+        if identity is None:
+            return {"configured": False, "node": None}
+        return {"configured": True, "node": self.runtime.node(identity)}
 
     def _save(self, body, session):
         require(

@@ -374,7 +374,17 @@ class QQAdmin:
     async def _profiles(self, body):
         c = self.profiles_config
         require(c is not None, "dependency_unavailable", 503)
-        require(type(body) is dict and set(body) == {"limit", "after"}, "invalid_input", 400)
+        require(
+            type(body) is dict and set(body) in ({"limit", "after"}, {"limit", "after", "role_id"}),
+            "invalid_input",
+            400,
+        )
+        if "role_id" in body:
+            require(
+                isinstance(body["role_id"], str) and bool(body["role_id"]),
+                "invalid_input",
+                400,
+            )
         require(type(body["limit"]) is int and 1 <= body["limit"] <= 100, "invalid_input", 400)
         require(
             body["after"] is None or qq_id(body["after"]) == body["after"], "invalid_input", 400
@@ -391,7 +401,12 @@ class QQAdmin:
             async with (self.session_factory or aiohttp.ClientSession)(trust_env=False) as client:
                 async with client.post(
                     c["base_url"].rstrip("/") + "/internal/v1/identity/qq-profiles",
-                    json={"schema_version": 1, "request_id": request_id, **body},
+                    json={
+                        "schema_version": 1,
+                        "request_id": request_id,
+                        "limit": body["limit"],
+                        "after": body["after"],
+                    },
                     headers={"Authorization": "Bearer " + token, "Accept-Encoding": "identity"},
                     ssl=context,
                     allow_redirects=False,
@@ -440,7 +455,30 @@ class QQAdmin:
                             "dependency_unavailable",
                             503,
                         )
-                    return {"items": answer["items"], "next_cursor": answer["next_cursor"]}
+                    items = answer["items"]
+                    if "role_id" in body:
+                        targets = await self.p.local_work.run(
+                            self.p.bot_observation.profile_targets,
+                            body["role_id"],
+                            [item["qq_id"] for item in items],
+                        )
+                        items = [item for item in items if item["qq_id"] in targets]
+                        for item in items:
+                            scope = targets[item["qq_id"]]
+                            item["aliases"] = [
+                                alias
+                                for alias in item["aliases"]
+                                if isinstance(alias, dict)
+                                and any(
+                                    alias.get("bot_id") == account
+                                    and (
+                                        not alias.get("group_id")
+                                        or conversation == "group:" + alias["group_id"]
+                                    )
+                                    for account, conversation in scope
+                                )
+                            ]
+                    return {"items": items, "next_cursor": answer["next_cursor"]}
         except (aiohttp.ClientError, OSError, ValueError, TimeoutError):
             raise Fault("dependency_unavailable", 503) from None
 

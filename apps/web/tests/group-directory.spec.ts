@@ -1,31 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
-function group(id = "20001") {
-  return {
-    id: `directory-${id}`,
-    owner_id: "obs:directory",
-    owner_name: "测试 BOT",
-    account_id: "90001",
-    group_id: id,
-    name: id === "20001" ? "随手聊天" : `合成群 ${id}`,
-    member_count: null,
-    max_member_count: null,
-    first_seen_at: 1792418400,
-    last_seen_at: 1792504799,
-    revision: 1,
-    rule: {
-      mode: "disabled",
-      actor_id: null as string | null,
-      keywords: [] as string[],
-    },
-    pending: false,
-    read_enabled: true,
-    has_archive: false,
-    state: "ready",
-    ordinary_claim_available: false,
-    memory_group_id: null as string | null,
-  };
-}
+import { group } from "./fixtures/group-directory";
+
 const actors = [{ id: "actor:a", label: "角色甲" }];
 const directory = (
   groups: ReturnType<typeof group>[],
@@ -33,6 +9,9 @@ const directory = (
 ) => ({ available: true, unlocked: true, actors, groups, next_cursor });
 
 async function session(page: Page) {
+  await page.addInitScript(() =>
+    sessionStorage.setItem("tianshu-memory-role:synthetic-owner", "actor:a"),
+  );
   await page.route("**/api/web/session", (route) =>
     route.fulfill({
       json: {
@@ -103,23 +82,24 @@ test("empty group profiles and four modes work here without Memory or a settings
     "主动",
   ]);
   await mode.selectOption("observe");
-  await expect(
-    page.getByRole("button", { name: "保存此群状态" }),
-  ).toBeDisabled();
-  await page.getByLabel("此群角色", { exact: true }).selectOption("actor:a");
+  await expect.poll(() => changes.length).toBe(1);
+  await expect(mode).toBeEnabled();
   await mode.selectOption("active");
+  await expect.poll(() => changes.length).toBe(2);
+  await expect(mode).toBeEnabled();
+  await page.getByRole("button", { name: "回复关键词", exact: true }).click();
   await page
     .getByLabel("此群关键词", { exact: true })
     .fill("字面关键词\n[原文].*");
-  await page.getByRole("button", { name: "保存此群状态" }).click();
+  await page.getByRole("button", { name: "保存关键词" }).click();
   await expect(
     page.getByText("状态已保存，等待宿主确认。", { exact: true }),
   ).toBeVisible();
-  expect(changes).toHaveLength(1);
-  expect(changes[0]).toMatchObject({
+  expect(changes).toHaveLength(3);
+  expect(changes[2]).toMatchObject({
     owner_id: "obs:directory",
     group_id: "20001",
-    expected_revision: 1,
+    expected_revision: 3,
     rule: {
       mode: "active",
       actor_id: "actor:a",
@@ -229,11 +209,9 @@ test("an older metadata response cannot undo the saved group state", async ({
   });
   try {
     await page.goto("/#/memory/1");
-    await page.getByLabel("此群状态", { exact: true }).selectOption("observe");
-    await page.getByLabel("此群角色", { exact: true }).selectOption("actor:a");
     await page.getByRole("button", { name: "刷新群档案" }).click();
     await waiting;
-    await page.getByRole("button", { name: "保存此群状态" }).click();
+    await page.getByLabel("此群状态", { exact: true }).selectOption("observe");
     await expect(
       page.getByText("群状态已保存并由宿主确认。", { exact: true }),
     ).toBeVisible();

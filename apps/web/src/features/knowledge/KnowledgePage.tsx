@@ -390,7 +390,9 @@ export default function KnowledgePage() {
     ? { tone: "blue" as const, label: "本页本次读取成功" }
     : connectionLabel(state);
   return (
-    <div className="knowledge-page">
+    <div
+      className={`knowledge-page${tab === "documents" && state.projects.length ? " scroll-page" : ""}`}
+    >
       <section className="panel">
         <div className="section-heading">
           <h2>项目知识</h2>
@@ -482,8 +484,12 @@ export default function KnowledgePage() {
             </StatePanel>
           )}
           {tab === "documents" && (
-            <div className="knowledge-columns">
-              <section className="panel">
+            <div className="knowledge-columns scroll-layout">
+              <section
+                className="panel scroll-pane"
+                aria-label="项目资料目录"
+                tabIndex={0}
+              >
                 <div className="section-heading">
                   <h2>资料目录</h2>
                   <button
@@ -546,7 +552,11 @@ export default function KnowledgePage() {
                   </>
                 )}
               </section>
-              <section className="panel">
+              <section
+                className="panel scroll-pane"
+                aria-label="项目资料详情"
+                tabIndex={0}
+              >
                 <h2>资料正文</h2>
                 {!selected ? (
                   <p className="muted">

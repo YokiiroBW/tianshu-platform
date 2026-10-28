@@ -326,9 +326,9 @@ export default function PersonaAuthor({ session }: { session: SessionState }) {
 
   return (
     <div
-      className={`persona-author persona-author-layout${mobileDetail ? " persona-show-detail" : ""}`}
+      className={`persona-author persona-author-layout scroll-layout${mobileDetail ? " persona-show-detail" : ""}`}
     >
-      <nav className="persona-author-list" aria-label="人格列表">
+      <nav className="persona-author-list scroll-pane" aria-label="人格列表">
         <div className="persona-list-heading">
           <h3>人格列表</h3>
           <button
@@ -368,7 +368,11 @@ export default function PersonaAuthor({ session }: { session: SessionState }) {
           ))}
         </div>
       </nav>
-      <section className="persona-author-form" aria-label="人格详情">
+      <section
+        className="persona-author-form scroll-pane"
+        aria-label="人格详情"
+        tabIndex={0}
+      >
         <button
           type="button"
           className="button persona-mobile-back"

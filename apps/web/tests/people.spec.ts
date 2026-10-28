@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { createPeopleAccount, profiles, portrait } from "./fixtures/people";
 
 async function fixture(
   page: Page,
@@ -9,27 +10,7 @@ async function fixture(
   let memoryRevoked = false;
   let overviewReads = 0;
   const writes: Record<string, unknown>[] = [];
-  const account = {
-    id: "bot:one",
-    name: "家里的机器人",
-    account_id: "90001",
-    revision: 1,
-    read_enabled: true,
-    enabled: true,
-    state: "ready",
-    private_policy: {
-      observe: true,
-      mode: "observe_only",
-      list: [] as string[],
-      actor_id: null as string | null,
-    },
-    group_policy: {
-      observe: true,
-      mode: "blacklist",
-      list: ["88888"],
-      actor_id: "role:a",
-    },
-  };
+  const account = createPeopleAccount();
   const roles = [
     { id: "role:a", label: "橙汐", version: 1, available: true, reason: null },
     { id: "role:b", label: "雪色", version: 2, available: true, reason: null },
@@ -60,35 +41,9 @@ async function fixture(
           json: { code: "memory_not_configured" },
         });
       result = { available: true, code: "ready", actor_id: "role:a", roles };
-    } else if (path === "qq-admin/profiles")
-      result = {
-        items: body.after
-          ? [
-              {
-                qq_id: "10003",
-                person_id: "person:three",
-                display_name: "林间风",
-                aliases: [],
-              },
-            ]
-          : [
-              {
-                qq_id: "10001",
-                person_id: "person:one",
-                display_name: "小雨",
-                aliases: [
-                  {
-                    kind: "group_card",
-                    bot_id: "90001",
-                    group_id: "80001",
-                    value: "群里的小雨",
-                    observed_at: "2026-10-04T10:00:00Z",
-                  },
-                ],
-              },
-            ],
-        next_cursor: body.after ? null : "profiles-page-2",
-      };
+    } else if (path === "bot-observation/groups") result = { actors: roles };
+    else if (path === "qq-admin/profiles")
+      result = profiles(Boolean(body.after));
     else if (path === "bot-observation/view")
       result = { available: true, unlocked, connections: [account] };
     else if (path === "bots/unlock") {
@@ -152,35 +107,7 @@ async function fixture(
           json: { code: "upstream_forbidden" },
         });
       result = { scope_version: 1 };
-    } else if (path === "memory/records")
-      result = {
-        items:
-          body.role_id === "role:b"
-            ? [
-                {
-                  semantic_group_id: "portrait:one",
-                  category: "preference",
-                  field_key: "reading",
-                  item_key: "books",
-                  units: [
-                    {
-                      record_id: "r1",
-                      record_version: 1,
-                      statement: "小雨喜欢在傍晚读书。",
-                      uncertainty: null,
-                      conditions: null,
-                      negations: null,
-                      valid_time: null,
-                      reality: null,
-                    },
-                  ],
-                },
-              ]
-            : [],
-        next_cursor: null,
-        scope_version: 1,
-        verified_at: "2026-10-04T10:00:00Z",
-      };
+    } else if (path === "memory/records") result = portrait(body.role_id);
     else if (path === "bot-observation/private-access") {
       writes.push(body);
       account.revision++;
@@ -247,6 +174,8 @@ test("people directory keeps observed hi users and separates shared portrait fro
   await page
     .getByRole("combobox", { name: "查看角色", exact: true })
     .selectOption("role:b");
+  await expect(page.locator(".people-detail")).toHaveCount(0);
+  await directory.getByRole("button").filter({ hasText: "QQ 10001" }).click();
   await expect(
     page.getByRole("tab", { name: "概览", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
@@ -320,7 +249,7 @@ test("QQ identity directory remains readable when memory service fails", async (
   await directory.getByRole("button").filter({ hasText: "QQ 10001" }).click();
   await expect(page.getByText("群里的小雨", { exact: false })).toBeVisible();
   await page.getByRole("tab", { name: "画像与记忆", exact: true }).click();
-  await expect(page.getByText("请选择查看角色。")).toBeVisible();
+  await expect(page.getByText("当前角色的记忆读取尚不可用。")).toBeVisible();
   await expect(page.getByText("还没有形成共享画像")).toHaveCount(0);
   expect(state.errors).toEqual([]);
 });
@@ -338,6 +267,11 @@ test("portrait scope revalidation hides revoked records and rechecks when visibl
   await page
     .getByRole("combobox", { name: "查看角色", exact: true })
     .selectOption("role:b");
+  await page
+    .getByRole("complementary", { name: "用户目录" })
+    .getByRole("button")
+    .filter({ hasText: "QQ 10001" })
+    .click();
   await page.getByRole("tab", { name: "画像与记忆", exact: true }).click();
   await expect(page.getByText("小雨喜欢在傍晚读书。")).toBeVisible();
   state.setMemoryRevoked(true);

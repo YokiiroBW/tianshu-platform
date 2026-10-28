@@ -58,12 +58,16 @@
 .persona-author-layout {
   display: grid;
   grid-template-columns: minmax(14rem, 16rem) minmax(0, 1fr);
-  min-height: min(42rem, 70vh);
+  min-height: 0;
 }
 .persona-author-list {
   min-width: 0;
   padding: var(--space-5) var(--space-4) 0 0;
   border-right: 1px solid var(--color-line);
+}
+.persona-author-list,
+.persona-author-form {
+  overscroll-behavior: contain;
 }
 .persona-list-heading,
 .persona-author-title,
@@ -256,10 +260,12 @@
     min-height: 0;
   }
   .persona-author-list {
+    height: 100%;
     border-right: 0;
     padding: var(--space-4) 0;
   }
   .persona-author-form {
+    height: 100%;
     display: none;
     padding: var(--space-4) 0;
   }
