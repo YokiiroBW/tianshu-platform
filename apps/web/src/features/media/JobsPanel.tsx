@@ -247,7 +247,10 @@ export function JobsPanel({ media }: { media: MediaController }) {
       .flatMap((target) => target.servers)
       .find((server) => server.server_id === id)?.label ?? id;
   return (
-    <section className="media-stack" aria-label="下载任务">
+    <section
+      className="media-stack scroll-page scroll-layout"
+      aria-label="下载任务"
+    >
       <div className="media-section-head">
         <div>
           <h2>下载与入库进度</h2>
@@ -318,8 +321,14 @@ export function JobsPanel({ media }: { media: MediaController }) {
           </p>
         </StatePanel>
       ) : (
-        <div className={`media-job-layout${selected ? " has-detail" : ""}`}>
-          <div className="media-job-list">
+        <div
+          className={`media-job-layout scroll-layout${selected ? " has-detail" : ""}`}
+        >
+          <div
+            className="media-job-list scroll-pane"
+            aria-label="下载任务列表"
+            tabIndex={0}
+          >
             {visible.map((job) => (
               <article
                 className={`media-card media-job${selected === job.job_id ? " selected" : ""}`}
@@ -489,7 +498,8 @@ export function JobsPanel({ media }: { media: MediaController }) {
           </div>
           {selected && (
             <aside
-              className="media-card media-job-detail"
+              key={selected}
+              className="media-card media-job-detail scroll-pane"
               ref={panel}
               tabIndex={-1}
               aria-label="任务详情"

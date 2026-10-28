@@ -1,10 +1,10 @@
-import { GettingStarted } from "../../app/Auth";
 import { ArrowUpRight, CalendarDays } from "lucide-react";
+import { HostResources } from "./HostResources";
 
 export default function WorkbenchPage() {
   return (
     <div className="workbench">
-      <GettingStarted />
+      <HostResources />
       <div className="workspace-columns">
         <section className="panel">
           <div className="section-heading">
@@ -15,7 +15,7 @@ export default function WorkbenchPage() {
           </div>
           <div className="quiet-content">
             <p className="empty-title">还没有可读取的角色近况</p>
-            <p>此处尚未读取角色近况。对话是否可用，请以上方准备状态为准。</p>
+            <p>此处尚未读取角色近况。可前往陪伴查看角色与对话状态。</p>
             <a className="text-link" href="#/room">
               查看小屋入口 <ArrowUpRight aria-hidden="true" />
             </a>

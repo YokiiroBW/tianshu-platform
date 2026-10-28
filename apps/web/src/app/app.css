@@ -82,6 +82,9 @@ svg {
   padding: var(--space-5);
   align-items: start;
 }
+.app-shell.is-sidebar-collapsed {
+  grid-template-columns: 80px minmax(0, 1fr);
+}
 .sidebar {
   position: sticky;
   top: var(--space-5);
@@ -91,11 +94,23 @@ svg {
   display: flex;
   flex-direction: column;
 }
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding-inline: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+.sidebar-brand .sidebar-toggle {
+  min-width: 2rem;
+  min-height: 2rem;
+}
 .brand {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: 0 var(--space-3) var(--space-5);
+  flex: 1;
+  min-width: 0;
   color: var(--color-text);
 }
 .brand strong {
@@ -197,6 +212,31 @@ svg {
 .sidebar-note span {
   color: var(--color-muted);
 }
+.is-sidebar-collapsed .sidebar {
+  padding-inline: var(--space-2);
+}
+.is-sidebar-collapsed .sidebar-brand {
+  flex-direction: column;
+  padding-inline: 0;
+  gap: var(--space-2);
+}
+.is-sidebar-collapsed .sidebar .brand-copy,
+.is-sidebar-collapsed .sidebar .nav-label,
+.is-sidebar-collapsed .sidebar .nav-item span,
+.is-sidebar-collapsed .sidebar .nav-subsections a span,
+.is-sidebar-collapsed .sidebar .sidebar-note {
+  display: none;
+}
+.is-sidebar-collapsed .sidebar .nav-item,
+.is-sidebar-collapsed .sidebar .nav-subsections a {
+  justify-content: center;
+  padding-inline: var(--space-2);
+}
+.is-sidebar-collapsed .sidebar .nav-subsections {
+  margin-inline: 0;
+  padding-inline-start: 0;
+  border-inline-start: 0;
+}
 .main-column {
   min-width: 0;
 }
@@ -241,8 +281,108 @@ svg {
 .mobile-menu {
   display: none;
 }
-.page-heading {
-  margin: var(--space-6) 0 var(--space-5);
+.main-column main {
+  padding-top: var(--space-5);
+}
+body:has(.app-shell.is-contained-page) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+.app-shell.is-contained-page {
+  height: 100dvh;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+  overflow: hidden;
+}
+.is-contained-page .sidebar {
+  position: static;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.is-contained-page .main-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.is-contained-page .topbar,
+.is-contained-page .offline-notice {
+  flex-shrink: 0;
+}
+.is-contained-page main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.is-contained-page .section-nav {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.is-contained-page .section-nav a {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.page-content {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+  padding: 0 4px 4px 0;
+}
+.page-content:has(> .scroll-page) {
+  overflow: hidden;
+  scrollbar-gutter: auto;
+  padding: 0;
+}
+.page-content > .scroll-page,
+.scroll-page > .scroll-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.scroll-page > :not(.scroll-layout) {
+  flex-shrink: 0;
+}
+.scroll-page > .scroll-layout {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.page-content > .scroll-page:not(:has(.scroll-layout)),
+.scroll-page > .scroll-page:not(:has(.scroll-layout)) {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.scroll-layout > .scroll-pane,
+.scroll-page > .scroll-layout.scroll-pane {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+.page-content:focus-visible,
+.scroll-pane:focus-visible {
+  outline-offset: -3px;
+}
+.is-contained-page .main-column > footer {
+  display: none;
 }
 .eyebrow {
   font-size: var(--text-small);
@@ -690,7 +830,8 @@ input[type="checkbox"] {
   body {
     background-attachment: scroll;
   }
-  .app-shell {
+  .app-shell,
+  .app-shell.is-sidebar-collapsed {
     grid-template-columns: 1fr;
     padding: var(--space-3);
   }
@@ -709,9 +850,6 @@ input[type="checkbox"] {
   }
   .environment-label {
     display: none;
-  }
-  .page-heading {
-    margin-top: var(--space-5);
   }
   .panel {
     padding: var(--space-4);

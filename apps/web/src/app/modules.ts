@@ -130,6 +130,13 @@ export const modules = [
 export type Module = (typeof modules)[number];
 export type ModuleId = Module["id"];
 
+export const userNavigation = [
+  { section: 0, icon: UserRound, href: "#/memory/0" },
+  { section: 1, icon: UsersRound, href: "#/memory/1" },
+  { section: 2, icon: Link, href: "#/memory/2" },
+  { section: 3, icon: BookOpen, href: "#/memory/3" },
+] as const;
+
 // Stable section indices preserve existing media bookmarks; only their display order differs.
 export const subscriptionNavigation = [
   { section: 4, icon: LayoutDashboard, href: "#/subscriptions" },

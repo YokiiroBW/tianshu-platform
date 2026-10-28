@@ -6,7 +6,7 @@ export default function PersonaPanel() {
   const { session, loading, error, refresh } = useAuth();
 
   return (
-    <section className="persona-page glass" aria-label="人格管理">
+    <section className="persona-page glass scroll-page" aria-label="人格管理">
       <header className="persona-page-heading">
         <h2>人格</h2>
       </header>

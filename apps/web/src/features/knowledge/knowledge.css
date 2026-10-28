@@ -39,7 +39,7 @@
   display: grid;
   grid-template-columns: minmax(15rem, 0.8fr) minmax(0, 1.2fr);
   gap: var(--space-4);
-  align-items: start;
+  align-items: stretch;
 }
 .knowledge-columns .panel {
   min-width: 0;
@@ -109,6 +109,7 @@
 @media (max-width: 760px) {
   .knowledge-columns {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 2fr);
   }
   .knowledge-search form > div {
     flex-wrap: wrap;

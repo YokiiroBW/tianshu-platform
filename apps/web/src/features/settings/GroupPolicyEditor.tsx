@@ -16,6 +16,10 @@ export const GROUP_MODE_LABELS: Record<GroupMode, string> = {
   active: "主动",
 };
 
+export function parseGroupKeywords(value: string) {
+  return [...new Set(value.split(/\r?\n/).filter((word) => word.trim()))];
+}
+
 export function GroupRuleEditor({
   name,
   value,
@@ -78,11 +82,7 @@ export function GroupRuleEditor({
           onChange={(e) =>
             onChange({
               ...value,
-              keywords: [
-                ...new Set(
-                  e.target.value.split(/\r?\n/).filter((word) => word.trim()),
-                ),
-              ],
+              keywords: parseGroupKeywords(e.target.value),
             })
           }
           placeholder="每行一个原文关键词，不使用正则"

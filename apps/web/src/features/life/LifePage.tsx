@@ -485,8 +485,12 @@ export default function LifePage() {
                   : "记录生活的片刻"}
               </span>
             </summary>
-            <div className="life-columns">
-              <section className="panel">
+            <div className="life-columns scroll-layout">
+              <section
+                className="panel scroll-pane"
+                aria-label="已发布日记目录"
+                tabIndex={0}
+              >
                 <h2>已发布日记</h2>
 
                 {!busy && !error && snapshot && diaries.length === 0 ? (
@@ -523,7 +527,11 @@ export default function LifePage() {
                   </button>
                 )}
               </section>
-              <section className="panel">
+              <section
+                className="panel scroll-pane"
+                aria-label="日记正文"
+                tabIndex={0}
+              >
                 <h2>日记正文</h2>
                 {!selected ? (
                   <p className="muted">选择一篇已发布日记。</p>

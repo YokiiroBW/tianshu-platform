@@ -4,6 +4,8 @@
 
 ## 部署配置
 
+工作台的“天枢主机资源”复用此模块已有的主机采样缓存。可在 `infrastructure` 设置中增加 `"platform_node_id": "已登记节点ID"`，明确指定平台所在机器；未填写时显示待绑定，不会自动取目录中的第一台节点。只读 `POST /api/web/infrastructure/host` 接受空对象，返回 `configured` 与该节点的 `node` 观测，沿用同源会话、CSRF 和 `external.manage` 权限。页面每 3 秒读取缓存，不启动额外 SSH、采集器或后台任务。过时、缺失和读取失败分别呈现，未知指标不显示成零。
+
 节点执行器由部署方安装，平台只启动部署配置中的固定 argv 和 cwd。网页不能传地址、私钥、known_hosts、命令、执行目录、配置文件或状态目录。现有平台 Dockerfile **没有 SSH 客户端和节点执行器包**，仅增加下面的设置不能连接节点；联合部署须采用 TS-178 的执行器打包产物及其安装说明。
 
 以下为 TS-180 联合部署路径约定，不表示该路径已经上线。平台 wheel 使用既有 `/opt/tianshu-venv`；执行器另用 `/opt/tianshu-infrastructure-venv` 和 `PyYAML==6.0.3`，镜像须另装 OpenSSH。执行器启动器把固定包加入自身导入路径，平台不修改 PATH 或注入 PYTHONPATH。`executor.json` 按节点合同的 `config.schema.json` 登记节点、显式身份／known_hosts、stacks 目录及固定 `state_dir`，这些内容不进入网页。

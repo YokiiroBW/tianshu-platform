@@ -146,9 +146,31 @@ export default function ResourcesPage() {
       );
     return null;
   })();
+  const browsing = !status && !page.failure && !busy && !!page.scope.library;
+  const freshness = state && (
+    <section className="asset-freshness" aria-label="读取说明">
+      <h3 className="asset-section-title">读取说明</h3>
+      <ul>
+        <li>
+          每次打开库、进入目录、提交搜索或刷新都会重新读取；切换时旧列表立即清除，不会先显示上一个库的内容。
+        </li>
+        <li>
+          列表是上游索引在读取时刻的快照，不是实时目录状态；继续读取下一页会带上本次范围的续读标记。
+        </li>
+        <li>
+          库里报告的“索引离线”只是一个状态：它不表示文件已经消失，原件是否可用本页无法验证。
+        </li>
+        <li>
+          {page.stamp
+            ? `最近一次读取：${new Date(page.stamp.at).toLocaleTimeString("zh-CN", { hour12: false })}（${page.stamp.operation}）。`
+            : "本次进入页面后还没有完成一次读取。"}
+        </li>
+      </ul>
+    </section>
+  );
 
   return (
-    <>
+    <div className={browsing ? "scroll-page" : undefined}>
       <section className="asset-head">
         <h2 className="asset-title" ref={heading} tabIndex={-1}>
           资产库
@@ -423,8 +445,12 @@ export default function ResourcesPage() {
           )}
 
           {!page.failure && !busy && page.scope.library && (
-            <div className="asset-body">
-              <section className="asset-main" aria-label="文件列表">
+            <div className="asset-body scroll-layout">
+              <section
+                className="asset-main scroll-pane"
+                aria-label="文件列表"
+                tabIndex={0}
+              >
                 {page.scope.query === null && (
                   <LibrarySummary
                     library={page.listing?.library ?? page.scope.library}
@@ -537,9 +563,15 @@ export default function ResourcesPage() {
                     这一级已完整显示 {listing.page.returned} 条。
                   </p>
                 )}
+                {freshness}
               </section>
 
-              <aside className="asset-side" aria-label="条目详情">
+              <aside
+                key={selected}
+                className="asset-side scroll-pane"
+                aria-label="条目详情"
+                tabIndex={0}
+              >
                 <DetailPanel
                   detail={page.detail}
                   preview={preview}
@@ -554,27 +586,7 @@ export default function ResourcesPage() {
         </>
       )}
 
-      {state && (
-        <section className="asset-freshness" aria-label="读取说明">
-          <h3 className="asset-section-title">读取说明</h3>
-          <ul>
-            <li>
-              每次打开库、进入目录、提交搜索或刷新都会重新读取；切换时旧列表立即清除，不会先显示上一个库的内容。
-            </li>
-            <li>
-              列表是上游索引在读取时刻的快照，不是实时目录状态；继续读取下一页会带上本次范围的续读标记。
-            </li>
-            <li>
-              库里报告的“索引离线”只是一个状态：它不表示文件已经消失，原件是否可用本页无法验证。
-            </li>
-            <li>
-              {page.stamp
-                ? `最近一次读取：${new Date(page.stamp.at).toLocaleTimeString("zh-CN", { hour12: false })}（${page.stamp.operation}）。`
-                : "本次进入页面后还没有完成一次读取。"}
-            </li>
-          </ul>
-        </section>
-      )}
-    </>
+      {!browsing && freshness}
+    </div>
   );
 }

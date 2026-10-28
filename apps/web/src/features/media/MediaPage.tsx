@@ -20,7 +20,9 @@ export default function MediaPage({ section = 4 }: { section?: number }) {
   if (section === 8) return <BooksPanel media={media} />;
   if (section === 9) return <ComicsPanel media={media} />;
   return (
-    <div className={`media-page${section === 4 ? " media-overview-page" : ""}`}>
+    <div
+      className={`media-page${section === 4 ? " media-overview-page" : ""}${section === 2 ? " scroll-page" : ""}`}
+    >
       {section !== 5 && (
         <div className="media-header">
           {media.view && section !== 4 && (

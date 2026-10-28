@@ -548,6 +548,29 @@ class BotObservation:
         row = self.catalog.get(key) if self.catalog else None
         return row if row and row.get("kind") == "observation" else None
 
+    def profile_targets(self, role_id, authors):
+        """Resolve profile visibility from existing role-to-conversation bindings."""
+        rows = self.rows()
+        if not authors or not rows:
+            return {}
+        targets = {}
+        placeholders = ",".join("?" for _ in authors)
+        with closing(self._db()) as db:
+            for row in rows:
+                found = db.execute(
+                    "SELECT DISTINCT conversation,author FROM discovered "
+                    "WHERE connection_id=? AND archive_epoch=? AND author IN ("
+                    + placeholders
+                    + ")",
+                    (row["id"], row["archive_epoch"], *authors),
+                )
+                for item in found:
+                    if self.actor(row, item["conversation"]) == role_id:
+                        targets.setdefault(item["author"], set()).add(
+                            (row["account_id"], item["conversation"])
+                        )
+        return targets
+
     def _project(self, row):
         value = {
             key: row[key]
@@ -688,7 +711,15 @@ class BotObservation:
             async with self.lock:
                 return {"connection": self._project(await self.private_access(body))}
         if path == PREFIX + "discovered":
-            require(set(body) == {"id", "limit", "cursor"}, "invalid_input", 400)
+            require(
+                set(body)
+                in (
+                    {"id", "limit", "cursor"},
+                    {"id", "limit", "cursor", "role_id"},
+                ),
+                "invalid_input",
+                400,
+            )
             return await self.discovered(body)
         if path == PREFIX + "history":
             require(
@@ -1282,6 +1313,12 @@ class BotObservation:
         }
 
     async def discovered(self, body):
+        if "role_id" in body:
+            require(
+                isinstance(body["role_id"], str) and bool(body["role_id"]),
+                "invalid_input",
+                400,
+            )
         row = self.get(body["id"])
         require(row is not None, "not_found", 404)
         require(row["read_enabled"], "forbidden", 403)
@@ -1318,7 +1355,12 @@ class BotObservation:
                     limit + 1,
                 ),
             ).fetchall()
-        items = [dict(item) for item in rows[:limit]]
+        page = rows[:limit]
+        items = [
+            dict(item)
+            for item in page
+            if "role_id" not in body or self.actor(row, item["conversation"]) == body["role_id"]
+        ]
         for item in items:
             policy = row[item["conversation"].split(":", 1)[0] + "_policy"]
             item["decision"] = decision(
@@ -1330,8 +1372,8 @@ class BotObservation:
         return {
             "items": items,
             "next_cursor": {
-                "conversation": items[-1]["conversation"],
-                "author": items[-1]["author"],
+                "conversation": page[-1]["conversation"],
+                "author": page[-1]["author"],
             }
             if len(rows) > limit
             else None,

@@ -202,7 +202,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
-  align-items: start;
+  align-items: stretch;
 }
 
 .asset-main,
@@ -217,11 +217,12 @@
 @media (min-width: 960px) {
   .asset-body {
     grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-rows: minmax(0, 1fr);
   }
-
-  .asset-side {
-    position: sticky;
-    top: var(--space-4);
+}
+@media (max-width: 959px) {
+  .asset-body {
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
 

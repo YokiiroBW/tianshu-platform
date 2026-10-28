@@ -162,6 +162,10 @@ export type NodeDetail = NodeSummary & {
   snapshot: Observation<Snapshot>;
   compose: Observation<{ stacks: Stack[] }>;
 };
+export type PlatformHostResources = {
+  configured: boolean;
+  node: (NodeSummary & { snapshot: Observation<Snapshot> }) | null;
+};
 export type ContainerStats = {
   id: string;
   availability: string;

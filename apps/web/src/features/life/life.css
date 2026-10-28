@@ -818,7 +818,10 @@
   display: grid;
   grid-template-columns: minmax(15rem, 0.8fr) minmax(0, 1.2fr);
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
+  height: min(36rem, 65dvh);
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
 }
 .life-columns .panel {
   min-width: 0;
@@ -1019,6 +1022,9 @@
   .life-columns,
   .life-facts {
     grid-template-columns: 1fr;
+  }
+  .life-columns {
+    grid-template-rows: repeat(2, minmax(0, 1fr));
   }
   .life-timeline-legend {
     gap: 14px;

@@ -216,7 +216,19 @@ class GroupDirectory:
         return sorted(entries, key=lambda item: (item["owner_id"], item["group_id"]))
 
     def view(self, console, session, body):
-        require(set(body) == {"limit", "cursor"}, "invalid_input", 400)
+        require(
+            set(body) in ({"limit", "cursor"}, {"limit", "cursor", "role_id"}),
+            "invalid_input",
+            400,
+        )
+        if "role_id" in body:
+            require(
+                body["role_id"] is None
+                or isinstance(body["role_id"], str)
+                and bool(body["role_id"]),
+                "invalid_input",
+                400,
+            )
         limit, cursor = body["limit"], body["cursor"]
         require(type(limit) is int and 1 <= limit <= 100, "invalid_input", 400)
         require(
@@ -230,6 +242,8 @@ class GroupDirectory:
         code = self.owner.p.bots._web_code(console, session)
         available = self.owner.catalog is not None and code != "operator_not_authorized"
         rows = self.entries() if available else []
+        if "role_id" in body:
+            rows = [item for item in rows if item["rule"]["actor_id"] == body["role_id"]]
         if cursor:
             rows = [
                 item

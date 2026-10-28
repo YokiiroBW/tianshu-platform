@@ -1,40 +1,26 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { RefreshCw, UsersRound } from "lucide-react";
 import { useAuth } from "../../app/Auth";
 import { integrationPost, readFailure } from "../../app/integrationApi";
 import { requestId } from "../../app/requestId";
 import { StatePanel } from "../../components/StatePanel";
+import { DetailCard } from "../../components/DetailCard";
+import {
+  readRolePreference,
+  saveRolePreference,
+} from "../../app/rolePreference";
 import { ObservationUnlock } from "../people/ObservationUnlock";
 import {
-  GroupRuleEditor,
   GROUP_MODE_LABELS,
   type GroupPolicy,
   type GroupRule,
 } from "../settings/GroupPolicyEditor";
 import GroupInsights from "./GroupInsights";
+import { GroupOverview } from "./GroupOverview";
+import type { GroupEntry } from "./groupTypes";
 import "../people/people.css";
 import "./groups.css";
 
-type GroupEntry = {
-  id: string;
-  owner_id: string;
-  owner_name: string;
-  account_id: string;
-  group_id: string;
-  name: string | null;
-  member_count: number | null;
-  max_member_count: number | null;
-  first_seen_at: number | null;
-  last_seen_at: number | null;
-  revision: number;
-  rule: GroupRule;
-  pending: boolean;
-  read_enabled: boolean;
-  has_archive: boolean;
-  state: string;
-  ordinary_claim_available: boolean;
-  memory_group_id: string | null;
-};
 type Directory = {
   available: boolean;
   unlocked: boolean;
@@ -46,26 +32,36 @@ type MemoryState = {
   available: boolean;
   roles: { id: string; version: number; available: boolean }[];
 };
-const stamp = (value: number | null) =>
-  value === null ? "尚未收到消息" : new Date(value * 1000).toLocaleString();
 
 export default function GroupDirectoryPage() {
   const { session } = useAuth();
   const csrf = session?.csrf ?? "";
+  const storageKey = `tianshu-memory-role:${encodeURIComponent(session?.username || csrf)}`;
+  const [roleId, setRoleId] = useState(
+    () => readRolePreference(storageKey) ?? "",
+  );
   const [view, setView] = useState<Directory | null>(null);
+  const [actors, setActors] = useState<Directory["actors"]>([]);
   const [memory, setMemory] = useState<MemoryState | null>(null);
   const [selected, setSelected] = useState("");
   const [query, setQuery] = useState("");
-  const [draft, setDraft] = useState<GroupRule | null>(null);
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [refresh, setRefresh] = useState(0);
+  const [bindingOpen, setBindingOpen] = useState(false);
+  const [unbound, setUnbound] = useState<GroupEntry[]>([]);
+  const [unboundCursor, setUnboundCursor] =
+    useState<Directory["next_cursor"]>(null);
+  const [bindingId, setBindingId] = useState("");
   const active = useRef<AbortController | null>(null);
   const loadedPages = useRef(1);
   const directoryGeneration = useRef(0);
-  const current = view?.groups.find((group) => group.id === selected);
-  const role = memory?.roles.find((item) => item.id === current?.rule.actor_id);
+  const current = view?.groups.find(
+    (group) => group.id === selected && group.rule.actor_id === roleId,
+  );
+  const role = memory?.roles.find((item) => item.id === roleId);
 
   async function load(signal: AbortSignal, more = false) {
     const generation = ++directoryGeneration.current;
@@ -76,7 +72,7 @@ export default function GroupDirectoryPage() {
     for (let page = 0; page < count; page++) {
       next = await integrationPost<Directory>(
         "bot-observation/groups",
-        { limit: 100, cursor },
+        { limit: 100, cursor, role_id: roleId || null },
         csrf,
         signal,
       );
@@ -87,6 +83,18 @@ export default function GroupDirectoryPage() {
     if (!next) return;
     if (signal.aborted || generation !== directoryGeneration.current) return;
     const result = next;
+    setActors(result.actors);
+    if (!result.actors.some((actor) => actor.id === roleId)) {
+      const remembered = readRolePreference(storageKey);
+      const chosen =
+        result.actors.find((actor) => actor.id === remembered)?.id ??
+        result.actors[0]?.id ??
+        "";
+      if (chosen && chosen !== roleId) {
+        setRoleId(chosen);
+        return;
+      }
+    }
     if (more) loadedPages.current = count;
     setView((previous) => {
       // A directory request started before a save cannot undo its read-back.
@@ -134,15 +142,87 @@ export default function GroupDirectoryPage() {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", update);
     };
-  }, [csrf, refresh]);
+  }, [csrf, refresh, roleId]);
 
-  useEffect(() => {
-    setDraft(
-      current
-        ? { ...current.rule, keywords: [...current.rule.keywords] }
-        : null,
-    );
-  }, [current?.id, current?.revision]);
+  function chooseRole(value: string) {
+    active.current?.abort();
+    directoryGeneration.current++;
+    loadedPages.current = 1;
+    setRoleId(value);
+    saveRolePreference(storageKey, value);
+    setView(null);
+    setSelected("");
+    setQuery("");
+    setError("");
+    setNotice("");
+    setBusy(false);
+    setSaving(false);
+    setBindingOpen(false);
+  }
+
+  async function loadUnbound(more = false) {
+    const controller = new AbortController();
+    active.current = controller;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await integrationPost<Directory>(
+        "bot-observation/groups",
+        { limit: 100, cursor: more ? unboundCursor : null, role_id: null },
+        csrf,
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      setUnbound((previous) =>
+        more ? [...previous, ...result.groups] : result.groups,
+      );
+      setUnboundCursor(result.next_cursor);
+      if (!more) setBindingId(result.groups[0]?.id ?? "");
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(readFailure(cause));
+    } finally {
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+
+  async function bindGroup() {
+    const target = unbound.find((group) => group.id === bindingId);
+    if (!target || !roleId || busy) return;
+    const controller = new AbortController();
+    active.current = controller;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await integrationPost<{ group: GroupEntry }>(
+        "bot-observation/group-policy",
+        {
+          owner_id: target.owner_id,
+          group_id: target.group_id,
+          expected_revision: target.revision,
+          rule: { ...target.rule, actor_id: roleId },
+          client_id: requestId(),
+        },
+        csrf,
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      setView(
+        (previous) =>
+          previous && {
+            ...previous,
+            groups: [...previous.groups, result.group],
+          },
+      );
+      setSelected(result.group.id);
+      setBindingOpen(false);
+      setNotice("群聊已绑定到当前角色。开启观察后才会整理新消息。");
+      setRefresh((value) => value + 1);
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(readFailure(cause));
+    } finally {
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
 
   async function more() {
     if (!view?.next_cursor || busy) return;
@@ -158,11 +238,12 @@ export default function GroupDirectoryPage() {
     }
   }
 
-  async function save() {
-    if (!current || !draft || busy) return;
+  async function save(rule: GroupRule): Promise<boolean> {
+    if (!current || busy) return false;
     const controller = new AbortController();
     active.current = controller;
     setBusy(true);
+    setSaving(true);
     setError("");
     setNotice("");
     try {
@@ -180,7 +261,7 @@ export default function GroupDirectoryPage() {
           owner_id: current.owner_id,
           group_id: current.group_id,
           expected_revision: current.revision,
-          rule: draft,
+          rule: { ...rule, actor_id: roleId },
           client_id: requestId(),
         },
         csrf,
@@ -215,10 +296,15 @@ export default function GroupDirectoryPage() {
             : "群状态已保存并由宿主确认。",
         );
       }
+      return !controller.signal.aborted;
     } catch (cause) {
       if (!controller.signal.aborted) setError(readFailure(cause));
+      return false;
     } finally {
-      if (!controller.signal.aborted) setBusy(false);
+      if (!controller.signal.aborted) {
+        setBusy(false);
+        setSaving(false);
+      }
     }
   }
 
@@ -235,24 +321,108 @@ export default function GroupDirectoryPage() {
     memory?.available &&
     role?.available &&
     !current.pending;
+  const renderOverview = (controls?: ReactNode, summary?: ReactNode) =>
+    current && (
+      <GroupOverview
+        key={current.id}
+        group={current}
+        roleName={actors.find((actor) => actor.id === roleId)?.label ?? roleId}
+        disabled={!view?.unlocked || busy}
+        saving={saving}
+        error={error}
+        controls={controls}
+        summary={summary}
+        onSave={save}
+      />
+    );
   return (
-    <div className="group-directory-page">
+    <div className="group-directory-page scroll-page">
       <section className="panel">
         <div className="section-heading">
           <div>
             <h2>群档案</h2>
             <p className="muted">
-              收到群消息即登记基础资料。新群默认停用，开启后才整理消息、画像和记忆。
+              查看当前角色绑定的群聊。新发现的群先绑定角色，再选择观察或回复方式。
             </p>
           </div>
-          <button
-            className="button"
-            disabled={busy}
-            onClick={() => setRefresh((value) => value + 1)}
-          >
-            <RefreshCw size={16} aria-hidden="true" />
-            刷新群档案
-          </button>
+          <div className="group-directory-actions">
+            <label className="people-role">
+              查看角色
+              <select
+                aria-label="查看角色"
+                value={roleId}
+                disabled={busy}
+                onChange={(event) => chooseRole(event.target.value)}
+              >
+                {!roleId && <option value="">选择角色</option>}
+                {actors.map((actor) => (
+                  <option key={actor.id} value={actor.id}>
+                    {actor.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="button"
+              disabled={busy}
+              onClick={() => setRefresh((value) => value + 1)}
+            >
+              <RefreshCw size={16} aria-hidden="true" />
+              刷新群档案
+            </button>
+            {roleId && view?.unlocked && (
+              <DetailCard
+                title="绑定群聊"
+                open={bindingOpen}
+                onOpenChange={(open) => {
+                  setBindingOpen(open);
+                  if (open) void loadUnbound();
+                }}
+              >
+                <p>
+                  将尚未绑定角色的群聊加入当前角色；绑定本身不会开启观察或回复。
+                </p>
+                {error && <p role="alert">{error}</p>}
+                <label className="people-role">
+                  待绑定群聊
+                  <select
+                    aria-label="待绑定群聊"
+                    value={bindingId}
+                    disabled={busy}
+                    onChange={(event) => setBindingId(event.target.value)}
+                  >
+                    {!unbound.length && (
+                      <option value="">
+                        {busy ? "正在读取…" : "没有待绑定群聊"}
+                      </option>
+                    )}
+                    {unbound.map((group) => (
+                      <option key={group.id} value={group.id}>
+                        {group.name ?? `群 ${group.group_id}`} ·{" "}
+                        {group.group_id} · {group.owner_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {unboundCursor && (
+                  <button
+                    className="button"
+                    disabled={busy}
+                    onClick={() => void loadUnbound(true)}
+                  >
+                    加载更多待绑定群
+                  </button>
+                )}
+                <button
+                  className="button primary"
+                  disabled={busy || !bindingId}
+                  onClick={() => void bindGroup()}
+                >
+                  绑定到当前角色
+                </button>
+              </DetailCard>
+            )}
+          </div>
         </div>
         {view && !view.unlocked && view.available && (
           <ObservationUnlock
@@ -272,16 +442,13 @@ export default function GroupDirectoryPage() {
           </StatePanel>
         )}
         {view?.available && !view.groups.length && (
-          <StatePanel kind="empty" title="尚未发现群">
-            <p>
-              已接入的 BOT
-              收到群消息后，这里会自动显示空档案，无需先配置观察群。
-            </p>
+          <StatePanel kind="empty" title="当前角色尚未绑定群聊">
+            <p>通过上方“绑定群聊”加入已发现的群。</p>
           </StatePanel>
         )}
       </section>
       {!!view?.groups.length && (
-        <div className="group-directory-layout">
+        <div className="group-directory-layout scroll-layout">
           <section className="panel group-directory-list">
             <label>
               查找群
@@ -292,7 +459,7 @@ export default function GroupDirectoryPage() {
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
-            <ul>
+            <ul aria-label="群聊列表" tabIndex={0}>
               {groups.map((group) => (
                 <li key={group.id}>
                   <button
@@ -338,103 +505,50 @@ export default function GroupDirectoryPage() {
               </button>
             )}
           </section>
-          {current && draft && (
-            <section className="panel group-directory-detail">
-              <div className="section-heading">
-                <h2>{current.name ?? `群 ${current.group_id}`}</h2>
-                <span>
-                  {GROUP_MODE_LABELS[current.rule.mode]}
-                  {current.pending ? " · 等待宿主确认" : ""}
-                </span>
-              </div>
-              <dl className="group-directory-facts">
-                <div>
-                  <dt>群号</dt>
-                  <dd>{current.group_id}</dd>
+          {current && (
+            <div
+              key={current.id}
+              className="group-directory-content scroll-pane"
+              role="region"
+              aria-label="群聊详情"
+              tabIndex={0}
+            >
+              {canRead && role && current.memory_group_id ? (
+                <GroupInsights
+                  key={
+                    current.id +
+                    ":" +
+                    role.id +
+                    ":" +
+                    role.version +
+                    ":" +
+                    current.memory_group_id
+                  }
+                  roleId={role.id}
+                  roleVersion={role.version}
+                  csrf={csrf}
+                  fixedGroupId={current.memory_group_id}
+                  renderOverview={renderOverview}
+                />
+              ) : (
+                <div className="group-workspace">
+                  {renderOverview()}
+                  <section className="panel">
+                    <h2>
+                      {current.has_archive ? "群内容暂不可读取" : "空档案"}
+                    </h2>
+                    <p className="muted">
+                      {current.has_archive
+                        ? "已有收集记录按原角色和读取授权保留；当前权限或宿主状态未就绪，暂不展示内容。"
+                        : "目前仅登记基础资料，尚无已收集的聊天内容或整理结果。开启观察后才会逐步形成话题、群画像、互动与热度。"}
+                    </p>
+                  </section>
                 </div>
-                <div>
-                  <dt>群人数</dt>
-                  <dd>
-                    {current.member_count ?? "未知"}
-                    {current.max_member_count !== null
-                      ? ` / ${current.max_member_count}`
-                      : ""}
-                  </dd>
-                </div>
-                <div>
-                  <dt>所属 BOT</dt>
-                  <dd>
-                    {current.owner_name} · {current.account_id}
-                  </dd>
-                </div>
-                <div>
-                  <dt>首次发现</dt>
-                  <dd>{stamp(current.first_seen_at)}</dd>
-                </div>
-                <div>
-                  <dt>最近收到消息</dt>
-                  <dd>{stamp(current.last_seen_at)}</dd>
-                </div>
-              </dl>
-              <GroupRuleEditor
-                name="此群"
-                value={draft}
-                actors={view.actors}
-                disabled={!view.unlocked || busy}
-                onChange={setDraft}
-              />
-              <p className="muted">
-                停用：仅更新基础资料。仅观察：整理群聊。启用回复：由 @
-                或关键词触发。主动：再按角色兴趣参与。开启不补采停用期间的消息。
-              </p>
-              {draft.mode !== "disabled" && !draft.actor_id && (
-                <p>开启前请选择负责此群的角色。</p>
               )}
-              {draft.mode === "active" && !current.ordinary_claim_available && (
-                <p role="status">
-                  当前宿主尚未报告普通消息参与能力，主动参与暂不可用。
-                </p>
-              )}
-              {!current.read_enabled && (
-                <p role="status">
-                  此 BOT
-                  的历史读取与新增观察已暂停。群状态会保留，恢复账号观察后才能生效。
-                </p>
-              )}
-              <button
-                className="button"
-                disabled={
-                  !view.unlocked ||
-                  busy ||
-                  (draft.mode !== "disabled" && !draft.actor_id)
-                }
-                onClick={() => void save()}
-              >
-                保存此群状态
-              </button>
-            </section>
+            </div>
           )}
         </div>
       )}
-      {current &&
-        (canRead && role && current.memory_group_id ? (
-          <GroupInsights
-            key={`${current.id}:${role.id}:${role.version}:${current.revision}`}
-            roleId={role.id}
-            roleVersion={role.version}
-            csrf={csrf}
-            fixedGroupId={current.memory_group_id}
-          />
-        ) : (
-          <section className="panel">
-            <h2>{current.has_archive ? "群内容暂不可读取" : "空档案"}</h2>
-            <p className="muted">
-              {current.has_archive
-                ? "已有收集记录按原角色和读取授权保留；当前权限或宿主状态未就绪，暂不展示内容。"
-                : "目前仅登记基础资料，尚无已收集的聊天内容或整理结果。开启观察后才会逐步形成话题、群画像、互动与热度。"}
-            </p>
-          </section>
-        ))}
     </div>
   );
 }

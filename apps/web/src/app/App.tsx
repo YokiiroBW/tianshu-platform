@@ -1,10 +1,18 @@
 import { Suspense, useEffect, useRef, useState } from "react";
-import { Menu, Palette, Sparkles, WifiOff } from "lucide-react";
+import {
+  Menu,
+  Palette,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Sparkles,
+  WifiOff,
+} from "lucide-react";
 import {
   modules,
   pages,
   resolveRoute,
   subscriptionNavigation,
+  userNavigation,
 } from "./modules";
 import {
   AuthProvider,
@@ -23,11 +31,13 @@ type Preferences = {
   theme: "system" | "light" | "dark";
   motion: boolean;
   transparency: boolean;
+  sidebarCollapsed: boolean;
 };
 const defaults: Preferences = {
   theme: "system",
   motion: false,
   transparency: false,
+  sidebarCollapsed: false,
 };
 function readPreferences(): Preferences {
   try {
@@ -40,6 +50,7 @@ function readPreferences(): Preferences {
         : "system",
       motion: saved?.motion === true,
       transparency: saved?.transparency === true,
+      sidebarCollapsed: saved?.sidebarCollapsed === true,
     };
   } catch {
     return defaults;
@@ -198,36 +209,53 @@ function AppShell() {
           <p className="nav-label">{group}</p>
           {modules
             .filter((item) => item.group === group)
-            .map((item) => (
-              <div key={item.id}>
-                <a
-                  className="nav-item"
-                  href={`#/${item.id}`}
-                  aria-current={current?.id === item.id ? "page" : undefined}
-                  onClick={() => setDrawer(null)}
-                >
-                  <item.icon aria-hidden="true" />
-                  <span>{item.label}</span>
-                </a>
-                {item.id === "subscriptions" && current?.id === item.id && (
-                  <nav className="nav-subsections" aria-label="订阅页面">
-                    {subscriptionNavigation.map((child) => (
-                      <a
-                        key={child.section}
-                        href={child.href}
-                        aria-current={
-                          section === child.section ? "page" : undefined
-                        }
-                        onClick={() => setDrawer(null)}
-                      >
-                        <child.icon aria-hidden="true" />
-                        <span>{item.sections[child.section]}</span>
-                      </a>
-                    ))}
-                  </nav>
-                )}
-              </div>
-            ))}
+            .map((item) => {
+              const children =
+                item.id === "subscriptions"
+                  ? subscriptionNavigation
+                  : item.id === "memory"
+                    ? userNavigation
+                    : [];
+              return (
+                <div key={item.id}>
+                  <a
+                    className="nav-item"
+                    href={`#/${item.id}`}
+                    aria-label={item.label}
+                    title={item.label}
+                    aria-current={current?.id === item.id ? "page" : undefined}
+                    onClick={() => setDrawer(null)}
+                  >
+                    <item.icon aria-hidden="true" />
+                    <span>{item.label}</span>
+                  </a>
+                  {children.length > 0 && current?.id === item.id && (
+                    <nav
+                      className="nav-subsections"
+                      aria-label={`${item.label}页面`}
+                    >
+                      {children.map((child) => (
+                        <a
+                          key={child.section}
+                          href={child.href}
+                          aria-label={
+                            item.sections[child.section] ?? item.label
+                          }
+                          title={item.sections[child.section] ?? item.label}
+                          aria-current={
+                            section === child.section ? "page" : undefined
+                          }
+                          onClick={() => setDrawer(null)}
+                        >
+                          <child.icon aria-hidden="true" />
+                          <span>{item.sections[child.section]}</span>
+                        </a>
+                      ))}
+                    </nav>
+                  )}
+                </div>
+              );
+            })}
         </div>
       ))}
     </nav>
@@ -287,19 +315,48 @@ function AppShell() {
       >
         跳到主要内容
       </a>
-      <div className="app-shell">
+      <div
+        className={`app-shell is-contained-page${preferences.sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}
+      >
         <aside
-          className={`sidebar glass${current?.id === "subscriptions" ? " has-subnavigation" : ""}`}
+          className={`sidebar glass${current?.id === "subscriptions" || current?.id === "memory" ? " has-subnavigation" : ""}`}
         >
-          <a className="brand" href="#/workbench">
-            <span className="brand-symbol">
-              <Sparkles aria-hidden="true" />
-            </span>
-            <span>
-              <strong>天枢</strong>
-              <small>个人空间</small>
-            </span>
-          </a>
+          <div className="sidebar-brand">
+            <a
+              className="brand"
+              href="#/workbench"
+              aria-label="天枢工作台"
+              title="天枢工作台"
+            >
+              <span className="brand-symbol">
+                <Sparkles aria-hidden="true" />
+              </span>
+              <span className="brand-copy">
+                <strong>天枢</strong>
+                <small>个人空间</small>
+              </span>
+            </a>
+            <button
+              className="icon-button sidebar-toggle"
+              aria-label={
+                preferences.sidebarCollapsed ? "展开侧栏" : "收起侧栏"
+              }
+              title={preferences.sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+              aria-expanded={!preferences.sidebarCollapsed}
+              onClick={() =>
+                setPreferences((previous) => ({
+                  ...previous,
+                  sidebarCollapsed: !previous.sidebarCollapsed,
+                }))
+              }
+            >
+              {preferences.sidebarCollapsed ? (
+                <PanelLeftOpen aria-hidden="true" />
+              ) : (
+                <PanelLeftClose aria-hidden="true" />
+              )}
+            </button>
+          </div>
           {navigation}
           <div className="sidebar-note">
             本地工作区
@@ -358,24 +415,16 @@ function AppShell() {
             </div>
           )}
           <main id="main" ref={main} tabIndex={-1}>
-            {current?.id === "subscriptions" ? (
-              <h1 className="sr-only">{current.sections[section]}</h1>
-            ) : (
-              <div className="page-heading">
-                <div>
-                  <p className="eyebrow">
-                    {account
-                      ? "账号与首次使用"
-                      : (current?.description ?? "检查页面地址")}
-                  </p>
-                  <h1>
-                    {account ? accountTitle : (current?.label ?? "页面不存在")}
-                  </h1>
-                </div>
-              </div>
-            )}
+            <h1 className="sr-only">
+              {current?.id === "subscriptions"
+                ? current.sections[section]
+                : account
+                  ? accountTitle
+                  : (current?.label ?? "页面不存在")}
+            </h1>
             {current &&
               current.id !== "subscriptions" &&
+              current.id !== "memory" &&
               current.sections.length > 0 && (
                 <nav
                   className="section-nav"
@@ -394,17 +443,25 @@ function AppShell() {
                   )}
                 </nav>
               )}
-            <PageBoundary key={hash}>
-              <Suspense
-                fallback={
-                  <StatePanel kind="loading" title="正在加载页面">
-                    <p>请稍候。</p>
-                  </StatePanel>
-                }
-              >
-                {page}
-              </Suspense>
-            </PageBoundary>
+            <div
+              key={hash}
+              className="page-content"
+              role="region"
+              aria-label={`${current?.label ?? "页面"}内容`}
+              tabIndex={0}
+            >
+              <PageBoundary>
+                <Suspense
+                  fallback={
+                    <StatePanel kind="loading" title="正在加载页面">
+                      <p>请稍候。</p>
+                    </StatePanel>
+                  }
+                >
+                  {page}
+                </Suspense>
+              </PageBoundary>
+            </div>
           </main>
           <footer>
             天枢 · 个人空间<span>服务状态以各页面为准</span>

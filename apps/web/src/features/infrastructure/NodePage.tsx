@@ -354,7 +354,7 @@ export default function NodePage() {
     );
   if (!view.configured) return <UnconfiguredInfrastructure />;
   return (
-    <div className="infra-workspace">
+    <div className="infra-workspace scroll-page">
       <div className="infra-heading">
         <div>
           <h2>节点与网络</h2>
@@ -366,10 +366,11 @@ export default function NodePage() {
       </div>
       {query.error && <p role="alert">{query.error}</p>}
       {view.nodes.length ? (
-        <div className="infra-node-layout">
+        <div className="infra-node-layout scroll-layout">
           <aside
-            className="panel infra-pane infra-selector"
+            className="panel infra-pane infra-selector scroll-pane"
             aria-label="运行节点"
+            tabIndex={0}
           >
             {view.nodes.map((node) => (
               <button
@@ -384,7 +385,17 @@ export default function NodePage() {
               </button>
             ))}
           </aside>
-          {selected && <Detail key={selected} identity={selected} />}
+          {selected && (
+            <div
+              key={selected}
+              className="scroll-pane"
+              role="region"
+              aria-label="节点详情"
+              tabIndex={0}
+            >
+              <Detail identity={selected} />
+            </div>
+          )}
         </div>
       ) : (
         <section className="panel infra-empty">

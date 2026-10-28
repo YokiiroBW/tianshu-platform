@@ -1,151 +1,129 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { Network, Pause, Play, RotateCcw, Waypoints } from "lucide-react";
 import type { Stats, TopicPage } from "./groupTypes";
+import { buildGroupGraph, graphLinkPath, pointSeed } from "./groupGraphLayout";
+import { useGraphMotion } from "./useGraphMotion";
+import { useGraphViewport } from "./useGraphViewport";
 
-type Point = {
-  id: string;
-  label: string;
-  x: number;
-  y: number;
-  size: number;
-  topic?: string;
-  count?: number;
-};
-type Link = { from: string; to: string; count: number; locators?: string[] };
-
-/** Coordinates are a deterministic display of explicit membership/interaction, never stored facts. */
 export default function GroupGraph({
   stats,
   topics,
   evidence,
   selectTopic,
+  actions,
 }: {
   stats?: Stats;
   topics?: TopicPage;
   evidence: (locator: string) => void;
   selectTopic: (key: string) => void;
+  actions?: ReactNode;
 }) {
   const [mode, setMode] = useState<"interactions" | "topics">("interactions");
-  const [zoom, setZoom] = useState(1);
   const [selected, setSelected] = useState<string | null>(null);
-  const graph = useMemo(() => {
-    const points: Point[] = [],
-      links: Link[] = [];
-    if (mode === "interactions") {
-      const authors = [...(stats?.authors ?? [])]
-        .sort(
-          (a, b) =>
-            b.messages - a.messages || a.sender_id.localeCompare(b.sender_id),
-        )
-        .slice(0, 80);
-      const known = new Set(authors.map((a) => a.sender_id));
-      authors.forEach((a, i) => {
-        const angle = (2 * Math.PI * i) / Math.max(1, authors.length);
-        points.push({
-          id: a.sender_id,
-          label: `QQ ${a.sender_id}`,
-          x: 450 + 320 * Math.cos(angle),
-          y: 240 + 175 * Math.sin(angle),
-          size: 6 + Math.min(12, Math.sqrt(a.messages)),
-          count: a.messages,
-        });
-      });
-      stats?.edges.forEach((e) => {
-        if (known.has(e.from_sender_id) && known.has(e.to_sender_id))
-          links.push({
-            from: e.from_sender_id,
-            to: e.to_sender_id,
-            count: e.interaction_count,
-            locators: e.evidence_locators,
-          });
-      });
-    } else {
-      const items = (topics?.items ?? [])
-        .flatMap((s) =>
-          s.topics.map((t) => ({ ...t, key: `${s.segment_id}/${t.topic_id}` })),
-        )
-        .slice(0, 80);
-      const people = [...new Set(items.flatMap((t) => t.person_ids))].sort();
-      const byPerson = new Map<string, Point>();
-      people.forEach((id, i) => {
-        const angle = (2 * Math.PI * i) / Math.max(1, people.length);
-        const p = {
-          id,
-          label: `人物 ${id}`,
-          x: 450 + 330 * Math.cos(angle),
-          y: 240 + 175 * Math.sin(angle),
-          size: 7,
-        };
-        points.push(p);
-        byPerson.set(id, p);
-      });
-      items.forEach((t, i) => {
-        const members = t.person_ids.map((id) => byPerson.get(id)!);
-        const average = (axis: "x" | "y") =>
-          members.length
-            ? members.reduce((v, p) => v + p[axis], 0) / members.length
-            : axis === "x"
-              ? 450
-              : 240;
-        points.push({
-          id: t.key,
-          label: t.summary,
-          topic: t.key,
-          x: (average("x") + 450) / 2 + Math.cos(i * 2.4) * 45,
-          y: (average("y") + 240) / 2 + Math.sin(i * 2.4) * 45,
-          size: 8,
-        });
-        t.person_ids.forEach((id) =>
-          links.push({ from: id, to: t.key, count: 1 }),
-        );
-      });
-    }
-    return { points, links, index: new Map(points.map((p) => [p.id, p])) };
-  }, [stats, topics, mode]);
+  const graph = useMemo(
+    () => buildGroupGraph(mode, stats, topics),
+    [stats, topics, mode],
+  );
+  function activate(id: string) {
+    const current = graph.index.get(id);
+    if (!current) return;
+    setSelected(id);
+    if (current.topic) selectTopic(current.topic);
+  }
+  const viewport = useGraphViewport(graph.points.length > 0, activate);
+  const motion = useGraphMotion(graph.points.length > 0, viewport.dragging);
+  const positions = new Map(
+    graph.points.map((point) => {
+      const offset = viewport.offsets[point.id];
+      const seed = pointSeed(point.id);
+      const phase = (seed % 628) / 100;
+      const speed = 0.65 + ((seed >>> 8) % 9) * 0.035;
+      // Independent, bounded motion; edges use these same endpoints each frame.
+      const dx = (Math.sin(motion.time * speed + phase) - Math.sin(phase)) * 16;
+      const dy =
+        (Math.cos(motion.time * speed * 0.8 + phase) - Math.cos(phase)) * 12;
+      return [
+        point.id,
+        {
+          ...point,
+          x: point.x + (offset?.x ?? 0) + dx,
+          y: point.y + (offset?.y ?? 0) + dy,
+        },
+      ] as const;
+    }),
+  );
+  const connected = new Set(selected ? [selected] : []);
+  if (selected)
+    graph.links.forEach((link) => {
+      if (link.from === selected) connected.add(link.to);
+      if (link.to === selected) connected.add(link.from);
+    });
+  function chooseMode(value: "interactions" | "topics") {
+    setMode(value);
+    setSelected(null);
+    viewport.reset();
+  }
   const point = selected ? graph.index.get(selected) : null;
   return (
-    <section className="group-graph" aria-label="群互动与话题图">
-      <div className="group-toolbar">
-        <button
-          className="button"
-          aria-pressed={mode === "interactions"}
-          onClick={() => {
-            setMode("interactions");
-            setSelected(null);
-          }}
-        >
-          互动关系
-        </button>
-        <button
-          className="button"
-          aria-pressed={mode === "topics"}
-          onClick={() => {
-            setMode("topics");
-            setSelected(null);
-          }}
-        >
-          话题点云
-        </button>
-        <label>
-          缩放{" "}
-          <input
-            aria-label="图缩放"
-            type="range"
-            min="0.6"
-            max="2"
-            step="0.1"
-            value={zoom}
-            onChange={(e) => setZoom(Number(e.target.value))}
-          />
-        </label>
-        <button className="button" onClick={() => setZoom(1)}>
-          还原视图
-        </button>
+    <section
+      className="group-graph"
+      aria-label="群互动与话题图"
+      data-mode={mode}
+    >
+      <div className="group-graph-toolbar">
+        <div className="group-graph-modes" aria-label="图谱类型">
+          <button
+            className="button"
+            aria-pressed={mode === "interactions"}
+            onClick={() => chooseMode("interactions")}
+          >
+            <Network aria-hidden="true" />
+            互动关系
+          </button>
+          <button
+            className="button"
+            aria-pressed={mode === "topics"}
+            onClick={() => chooseMode("topics")}
+          >
+            <Waypoints aria-hidden="true" />
+            话题点云
+          </button>
+        </div>
+        <div className="group-graph-actions">{actions}</div>
+        <div className="group-graph-view-controls">
+          <label className="group-graph-zoom">
+            <span>缩放</span>
+            <input
+              aria-label="图缩放"
+              type="range"
+              min="0.5"
+              max="3"
+              step="0.01"
+              value={viewport.zoom}
+              onChange={(e) => viewport.setZoom(Number(e.target.value))}
+            />
+            <output>{Math.round(viewport.zoom * 100)}%</output>
+          </label>
+          <button
+            className="button group-graph-motion"
+            onClick={motion.toggle}
+            aria-pressed={motion.floating}
+            aria-label={motion.floating ? "暂停浮动" : "开启浮动"}
+            title={motion.floating ? "暂停浮动" : "开启浮动"}
+          >
+            {motion.floating ? (
+              <Pause aria-hidden="true" />
+            ) : (
+              <Play aria-hidden="true" />
+            )}
+            {motion.floating ? "暂停浮动" : "开启浮动"}
+          </button>
+          <button className="button" onClick={viewport.reset}>
+            <RotateCcw aria-hidden="true" />
+            还原视图
+          </button>
+        </div>
       </div>
-      <p className="muted">
-        {mode === "interactions"
-          ? "连线只表示实际回复或 @，不代表亲密程度。绘制最活跃的前 80 位；账号 ID 不与画像人物 ID 自动合并。"
-          : "按已整理话题与真实参与者排布，最多显示本页 80 个话题。点的位置是布局，不代表语义距离或共同同意。"}
-      </p>
       {!graph.points.length ? (
         <p>
           {mode === "interactions"
@@ -153,66 +131,95 @@ export default function GroupGraph({
             : "当前页尚无有效整理话题。"}
         </p>
       ) : (
-        <div className="group-graph-scroll">
+        <div
+          className="group-graph-scroll"
+          data-dragging={viewport.dragging || undefined}
+        >
           <svg
+            className="group-graph-canvas"
+            ref={viewport.svg}
+            {...viewport.handlers}
             viewBox="0 0 900 480"
             role="group"
             aria-label={mode === "interactions" ? "定向互动图" : "整理话题点云"}
           >
-            <g
-              transform={`translate(450 240) scale(${zoom}) translate(-450 -240)`}
-            >
+            <desc>
+              拖动节点调整位置，拖动空白区域平移，滚轮缩放。点的位置仅用于布局。
+            </desc>
+            <g transform={viewport.transform}>
               {graph.links.map((link, i) => {
-                const a = graph.index.get(link.from)!,
-                  b = graph.index.get(link.to)!;
+                const a = positions.get(link.from)!,
+                  b = positions.get(link.to)!;
                 return (
-                  <line
+                  <path
                     key={`${link.from}/${link.to}/${i}`}
-                    x1={a.x}
-                    y1={a.y}
-                    x2={b.x}
-                    y2={b.y}
-                    strokeWidth={1 + Math.min(4, Math.log2(link.count + 1))}
+                    d={graphLinkPath(a, b)}
+                    strokeWidth={
+                      0.75 + Math.min(1.2, Math.log2(link.count + 1) * 0.2)
+                    }
                     className="group-graph-edge"
+                    data-highlighted={
+                      selected === link.from ||
+                      selected === link.to ||
+                      undefined
+                    }
+                    data-muted={
+                      (!!selected &&
+                        selected !== link.from &&
+                        selected !== link.to) ||
+                      undefined
+                    }
                   >
                     <title>{`${a.label} → ${b.label} · ${link.count}`}</title>
-                  </line>
+                  </path>
                 );
               })}
-              {graph.points.map((p) => (
-                <g
-                  key={p.id}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={p.label}
-                  className="group-graph-node"
-                  data-selected={selected === p.id || undefined}
-                  onClick={() => {
-                    setSelected(p.id);
-                    if (p.topic) selectTopic(p.topic);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setSelected(p.id);
-                      if (p.topic) selectTopic(p.topic);
+              {[...positions.values()].map((p) => {
+                const label =
+                  Array.from(p.label).length > 14
+                    ? `${Array.from(p.label).slice(0, 12).join("")}…`
+                    : p.label;
+                return (
+                  <g
+                    key={p.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={p.label}
+                    className="group-graph-node"
+                    transform={`translate(${p.x} ${p.y})`}
+                    data-tone={p.tone}
+                    data-selected={selected === p.id || undefined}
+                    data-muted={
+                      (!!selected && !connected.has(p.id)) || undefined
                     }
-                  }}
-                >
-                  <circle
-                    cx={p.x}
-                    cy={p.y}
-                    r={p.size}
-                    className={p.topic ? "group-topic-point" : undefined}
-                  />
-                  <title>{p.label}</title>
-                  <text x={p.x} y={p.y + p.size + 15} textAnchor="middle">
-                    {p.topic
-                      ? `话题 ${graph.points.filter((q) => q.topic).findIndex((q) => q.id === p.id) + 1}`
-                      : p.label}
-                  </text>
-                </g>
-              ))}
+                    data-point-id={p.id}
+                    onClick={() => activate(p.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        activate(p.id);
+                      }
+                    }}
+                  >
+                    <title>
+                      {p.label}
+                      {p.count !== undefined
+                        ? ` · ${p.count}${p.topic ? " 位参与人物" : " 条消息"}`
+                        : ""}
+                    </title>
+                    <circle className="group-graph-node-hit" r="16" />
+                    <circle className="group-graph-node-ring" r={p.size + 4} />
+                    <circle className="group-graph-node-body" r={p.size} />
+                    <text
+                      className="group-graph-point-label"
+                      textAnchor="middle"
+                      y={p.size + 15}
+                    >
+                      {label}
+                    </text>
+                  </g>
+                );
+              })}
             </g>
           </svg>
         </div>
@@ -220,15 +227,15 @@ export default function GroupGraph({
       {point && (
         <div className="group-selection">
           <strong>{point.label}</strong>
-          {point.count !== undefined && (
+          {!point.topic && point.count !== undefined && (
             <p>当前统计窗口 {point.count} 条消息</p>
           )}
           {graph.links
-            .filter((l) => l.from === point.id && l.locators?.length)
-            .map((l) => (
-              <p key={l.to}>
-                → QQ {l.to} · {l.count} 次定向互动{" "}
-                {l.locators!.map((ref, i) => (
+            .filter((link) => link.from === point.id && link.locators?.length)
+            .map((link) => (
+              <p key={link.to}>
+                → QQ {link.to} · {link.count} 次定向互动{" "}
+                {link.locators!.map((ref, i) => (
                   <button
                     className="button"
                     key={ref}

@@ -254,6 +254,22 @@ class InfrastructureHTTPTests(unittest.IsolatedAsyncioTestCase):
             "infrastructure/logs/refresh", {**request, "container_id": f"{999:064x}"}, expected=404
         )
 
+    async def test_platform_host_uses_explicit_registered_node_and_existing_gate(self):
+        self.assertEqual(
+            await self.post("infrastructure/host", {}), {"configured": False, "node": None}
+        )
+        await self.register()
+        await self.settled()
+        self.platform.infrastructure.config["platform_node_id"] = "fixture-nas"
+        result = await self.post("infrastructure/host", {})
+        self.assertTrue(result["configured"])
+        self.assertEqual(result["node"]["id"], "fixture-nas")
+        self.assertIsNotNone(result["node"]["snapshot"]["data"])
+        await self.post("infrastructure/host", {}, expected=403, csrf="wrong-token")
+        await self.post("infrastructure/host", {"node_id": "fixture-router"}, expected=400)
+        self.platform.auth.principals["admin"]["actions"].remove("external.manage")
+        await self.post("infrastructure/host", {}, expected=403)
+
     async def test_csrf_admin_and_session_revocation_remain_real_http_requirements(self):
         await self.post("infrastructure/view", {}, expected=403, csrf="wrong-token")
         self.platform.auth.principals["admin"]["actions"].remove("external.manage")
