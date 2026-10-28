@@ -196,7 +196,18 @@ class WebActorMemory:
                             502,
                         )
                     if request["operation"] == "memory_impact":
-                        require(answer["ref"] == request["ref"], "invalid_upstream", 502)
+                        require(
+                            all(
+                                answer["ref"][key] == request["ref"][key] for key in ("kind", "id")
+                            ),
+                            "invalid_upstream",
+                            502,
+                        )
+                        require(
+                            answer["ref"]["revision"] == request["ref"]["revision"],
+                            "version_conflict",
+                            409,
+                        )
                     return answer
         except (aiohttp.ClientError, ssl.SSLError, OSError, TimeoutError):
             raise Fault("dependency_unavailable", 503) from None

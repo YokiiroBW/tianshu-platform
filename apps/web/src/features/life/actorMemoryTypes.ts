@@ -24,7 +24,7 @@ export type ManagedMemory = {
     | null;
   state: string;
   text: string | null;
-  episode_refs: { episode_id: string; revision: number }[];
+  episode_refs: { episode_id: string; expected_revision: number }[];
   source_refs: MemorySource[];
   recorded_at: string;
   occurred_at: string | null;

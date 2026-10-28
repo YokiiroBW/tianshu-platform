@@ -165,7 +165,7 @@ test("actor memory shows distinct interest history, corrects and forgets with st
                   state: "active",
                   text,
                   episode_refs: [
-                    { episode_id: "episode:reading", revision: 1 },
+                    { episode_id: "episode:reading", expected_revision: 1 },
                   ],
                   source_refs: [],
                   recorded_at: "2026-10-28T04:00:00Z",
@@ -242,6 +242,10 @@ test("actor memory shows distinct interest history, corrects and forgets with st
     page.getByRole("heading", { name: "角色自身记忆" }),
   ).toBeVisible();
   await expect(page.getByText("独立依据 2 项")).toBeVisible();
+  await page.getByText("经历依据（1）", { exact: true }).click();
+  await expect(
+    page.getByText("episode:reading · 版本 1", { exact: true }),
+  ).toBeVisible();
   await page.getByText("兴趣变化（1）", { exact: true }).click();
   await expect(page.getByText(/好奇 · 已被替代/)).toBeVisible();
   await page.getByRole("button", { name: "查看详情与更正范围" }).click();

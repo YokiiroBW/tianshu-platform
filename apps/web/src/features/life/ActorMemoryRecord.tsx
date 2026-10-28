@@ -62,8 +62,8 @@ export function ActorMemoryRecord({
           <summary>经历依据（{item.episode_refs.length}）</summary>
           <ul>
             {item.episode_refs.map((ref) => (
-              <li key={`${ref.episode_id}:${ref.revision}`}>
-                {ref.episode_id} · 版本 {ref.revision}
+              <li key={`${ref.episode_id}:${ref.expected_revision}`}>
+                {ref.episode_id} · 版本 {ref.expected_revision}
               </li>
             ))}
           </ul>

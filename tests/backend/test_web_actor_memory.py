@@ -46,6 +46,7 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.calls = []
         self.revoke = False
         self.wrong_actor = False
+        self.impact_changed = False
         peer = web.Application()
         peer.router.add_post("/internal/v1/actor-self-memory/operate", self.peer)
         self.peer_runner, peer_url = await start_http(peer)
@@ -115,6 +116,9 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
                 owner_originals_affected=False,
                 omitted=False,
             )
+            if self.impact_changed:
+                answer["ref"] = {**body["ref"], "revision": body["ref"]["revision"] + 1}
+                answer.update(can_revise=False, can_forget=False)
         elif body["operation"] == "forget_memory":
             answer = {
                 "schema_version": 1,
@@ -205,6 +209,13 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["state"], "withdrawn")
         self.assertEqual(self.calls[-1]["idempotency_key"], "synthetic-key")
+
+    async def test_impact_source_invalidation_requires_refresh_of_selected_revision(self):
+        self.impact_changed = True
+        result = await self.post(
+            "impact", {"ref": {"kind": "derived", "id": "derived:synthetic", "revision": 1}}, 409
+        )
+        self.assertEqual(result["code"], "version_conflict")
 
     async def test_episode_projects_coverage_without_internal_source_authority(self):
         answer = await self.post(
