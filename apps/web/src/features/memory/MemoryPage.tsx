@@ -12,11 +12,10 @@ import {
   readRolePreference,
   saveRolePreference,
 } from "../../app/rolePreference";
+import MemoryRecords, { type RecordGroup } from "./MemoryRecords";
+import MemoryReview, { type MemoryReviewData } from "./MemoryReview";
 import "./memory.css";
 
-type SubjectKey =
-  | { kind: "person"; person_id: string }
-  | { kind: "group"; conversation_id: string };
 type Connection = {
   available: boolean;
   code: string;
@@ -36,35 +35,13 @@ type Overview = {
   counts_truncated: boolean;
   verified_at: string;
   scope_version: number;
-};
-type Subject = {
-  subject: SubjectKey;
-  categories: string[];
-  group_count: number;
-  group_count_truncated: boolean;
-};
-type Subjects = {
-  items: Subject[];
-  next_cursor: string | null;
-  verified_at: string;
-  scope_version: number;
-};
-type Unit = {
-  record_id: string;
-  record_version: number;
-  statement: string;
-  conditions: unknown;
-  negations: unknown;
-  valid_time: unknown;
-  uncertainty: unknown;
-  reality: unknown;
-};
-type RecordGroup = {
-  semantic_group_id: string;
-  category: string;
-  field_key: string;
-  item_key: string;
-  units: Unit[];
+  review?: MemoryReviewData | null;
+  learning?: {
+    received: number;
+    completed: number;
+    waiting: number;
+    truncated: boolean;
+  } | null;
 };
 type Records = {
   items: RecordGroup[];
@@ -72,12 +49,6 @@ type Records = {
   verified_at: string;
   scope_version: number;
 };
-
-function subjectText(subject: SubjectKey) {
-  return subject.kind === "person"
-    ? `人物 ${subject.person_id}`
-    : `群 ${subject.conversation_id}`;
-}
 
 function unavailableTitle(code: string) {
   if (code === "memory_identity_not_ready")
@@ -99,11 +70,9 @@ export default function MemoryPage({ section }: { section: number }) {
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
   const storageKey = `tianshu-memory-role:${encodeURIComponent(session?.username || csrf)}`;
+  const [overview, setOverview] = useState<Overview | null>(null);
   const [state, setState] = useState<Connection | null>(null);
   const [roleId, setRoleId] = useState<string | null>(null);
-  const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [subjectsCursor, setSubjectsCursor] = useState<string | null>(null);
-  const [selected, setSelected] = useState<SubjectKey | null>(null);
   const [records, setRecords] = useState<RecordGroup[]>([]);
   const [recordsCursor, setRecordsCursor] = useState<string | null>(null);
   const [recordsScope, setRecordsScope] = useState("");
@@ -113,16 +82,17 @@ export default function MemoryPage({ section }: { section: number }) {
   const [stateError, setStateError] = useState("");
   const current = useRef<AbortController | null>(null);
   const generation = useRef(0);
+  const recordsVersion = useRef<number | null>(null);
+  const catalogVersion = useRef<number | null>(null);
   const role = state?.roles.find((item) => item.id === roleId);
-  const visibleSubjects = subjects;
 
   function clearResults() {
     generation.current++;
+    recordsVersion.current = null;
+    catalogVersion.current = null;
     current.current?.abort();
-    setSubjects([]);
-    setSubjectsCursor(null);
-    setSelected(null);
     setRecords([]);
+    setOverview(null);
     setRecordsCursor(null);
     setRecordsScope("");
     setError("");
@@ -225,45 +195,12 @@ export default function MemoryPage({ section }: { section: number }) {
     return () => current.current?.abort();
   }, [csrf, storageKey]);
 
-  async function listSubjects(cursor: string | null = null) {
+  async function listRecords(cursor: string | null = null) {
     const selection = roleRequest();
     if (!csrf || !selection) return;
     const controller = start();
     const mark = generation.current;
-    if (!cursor) {
-      setSubjects([]);
-      setSubjectsCursor(null);
-    }
-    try {
-      const answer = await integrationPost<Subjects>(
-        "memory/subjects",
-        { ...selection, limit: 20, cursor },
-        csrf,
-        controller.signal,
-      );
-      if (controller.signal.aborted || mark !== generation.current) return;
-      setSubjects((before) =>
-        cursor ? [...before, ...answer.items] : answer.items,
-      );
-      setSubjectsCursor(answer.next_cursor);
-    } catch (cause) {
-      if (!controller.signal.aborted && mark === generation.current) {
-        failRead(cause);
-      }
-    } finally {
-      if (!controller.signal.aborted) setBusy(false);
-    }
-  }
-
-  async function listRecords(
-    subject: SubjectKey | null,
-    cursor: string | null = null,
-  ) {
-    const selection = roleRequest();
-    if (!csrf || !selection) return;
-    const controller = start();
-    const mark = generation.current;
-    const key = subject ? subjectText(subject) : "本人记忆";
+    const key = "本人记忆";
     if (!cursor) {
       setRecords([]);
       setRecordsCursor(null);
@@ -272,11 +209,23 @@ export default function MemoryPage({ section }: { section: number }) {
     try {
       const answer = await integrationPost<Records>(
         "memory/records",
-        { ...selection, subject, limit: 20, cursor },
+        { ...selection, subject: null, limit: 20, cursor },
         csrf,
         controller.signal,
       );
       if (controller.signal.aborted || mark !== generation.current) return;
+      if (
+        catalogVersion.current !== null &&
+        answer.scope_version < catalogVersion.current
+      ) {
+        void listRecords();
+        return;
+      }
+      catalogVersion.current = answer.scope_version;
+      recordsVersion.current = answer.scope_version;
+      setOverview((before) =>
+        before?.scope_version === answer.scope_version ? before : null,
+      );
       setRecords((before) =>
         cursor ? [...before, ...answer.items] : answer.items,
       );
@@ -294,8 +243,7 @@ export default function MemoryPage({ section }: { section: number }) {
     if (!state) return;
     clearResults();
     if (!state?.available || !role?.available) return;
-    if (section === 1) void listSubjects();
-    else if (section === 3) void listRecords(null);
+    if (section === 3) void listRecords();
   }, [state, roleId, section, csrf]);
 
   useEffect(() => {
@@ -308,20 +256,25 @@ export default function MemoryPage({ section }: { section: number }) {
       const mark = generation.current;
       pending = controller;
       try {
-        await integrationPost<Overview>(
+        const next = await integrationPost<Overview>(
           "memory/overview",
           selection,
           csrf,
           controller.signal,
         );
+        if (controller.signal.aborted || mark !== generation.current) return;
         if (
-          controller.signal.aborted ||
-          mark !== generation.current ||
-          !resumed
+          catalogVersion.current !== null &&
+          next.scope_version < catalogVersion.current
         )
           return;
-        if (section === 1) await listSubjects();
-        else if (section === 3) await listRecords(null);
+        const changed =
+          recordsVersion.current !== null &&
+          recordsVersion.current !== next.scope_version;
+        if (changed) clearResults();
+        catalogVersion.current = next.scope_version;
+        setOverview(next);
+        if (section === 3 && (resumed || changed)) await listRecords();
       } catch (cause) {
         if (!controller.signal.aborted && mark === generation.current)
           failRead(cause);
@@ -343,6 +296,7 @@ export default function MemoryPage({ section }: { section: number }) {
       setRevalidating(true);
       void verify(true);
     };
+    void verify();
     const timer = window.setInterval(() => void verify(), 15000);
     document.addEventListener("visibilitychange", visible);
     return () => {
@@ -351,16 +305,6 @@ export default function MemoryPage({ section }: { section: number }) {
       pending?.abort();
     };
   }, [csrf, state?.available, role?.id, role?.version, section]);
-
-  function choose(row: SubjectKey) {
-    generation.current++;
-    current.current?.abort();
-    setSelected(row);
-    setRecords([]);
-    setRecordsCursor(null);
-    setError("");
-    void listRecords(row);
-  }
 
   if (!csrf)
     return (
@@ -487,9 +431,7 @@ export default function MemoryPage({ section }: { section: number }) {
           <h2>授权记忆范围</h2>
           <button
             className="button"
-            onClick={() =>
-              section === 1 ? void listSubjects() : void listRecords(null)
-            }
+            onClick={() => void listRecords()}
             disabled={busy}
           >
             <RefreshCw aria-hidden="true" />
@@ -498,8 +440,7 @@ export default function MemoryPage({ section }: { section: number }) {
         </div>
         <StatusRail tone="yellow" label="按当前账号授权读取">
           <p>
-            内容来自 Memory
-            已确认的有效语义组；人物、群和本人范围分别校验。没有网页批准、遗忘或账号关联操作。
+            这里展示当前角色可以读取的记忆。来源或授权变化后，会重新核验并隐藏失效内容。
           </p>
         </StatusRail>
       </section>
@@ -508,14 +449,7 @@ export default function MemoryPage({ section }: { section: number }) {
           kind="error"
           title="本次记忆读取失败"
           action={
-            <button
-              className="button"
-              onClick={() =>
-                section === 1 && !selected
-                  ? void listSubjects()
-                  : void listRecords(selected)
-              }
-            >
+            <button className="button" onClick={() => void listRecords()}>
               从第一页重读
             </button>
           }
@@ -524,149 +458,36 @@ export default function MemoryPage({ section }: { section: number }) {
           <p>失败没有被当作空记忆。</p>
         </StatePanel>
       )}
-      {section === 1 && (
-        <div className="memory-columns">
-          <section className="panel">
-            <h2>人物与群</h2>
-            {visibleSubjects.length === 0 && !busy && !error ? (
-              <StatePanel
-                kind="empty"
-                title={
-                  subjectsCursor ? "本页没有可见人物或群" : "没有可见人物或群"
-                }
-              >
-                <p>
-                  {subjectsCursor
-                    ? "本页扫描没有返回可见条目，仍有后续页可读取。"
-                    : "这次读取成功，且当前授权范围没有更多可浏览条目。"}
-                </p>
-              </StatePanel>
-            ) : (
-              <ul className="memory-list">
-                {visibleSubjects.map((row) => (
-                  <li key={subjectText(row.subject)}>
-                    <button
-                      type="button"
-                      data-selected={
-                        (selected &&
-                          subjectText(selected) === subjectText(row.subject)) ||
-                        undefined
-                      }
-                      onClick={() => choose(row.subject)}
-                    >
-                      <strong>{subjectText(row.subject)}</strong>
-                      <small>
-                        {row.group_count_truncated
-                          ? `至少 ${row.group_count}`
-                          : row.group_count}{" "}
-                        个有效组 · {row.categories.join("、") || "未分类"}
-                      </small>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {subjectsCursor && (
-              <button
-                className="button"
-                disabled={busy}
-                onClick={() => void listSubjects(subjectsCursor)}
-              >
-                继续读取人物与群
-              </button>
-            )}
-          </section>
-          <section className="panel">
-            <h2>共享画像</h2>
-            {selected ? (
-              <RecordList
-                scope={recordsScope}
-                records={records}
-                cursor={recordsCursor}
-                busy={busy}
-                error={error}
-                more={() => void listRecords(selected, recordsCursor)}
-              />
-            ) : (
-              <p className="muted">
-                选择人物或群后读取当前可见的共享画像。不会显示对方私有记忆。
-              </p>
-            )}
-          </section>
-        </div>
-      )}
       {section === 3 && (
         <section className="panel">
           <h2>本人记忆</h2>
-          <RecordList
+          {overview?.learning && (
+            <p className="muted" role="status">
+              本次可见材料 {overview.learning.received} 条，已整理{" "}
+              {overview.learning.completed} 条，待整理{" "}
+              {overview.learning.waiting} 条。
+              {overview.learning.truncated && "这里只统计部分已接收材料。"}
+              整理完成可以不产生新记忆，尚未进入记忆服务的消息不在此统计。
+            </p>
+          )}
+          {overview && (
+            <p className="muted">
+              来源核验于{" "}
+              {new Date(overview.verified_at).toLocaleString("zh-CN")}
+              ；失效来源的内容会隐藏。
+            </p>
+          )}
+          {overview?.review && <MemoryReview review={overview.review} />}
+          <MemoryRecords
             scope={recordsScope || "本人记忆"}
             records={records}
             cursor={recordsCursor}
             busy={busy}
             error={error}
-            more={() => void listRecords(null, recordsCursor)}
+            more={() => void listRecords(recordsCursor)}
           />
         </section>
       )}
     </div>
-  );
-}
-
-function RecordList({
-  scope,
-  records,
-  cursor,
-  busy,
-  error,
-  more,
-}: {
-  scope: string;
-  records: RecordGroup[];
-  cursor: string | null;
-  busy: boolean;
-  error: string;
-  more: () => void;
-}) {
-  if (busy && records.length === 0)
-    return (
-      <StatePanel kind="loading" title="正在读取记忆条目">
-        <p>请稍候。</p>
-      </StatePanel>
-    );
-  if (!busy && !error && records.length === 0 && !cursor)
-    return (
-      <StatePanel kind="empty" title="这个范围没有有效记忆">
-        <p>{scope}成功返回空列表。其它范围可能有不同内容。</p>
-      </StatePanel>
-    );
-  return (
-    <>
-      {records.length === 0 && cursor && (
-        <p className="muted">本页没有可见记忆，仍有后续页可读取。</p>
-      )}
-      <ul className="memory-records">
-        {records.map((group) => (
-          <li key={group.semantic_group_id}>
-            <h3>
-              {group.category} · {group.field_key}
-            </h3>
-            <p className="muted">语义组 {group.semantic_group_id}</p>
-            <ul>
-              {group.units.map((unit) => (
-                <li key={unit.record_id}>
-                  <p>{unit.statement}</p>
-                  <small>记录版本 {unit.record_version}</small>
-                </li>
-              ))}
-            </ul>
-          </li>
-        ))}
-      </ul>
-      {cursor && (
-        <button className="button" disabled={busy} onClick={more}>
-          继续读取记忆
-        </button>
-      )}
-    </>
   );
 }

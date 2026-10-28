@@ -23,15 +23,6 @@
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
-.memory-columns {
-  display: grid;
-  grid-template-columns: minmax(15rem, 0.8fr) minmax(0, 1.2fr);
-  gap: var(--space-4);
-  align-items: start;
-}
-.memory-columns .panel {
-  min-width: 0;
-}
 .memory-list,
 .memory-records {
   list-style: none;
@@ -72,9 +63,4 @@
 }
 .memory-records ul li + li {
   margin-top: var(--space-3);
-}
-@media (max-width: 760px) {
-  .memory-columns {
-    grid-template-columns: 1fr;
-  }
 }
