@@ -836,7 +836,13 @@ class WebConsole:
                 "session_expired",
                 401,
             )
-            return web.json_response(result)
+            headers = (
+                {"Cache-Control": "no-store"}
+                if request.path
+                in {BOT_ADAPTERS_PREFIX + "onebot-servers", BOT_ADAPTERS_PREFIX + "onebot-create"}
+                else None
+            )
+            return web.json_response(result, headers=headers)
         if request.path.startswith(BOT_OBSERVATION_PREFIX):
             result = await self.platform.bot_observation.route(self, request.path, body, session)
             require(

@@ -785,6 +785,15 @@ class BotObservation:
         require(any(a["id"] == account_id for a in value["accounts"]), "invalid_input", 400)
         require(
             not any(
+                existing["instance_id"] == value["instance_id"]
+                and existing["account_id"] == account_id
+                for existing in self.rows()
+            ),
+            "account_already_added",
+            409,
+        )
+        require(
+            not any(
                 existing.get("kind") != "observation"
                 and existing.get("instance_id") == value["instance_id"]
                 and existing.get("account_id") == account_id

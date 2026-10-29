@@ -859,6 +859,7 @@ def create_app(platform, probe=None, *, console=None, public=False, trusted_loca
                 while True:
                     try:
                         await platform.bot_adapters.pump_once()
+                        await platform.bot_adapters.onebot_servers.synchronize()
                         await platform.qq_admin.flush_aliases()
                     except (Fault, OSError, sqlite3.Error):
                         pass

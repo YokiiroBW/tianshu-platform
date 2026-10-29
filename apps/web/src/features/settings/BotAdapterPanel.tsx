@@ -600,7 +600,8 @@ export function BotAdapterPanel() {
           </button>
         </div>
         <p className="muted">
-          安装宿主插件并取得连接密钥后，默认按机器人账号接入观察。检测只读取真实在线账号，不发送测试消息。
+          创建机器人后，将 WS 地址和 Token 填入 SnowLuma
+          等客户端；连接成功后自动关联账号。
         </p>
         {busy === "refresh" && !view && (
           <p role="status">正在读取适配器状态…</p>

@@ -116,6 +116,18 @@ class BotAdapterCatalog:
                     )
                 for key, _, blob in db.execute("SELECT id,fingerprint,document FROM receipts"):
                     self._open(blob, "receipt:" + key)
+            # Older versions can still read existing adapter rows on rollback.
+            with closing(self._db()) as db, db:
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS onebot_servers "
+                    "(id TEXT PRIMARY KEY, document BLOB NOT NULL)"
+                )
+                for key, blob in db.execute("SELECT id,document FROM onebot_servers"):
+                    require(
+                        self._open(blob, "server:" + key)["id"] == key,
+                        "bot_adapter_store_unavailable",
+                        503,
+                    )
         except Fault:
             raise
         except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
@@ -154,6 +166,49 @@ class BotAdapterCatalog:
         with closing(self._db()) as db:
             row = db.execute("SELECT document FROM rows WHERE id=?", (key,)).fetchone()
             return self._open(row[0], "row:" + key) if row else None
+
+    def servers(self):
+        with closing(self._db()) as db:
+            return [
+                self._open(blob, "server:" + key)
+                for key, blob in db.execute("SELECT id,document FROM onebot_servers ORDER BY id")
+            ]
+
+    def server(self, key):
+        with closing(self._db()) as db:
+            row = db.execute("SELECT document FROM onebot_servers WHERE id=?", (key,)).fetchone()
+            return self._open(row[0], "server:" + key) if row else None
+
+    def put_server(self, item):
+        key = item["id"]
+        with closing(self._db()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO onebot_servers VALUES(?,?) "
+                "ON CONFLICT(id) DO UPDATE SET document=excluded.document",
+                (key, self._seal(item, "server:" + key)),
+            )
+
+    def begin_server(self, item, client_id, fingerprint):
+        key = item["id"]
+        with closing(self._db()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute(
+                "SELECT fingerprint,document FROM receipts WHERE id=?", (client_id,)
+            ).fetchone()
+            if previous:
+                require(previous[0] == fingerprint, "idempotency_conflict", 409)
+                return self._open(previous[1], "receipt:" + client_id)
+            db.execute(
+                "INSERT INTO onebot_servers VALUES(?,?)",
+                (key, self._seal(item, "server:" + key)),
+            )
+            db.execute(
+                "INSERT INTO receipts VALUES(?,?,?)",
+                (client_id, fingerprint, self._seal({"id": key}, "receipt:" + client_id)),
+            )
+            db.commit()
+        return None
 
     def put(self, item):
         key = item["id"]

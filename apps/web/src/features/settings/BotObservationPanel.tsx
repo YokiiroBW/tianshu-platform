@@ -5,6 +5,7 @@ import { StatusRail } from "../../components/StatusRail";
 import { webFetch } from "../../app/sessionTransport";
 import { requestId } from "../../app/requestId";
 import { type GroupPolicy } from "./GroupPolicyEditor";
+import { OneBotOnboarding } from "./OneBotOnboarding";
 import {
   adapterPost,
   type AdapterKind,
@@ -95,7 +96,12 @@ async function post<T>(
     body: JSON.stringify(body),
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(String(result?.code ?? "后台未确认"));
+  if (!response.ok) {
+    const code = String(result?.code ?? "后台未确认");
+    throw new Error(
+      code === "account_already_added" ? "该 QQ 账号已经添加。" : code,
+    );
+  }
   return result as T;
 }
 
@@ -252,7 +258,7 @@ export function BotObservationPanel({
   const [group, setGroup] = useState<GroupPolicy | null>(null);
   const [privatePolicy, setPrivate] = useState<Policy | null>(null);
   const [probe, setProbe] = useState<AdapterProbe | null>(null);
-  const [adapter, setAdapter] = useState<AdapterKind>("astrbot");
+  const [adapter, setAdapter] = useState<AdapterKind | "builtin">("builtin");
   const [address, setAddress] = useState("");
   const [key, setKey] = useState("");
   const [privateHttp, setPrivateHttp] = useState(false);
@@ -322,9 +328,20 @@ export function BotObservationPanel({
       );
       setKey("");
       setProbe(result);
-      setAccount(result.accounts[0]?.id ?? "");
+      setAccount(
+        result.accounts.find(
+          (item) =>
+            !view?.connections.some(
+              (connection) =>
+                connection.instance_id === result.instance_id &&
+                connection.account_id === item.id,
+            ),
+        )?.id ?? "",
+      );
       setNotice(
-        "已检测在线账号。新群默认停用，仅登记基础资料；私聊按原策略观察。",
+        result.accounts.length
+          ? "已检测在线账号。新群默认停用，仅登记基础资料；私聊按原策略观察。"
+          : "尚未检测到在线账号，请在 SnowLuma 连接后重新检测。",
       );
     });
   }
@@ -503,69 +520,78 @@ export function BotObservationPanel({
         <DetailCard title={"添加机器人账号"}>
           {error && <p role="alert">{error}</p>}
           {notice && <p role="status">{notice}</p>}
-          <form
-            className="bot-form bot-observation-card"
-            onSubmit={(event) => void detect(event)}
-          >
+          <div className="bot-form bot-observation-card">
             <h3>连接与账号</h3>
             <label>
-              宿主
+              接入方式
               <select
                 value={adapter}
-                onChange={(event) =>
-                  setAdapter(event.target.value as AdapterKind)
-                }
+                onChange={(event) => {
+                  setAdapter(event.target.value as AdapterKind | "builtin");
+                  setProbe(null);
+                  setAccount("");
+                }}
               >
-                <option value="astrbot">AstrBot</option>
-                <option value="nonebot">NoneBot</option>
-                <option value="onebot">OneBot / NapCat</option>
+                <option value="builtin">内置 OneBot v11（QQ）</option>
+                <option value="astrbot">外部 AstrBot</option>
+                <option value="nonebot">外部 NoneBot</option>
+                <option value="onebot">外部 OneBot / NapCat</option>
               </select>
             </label>
-            <label>
-              观察服务 URL
-              <input
-                type="url"
-                required
-                value={address}
-                onChange={(event) => setAddress(event.target.value)}
-              />
-              {adapter === "onebot" && (
-                <span className="muted">
-                  填写天枢 OneBot 接入服务的 HTTP 地址；QQ 账号由该服务连接的
-                  NapCat 等 OneBot 实现提供。
-                </span>
-              )}
-            </label>
-            <label>
-              观察服务密钥
-              <input
-                type="password"
-                required
-                autoComplete="off"
-                value={key}
-                onChange={(event) => setKey(event.target.value)}
-              />
-            </label>
-            <label className="bot-check">
-              <input
-                type="checkbox"
-                checked={privateHttp}
-                onChange={(event) => setPrivateHttp(event.target.checked)}
-              />
-              允许已审查的局域网 HTTP
-            </label>
-            <label>
-              插件 TLS CA（如需）
-              <textarea
-                rows={3}
-                value={caPem}
-                onChange={(event) => setCaPem(event.target.value)}
-              />
-            </label>
-            <button className="button" disabled={busy}>
-              检测在线账号
-            </button>
-          </form>
+            {adapter === "builtin" ? (
+              <OneBotOnboarding csrf={csrf} onChanged={() => void refresh()} />
+            ) : (
+              <form
+                className="bot-form"
+                onSubmit={(event) => void detect(event)}
+              >
+                <label>
+                  观察服务 URL
+                  <input
+                    type="url"
+                    required
+                    value={address}
+                    onChange={(event) => setAddress(event.target.value)}
+                  />
+                  {adapter === "onebot" && (
+                    <span className="muted">
+                      填写天枢 OneBot 接入服务的 HTTP 地址；QQ
+                      账号由该服务连接的 NapCat 等 OneBot 实现提供。
+                    </span>
+                  )}
+                </label>
+                <label>
+                  观察服务密钥
+                  <input
+                    type="password"
+                    required
+                    autoComplete="off"
+                    value={key}
+                    onChange={(event) => setKey(event.target.value)}
+                  />
+                </label>
+                <label className="bot-check">
+                  <input
+                    type="checkbox"
+                    checked={privateHttp}
+                    onChange={(event) => setPrivateHttp(event.target.checked)}
+                  />
+                  允许已审查的局域网 HTTP
+                </label>
+                <label>
+                  插件 TLS CA（如需）
+                  <textarea
+                    rows={3}
+                    value={caPem}
+                    onChange={(event) => setCaPem(event.target.value)}
+                  />
+                </label>
+                <button className="button" disabled={busy}>
+                  检测在线账号
+                </button>
+              </form>
+            )}
+          </div>
           {probe && (
             <form
               className="bot-form bot-observation-card"
@@ -586,11 +612,19 @@ export function BotObservationPanel({
                   value={account}
                   onChange={(event) => setAccount(event.target.value)}
                 >
-                  {probe.accounts.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.label}（{item.id}）
-                    </option>
-                  ))}
+                  {!account && <option value="">没有可添加的在线账号</option>}
+                  {probe.accounts.map((item) => {
+                    const added = view.connections.some(
+                      (connection) =>
+                        connection.instance_id === probe.instance_id &&
+                        connection.account_id === item.id,
+                    );
+                    return (
+                      <option key={item.id} value={item.id} disabled={added}>
+                        {item.label}（{item.id}）{added ? " · 已添加" : ""}
+                      </option>
+                    );
+                  })}
                 </select>
               </label>
               <button className="button" disabled={busy || !account}>

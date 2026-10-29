@@ -148,6 +148,8 @@ test("account observation is the default entry without conversation, author or a
         actors: [],
         connections: [],
       });
+    if (operation === "onebot-servers")
+      return json(route, { available: false, servers: [] });
     if (operation === "probe") return json(route, probePayload());
     throw new Error(`Unexpected adapter request: ${operation}`);
   });
@@ -208,6 +210,7 @@ test("account observation is the default entry without conversation, author or a
   await observation
     .getByRole("button", { name: "添加机器人账号", exact: true })
     .click();
+  await observation.getByLabel("接入方式").selectOption("astrbot");
   await observation
     .getByLabel("观察服务 URL")
     .fill("https://bot.example.test:8443");
@@ -227,6 +230,90 @@ test("account observation is the default entry without conversation, author or a
   expect(createBody).not.toHaveProperty("conversation");
   expect(createBody).not.toHaveProperty("allowed_authors");
   expect(createBody).not.toHaveProperty("actor_id");
+});
+
+test("built-in OneBot creates a server and automatically shows its connected account", async ({
+  page,
+}) => {
+  await signedIn(page);
+  let unlocked = false;
+  let created: Record<string, unknown> | null = null;
+  let connected = false;
+  const server = () => ({
+    id: "onebot:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    name: "第二个 QQ",
+    token: "synthetic-generated-token",
+    account_id: connected ? "10002" : null,
+    connected,
+    observation_id: connected ? "obs:10002" : null,
+    observation_state: connected ? "ready" : null,
+    ws_path: "/onebot/v11/ws/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+  await page.route("**/api/web/bots/unlock", (route) => {
+    unlocked = true;
+    return json(route, { unlocked: true });
+  });
+  await page.route("**/api/web/bot-adapters/*", (route) => {
+    const operation = new URL(route.request().url()).pathname.split("/").pop();
+    if (operation === "view")
+      return json(route, {
+        available: true,
+        unlocked,
+        actors: [],
+        connections: [],
+      });
+    if (operation === "onebot-create") {
+      created = route.request().postDataJSON() as Record<string, unknown>;
+      return json(route, {
+        available: true,
+        ws_port: 18765,
+        servers: [server()],
+      });
+    }
+    if (operation === "onebot-servers")
+      return json(route, {
+        available: true,
+        ws_port: 18765,
+        servers: created ? [server()] : [],
+      });
+    throw new Error(`Unexpected adapter request: ${operation}`);
+  });
+  await page.route("**/api/web/bot-observation/*", (route) => {
+    const operation = new URL(route.request().url()).pathname.split("/").pop();
+    if (operation === "view")
+      return json(route, { available: true, unlocked, connections: [] });
+    throw new Error(`Unexpected observation request: ${operation}`);
+  });
+  await page.goto("/#/settings/3");
+  await page
+    .getByLabel("管理员密码（二次验证）")
+    .fill("synthetic-local-password-014");
+  await page.getByRole("button", { name: "解锁连接管理" }).click();
+  const observation = page.getByRole("region", {
+    name: "账号级观察与回复策略",
+  });
+  await observation
+    .getByRole("button", { name: "添加机器人账号", exact: true })
+    .click();
+  await observation.getByLabel("机器人名称").fill("第二个 QQ");
+  await observation
+    .getByRole("button", { name: "创建机器人", exact: true })
+    .click();
+  expect(created).toMatchObject({ name: "第二个 QQ", token: "" });
+  const robot = observation.getByRole("region", { name: "第二个 QQ" });
+  await expect(robot.getByLabel("反向 WebSocket 地址")).toHaveValue(
+    "ws://127.0.0.1:18765/onebot/v11/ws/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  );
+  await expect(robot.getByText("等待客户端连接")).toBeVisible();
+  await expect(
+    observation.getByRole("button", { name: "检测在线账号" }),
+  ).toHaveCount(0);
+  connected = true;
+  await expect(robot.getByText("已连接 QQ 10002")).toBeVisible({
+    timeout: 6000,
+  });
+  await observation.getByLabel("接入方式").selectOption("astrbot");
+  await expect(observation.getByLabel("观察服务 URL")).toBeVisible();
 });
 
 test("observation cards render connected, archive, error and locked states", async ({

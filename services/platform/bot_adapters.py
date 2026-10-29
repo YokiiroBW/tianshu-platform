@@ -16,6 +16,7 @@ import aiohttp
 from .auth import secret
 from .bot_adapter_catalog import BotAdapterCatalog
 from .contracts import Fault, digest, loads, require, utc
+from .onebot_servers import OneBotServers
 from .role_runtime import is_placeholder_actor
 from .transport import core_settings
 from .web_external import _url
@@ -62,6 +63,7 @@ class BotAdapters:
             _id(connection_id)
             require(callable(factory), "invalid_input", 400)
         self.owned_adapter_instances = {}
+        self.owned_adapter_onboarding = {}
         self.config = platform.settings.get("bot_adapter_self_service")
         self.catalog = (
             BotAdapterCatalog(
@@ -72,6 +74,7 @@ class BotAdapters:
         )
         self.drafts = {}
         self.lock = asyncio.Lock()
+        self.onebot_servers = OneBotServers(self)
         self.row_locks = {}
         self.admission_lock = threading.RLock()
         if self.catalog:
@@ -91,13 +94,46 @@ class BotAdapters:
                     row["pending"] = {"desired": True, "request_id": row["last_request_id"]}
                     self.catalog.put(row)
 
-    def bind_owned_adapter(self, instance_id, session_factory, *, origin=None):
+    def bind_owned_adapter(
+        self, instance_id, session_factory, *, origin=None, onboarding=None, server_status=None
+    ):
         """Bind a host-owned SDK identity, including its future conversation rows."""
         _id(instance_id)
         require(callable(session_factory), "invalid_input", 400)
         if origin is not None:
             origin = _url(origin, "home", True)
+        if onboarding is not None:
+            require(origin is not None and callable(onboarding), "invalid_input", 400)
+            self.owned_adapter_onboarding[instance_id] = onboarding
+        else:
+            self.owned_adapter_onboarding.pop(instance_id, None)
         self.owned_adapter_instances[instance_id] = (session_factory, origin)
+        if server_status is not None:
+            require(callable(server_status), "invalid_input", 400)
+        self.onebot_servers.status_provider = server_status
+
+    async def _owned_onboarding(self):
+        if not self.owned_adapter_onboarding:
+            return None
+        require(len(self.owned_adapter_onboarding) == 1, "dependency_unavailable", 503)
+        instance_id, provider = next(iter(self.owned_adapter_onboarding.items()))
+        try:
+            details = await asyncio.to_thread(provider)
+        except Exception:
+            raise Fault("dependency_unavailable", 503) from None
+        require(
+            isinstance(details, dict)
+            and set(details) == {"access_key", "ws_port"}
+            and isinstance(details["access_key"], str)
+            and 24 <= len(details["access_key"]) <= 4096
+            and details["access_key"].isascii()
+            and all(33 <= ord(c) <= 126 for c in details["access_key"])
+            and type(details["ws_port"]) is int
+            and 1 <= details["ws_port"] <= 65535,
+            "dependency_unavailable",
+            503,
+        )
+        return instance_id, details
 
     def _row_lock(self, row_id):
         _id(row_id)
@@ -249,6 +285,14 @@ class BotAdapters:
                 else [],
             }
         self._gate(console, session)
+        if path == PREFIX + "onebot-servers":
+            require(body == {}, "invalid_input", 400)
+            return await self.onebot_servers.view()
+        if path == PREFIX + "onebot-create":
+            require(await self._owned_onboarding() is not None, "dependency_unavailable", 503)
+            require(self.onebot_servers.status_provider is not None, "dependency_unavailable", 503)
+            await self.onebot_servers.create(body)
+            return await self.onebot_servers.view()
         if path == PREFIX + "probe":
             require(
                 set(body) == {"adapter", "address", "access_key", "allow_private_http", "ca_pem"},
@@ -409,10 +453,26 @@ class BotAdapters:
             ca_file=settings.get("ca_file"),
         )
 
-    async def probe(self, body, session):
+    def _prepare_probe(self):
         now = time.time()
         self.drafts = {key: item for key, item in self.drafts.items() if item[1] > now}
         require(len(self.drafts) < 128, "queue_full", 429)
+
+    async def probe_owned(self, session):
+        self._prepare_probe()
+        owned = await self._owned_onboarding()
+        require(owned is not None, "dependency_unavailable", 503)
+        instance_id, details = owned
+        factory, origin = self.owned_adapter_instances[instance_id]
+        key = details["access_key"]
+        result = await self._call(
+            origin, key, None, None, RPC + "/capabilities", {}, session_factory=factory
+        )
+        require(result.get("instance_id") == instance_id, "adapter_incompatible", 502)
+        return self._probe_draft("onebot", origin, key, True, None, None, result, session)
+
+    async def probe(self, body, session):
+        self._prepare_probe()
         require(body["adapter"] in {"astrbot", "nonebot", "onebot"}, "invalid_input", 400)
         require(type(body["allow_private_http"]) is bool, "invalid_input", 400)
         address = _url(body["address"], "home", body["allow_private_http"])
@@ -435,9 +495,14 @@ class BotAdapters:
                 raise Fault("invalid_input", 400) from None
         pins = await reviewed_pins(address, self.config["allowed_cidrs"])
         result = await self._call(address, key, pins, ca, RPC + "/capabilities", {})
+        return self._probe_draft(
+            body["adapter"], address, key, body["allow_private_http"], ca, pins, result, session
+        )
+
+    def _probe_draft(self, adapter, address, key, allow_private_http, ca, pins, result, session):
         require(
             result.get("protocol") == PROTOCOL
-            and result.get("adapter") == body["adapter"]
+            and result.get("adapter") == adapter
             and isinstance(result.get("instance_id"), str)
             and 1 <= len(result["instance_id"]) <= 128
             and "text" in result.get("capabilities", [])
@@ -466,10 +531,10 @@ class BotAdapters:
         draft_id = "draft:" + uuid.uuid4().hex
         expires = time.time() + 600
         draft = {
-            "adapter": body["adapter"],
+            "adapter": adapter,
             "address": address,
             "access_key": key,
-            "allow_private_http": body["allow_private_http"],
+            "allow_private_http": allow_private_http,
             "ca_pem": ca,
             "pins": pins,
             "instance_id": result["instance_id"],
