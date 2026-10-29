@@ -342,7 +342,10 @@ def create_app(platform, probe=None, *, console=None, public=False, trusted_loca
                 require(
                     len(raw)
                     <= (
-                        65536
+                        262144
+                        if request.path == OBSERVATION_VERIFY
+                        and body.get("operation") in {"segment", "segment_resolve"}
+                        else 65536
                         if request.path == OBSERVATION_PROCESSING
                         else 32768
                         if request.path == OBSERVATION_ADMIN_ENROLL
