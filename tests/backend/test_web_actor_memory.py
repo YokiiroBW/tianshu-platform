@@ -53,10 +53,18 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.wrong_ref = False
         peer = web.Application()
         peer.router.add_post("/internal/v1/actor-self-memory/operate", self.peer)
+        peer.router.add_post("/internal/v2/life/read", self.life_peer)
+        self.life_calls = []
+        self.life_change = None
+        self.life_denied = False
+        self.life_wrong_request = False
         self.peer_runner, peer_url = await start_http(peer)
         self.p.role_runtime.config["memory"] = {"base_url": peer_url, "token_env": "TS396_MEMORY"}
         self.console = create_console(self.p)
         self.console.actor_memory.session_factory = aiohttp.ClientSession
+        self.console.life.config["base_url"] = peer_url
+        self.p.settings["core"].update(base_url=peer_url, token_env="TS396_MEMORY")
+        self.console.life_management.session_factory = aiohttp.ClientSession
         self.runner, self.url = await start_http(create_app(self.p, console=self.console))
         settings["web"]["origin"] = self.url
         self.client = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
@@ -304,7 +312,7 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
             session,
         )
         self.assertIsNone(calls[-1][1]["scope"])
-        self.assertTrue(calls[-1][2]["management"])
+        self.assertFalse(calls[-1][2]["management"])
         body = {
             "actor_id": "actor:a",
             "operation": "actor-memory.import",
@@ -321,3 +329,96 @@ class ActorMemoryBrowserTests(unittest.IsolatedAsyncioTestCase):
             await self.console.life_management.runtime("manage", body, session)
         self.assertEqual(failure.exception.status, 403)
         self.assertEqual(len(calls), 2)
+
+    async def life_peer(self, request):
+        body = await request.json()
+        self.p.contracts.check("life-runtime#read_request", body)
+        self.life_calls.append((request.headers["Authorization"], body))
+        request_id = "wrong-request" if self.life_wrong_request else body["query"]["request_id"]
+        # Synthetic owner grants only the household/web-life reader for autonomy.
+        denied = self.life_denied or (
+            body["resource"] == "autonomy"
+            and request.headers["Authorization"] != "Bearer " + os.environ["TS396_LIFE"]
+        )
+        if denied:
+            return web.json_response(
+                {
+                    "code": "not_found",
+                    "execution_state": "not_started",
+                    "request_id": request_id,
+                },
+                status=404,
+            )
+        if self.life_change == "capability":
+            self.role["capabilities"] = []
+        elif self.life_change == "owner":
+            self.role["operator"] = "other"
+        elif self.life_change == "version":
+            self.role["version"] += 1
+        elif self.life_change == "guard":
+            self.p.auth.principals["admin"]["actions"].remove("role.manage")
+        if self.life_change:
+            self.p.role_runtime._put(self.role)
+        return web.json_response(
+            {
+                "schema_version": 2,
+                "request_id": request_id,
+                "actor_id": body["actor_id"],
+                "resource": body["resource"],
+                "items": [],
+                "next_cursor": None,
+            }
+        )
+
+    async def life_read(self, status=200, **extra):
+        async with self.client.post(
+            self.url + "/api/web/life/runtime/read",
+            json={
+                "actor_id": "actor:a",
+                "resource": "autonomy",
+                "object_id": None,
+                "expected_version": None,
+                "limit": 32,
+                "after": None,
+                **extra,
+            },
+            headers={"Origin": self.url, "X-CSRF-Token": self.csrf},
+        ) as response:
+            result = await response.json()
+            self.assertEqual(response.status, status, result)
+            return result
+
+    async def test_autonomy_reader_grant_and_management_credentials_are_independent(self):
+        await self.life_read()
+        self.assertEqual(self.life_calls[-1][0], "Bearer " + os.environ["TS396_LIFE"])
+        self.assertIsNone(self.life_calls[-1][1]["scope"])
+        for resource, extra in (("image_backend", {}), ("chapter", {"chapter_view": "current"})):
+            await self.life_read(resource=resource, **extra)
+            self.assertEqual(self.life_calls[-1][0], "Bearer " + os.environ["TS396_MEMORY"])
+        self.life_denied = True
+        self.assertEqual((await self.life_read(404))["code"], "not_found")
+        self.life_wrong_request = True
+        self.assertEqual((await self.life_read(502))["code"], "invalid_upstream")
+
+    async def test_autonomy_requires_memory_read_and_operator_ownership(self):
+        for change in ({"capabilities": []}, {"operator": "other"}):
+            original = dict(self.role)
+            self.role.update(change)
+            self.p.role_runtime._put(self.role)
+            await self.life_read(403)
+            self.role = original
+        self.assertEqual(self.life_calls, [])
+
+    async def test_autonomy_rechecks_capability_owner_role_version_and_guard_after_read(self):
+        for change, status in (
+            ("capability", 403),
+            ("owner", 403),
+            ("version", 409),
+            ("guard", 403),
+        ):
+            with self.subTest(change=change):
+                self.role.update(operator="admin", capabilities=["memory.read", "memory.write"])
+                self.p.role_runtime._put(self.role)
+                self.life_change = change
+                await self.life_read(status)
+        self.assertEqual(len(self.life_calls), 4)

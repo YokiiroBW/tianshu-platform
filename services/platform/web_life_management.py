@@ -410,11 +410,13 @@ class WebLifeManagement:
                 payload.update({key: body[key] for key in selection - {"actor_id"}})
                 if "chapter_view" in body:
                     payload["chapter_view"] = body["chapter_view"]
-                management_read = body.get("chapter_view") == "current" or body["resource"] in {
-                    "image_backend",
-                    "autonomy",
-                }
-                if management_read:
+                management_read = (
+                    body.get("chapter_view") == "current" or body["resource"] == "image_backend"
+                )
+                guarded_read = management_read or body["resource"] == "autonomy"
+                # Autonomy retains owner/capability guards but reads through the
+                # independently granted web-life reader, not the manager credential.
+                if guarded_read:
                     await self.p.local_work.run(self.guard, session)
                 autonomy_role = None
                 if body["resource"] == "autonomy":
@@ -441,7 +443,7 @@ class WebLifeManagement:
             answer = await self._call(
                 path, payload, management=name == "read" and management_read, binary=name == "media"
             )
-            if name == "read" and management_read:
+            if name == "read" and guarded_read:
                 await self.p.local_work.run(self.guard, session)
                 if autonomy_role is not None:
                     current = await self.p.local_work.run(
