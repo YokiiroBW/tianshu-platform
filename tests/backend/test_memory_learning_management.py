@@ -159,6 +159,20 @@ class RecoveryManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([self.body, self.body], self.commands)
         self.assertEqual(1, len(self.receipts))
 
+    async def test_no_model_receipt_recovery_preserves_null_and_operator_boundary(self):
+        self.body["model_request_id"] = None
+        await self.post(header=bearer("COMPANION"), expected=403)
+        self.assertEqual([], self.commands)
+        result = await self.post()
+        self.assertIsNone(result["model_request_id"])
+        self.assertEqual([self.body], self.commands)
+        self.assertEqual(["Bearer synthetic-core-management"], self.authorizations)
+
+    async def test_invalid_model_identifier_does_not_forward(self):
+        for value in ("", 0, True, [], {}):
+            await self.post(body={**self.body, "model_request_id": value}, expected=400)
+        self.assertEqual([], self.commands)
+
     async def test_closed_json_and_4096_byte_boundary_prevent_forwarding(self):
         await self.post(body={**self.body, "extra": True}, expected=400)
         await self.post(body={**self.body, "expected_attempts": True}, expected=400)

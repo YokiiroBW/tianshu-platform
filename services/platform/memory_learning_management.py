@@ -18,8 +18,10 @@ FIELDS = frozenset(
 
 def authorize(platform, header, body):
     require(isinstance(body, dict) and set(body) == FIELDS, "invalid_input", 400)
-    for field in ("actor_id", "job_id", "request_id", "model_request_id"):
+    for field in ("actor_id", "job_id", "request_id"):
         platform.contracts.check("common#id", body[field])
+    if body["model_request_id"] is not None:
+        platform.contracts.check("common#id", body["model_request_id"])
     for field in ("expected_attempts", "expected_failure_count"):
         require(type(body[field]) is int and body[field] >= 0, "invalid_input", 400)
     with platform.store.connect() as db:
