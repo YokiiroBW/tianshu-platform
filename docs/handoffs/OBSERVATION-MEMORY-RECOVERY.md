@@ -12,4 +12,3 @@ R28 原 Linux 镜像内，以当前候选完整服务源码和既有合同隔离
 R33 自然诊断为 PlatformVerifier 收到413；按原 job 的现有 collect() 完整范围进行真实只读校验，20条来源无重复但返回 budget_exceeded。server.py 把已支持批量的 segment/segment_resolve 仍限制为旧单条4096B，Memory再包装为依赖503。
 
 仅 OBSERVATION_VERIFY 的这两个既有操作按 Memory 原262144B边界接收，来源数量/schema/鉴权和业务验证仍由原owner执行；其他观察操作及其他端点限制保持，无配置、权限或DDL变化。新增原生HTTP边界用例先复现413，修复后合法大集合转交、超256KiB拒绝、旧ingest 4KiB和401拒绝共5场景通过。原隔离R28镜像、无生产挂载、无安装依赖、模型或QQ调用；只格式化了该新测试文件。发布后核同一原20来源证明与自然队列，不重新生成旧unknown任务或模型输出。
-
