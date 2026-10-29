@@ -1,6 +1,6 @@
 """Trusted operator forwarding to Companion's original learning recovery owner."""
 
-from .contracts import require
+from .contracts import Fault, require
 from .transport import management_call
 
 PATH = "/internal/v1/memory/learning/recover"
@@ -17,9 +17,12 @@ FIELDS = frozenset(
 
 
 def authorize(platform, header, body):
-    require(isinstance(body, dict) and set(body) == FIELDS, "invalid_input", 400)
-    for field in ("actor_id", "job_id", "request_id"):
+    segment_fields = (FIELDS - {"job_id"}) | {"segment_id"}
+    require(isinstance(body, dict) and set(body) in (FIELDS, segment_fields), "invalid_input", 400)
+    selector = "segment_id" if "segment_id" in body else "job_id"
+    for field in ("actor_id", selector, "request_id"):
         platform.contracts.check("common#id", body[field])
+    require(selector != "segment_id" or body["model_request_id"] is None, "invalid_input", 400)
     if body["model_request_id"] is not None:
         platform.contracts.check("common#id", body["model_request_id"])
     for field in ("expected_attempts", "expected_failure_count"):
@@ -49,11 +52,14 @@ async def recover(platform, header, body, *, started):
         body,
         session_factory=platform.client_factories["companion"],
     )
+    fields = {"request_id", "job_id", "state", "attempts", "failure_count", "model_request_id"}
+    selector = "segment_id" if "segment_id" in body else "job_id"
+    if selector == "segment_id":
+        fields.add("segment_id")
     require(
-        set(result)
-        == {"request_id", "job_id", "state", "attempts", "failure_count", "model_request_id"}
+        set(result) == fields
         and all(
-            result[field] == body[field] for field in ("request_id", "job_id", "model_request_id")
+            result[field] == body[field] for field in ("request_id", selector, "model_request_id")
         )
         and result["state"] in {"resumed", "completed", "invalidated"}
         and all(
@@ -63,4 +69,8 @@ async def recover(platform, header, body, *, started):
         "dependency_unavailable",
         503,
     )
+    try:
+        platform.contracts.check("common#id", result["job_id"])
+    except Fault:
+        raise Fault("dependency_unavailable", 503) from None
     return result

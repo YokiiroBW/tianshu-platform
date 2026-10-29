@@ -59,13 +59,15 @@ class RecoveryManagementTests(unittest.IsolatedAsyncioTestCase):
                 body["request_id"],
                 {
                     "request_id": body["request_id"],
-                    "job_id": body["job_id"],
+                    "job_id": body.get("job_id", "job:created-from-original-segment"),
                     "state": "resumed",
                     "attempts": body["expected_attempts"],
                     "failure_count": body["expected_failure_count"],
                     "model_request_id": body["model_request_id"],
                 },
             )
+            if "segment_id" in body:
+                result.setdefault("segment_id", body["segment_id"])
             if self.lose_response:
                 self.lose_response = False
                 request.transport.close()
@@ -103,6 +105,38 @@ class RecoveryManagementTests(unittest.IsolatedAsyncioTestCase):
             "expected_failure_count": 6,
             "model_request_id": "model:" + "a" * 32,
         }
+
+    async def test_original_segment_recovery_forwards_only_owned_selector_and_binds_receipt(self):
+        body = dict(
+            self.body,
+            request_id="recover:original-segment",
+            segment_id="segment:original",
+            model_request_id=None,
+        )
+        body.pop("job_id")
+        for request in (
+            dict(body, job_id="job:invented"),
+            dict(body, model_request_id="model:unknown"),
+        ):
+            async with self.client.post(
+                self.url + PATH, json=request, headers={"Authorization": bearer("ADMIN")}
+            ) as response:
+                self.assertEqual(response.status, 400, await response.text())
+        self.assertEqual([], self.commands)
+        async with self.client.post(
+            self.url + PATH, json=body, headers={"Authorization": bearer("ADMIN")}
+        ) as response:
+            self.assertEqual(response.status, 200, await response.text())
+            result = await response.json()
+        self.assertEqual(body, self.commands[0])
+        self.assertEqual(body["segment_id"], result["segment_id"])
+        self.assertEqual("job:created-from-original-segment", result["job_id"])
+        for field, wrong in (("segment_id", "segment:other"), ("job_id", None)):
+            self.receipts[body["request_id"]] = dict(result, **{field: wrong})
+            async with self.client.post(
+                self.url + PATH, json=body, headers={"Authorization": bearer("ADMIN")}
+            ) as response:
+                self.assertEqual(response.status, 503, await response.text())
 
     async def post(self, *, body=None, header=None, data=None, expected=200):
         options = {"json": self.body if body is None else body} if data is None else {"data": data}

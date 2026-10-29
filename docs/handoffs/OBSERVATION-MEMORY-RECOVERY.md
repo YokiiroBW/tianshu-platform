@@ -7,6 +7,10 @@
 R28 原 Linux 镜像内，以当前候选完整服务源码和既有合同隔离运行 `test_memory_learning_management`：6 项通过，1.306 秒。覆盖 null 原样转发、权限拒绝、非法非 null ID 拒绝、原命令和丢失响应幂等边界。无生产挂载、无依赖安装、无模型/QQ 调用。Windows 两个现有解释器缺 aiohttp，未修改共享环境；改用镜像内现有依赖完成有效检查。
 
 本候选由记忆窗口统一与 Memory、Companion 和监控候选串行推送部署；本提交不表示已部署。
+## 原分段恢复转发
+
+同一原 memory/learning/recover 入口新增与job_id排他的segment_id选择，仍只允许原角色operator的role.manage及memory.write。分段恢复的model_request_id必须为空；响应严格回显原segment/请求，并校验Memory真正job标识，不接受错绑或畸形回执。旧job请求/回执形状、鉴权、未知响应不重试保持。原生HTTP管理文件7项通过，含原有6项和分段转发、拒绝双selector/未知模型、错绑回执/非法job ID场景；无生产挂载、模型或QQ调用。
+
 # 2026-10-30 批量来源校验的 HTTP 大小边界
 
 R33 自然诊断为 PlatformVerifier 收到413；按原 job 的现有 collect() 完整范围进行真实只读校验，20条来源无重复但返回 budget_exceeded。server.py 把已支持批量的 segment/segment_resolve 仍限制为旧单条4096B，Memory再包装为依赖503。
