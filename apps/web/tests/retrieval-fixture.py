@@ -53,6 +53,20 @@ async def main():
         await peer.setup()
         await web.TCPSite(peer, "127.0.0.1", 4829).start()
         catalog = ProviderCatalog(Path(directory) / "providers", create=True)
+        source = catalog.sources.save(
+            client_id="retrieval-source",
+            name="Synthetic provider",
+            base_url="https://models.example/v1",
+            api_key="synthetic-secret-not-real",
+        )
+        for kind in ("embed", "rerank"):
+            catalog.sources.add_models(
+                client_id="retrieval-model-" + kind,
+                source_id=source["source_id"],
+                expected_revision=1,
+                models=["fixture-" + kind],
+                kind=kind,
+            )
         settings = web_settings(
             directory, origin="http://127.0.0.1:4828", static=root / "apps/web/dist"
         )

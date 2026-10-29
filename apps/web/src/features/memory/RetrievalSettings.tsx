@@ -2,6 +2,7 @@ import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../../app/Auth";
 import { integrationPost, readFailure } from "../../app/integrationApi";
+import { requestId } from "../../app/requestId";
 
 import "./retrieval.css";
 
@@ -129,7 +130,7 @@ export function RetrievalSettings() {
             value,
             credential,
             expected_revision: view.revision,
-            client_id: crypto.randomUUID(),
+            client_id: requestId(),
           },
           csrf,
           controller.signal,

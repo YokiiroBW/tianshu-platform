@@ -1,8 +1,11 @@
 import { test, expect } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 
-test("memory retrieval saves independent models and all six mode combinations", async ({
-  page,
-}, info) => {
+test.beforeEach(async ({ page }) => {
+  // LAN HTTP keeps getRandomValues available, but does not expose randomUUID.
+  await page.addInitScript(() =>
+    Object.defineProperty(Crypto.prototype, "randomUUID", { value: undefined }),
+  );
   await page.goto("/#/settings/10");
   await page.getByLabel("管理员账号").fill("synthetic-admin");
   await page
@@ -12,6 +15,11 @@ test("memory retrieval saves independent models and all six mode combinations", 
   await expect(
     page.getByRole("heading", { name: "记忆检索", exact: true }),
   ).toBeVisible();
+});
+
+test("memory retrieval saves independent models and all six mode combinations", async ({
+  page,
+}, info) => {
   for (const name of ["嵌入", "重排序"]) {
     await page
       .getByRole("region", { name: `${name}模型连接` })
@@ -85,4 +93,77 @@ test("memory retrieval saves independent models and all six mode combinations", 
     path: info.outputPath("retrieval.png"),
     fullPage: true,
   });
+});
+
+test("memory retrieval saves provider embedding and reranking selections without randomUUID", async ({
+  page,
+}) => {
+  const { csrf } = await (await page.request.get("/api/web/session")).json();
+  const headers = {
+    "X-CSRF-Token": csrf,
+    Origin: new URL(page.url()).origin,
+  };
+  const original = await (
+    await page.request.post("/api/web/memory-retrieval/state", {
+      headers,
+      data: {},
+    })
+  ).json();
+  try {
+    for (const [name, model] of [
+      ["嵌入", "fixture-embed"],
+      ["重排序", "fixture-rerank"],
+    ]) {
+      const open = () =>
+        page
+          .getByRole("button", { name: `${name}模型设置`, exact: true })
+          .click();
+      await open();
+      const selection = page.getByLabel(`${name}模型选择`, { exact: true });
+      await selection.selectOption({ label: `Synthetic provider / ${model}` });
+      await page
+        .getByRole("button", { name: `保存${name}模型`, exact: true })
+        .click();
+      await expect(page.getByRole("dialog").getByRole("status")).toContainText(
+        "已保存",
+      );
+      await page.reload();
+      await open();
+      await expect(selection.locator("option:checked")).toHaveText(
+        `Synthetic provider / ${model}`,
+      );
+      await expect(
+        page.getByRole("button", { name: "测试已保存模型", exact: true }),
+      ).toBeEnabled();
+      await expect(page.getByRole("dialog").getByRole("alert")).toHaveCount(0);
+      await page.keyboard.press("Escape");
+    }
+  } finally {
+    // The fixture server is shared across device projects; restore standalone
+    // connections so the next project's legacy editor remains available.
+    let state = await (
+      await page.request.post("/api/web/memory-retrieval/state", {
+        headers,
+        data: {},
+      })
+    ).json();
+    for (const kind of ["embed", "rerank"]) {
+      const connection = original.connections[kind];
+      const saved = await page.request.post("/api/web/memory-retrieval/save", {
+        headers,
+        data: {
+          kind,
+          value: {
+            base_url: connection.base_url || "https://models.example/v1",
+            model_id: connection.model_id || `fixture-${kind}`,
+          },
+          credential: { action: "replace", value: "synthetic-secret-not-real" },
+          expected_revision: state.revision,
+          client_id: randomUUID(),
+        },
+      });
+      expect(saved.ok()).toBeTruthy();
+      state = await saved.json();
+    }
+  }
 });
