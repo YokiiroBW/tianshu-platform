@@ -46,6 +46,7 @@ NUMERIC_PATHS = frozenset(
         "count",
         "expires_at",
         "checked_at",
+        "tested_at",
     }
 )
 ROW_ORDER_TABLES = frozenset(

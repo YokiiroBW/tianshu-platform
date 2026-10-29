@@ -9,10 +9,29 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from services.platform.contracts import Fault
 from services.platform.provider_catalog import ProviderCatalog, normalize_base_url
+from services.platform.postgres import dialect
+
+
+class ProviderTestDialectTests(unittest.TestCase):
+    def test_failed_test_timestamp_uses_numeric_predicate_and_preserves_null_fallback(self):
+        connection = Mock()
+        parameters = ("synthetic-fingerprint", 1793260800.125)
+        dialect(
+            connection,
+            "SELECT result FROM test_attempts WHERE fingerprint=? AND state='settled' "
+            "AND (json_extract(result,'$.tested_at')=? OR "
+            "json_extract(result,'$.tested_at') IS NULL) ORDER BY rowid DESC LIMIT 1",
+            parameters,
+        )
+        connection.native.assert_called_once()
+        statement, passed = connection.native.call_args.args
+        self.assertIn("(ts_json_extract(result,'$.tested_at'))::double precision=?", statement)
+        self.assertIn("(ts_json_extract(result,'$.tested_at'))::double precision IS NULL", statement)
+        self.assertEqual(passed, parameters)
 
 
 class ProviderCatalogTests(unittest.TestCase):
