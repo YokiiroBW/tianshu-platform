@@ -245,6 +245,14 @@ export function WardrobePanel({ access }: { access: LifeAccess }) {
         </DetailCard>
         <RuntimeFeedback {...action} />
       </section>
+    </>
+  );
+}
+
+export function ImageStudioPanel({ access }: { access: LifeAccess }) {
+  const outfits = useLifeResource(access, "outfits");
+  return (
+    <>
       <IdentityReference access={access} />
       <ImageStudio access={access} outfits={outfits.items} />
     </>

@@ -69,7 +69,13 @@ function badge(item: Item) {
   return "草稿";
 }
 
-export default function PersonaAuthor({ session }: { session: SessionState }) {
+export default function PersonaAuthor({
+  session,
+  actor = "",
+}: {
+  session: SessionState;
+  actor?: string;
+}) {
   const [profiles, setProfiles] = useState<Item[]>([]);
   const [targets, setTargets] = useState<Item[]>([]);
   const [permissions, setPermissions] = useState({
@@ -116,10 +122,12 @@ export default function PersonaAuthor({ session }: { session: SessionState }) {
     };
     window.addEventListener("beforeunload", warn);
     window.addEventListener("tianshu:before-route", protect);
+    window.addEventListener("tianshu:before-role", protect);
     return () => {
       controller.current?.abort();
       window.removeEventListener("beforeunload", warn);
       window.removeEventListener("tianshu:before-route", protect);
+      window.removeEventListener("tianshu:before-role", protect);
     };
   }, []);
 
@@ -155,7 +163,10 @@ export default function PersonaAuthor({ session }: { session: SessionState }) {
     setPermissions(result.permissions);
     if (!initialized.current) {
       initialized.current = true;
-      const first = result.profiles[0] ?? result.targets[0];
+      const first =
+        result.targets.find((item) => item.id === actor) ??
+        result.profiles[0] ??
+        result.targets[0];
       if (first) {
         const answer = await call<{ item: Item }>("view", { id: first.id });
         const next = fromItem(answer.item);
@@ -169,7 +180,7 @@ export default function PersonaAuthor({ session }: { session: SessionState }) {
       }
     }
     setLoaded(true);
-  }, [call]);
+  }, [call, actor]);
 
   useEffect(() => {
     void load().catch((cause) => setError(reason(cause)));

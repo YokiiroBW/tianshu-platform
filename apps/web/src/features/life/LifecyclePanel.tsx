@@ -6,6 +6,7 @@ import { showState, type LifeAccess } from "./runtimeApi";
 import type { activities_record, open_work_record } from "./runtimeTypes";
 import { showMood } from "./lifeLabels";
 import { LifeEvidence } from "./LifeEvidence";
+import { Target, Sun, Heart, ListTodo } from "lucide-react";
 
 function time(value: number | null) {
   return value !== null
@@ -32,9 +33,11 @@ export function LifecyclePanel({ access }: { access: LifeAccess }) {
     affect = useLifeResource(access, "affect", { refreshMs: 15000 }),
     autonomy = useLifeResource(access, "autonomy", { refreshMs: 15000 });
   return (
-    <div className="life-runtime-grid">
-      <section className="panel">
-        <h3>当前自主目标</h3>
+    <div className="life-runtime-grid life-activity-overview">
+      <section className="panel life-goal-card">
+        <h3>
+          <Target aria-hidden="true" /> 当前自主目标
+        </h3>
         <ResourceFeedback {...autonomy} empty={!autonomy.items.length} />
         {autonomy.items.map((row) => (
           <article key={row.id} className="life-record">
@@ -66,8 +69,10 @@ export function LifecyclePanel({ access }: { access: LifeAccess }) {
           刷新当前目标
         </button>
       </section>
-      <section className="panel">
-        <h3>此刻</h3>
+      <section className="panel life-now-card">
+        <h3>
+          <Sun aria-hidden="true" /> 此刻
+        </h3>
         <ResourceFeedback {...state} empty={!state.items.length} />
         {state.items.map((row) => (
           <div key={row.actor_id}>
@@ -84,12 +89,20 @@ export function LifecyclePanel({ access }: { access: LifeAccess }) {
           刷新状态
         </button>
       </section>
-      <section className="panel">
-        <h3>短期感受</h3>
+      <section className="panel life-feeling-card">
+        <h3>
+          <Heart aria-hidden="true" /> 短期感受
+        </h3>
         <ResourceFeedback {...affect} empty={!affect.items.length} />
         {affect.items.map((row) => (
           <div key={row.actor_id}>
-            <p>情绪倾向 {row.valence.toFixed(2)}</p>
+            <p>
+              {row.valence > 0.2
+                ? "心情明朗"
+                : row.valence < -0.2
+                  ? "需要一点空间"
+                  : "平静的此刻"}
+            </p>
             <ul>
               {row.feelings.map((item) => (
                 <li key={item.id}>
@@ -162,9 +175,11 @@ function ActivityPanel({ access }: { access: LifeAccess }) {
     }
   }
   return (
-    <section className="panel">
+    <section className="panel life-activities-card">
       <div className="section-heading">
-        <h3>活动与进度</h3>
+        <h3>
+          <ListTodo aria-hidden="true" /> 活动与进度
+        </h3>
         <button
           className="button"
           disabled={records.loading}

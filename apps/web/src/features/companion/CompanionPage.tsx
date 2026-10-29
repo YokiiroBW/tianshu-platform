@@ -5,22 +5,29 @@ import "./companion.css";
 
 import { request, type Session } from "./api";
 import { DialoguePanel } from "./DialoguePanel";
+import { useRoleWorkspace } from "../../app/RoleWorkspace";
 
 export default function CompanionPage() {
+  const workspace = useRoleWorkspace();
   const [session, setSession] = useState<Session | null>(null);
   useSessionGuard(session);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [conversationId, setConversationId] = useState("");
-  const [actorId, setActorId] = useState("");
   const active = useRef<AbortController | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const conversations = session?.conversations ?? [];
   const conversation =
-    conversations.find((item) => item.id === conversationId) ??
-    conversations[0];
+    conversations.find(
+      (item) =>
+        item.id === conversationId &&
+        (!workspace.actor || item.actors.includes(workspace.actor)),
+    ) ??
+    conversations.find(
+      (item) => !workspace.actor || item.actors.includes(workspace.actor),
+    );
   const actors = conversation?.actors ?? [];
-  const actor = actors.includes(actorId) ? actorId : (actors[0] ?? "");
+  const actor = actors.includes(workspace.actor) ? workspace.actor : "";
 
   async function connect() {
     active.current?.abort();
@@ -59,15 +66,16 @@ export default function CompanionPage() {
 
   return (
     <section
-      className="chat-console glass scroll-page"
+      className="chat-page chat-console glass scroll-page"
       aria-label="网页文字对话"
       aria-busy={busy}
     >
       <div className="chat-toolbar">
         <div>
-          <p className="eyebrow">同源 · 私人对话</p>
+          <p className="eyebrow">角色 · Web 聊天</p>
           <h2 ref={heading} tabIndex={-1}>
-            留一点时间，慢慢聊
+            {workspace.roles.find((r) => r.id === workspace.actor)?.name ??
+              "选择角色，开始聊天"}
           </h2>
         </div>
         <div className="chat-actions">
@@ -107,45 +115,43 @@ export default function CompanionPage() {
               会话
               <select
                 value={conversation?.id ?? ""}
-                disabled={busy || !conversations.length}
+                disabled={
+                  busy ||
+                  !conversations.some((item) =>
+                    item.actors.includes(workspace.actor),
+                  )
+                }
                 onChange={(event) => {
                   setConversationId(event.target.value);
-                  setActorId("");
                 }}
               >
                 {!conversations.length && (
                   <option value="">没有已授权会话</option>
                 )}
-                {conversations.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              角色
-              <select
-                value={actor}
-                disabled={busy || !actors.length}
-                onChange={(event) => {
-                  setActorId(event.target.value);
-                }}
-              >
-                {!actors.length && <option value="" />}
-                {actors.map((id) => (
-                  <option key={id} value={id}>
-                    {id}
-                  </option>
-                ))}
+                {conversations
+                  .filter((item) => item.actors.includes(workspace.actor))
+                  .map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label === "private-chat" ? "私人对话" : item.label}
+                    </option>
+                  ))}
               </select>
             </label>
           </div>
+          {workspace.actor && !actor && (
+            <p role="status">
+              此角色尚未获得 Web
+              聊天会话，请在角色管理中检查“启用角色”和“允许对话”。
+            </p>
+          )}
           <DialoguePanel
             key={`${conversation?.id}:${actor}:${session.csrf}`}
             session={session}
             conversation={conversation?.id ?? ""}
             actor={actor}
+            actorName={
+              workspace.roles.find((r) => r.id === actor)?.name ?? "角色"
+            }
           />
         </>
       )}

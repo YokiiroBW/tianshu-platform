@@ -1,7 +1,8 @@
 import { Drawer } from "../../components/Drawer";
 import { DetailCard } from "../../components/DetailCard";
 import { useEffect, useMemo, useState } from "react";
-import { Plus, RefreshCw } from "lucide-react";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useRoleWorkspace } from "../../app/RoleWorkspace";
 import { LoginLink, useAuth } from "../../app/Auth";
 import { requestId } from "../../app/requestId";
 import { request } from "./api";
@@ -23,6 +24,8 @@ type Role = {
   error_code: string | null;
   client_id: string;
   legacy: boolean;
+  deleted?: boolean;
+  deleting?: boolean;
 };
 type View = {
   roles: Role[];
@@ -115,6 +118,8 @@ function formFor(role: Role): Form {
 
 export default function RoleManager() {
   const { session, loading, error: authError } = useAuth();
+  const workspace = useRoleWorkspace();
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [view, setView] = useState<View | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -175,6 +180,7 @@ export default function RoleManager() {
   }, [session?.csrf]);
 
   function select(actor: string | null) {
+    if (actor && !workspace.select(actor)) return;
     setSelected(actor);
     const found = view?.roles.find((item) => item.actor_id === actor);
     const existing = view?.legacy_roles.find((item) => item.id === actor);
@@ -239,6 +245,8 @@ export default function RoleManager() {
         session.csrf,
       );
       await refresh();
+      await workspace.refresh();
+      workspace.select(result.role.actor_id);
       setSelected(result.role.actor_id);
       setForm(formFor(result.role));
       setPendingId(result.role.state === "pending" ? clientId : null);
@@ -267,6 +275,13 @@ export default function RoleManager() {
         session.csrf,
       );
       await refresh();
+      await workspace.refresh();
+      if (result.role.deleted) {
+        setSelected(null);
+        setMobileDetail(false);
+        setNotice("角色已删除，历史对话与记忆保留。");
+        return;
+      }
       setPendingId(
         result.role.state === "pending" ? result.role.client_id : null,
       );
@@ -320,11 +335,47 @@ export default function RoleManager() {
     }
   }
 
+  async function deleteRole() {
+    if (!session?.authenticated || !role) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await request<{ role: Role & { deleted?: boolean } }>(
+        "roles/delete",
+        new AbortController().signal,
+        {
+          actor_id: role.actor_id,
+          expected_version: role.version,
+          client_id: requestId(),
+        },
+        session.csrf,
+      );
+      await refresh();
+      await workspace.refresh();
+      setDeleteOpen(false);
+      if (result.role.deleted) {
+        setSelected(null);
+        setMobileDetail(false);
+        setNotice("角色已删除，历史对话与记忆保留。");
+      } else {
+        setNotice("正在停用并删除角色，完成后将从列表移除。");
+      }
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "删除尚未完成，请刷新查看状态。",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="role-page glass scroll-page" aria-label="角色管理">
       <header className="role-header">
         <div>
-          <p className="eyebrow">陪伴 · 独立运行角色</p>
+          <p className="eyebrow">角色工作区</p>
           <h2>角色管理</h2>
         </div>
         <button
@@ -386,10 +437,15 @@ export default function RoleManager() {
                   <button
                     type="button"
                     className="role-list-item"
-                    aria-current={selected === item.id ? "true" : undefined}
+                    aria-current={
+                      workspace.actor === item.id ? "true" : undefined
+                    }
                     key={item.id}
                     onClick={() => select(item.id)}
                   >
+                    <span className="role-context-avatar" aria-hidden="true">
+                      {item.name.slice(0, 1)}
+                    </span>
                     <strong>{item.name}</strong>
                     <span>{item.label}</span>
                   </button>
@@ -441,7 +497,9 @@ export default function RoleManager() {
                         onClick={() => void retry()}
                       >
                         {role.stage.startsWith("cancel_")
-                          ? "继续停用"
+                          ? role.deleting
+                            ? "继续删除"
+                            : "继续停用"
                           : "继续配置"}
                       </button>
                       {!role.stage.startsWith("cancel_") && (
@@ -645,8 +703,43 @@ export default function RoleManager() {
                         </button>
                       )}
                     </div>
+                    {role && (
+                      <div className="role-danger-zone">
+                        <button
+                          type="button"
+                          className="button"
+                          disabled={busy}
+                          onClick={() => setDeleteOpen(true)}
+                        >
+                          <Trash2 aria-hidden="true" /> 删除角色
+                        </button>
+                        <p className="muted">
+                          移除角色并停止运行，历史对话与记忆保留。
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
+              </Drawer>
+              <Drawer
+                title={`删除 ${role?.name ?? "角色"}`}
+                variant="card"
+                open={deleteOpen}
+                onClose={() => setDeleteOpen(false)}
+              >
+                <p>
+                  删除后，角色将退出列表并停止运行。历史对话、日记和记忆会保留。
+                </p>
+                <button className="button" onClick={() => setDeleteOpen(false)}>
+                  保留角色
+                </button>
+                <button
+                  className="button"
+                  disabled={busy}
+                  onClick={() => void deleteRole()}
+                >
+                  {busy ? "正在删除…" : "删除角色"}
+                </button>
               </Drawer>
             </div>
           )}

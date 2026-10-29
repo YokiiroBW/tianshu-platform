@@ -20,6 +20,29 @@ def validate_function(value):
     return value
 
 
+def effective_binding(view, function_id, role=None):
+    """One selection rule shared by the role editor and runtime admission."""
+    binding = next(item for item in view["functions"] if item["function_id"] == function_id)
+    override = (role or {}).get("model_functions", {}).get(function_id)
+    if override:
+        return {**override, "source": "role_function"}
+    if function_id == "chat" and (role or {}).get("provider_id"):
+        return {
+            "provider_id": role["provider_id"],
+            "provider_revision": role["provider_revision"],
+            "source": "role_default",
+        }
+    if binding["provider_id"] is not None:
+        return {**binding, "source": "system_function"}
+    if (role or {}).get("provider_id"):
+        return {
+            "provider_id": role["provider_id"],
+            "provider_revision": role["provider_revision"],
+            "source": "role_default",
+        }
+    return {**view["default"], "source": "system_default"}
+
+
 class ModelFunctions:
     def __init__(self, catalog):
         self.catalog = catalog

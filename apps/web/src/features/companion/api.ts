@@ -23,6 +23,11 @@ const errors: Record<string, string> = {
   model_not_configured: "模型尚未配置，暂时不能发送。",
   version_conflict: "后台版本已变化，请刷新后再操作。",
   scope_changed: "会话授权范围已变化，请重新连接。",
+  provider_unavailable: "所选模型当前不可用，请选择其他模型或检查供应商。",
+  role_configuring: "角色正在应用设置，请完成后再修改。",
+  not_found: "角色或所选内容已不存在，请刷新列表。",
+  invalid_input: "设置格式有误，请检查名称和所选项目。",
+  idempotency_conflict: "本次操作状态已变化，请刷新后重试。",
   budget_exceeded: "对话内容超过当前读取预算。",
 };
 

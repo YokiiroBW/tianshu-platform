@@ -482,13 +482,7 @@ export function DailyLife({
                 type="button"
                 className="life-card life-diary-link"
                 onClick={() => {
-                  const diaries = document.getElementById("life-diaries");
-                  if (diaries instanceof HTMLDetailsElement)
-                    diaries.open = true;
-                  diaries?.scrollIntoView({
-                    behavior: "smooth",
-                    block: "start",
-                  });
+                  window.location.hash = "#/companion/4";
                 }}
               >
                 <span className="life-diary-icon">

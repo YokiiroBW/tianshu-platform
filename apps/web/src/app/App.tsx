@@ -13,7 +13,10 @@ import {
   resolveRoute,
   subscriptionNavigation,
   userNavigation,
+  roleNavigation,
 } from "./modules";
+import { RoleWorkspaceProvider, RolePicker } from "./RoleWorkspace";
+import "./role-workspace.css";
 import {
   AuthProvider,
   AccountPage,
@@ -60,7 +63,9 @@ function readPreferences(): Preferences {
 export function App() {
   return (
     <AuthProvider>
-      <AppShell />
+      <RoleWorkspaceProvider>
+        <AppShell />
+      </RoleWorkspaceProvider>
     </AuthProvider>
   );
 }
@@ -208,19 +213,23 @@ function AppShell() {
         <div className="nav-group" key={group}>
           <p className="nav-label">{group}</p>
           {modules
-            .filter((item) => item.group === group)
+            .filter((item) => item.group === group && item.id !== "room")
             .map((item) => {
               const children =
                 item.id === "subscriptions"
                   ? subscriptionNavigation
-                  : item.id === "memory"
-                    ? userNavigation
-                    : [];
+                  : item.id === "companion"
+                    ? roleNavigation
+                    : item.id === "memory"
+                      ? userNavigation
+                      : [];
               return (
                 <div key={item.id}>
                   <a
                     className="nav-item"
-                    href={`#/${item.id}`}
+                    href={
+                      item.id === "companion" ? "#/companion/3" : `#/${item.id}`
+                    }
                     aria-label={item.label}
                     title={item.label}
                     aria-current={current?.id === item.id ? "page" : undefined}
@@ -234,6 +243,7 @@ function AppShell() {
                       className="nav-subsections"
                       aria-label={`${item.label}页面`}
                     >
+                      {item.id === "companion" && <RolePicker />}
                       {children.map((child) => (
                         <a
                           key={child.section}
@@ -283,6 +293,13 @@ function AppShell() {
     page = <pages.personas />;
   else if (current.id === "companion" && section === 3) page = <pages.roles />;
   else if (current.id === "companion" && section === 1) page = <pages.life />;
+  else if (current.id === "companion" && section === 4)
+    page = <pages.life mode="diary" />;
+  else if (current.id === "companion" && section === 5)
+    page = <pages.life mode="writing" />;
+  else if (current.id === "companion" && section === 6)
+    page = <pages.roleSettings />;
+  else if (current.id === "companion" && section === 7) page = <pages.room />;
   else if (current.id === "home" && section === 0) page = <pages.home />;
   else if (current.id === "home" && (section === 1 || section === 2))
     page = <pages.infrastructure section={section} />;
@@ -319,7 +336,7 @@ function AppShell() {
         className={`app-shell is-contained-page${preferences.sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}
       >
         <aside
-          className={`sidebar glass${current?.id === "subscriptions" || current?.id === "memory" ? " has-subnavigation" : ""}`}
+          className={`sidebar glass${current?.id === "subscriptions" || current?.id === "memory" || current?.id === "companion" ? " has-subnavigation" : ""}`}
         >
           <div className="sidebar-brand">
             <a
@@ -379,7 +396,11 @@ function AppShell() {
               <span>天枢</span>
               <span aria-hidden="true">/</span>
               <strong>
-                {account ? accountTitle : (current?.label ?? "页面不存在")}
+                {account
+                  ? accountTitle
+                  : current?.id === "companion"
+                    ? `角色 / ${current.sections[section]}`
+                    : (current?.label ?? "页面不存在")}
               </strong>
             </p>
             <div className="account-control">
@@ -416,7 +437,7 @@ function AppShell() {
           )}
           <main id="main" ref={main} tabIndex={-1}>
             <h1 className="sr-only">
-              {current?.id === "subscriptions"
+              {current?.id === "subscriptions" || current?.id === "companion"
                 ? current.sections[section]
                 : account
                   ? accountTitle
@@ -425,6 +446,7 @@ function AppShell() {
             {current &&
               current.id !== "subscriptions" &&
               current.id !== "memory" &&
+              current.id !== "companion" &&
               current.sections.length > 0 && (
                 <nav
                   className="section-nav"

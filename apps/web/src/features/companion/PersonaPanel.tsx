@@ -1,14 +1,20 @@
+import { useRoleWorkspace } from "../../app/RoleWorkspace";
 import { LoginLink, useAuth } from "../../app/Auth";
 import PersonaAuthor from "./PersonaAuthor";
 import "./personas.css";
 
 export default function PersonaPanel() {
   const { session, loading, error, refresh } = useAuth();
+  const workspace = useRoleWorkspace();
 
   return (
     <section className="persona-page glass scroll-page" aria-label="人格管理">
       <header className="persona-page-heading">
-        <h2>人格</h2>
+        <h2>
+          {workspace.roles.find((role) => role.id === workspace.actor)?.name ??
+            "角色"}{" "}
+          · 人格与世界
+        </h2>
       </header>
       {loading ? (
         <p role="status">正在读取人格…</p>
@@ -20,7 +26,11 @@ export default function PersonaPanel() {
           </button>
         </div>
       ) : session?.authenticated ? (
-        <PersonaAuthor session={session} />
+        <PersonaAuthor
+          key={workspace.actor}
+          actor={workspace.actor}
+          session={session}
+        />
       ) : (
         <LoginLink />
       )}

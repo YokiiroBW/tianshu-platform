@@ -1,3 +1,5 @@
+import { BookShelf } from "../../components/BookShelf";
+import { Drawer } from "../../components/Drawer";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { RefreshCw, Search } from "lucide-react";
 import { useAuth } from "../../app/Auth";
@@ -484,7 +486,7 @@ export default function KnowledgePage() {
             </StatePanel>
           )}
           {tab === "documents" && (
-            <div className="knowledge-columns scroll-layout">
+            <div className="knowledge-shelf scroll-layout">
               <section
                 className="panel scroll-pane"
                 aria-label="项目资料目录"
@@ -517,26 +519,19 @@ export default function KnowledgePage() {
                         <p>项目知识服务成功返回了空目录。</p>
                       </StatePanel>
                     ) : (
-                      <ul className="knowledge-list">
-                        {items.map((row) => (
-                          <li key={row.document_id}>
-                            <button
-                              type="button"
-                              data-selected={
-                                selected?.document_id === row.document_id ||
-                                undefined
-                              }
-                              onClick={() => void readDocument(row)}
-                            >
-                              <strong>{row.document_id}</strong>
-                              <small>
-                                {row.kind} · 版本 {row.version} ·{" "}
-                                {row.indexed_state}
-                              </small>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
+                      <BookShelf
+                        entries={items.map((row) => ({
+                          id: row.document_id,
+                          title: row.document_id,
+                          badge: `版本 ${row.version}`,
+                          category: row.kind,
+                          selected: selected?.document_id === row.document_id,
+                        }))}
+                        onOpen={(id) => {
+                          const row = items.find((r) => r.document_id === id);
+                          if (row) void readDocument(row);
+                        }}
+                      />
                     )}
                     {docs.next_cursor && (
                       <button
@@ -552,11 +547,19 @@ export default function KnowledgePage() {
                   </>
                 )}
               </section>
-              <section
-                className="panel scroll-pane"
-                aria-label="项目资料详情"
-                tabIndex={0}
+              <Drawer
+                title={selected?.document_id ?? "资料正文"}
+                open={!!selected}
+                onClose={() => {
+                  current.current?.abort();
+                  setSelected(null);
+                  setDetail(null);
+                  setBlocks([]);
+                  setBusy(false);
+                }}
+                variant="card"
               >
+                {error && <p role="alert">{error}</p>}
                 <h2>资料正文</h2>
                 {!selected ? (
                   <p className="muted">
@@ -606,7 +609,7 @@ export default function KnowledgePage() {
                     </>
                   )
                 )}
-              </section>
+              </Drawer>
             </div>
           )}
           {tab !== "documents" && (

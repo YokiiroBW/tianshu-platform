@@ -160,22 +160,11 @@ export default function RoomPage() {
         </button>
       </header>
       <div className="room-live">
-        <label>
-          小屋角色
-          <select
-            value={life.actor}
-            onChange={(e) => life.choose(e.target.value)}
-          >
-            <option value="">
-              {life.actors.length ? "选择已授权角色" : ""}
-            </option>
-            {life.actors.map((row) => (
-              <option key={row.actor_id} value={row.actor_id}>
-                {row.label ?? row.actor_id}
-              </option>
-            ))}
-          </select>
-        </label>
+        <span className="muted">
+          当前角色：
+          {life.actors.find((row) => row.actor_id === life.actor)?.label ??
+            "请在侧栏选择角色"}
+        </span>
         <button
           className="button"
           onClick={life.refresh}

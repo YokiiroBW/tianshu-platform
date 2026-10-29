@@ -3,6 +3,7 @@ import { DetailCard } from "../../../components/DetailCard";
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useAuth } from "../../../app/Auth";
+import { useRoleWorkspace } from "../../../app/RoleWorkspace";
 import {
   integrationPost,
   readFailure,
@@ -34,8 +35,9 @@ const states: Record<
   unavailable: { label: "暂时不可用", tone: "red" },
 };
 
-export function SkillsPanel() {
+export function SkillsPanel({ actorId }: { actorId?: string }) {
   const { session } = useAuth();
+  const workspace = useRoleWorkspace();
   const csrf = session?.authenticated ? session.csrf : "";
   const preference = `tianshu-skills-role:${encodeURIComponent(session?.username || csrf)}`;
   const [actors, setActors] = useState<Actor[]>([]);
@@ -78,13 +80,17 @@ export function SkillsPanel() {
       setCursor(response.next_after_actor_id);
       if (!after)
         setActor((previous) =>
-          response.items.some((item) => item.actor_id === previous)
-            ? previous
-            : (response.items.find(
-                (item) => item.actor_id === readRolePreference(preference),
-              )?.actor_id ??
-              response.items[0]?.actor_id ??
-              ""),
+          actorId
+            ? response.items.some((item) => item.actor_id === actorId)
+              ? actorId
+              : ""
+            : response.items.some((item) => item.actor_id === previous)
+              ? previous
+              : (response.items.find(
+                  (item) => item.actor_id === readRolePreference(preference),
+                )?.actor_id ??
+                response.items[0]?.actor_id ??
+                ""),
         );
     } catch (cause) {
       if (!controller.signal.aborted) setError(readFailure(cause));
@@ -194,6 +200,8 @@ export function SkillsPanel() {
     saveRolePreference(preference, next);
   }
   function comfyLink() {
+    workspace.select(actor);
+    saveRolePreference("tianshu-life-tab", "images");
     saveRolePreference(
       `tianshu-life-role:${encodeURIComponent(session?.username || csrf)}`,
       actor,
@@ -228,7 +236,7 @@ export function SkillsPanel() {
           选择角色
           <select
             value={actor}
-            disabled={busy || actors.length === 0}
+            disabled={busy || actors.length === 0 || !!actorId}
             onChange={(event) => selectActor(event.target.value)}
           >
             {actors.length === 0 && <option value="" />}

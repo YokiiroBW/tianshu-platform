@@ -3,7 +3,7 @@
 import time
 
 from .contracts import digest, require
-from .model_functions import validate_function
+from .model_functions import effective_binding, validate_function
 
 
 class ProviderAuthority:
@@ -77,37 +77,22 @@ class ProviderAuthority:
         self._identity(header, "config.select", body["caller_service"])
         function_id = validate_function(body.get("function_id", "chat"))
         view = self.catalog.view()
-        selected = view["default"]
-        binding = next(item for item in view["functions"] if item["function_id"] == function_id)
-        if binding["provider_id"] is not None:
-            selected = binding
         role_runtime = getattr(self.platform, "role_runtime", None)
         role = role_runtime.get(body["actor_id"]) if role_runtime is not None else None
         if role is not None:
             require(role_runtime.active(body["actor_id"]), "forbidden", 403)
-            if role["provider_id"] is not None and (
-                function_id == "chat" or binding["provider_id"] is None
-            ):
-                provider = next(
-                    (
-                        item
-                        for item in view["providers"]
-                        if item["provider_id"] == role["provider_id"]
-                    ),
-                    None,
-                )
-                require(
-                    provider is not None
-                    and provider["revision"] == role["provider_revision"]
-                    and self.catalog._selectable(provider),
-                    "provider_unavailable",
-                    409,
-                )
-                selected = {
-                    "configured": True,
-                    "provider_id": role["provider_id"],
-                    "provider_revision": role["provider_revision"],
-                }
+        selected = effective_binding(view, function_id, role)
+        provider = next(
+            (p for p in view["providers"] if p["provider_id"] == selected.get("provider_id")), None
+        )
+        configured = bool(
+            provider
+            and provider["revision"] == selected.get("provider_revision")
+            and self.catalog._selectable(provider)
+        )
+        if selected["source"] in {"role_function", "role_default"}:
+            require(configured, "provider_unavailable", 409)
+        selected = {**selected, "configured": configured}
         now = self.clock()
         # Existing static deployments may already have used the new numeric range.
         # Once enabled, Models.publish reserves it, so this read is stable for new grants.
@@ -141,7 +126,8 @@ class ProviderAuthority:
                     # transaction before moving its grant to a fresh version.
                     document, encrypted = self.catalog._row(db, provider_id, revision)
                     require(
-                        document["enabled"] and document["source_enabled"]
+                        document["enabled"]
+                        and document["source_enabled"]
                         and encrypted is not None,
                         "provider_unavailable",
                         409,
@@ -150,8 +136,14 @@ class ProviderAuthority:
                     changed = db.execute(
                         "UPDATE provider_turn_grants SET version=? WHERE turn_id=? AND version=? "
                         "AND scope_digest=? AND caller_service=? AND workload=?",
-                        (version, body["turn_id"], grant["version"], grant["scope_digest"],
-                         body["caller_service"], body["workload"]),
+                        (
+                            version,
+                            body["turn_id"],
+                            grant["version"],
+                            grant["scope_digest"],
+                            body["caller_service"],
+                            body["workload"],
+                        ),
                     ).rowcount
                     require(changed == 1, "version_conflict", 409)
             else:

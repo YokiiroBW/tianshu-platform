@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw, Sparkles, BookOpen } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { useAuth } from "../../app/Auth";
 import { integrationPost, readFailure } from "../../app/integrationApi";
 import { StatePanel } from "../../components/StatePanel";
 import { DailyLife } from "./DailyLife";
 import { LifeWorkspace } from "./LifeWorkspace";
-import {
-  readRolePreference,
-  saveRolePreference,
-} from "../../app/rolePreference";
 import "./life.css";
+import { useRoleWorkspace } from "../../app/RoleWorkspace";
+import { BookShelf } from "../../components/BookShelf";
+import { Drawer } from "../../components/Drawer";
+import { WritingPanel } from "./WritingPanel";
 
 type Connection = {
   can_retry?: boolean;
@@ -116,10 +116,14 @@ function unavailableTitle(code: string) {
 }
 
 /** Read-only persisted life and authorized published diary revisions. */
-export default function LifePage() {
+export default function LifePage({
+  mode = "life",
+}: {
+  mode?: "life" | "diary" | "writing";
+}) {
+  const workspace = useRoleWorkspace();
   const { session } = useAuth();
   const csrf = session?.authenticated ? session.csrf : "";
-  const rolePreference = `tianshu-life-role:${encodeURIComponent(session?.username || csrf)}`;
   const [state, setState] = useState<Connection | null>(null);
   const [actors, setActors] = useState<Actor[]>([]);
   const [actorCursor, setActorCursor] = useState<string | null>(null);
@@ -190,10 +194,6 @@ export default function LifePage() {
     if (!csrf) return;
     const controller = start();
     const mark = generation.current;
-    if (!after_actor_id) {
-      setActors([]);
-      setActorCursor(null);
-    }
     try {
       const answer = await integrationPost<Actors>(
         "life/actors",
@@ -207,16 +207,6 @@ export default function LifePage() {
         after_actor_id ? [...before, ...answer.items] : answer.items,
       );
       setActorCursor(answer.next_after_actor_id);
-      if (!after_actor_id)
-        setActor((before) =>
-          answer.items.some((row) => row.actor_id === before)
-            ? before
-            : (answer.items.find(
-                (row) => row.actor_id === readRolePreference(rolePreference),
-              )?.actor_id ??
-              answer.items[0]?.actor_id ??
-              ""),
-        );
     } catch (cause) {
       if (!controller.signal.aborted && generation.current === mark)
         setError(readFailure(cause));
@@ -277,21 +267,21 @@ export default function LifePage() {
     if (actor) void readActor(actor);
   }, [actor, csrf]);
 
-  function changeActor(next: string) {
-    if (next === actor) return;
-    generation.current++;
-    active.current?.abort();
-    setSnapshot(null);
-    setDiaries([]);
-    setDiaryCursor(null);
-    setSelected(null);
-    setRevision(null);
-    setError("");
-    setBusy(false);
-
-    setActor(next);
-    saveRolePreference(rolePreference, next);
-  }
+  useEffect(() => {
+    const next = actors.some((row) => row.actor_id === workspace.actor)
+      ? workspace.actor
+      : "";
+    if (next !== actor) {
+      generation.current++;
+      active.current?.abort();
+      setBusy(false);
+      setActor(next);
+      setSnapshot(null);
+      setDiaries([]);
+      setSelected(null);
+      setRevision(null);
+    }
+  }, [workspace.actor, actors]);
 
   async function moreDiaries() {
     if (!csrf || !actor || !diaryCursor) return;
@@ -389,183 +379,128 @@ export default function LifePage() {
       </StatePanel>
     );
 
+  const roleName =
+    workspace.roles.find((r) => r.id === workspace.actor)?.name ??
+    actors.find((r) => r.actor_id === actor)?.label ??
+    "角色";
   return (
-    <div className="life-page">
-      <header className="life-toolbar">
-        <div className="life-identity">
-          <span className="life-avatar">
-            <Sparkles aria-hidden="true" />
-          </span>
-          <label className="life-actor">
-            <span className="sr-only">选择角色</span>
-            <select
-              value={actor}
-              disabled={actors.length === 0}
-              onChange={(event) => changeActor(event.target.value)}
-            >
-              {actors.length === 0 && <option value="" />}
-              {actors.map((row) => (
-                <option key={row.actor_id} value={row.actor_id}>
-                  {row.label || row.actor_id}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="life-page-title">
-          <h2>今天的生活</h2>
-          <p className="muted">在平凡的日子里，发现值得珍藏的瞬间。</p>
+    <div className="life-page scroll-page">
+      <header className="role-section-heading">
+        <div className="role-identity-title">
+          <span className="role-context-avatar">{roleName.slice(0, 1)}</span>
+          <div>
+            <h2>
+              {mode === "diary"
+                ? `${roleName}的日记`
+                : mode === "writing"
+                  ? `${roleName}的创作`
+                  : `${roleName}的生活`}
+            </h2>
+            <p>
+              {mode === "diary"
+                ? "翻开日常里值得记住的一页。"
+                : mode === "writing"
+                  ? "故事、灵感与尚未完成的篇章。"
+                  : "近况、计划与经历，各有自己的位置。"}
+            </p>
+          </div>
         </div>
         <button
-          className="button life-icon-button"
-          aria-label="重新读取角色"
-          title="重新读取角色"
-          disabled={busy}
+          className="button"
           onClick={() => void listActors()}
+          disabled={busy}
         >
           <RefreshCw aria-hidden="true" />
+          刷新
         </button>
-        {actorCursor && (
-          <button
-            className="button"
-            disabled={busy}
-            onClick={() => void listActors(actorCursor)}
-          >
-            继续读取角色
-          </button>
-        )}
       </header>
-      {error && (
-        <StatePanel
-          kind="error"
-          title="本次读取失败"
-          action={
-            <button
-              className="button"
-              onClick={() =>
-                selected
-                  ? void readRevision(selected)
-                  : actor
-                    ? void readActor(actor)
-                    : void listActors()
-              }
-            >
-              重新读取
-            </button>
-          }
+      {actorCursor && (
+        <button
+          className="button"
+          disabled={busy}
+          onClick={() => void listActors(actorCursor)}
         >
-          <p>{error}</p>
-          <p>失败没有被当作空生活状态或空日记。</p>
+          继续读取角色
+        </button>
+      )}
+      {error && <p role="alert">{error}</p>}
+      {!actor && !busy && (
+        <StatePanel kind="empty" title="当前角色暂无可读取的生活内容">
+          <p>请在侧栏选择已授权的角色，或到角色管理检查运行状态。</p>
         </StatePanel>
       )}
-      {!busy && !error && actors.length === 0 && (
-        <StatePanel kind="empty" title="没有可读角色">
-          <p>服务成功返回了空的授权角色列表。这不表示其它角色不存在。</p>
-        </StatePanel>
-      )}
-      {actor && (
-        <>
-          <DailyLife
-            key={`${csrf}:${actor}`}
-            actor={actor}
-            csrf={csrf}
-            canRetry={state.can_retry === true}
-            snapshot={snapshot?.actor_id === actor ? snapshot : null}
-          />
+      {actor === workspace.actor &&
+        actor &&
+        (mode === "life" ? (
           <LifeWorkspace
             key={`workspace:${csrf}:${actor}`}
             access={{ actor, csrf }}
+            overview={
+              <DailyLife
+                key={`${csrf}:${actor}`}
+                actor={actor}
+                csrf={csrf}
+                canRetry={state.can_retry === true}
+                snapshot={snapshot?.actor_id === actor ? snapshot : null}
+              />
+            }
           />
-          <details id="life-diaries" className="life-diary-section">
-            <summary>
-              <BookOpen aria-hidden="true" /> 生活日记{" "}
-              <span className="muted">
-                {diaries.length
-                  ? `${diaries.length}${diaryCursor ? "+" : ""} 篇已发布`
-                  : "记录生活的片刻"}
-              </span>
-            </summary>
-            <div className="life-columns scroll-layout">
-              <section
-                className="panel scroll-pane"
-                aria-label="已发布日记目录"
-                tabIndex={0}
+        ) : mode === "writing" ? (
+          <WritingPanel key={actor} access={{ actor, csrf }} />
+        ) : (
+          <>
+            <BookShelf
+              entries={diaries.map((row) => ({
+                id: row.diary_id,
+                title: row.day,
+                subtitle: diarySource(row.provenance),
+                badge: "生活日记",
+                category: row.day.slice(0, 7).replace("-", " 年 ") + " 月",
+                selected: selected?.diary_id === row.diary_id,
+              }))}
+              empty="还没有已发布日记"
+              onOpen={(id) => {
+                const row = diaries.find((r) => r.diary_id === id);
+                if (row) void readRevision(row);
+              }}
+            />
+            {diaryCursor && (
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() => void moreDiaries()}
               >
-                <h2>已发布日记</h2>
-
-                {!busy && !error && snapshot && diaries.length === 0 ? (
-                  <StatePanel kind="empty" title="还没有已发布日记">
-                    <p>这位角色当前没有可读取的已发布日记。</p>
-                  </StatePanel>
-                ) : (
-                  <ul className="life-list">
-                    {diaries.map((row) => (
-                      <li key={row.diary_id}>
-                        <button
-                          type="button"
-                          data-selected={
-                            selected?.diary_id === row.diary_id || undefined
-                          }
-                          onClick={() => void readRevision(row)}
-                        >
-                          <strong>{row.day}</strong>
-                          <small>
-                            已发布 · {diarySource(row.provenance)} · 点击阅读
-                          </small>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {diaryCursor && (
-                  <button
-                    className="button"
-                    disabled={busy}
-                    onClick={() => void moreDiaries()}
-                  >
-                    继续读取日记
-                  </button>
-                )}
-              </section>
-              <section
-                className="panel scroll-pane"
-                aria-label="日记正文"
-                tabIndex={0}
-              >
-                <h2>日记正文</h2>
-                {!selected ? (
-                  <p className="muted">选择一篇已发布日记。</p>
-                ) : !revision && !error ? (
-                  <StatePanel kind="loading" title="正在核对发布版本">
-                    <p>请稍候。</p>
-                  </StatePanel>
-                ) : (
-                  revision && (
-                    <article className="life-revision">
-                      <p className="muted">{selected.day}</p>
-                      <p>{revision.content}</p>
-                      <small>正文记录于 {dateText(revision.created_at)}</small>
-                      <p className="muted">
-                        材料来源：{diarySource(revision.provenance)}
-                      </p>
-                      {revision.provenance && (
-                        <p className="muted">
-                          取材时间：{revision.provenance.occurred_from} 至{" "}
-                          {revision.provenance.occurred_before}
-                          （不含结束时刻）； 角色时区：
-                          {revision.provenance.timezone}。
-                          {!revision.provenance.selection_complete &&
-                            "材料未完整读取，本篇不代表该时段的全部经历。"}
-                        </p>
-                      )}
-                    </article>
-                  )
-                )}
-              </section>
-            </div>
-          </details>
-        </>
-      )}
+                继续读取日记
+              </button>
+            )}
+            <Drawer
+              title={selected ? `${selected.day} · ${roleName}` : "日记"}
+              open={!!selected}
+              onClose={() => {
+                active.current?.abort();
+                setBusy(false);
+                setSelected(null);
+                setRevision(null);
+              }}
+              variant="card"
+            >
+              {error && <p role="alert">{error}</p>}
+              {!revision && !error ? (
+                <p>正在读取日记…</p>
+              ) : (
+                revision && (
+                  <article className="life-revision">
+                    <p>{revision.content}</p>
+                    <small>
+                      {dateText(revision.created_at)} ·{" "}
+                      {diarySource(revision.provenance)}
+                    </small>
+                  </article>
+                )
+              )}
+            </Drawer>
+          </>
+        ))}
     </div>
   );
 }

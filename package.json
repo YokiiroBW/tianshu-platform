@@ -8,6 +8,7 @@
   },
   "packageManager": "npm@11.6.2",
   "scripts": {
+    "dev:workspace-preview": "vite --config apps/web/previews/role-workspace/vite.config.mjs",
     "dev": "vite --config apps/web/vite.config.ts --host 127.0.0.1",
     "build": "npm run typecheck && vite build --config apps/web/vite.config.ts",
     "preview": "vite preview --config apps/web/vite.config.ts --host 127.0.0.1",

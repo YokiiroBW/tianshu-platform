@@ -1,3 +1,5 @@
+import { BookShelf } from "../../components/BookShelf";
+import { Drawer } from "../../components/Drawer";
 import { useEffect, useState } from "react";
 import { ResourceFeedback, RuntimeFeedback } from "./RuntimeFeedback";
 import { useDraftId, useLifeResource, useLifeAction } from "./useLifeRuntime";
@@ -44,76 +46,83 @@ export function WritingPanel({ access }: { access: LifeAccess }) {
     }
   }
   return (
-    <div className="life-runtime-grid">
+    <div className="writing-workspace">
       <section className="panel">
         <h3>作品与原稿</h3>
         <button className="button" onClick={works.refresh}>
           读取作品版本
         </button>
         <ResourceFeedback {...works} empty={!works.items.length} />
-        {works.items.map((row) => (
-          <article key={row.id} className="life-record">
-            <header>
-              <strong>{row.title}</strong>
-              <span className="status-pill">{showState(row.state)}</span>
-            </header>
-            <p>{row.outline}</p>
-            <small>
-              作品版本 {row.version} · {row.chapter_ids.length} 章
-            </small>
-            <button className="button" onClick={() => setSelected(row.id)}>
-              继续这部作品
-            </button>
-          </article>
-        ))}
+        <BookShelf
+          entries={works.items.map((row) => ({
+            id: row.id,
+            title: row.title,
+            subtitle: row.outline,
+            badge: `${row.chapter_ids.length} 章`,
+            category: row.state === "published" ? "已发布作品" : "写作中",
+            selected: selected === row.id,
+          }))}
+          onOpen={setSelected}
+          empty="书架上还没有作品"
+        />
         {works.cursor && (
           <button className="button" onClick={() => void works.more()}>
             继续读取作品
           </button>
         )}
-        <form className="life-form" onSubmit={create}>
-          <h4>开始新作品</h4>
-          <label>
-            作品名称
-            <input
-              required
-              maxLength={200}
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-            />
-          </label>
-          <label>
-            大纲
-            <textarea
-              required
-              maxLength={4000}
-              value={outline}
-              onChange={(e) => setOutline(e.target.value)}
-            />
-          </label>
-          <label>
-            人物设定
-            <textarea
-              value={characters}
-              maxLength={8000}
-              onChange={(e) => setCharacters(e.target.value)}
-              placeholder="每行一位人物：姓名：设定"
-            />
-          </label>
-          <button className="button primary" disabled={action.busy}>
-            保存作品与大纲
-          </button>
-        </form>
+        <details className="writing-create">
+          <summary className="button">开始新作品</summary>
+          <form className="life-form" onSubmit={create}>
+            <h4>开始新作品</h4>
+            <label>
+              作品名称
+              <input
+                required
+                maxLength={200}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+              />
+            </label>
+            <label>
+              大纲
+              <textarea
+                required
+                maxLength={4000}
+                value={outline}
+                onChange={(e) => setOutline(e.target.value)}
+              />
+            </label>
+            <label>
+              人物设定
+              <textarea
+                value={characters}
+                maxLength={8000}
+                onChange={(e) => setCharacters(e.target.value)}
+                placeholder="每行一位人物：姓名：设定"
+              />
+            </label>
+            <button className="button primary" disabled={action.busy}>
+              保存作品与大纲
+            </button>
+          </form>
+        </details>
         <RuntimeFeedback {...action} />
       </section>
-      {work && (
-        <WorkChapters
-          key={work.id}
-          access={access}
-          work={work}
-          refreshed={works.refresh}
-        />
-      )}
+      <Drawer
+        title={work?.title ?? "作品"}
+        open={!!work}
+        onClose={() => setSelected("")}
+        variant="card"
+      >
+        {work && (
+          <WorkChapters
+            key={work.id}
+            access={access}
+            work={work}
+            refreshed={works.refresh}
+          />
+        )}
+      </Drawer>
     </div>
   );
 }

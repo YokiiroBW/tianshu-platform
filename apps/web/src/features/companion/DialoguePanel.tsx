@@ -108,10 +108,12 @@ export function DialoguePanel({
   session,
   conversation,
   actor,
+  actorName = actor,
 }: {
   session: Session;
   conversation: string;
   actor: string;
+  actorName?: string;
 }) {
   const [draft, setDraft] = useState("");
   const [read, setRead] = useState<ReadResult | null>(null);
@@ -123,6 +125,8 @@ export function DialoguePanel({
   const [refresh, setRefresh] = useState(0);
   const alive = useRef(true);
   const mutations = useRef(new Set<AbortController>());
+  const timeline = useRef<HTMLDivElement>(null);
+  const followLatest = useRef(true);
   const readIdentity = useRef("");
   const available = Boolean(
     session.dialogue?.available && conversation && actor,
@@ -198,13 +202,14 @@ export function DialoguePanel({
   }, [session, conversation, actor, before, refresh, available]);
 
   async function send() {
-    if (!draft.trim() || sending) return;
+    if (!available || modelUnavailable || !draft.trim() || sending) return;
     const controller = new AbortController();
     mutations.current.add(controller);
     setSending(true);
     setError("");
     setNotice("正在提交原文…");
     const text = draft;
+    followLatest.current = true;
     setDraft("");
     try {
       const result = await request<Submission>(
@@ -216,7 +221,7 @@ export function DialoguePanel({
       if (alive.current) {
         setNotice(
           result.state === "accepted"
-            ? "入站已接收，等待后台状态；尚不代表已回复。"
+            ? "消息已提交。"
             : `提交结果：${states[result.state] ?? result.state}${result.result?.code ? ` · ${result.result.code}` : ""}。不会自动重发。`,
         );
         setBefore(null);
@@ -269,6 +274,10 @@ export function DialoguePanel({
   }
 
   const snapshot = read?.snapshot;
+  useEffect(() => {
+    if (snapshot && followLatest.current && !before && timeline.current)
+      timeline.current.scrollTop = timeline.current.scrollHeight;
+  }, [snapshot, before]);
   const turns = snapshot
     ? [...snapshot.history, ...snapshot.active_turns].sort(
         (a, b) => a.turn.turn_sequence - b.turn.turn_sequence,
@@ -291,7 +300,7 @@ export function DialoguePanel({
           <div className="chat-actions">
             <span className="muted">
               {snapshot
-                ? `后台快照 · ${new Date(snapshot.observed_at).toLocaleTimeString("zh-CN")}`
+                ? `已同步 · ${new Date(snapshot.observed_at).toLocaleTimeString("zh-CN")}`
                 : error
                   ? "连接中断，内容已隐藏"
                   : "正在读取后台状态…"}
@@ -299,6 +308,7 @@ export function DialoguePanel({
             <button
               className="button"
               onClick={() => {
+                followLatest.current = true;
                 setBefore(null);
                 setRefresh((n) => n + 1);
               }}
@@ -321,6 +331,12 @@ export function DialoguePanel({
           )}
           <div
             className="chat-timeline scroll-layout scroll-pane"
+            ref={timeline}
+            onScroll={(event) => {
+              const node = event.currentTarget;
+              followLatest.current =
+                node.scrollHeight - node.clientHeight - node.scrollTop < 100;
+            }}
             aria-label="对话记录"
             tabIndex={0}
           >
@@ -335,16 +351,15 @@ export function DialoguePanel({
             {turns.map(({ turn, messages, replies }) => (
               <article className="chat-turn" key={turn.turn_id}>
                 <div className="chat-turn-heading">
-                  <h3>
-                    第 {turn.turn_sequence} 轮 ·{" "}
-                    {states[turn.phase] ?? "状态待确认"}
-                  </h3>
-                  <span className="status-pill">
-                    {states[turn.delivery_state] ?? "送达待确认"} · 已送{" "}
-                    {replies.filter((reply) => reply.state === "sent").length}{" "}
-                    段
-                  </span>
-                  <DetailCard title="状态详情" className="muted">
+                  <DetailCard
+                    title={`第 ${turn.turn_sequence} 轮 · ${states[turn.phase] ?? "状态待确认"}`}
+                    className="muted"
+                  >
+                    <p>
+                      {states[turn.delivery_state] ?? "送达待确认"} · 已送{" "}
+                      {replies.filter((reply) => reply.state === "sent").length}{" "}
+                      段
+                    </p>
                     <p>
                       版本 {turn.version} · {turn.phase} / {turn.delivery_state}
                     </p>
@@ -376,9 +391,7 @@ export function DialoguePanel({
                     key={reply.reply_id}
                   >
                     <span className="chat-message-label">
-                      {actor} · 第 {reply.segment_sequence}/
-                      {reply.segment_count} 段 ·{" "}
-                      {states[reply.state] ?? "状态待确认"}
+                      {actorName} · {states[reply.state] ?? "状态待确认"}
                     </span>
                     {reply.content_state === "available" &&
                     reply.text !== null ? (
@@ -456,6 +469,16 @@ export function DialoguePanel({
           maxLength={8000}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Enter" &&
+              !event.shiftKey &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              void send();
+            }
+          }}
           placeholder="可以先写下想说的话，草稿只保留在当前页面。"
           aria-describedby="chat-send-help"
         />
@@ -466,7 +489,7 @@ export function DialoguePanel({
               : modelUnavailable
                 ? "模型尚未配置，发送不可用。"
                 : ""}
-            由后台合并 5 秒内的续句；入站回执不代表已回复。
+            Enter 发送，Shift + Enter 换行。短时间补充的消息会一起回复。
           </p>
           <button
             className="button primary"

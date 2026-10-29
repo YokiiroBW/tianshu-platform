@@ -1,19 +1,33 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { LifecyclePanel } from "./LifecyclePanel";
-import { WardrobePanel } from "./WardrobePanel";
+import { WardrobePanel, ImageStudioPanel } from "./WardrobePanel";
+import {
+  readRolePreference,
+  saveRolePreference,
+} from "../../app/rolePreference";
 import { ReadingPanel } from "./ReadingPanel";
-import { WritingPanel } from "./WritingPanel";
 import { ActorMemoryPanel } from "./ActorMemoryPanel";
 import type { LifeAccess } from "./runtimeApi";
 const tabs = [
+  { id: "overview", label: "总览" },
   { id: "now", label: "活动与关注" },
   { id: "memory", label: "经历与记忆" },
-  { id: "wardrobe", label: "衣柜与相册" },
-  { id: "reading", label: "原文与共读" },
-  { id: "writing", label: "作品与原稿" },
+  { id: "wardrobe", label: "衣柜" },
+  { id: "reading", label: "阅读与学习" },
+  { id: "images", label: "生图与相册" },
 ] as const;
-export function LifeWorkspace({ access }: { access: LifeAccess }) {
-  const [tab, setTab] = useState<(typeof tabs)[number]["id"]>("now");
+export function LifeWorkspace({
+  access,
+  overview,
+}: {
+  access: LifeAccess;
+  overview: ReactNode;
+}) {
+  const [tab, setTab] = useState<(typeof tabs)[number]["id"]>(
+    () =>
+      tabs.find((item) => item.id === readRolePreference("tianshu-life-tab"))
+        ?.id ?? "overview",
+  );
   return (
     <section className="life-workspace">
       <div
@@ -29,7 +43,10 @@ export function LifeWorkspace({ access }: { access: LifeAccess }) {
             aria-controls={`life-panel-${item.id}`}
             aria-selected={tab === item.id}
             key={item.id}
-            onClick={() => setTab(item.id)}
+            onClick={() => {
+              setTab(item.id);
+              saveRolePreference("tianshu-life-tab", item.id);
+            }}
           >
             {item.label}
           </button>
@@ -40,16 +57,18 @@ export function LifeWorkspace({ access }: { access: LifeAccess }) {
         id={`life-panel-${tab}`}
         aria-labelledby={`life-tab-${tab}`}
       >
-        {tab === "now" ? (
+        {tab === "overview" ? (
+          overview
+        ) : tab === "now" ? (
           <LifecyclePanel access={access} />
         ) : tab === "memory" ? (
           <ActorMemoryPanel access={access} />
         ) : tab === "wardrobe" ? (
           <WardrobePanel access={access} />
-        ) : tab === "reading" ? (
-          <ReadingPanel access={access} />
+        ) : tab === "images" ? (
+          <ImageStudioPanel access={access} />
         ) : (
-          <WritingPanel access={access} />
+          <ReadingPanel access={access} />
         )}
       </div>
     </section>

@@ -16,6 +16,10 @@ import {
   Activity,
   HardDrive,
   Puzzle,
+  Sparkles,
+  BookMarked,
+  PenLine,
+  SlidersHorizontal,
 } from "lucide-react";
 
 // Local navigation metadata, never a cross-product API or a connection-health registry.
@@ -30,11 +34,20 @@ export const modules = [
   },
   {
     id: "companion",
-    label: "陪伴",
+    label: "角色",
     icon: MessageCircle,
     group: "个人空间",
     description: "文字对话与角色近况",
-    sections: ["文字对话", "生活与日记", "人格与世界", "角色管理"],
+    sections: [
+      "Web 聊天",
+      "生活",
+      "人格与世界",
+      "角色管理",
+      "日记书架",
+      "创作书架",
+      "角色设置",
+      "小屋",
+    ],
   },
   {
     id: "room",
@@ -137,6 +150,17 @@ export const userNavigation = [
   { section: 3, icon: BookOpen, href: "#/memory/3" },
 ] as const;
 
+export const roleNavigation = [
+  { section: 3, icon: UsersRound, href: "#/companion/3" },
+  { section: 0, icon: MessageCircle, href: "#/companion/0" },
+  { section: 1, icon: Sparkles, href: "#/companion/1" },
+  { section: 4, icon: BookMarked, href: "#/companion/4" },
+  { section: 5, icon: PenLine, href: "#/companion/5" },
+  { section: 2, icon: BookOpen, href: "#/companion/2" },
+  { section: 6, icon: SlidersHorizontal, href: "#/companion/6" },
+  { section: 7, icon: House, href: "#/companion/7" },
+] as const;
+
 // Stable section indices preserve existing media bookmarks; only their display order differs.
 export const subscriptionNavigation = [
   { section: 4, icon: LayoutDashboard, href: "#/subscriptions" },
@@ -157,6 +181,7 @@ export const pages = {
   companion: lazy(() => import("../features/companion/CompanionPage")),
   personas: lazy(() => import("../features/companion/PersonaPanel")),
   roles: lazy(() => import("../features/companion/RoleManager")),
+  roleSettings: lazy(() => import("../features/companion/RoleSettings")),
   workbench: lazy(() => import("../features/workbench/WorkbenchPage")),
   room: lazy(() => import("../features/room/RoomPage")),
   settings: lazy(() => import("../features/settings/SettingsPage")),
@@ -177,6 +202,16 @@ export function resolveRoute(
 ): { module: Module; section: number; redirectHash?: string } | null {
   const path = hash.replace(/^#\/?/, "");
   const [id = "", section, ...rest] = path.split("/");
+  if (
+    id === "room" &&
+    (section === undefined || section === "0") &&
+    rest.length === 0
+  )
+    return {
+      module: modules.find((m) => m.id === "companion")!,
+      section: 7,
+      redirectHash: "#/companion/7",
+    };
   if (id === "resources" && section === "2" && rest.length === 0) {
     return {
       module: modules.find((item) => item.id === "subscriptions")!,

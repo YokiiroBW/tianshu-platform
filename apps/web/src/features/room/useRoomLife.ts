@@ -1,26 +1,21 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../app/Auth";
 import { integrationPost, readFailure } from "../../app/integrationApi";
-import {
-  readRolePreference,
-  saveRolePreference,
-} from "../../app/rolePreference";
+import { useRoleWorkspace } from "../../app/RoleWorkspace";
 import { useLifeResource } from "../life/useLifeRuntime";
 import { readContent } from "../life/runtimeApi";
 export function useRoomLife() {
   const { session } = useAuth();
+  const workspace = useRoleWorkspace();
   const csrf = session?.authenticated ? session.csrf : "";
-  const preference = `tianshu-life-role:${encodeURIComponent(session?.username || csrf)}`;
   const [actors, setActors] = useState<{ actor_id: string; label?: string }[]>(
       [],
     ),
-    [actor, setActor] = useState(""),
     [error, setError] = useState(""),
     [garment, setGarment] = useState<HTMLImageElement | null>(null),
     [garmentError, setGarmentError] = useState("");
   useEffect(() => {
     setActors([]);
-    setActor("");
     setError("");
     if (!csrf) return;
     const control = new AbortController();
@@ -33,18 +28,15 @@ export function useRoomLife() {
       .then((answer) => {
         if (control.signal.aborted) return;
         setActors(answer.items);
-        const remembered = readRolePreference(preference);
-        setActor(
-          answer.items.some((x) => x.actor_id === remembered)
-            ? remembered!
-            : (answer.items[0]?.actor_id ?? ""),
-        );
       })
       .catch((cause) => {
         if (!control.signal.aborted) setError(readFailure(cause));
       });
     return () => control.abort();
-  }, [csrf, preference]);
+  }, [csrf]);
+  const actor = actors.some((row) => row.actor_id === workspace.actor)
+    ? workspace.actor
+    : "";
   const access = { actor, csrf },
     state = useLifeResource(access, "state"),
     activities = useLifeResource(access, "activities"),
@@ -121,8 +113,7 @@ export function useRoomLife() {
     actors,
     actor,
     choose: (id: string) => {
-      setActor(id);
-      saveRolePreference(preference, id);
+      workspace.select(id);
     },
     current,
     activity,

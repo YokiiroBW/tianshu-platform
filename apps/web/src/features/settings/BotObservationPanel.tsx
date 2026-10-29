@@ -255,6 +255,9 @@ export function BotObservationPanel({
 }) {
   const [view, setView] = useState<View | null>(null);
   const [selected, setSelected] = useState("");
+  const [managedConnections, setManagedConnections] = useState<string[]>([]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [serverEpoch, setServerEpoch] = useState(0);
   const [group, setGroup] = useState<GroupPolicy | null>(null);
   const [privatePolicy, setPrivate] = useState<Policy | null>(null);
   const [probe, setProbe] = useState<AdapterProbe | null>(null);
@@ -485,13 +488,15 @@ export function BotObservationPanel({
   if (!view?.available) return null;
   return (
     <section
-      className="panel bot-adapter bot-observation"
+      className="bot-adapter bot-observation"
       aria-label="账号级观察与回复策略"
     >
       <div className="section-heading">
         <div>
-          <h2>观察与回复策略</h2>
-          <p className="muted">按机器人账号管理群聊、私聊的观察与回复。</p>
+          <h2>机器人账号</h2>
+          <p className="muted">
+            连接后，在卡片里管理每个账号的观察与回复范围。
+          </p>
         </div>
         <button
           className="button"
@@ -502,10 +507,13 @@ export function BotObservationPanel({
           <RefreshCw size={16} aria-hidden="true" /> 刷新状态
         </button>
       </div>
-      <p className="bot-observation-intro">
-        新连接收到群消息时仅登记基础资料。群聊默认停用，可在群画像页逐群开启；私聊默认仅观察。
-        天枢仅控制自己的回复，宿主中的其他插件仍可能独立回复。旧精确范围连接不会自动升级。
-      </p>
+      <details className="bot-policy-hint">
+        <summary>默认回复规则</summary>
+        <p className="bot-observation-intro">
+          新连接收到群消息时仅登记基础资料。群聊默认停用，可在群画像页逐群开启；私聊默认仅观察。
+          天枢仅控制自己的回复，宿主中的其他插件仍可能独立回复。旧精确范围连接不会自动升级。
+        </p>
+      </details>
       {error && (
         <p role="alert" className="bot-error">
           {error}
@@ -517,7 +525,30 @@ export function BotObservationPanel({
         </p>
       )}
       {unlocked && (
-        <DetailCard title={"添加机器人账号"}>
+        <OneBotOnboarding
+          key={serverEpoch}
+          csrf={csrf}
+          onChanged={() => void refresh()}
+          mode="cards"
+          onConnections={setManagedConnections}
+          onConfigure={(id) => {
+            const row = view?.connections.find((item) => item.id === id);
+            if (!row) return;
+            setSelected(row.id);
+            setGroup(row.group_policy);
+            setPrivate(row.private_policy);
+            setFound([]);
+            setCursor(null);
+            setArchive(null);
+          }}
+        />
+      )}
+      {unlocked && (
+        <DetailCard
+          title={"添加机器人账号"}
+          open={addOpen}
+          onOpenChange={setAddOpen}
+        >
           {error && <p role="alert">{error}</p>}
           {notice && <p role="status">{notice}</p>}
           <div className="bot-form bot-observation-card">
@@ -539,7 +570,19 @@ export function BotObservationPanel({
               </select>
             </label>
             {adapter === "builtin" ? (
-              <OneBotOnboarding csrf={csrf} onChanged={() => void refresh()} />
+              <OneBotOnboarding
+                csrf={csrf}
+                onChanged={() => void refresh()}
+                mode="form"
+                onCreated={() => {
+                  setAddOpen(false);
+                  setServerEpoch((n) => n + 1);
+                  setNotice(
+                    "机器人已创建。展开卡片中的连接信息，将地址和 Token 填入 SnowLuma。",
+                  );
+                  void refresh();
+                }}
+              />
             ) : (
               <form
                 className="bot-form"
@@ -635,30 +678,37 @@ export function BotObservationPanel({
         </DetailCard>
       )}
       {view.connections.length > 0 && (
-        <label className="bot-observation-account">
-          已接入账号
-          <select
-            value={selected}
-            onChange={(event) => {
-              const row = view.connections.find(
-                (item) => item.id === event.target.value,
-              );
-              if (!row) return;
-              setSelected(row.id);
-              setGroup(row.group_policy);
-              setPrivate(row.private_policy);
-              setFound([]);
-              setCursor(null);
-              setArchive(null);
-            }}
-          >
-            {view.connections.map((row) => (
-              <option key={row.id} value={row.id}>
-                {row.name} · {row.account_id} · {stateLabel(row.state)}
-              </option>
+        <div className="bot-connection-cards">
+          {view.connections
+            .filter((row) => !unlocked || !managedConnections.includes(row.id))
+            .map((row) => (
+              <article className="bot-connection-card" key={row.id}>
+                <header>
+                  <span className="role-context-avatar">
+                    {row.name.slice(0, 1)}
+                  </span>
+                  <h3>{row.name}</h3>
+                </header>
+                <p className="bot-card-qq">QQ {row.account_id}</p>
+                <p>{stateLabel(row.state)}</p>
+                <button
+                  type="button"
+                  className="button"
+                  aria-pressed={selected === row.id}
+                  onClick={() => {
+                    setSelected(row.id);
+                    setGroup(row.group_policy);
+                    setPrivate(row.private_policy);
+                    setFound([]);
+                    setCursor(null);
+                    setArchive(null);
+                  }}
+                >
+                  观察与回复设置
+                </button>
+              </article>
             ))}
-          </select>
-        </label>
+        </div>
       )}
       {current && group && privatePolicy && (
         <>

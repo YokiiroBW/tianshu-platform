@@ -35,7 +35,11 @@ function errorMessage(cause: unknown) {
   return "连接中断，本次操作结果未知。请重新读取状态，不会自动重试。";
 }
 
-export function ProviderModelsPanel() {
+export function ProviderModelsPanel({
+  mode = "providers",
+}: {
+  mode?: "providers" | "defaults";
+}) {
   const [session, setSession] = useState<SessionState | null>(null);
   useSessionGuard(session);
   const [management, setManagement] = useState<ModelsView["management"] | null>(
@@ -487,32 +491,41 @@ export function ProviderModelsPanel() {
           )}
           {management?.unlocked && providerView && (
             <>
-              <ProviderManager
-                providers={providerView.providers}
-                sources={providerView.sources}
-                editable
-                actions={actions}
-                onError={handleProviderError}
-              />
-              <ModelFunctionsPanel
-                functions={providerView.functions}
-                providers={providerView.providers}
-                onError={handleProviderError}
-                save={async (item, provider, signal) => {
-                  await invoke(
-                    "function",
-                    {
-                      client_id: requestId(),
-                      function_id: item.function_id,
-                      provider_id: provider?.providerId ?? null,
-                      expected_revision: provider?.revision ?? null,
-                      expected_binding_revision: item.revision,
-                    },
-                    signal,
-                  );
-                  await reloadProviders(signal);
-                }}
-              />
+              {mode === "providers" && (
+                <ProviderManager
+                  providers={providerView.providers}
+                  sources={providerView.sources}
+                  editable
+                  actions={actions}
+                  onError={handleProviderError}
+                />
+              )}
+              {mode === "defaults" ? (
+                <ModelFunctionsPanel
+                  functions={providerView.functions}
+                  providers={providerView.providers}
+                  onError={handleProviderError}
+                  save={async (item, provider, signal) => {
+                    await invoke(
+                      "function",
+                      {
+                        client_id: requestId(),
+                        function_id: item.function_id,
+                        provider_id: provider?.providerId ?? null,
+                        expected_revision: provider?.revision ?? null,
+                        expected_binding_revision: item.revision,
+                      },
+                      signal,
+                    );
+                    await reloadProviders(signal);
+                  }}
+                />
+              ) : (
+                <p className="muted">
+                  具体角色使用的模型请在<a href="#/companion/6">角色设置</a>
+                  中分配。
+                </p>
+              )}
             </>
           )}
         </>

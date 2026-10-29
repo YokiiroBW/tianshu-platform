@@ -60,6 +60,8 @@ class RoleRuntime:
             rows = db.execute("SELECT actor_id,body FROM roles").fetchall()
             for actor, document in rows:
                 row = json.loads(document)
+                if row.get("deleted"):
+                    continue
                 if row["state"] == "active" or (
                     row["state"] == "disabled"
                     and self.config.get("knowledge") is not None
@@ -103,17 +105,18 @@ class RoleRuntime:
         return [
             {"id": row["actor_id"], "label": row["name"]}
             for row in rows
-            if row["state"] == "active" and row["enabled"]
+            if not row.get("deleted") and row["state"] == "active" and row["enabled"]
         ]
 
-    def directory(self):
+    def directory(self, include_deleted=False):
         """Read only the current local role intents for a narrow browser projection."""
         if self.config is None:
             return []
         with closing(self._db()) as db:
-            return [
+            rows = [
                 json.loads(row[0]) for row in db.execute("SELECT body FROM roles ORDER BY actor_id")
             ]
+            return [row for row in rows if include_deleted or not row.get("deleted")]
 
     def _put(self, row):
         with closing(self._db()) as db, db:
@@ -483,6 +486,8 @@ class RoleRuntime:
             await self.p.local_work.run_settled(self._put, row)
         if row["stage"] == "complete":
             row["state"] = "disabled"
+            if row.get("deleting"):
+                row["deleted"] = True
             await self.p.local_work.run_settled(self._put, row)
         return row
 
@@ -600,6 +605,7 @@ class RoleRuntime:
                 return json.loads(row[0])
             existing = db.execute("SELECT body FROM roles WHERE actor_id=?", (actor,)).fetchone()
             old = json.loads(existing[0]) if existing else None
+            require(not (old or {}).get("deleted"), "not_found", 404)
             require(
                 old is not None
                 or body["actor_id"] is None
@@ -629,6 +635,16 @@ class RoleRuntime:
                 "memory_version": old["memory_version"] if old else 0,
                 "knowledge_version": old.get("knowledge_version") if old else None,
                 "legacy": old["legacy"] if old else body["actor_id"] is not None,
+                "model_functions": old.get("model_functions", {}) if old else {},
+                "model_version": (
+                    old.get("model_version", 0)
+                    + int(
+                        (body["provider_id"], body["provider_revision"])
+                        != (old["provider_id"], old["provider_revision"])
+                    )
+                )
+                if old
+                else 0,
             }
             if old is not None and old["state"] == "active" and not body["enabled"]:
                 # Stop the current installed snapshot. The form may carry stale
@@ -654,7 +670,7 @@ class RoleRuntime:
         self._remove_web(actor)
         return row
 
-    def _begin_cancel(self, body):
+    def _begin_cancel(self, body, deleting=False):
         require(
             isinstance(body, dict)
             and set(body) == {"client_id", "actor_id", "expected_version"}
@@ -668,7 +684,7 @@ class RoleRuntime:
             require(client == body["client_id"], "invalid_input", 400)
         except (TypeError, ValueError):
             raise Fault("invalid_input", 400) from None
-        signature = digest(body)
+        signature = digest(["delete", body]) if deleting else digest(body)
         with closing(self._db()) as db:
             db.execute("BEGIN IMMEDIATE")
             prior = db.execute(
@@ -686,7 +702,8 @@ class RoleRuntime:
             require(saved is not None, "not_found", 404)
             old = json.loads(saved[0])
             require(old["version"] == body["expected_version"], "version_conflict", 409)
-            require(old["state"] == "pending", "role_configuring", 409)
+            require(not old.get("deleted"), "not_found", 404)
+            require(deleting or old["state"] == "pending", "role_configuring", 409)
             row = {
                 **old,
                 "client_id": client,
@@ -698,6 +715,7 @@ class RoleRuntime:
                 "error_code": None,
                 "cancel_source_stage": old["stage"],
                 "cancel_epoch": 0,
+                "deleting": deleting,
             }
             db.execute("INSERT INTO intents VALUES (?,?,?)", (client, signature, body["actor_id"]))
             db.execute(
@@ -710,7 +728,30 @@ class RoleRuntime:
     async def route(self, console, path, body, session):
         await self.p.local_work.run(self._gate, console, session)
         name = path[len(PREFIX) :] if path.startswith(PREFIX) else ""
-        require(name in {"view", "apply", "retry", "cancel"}, "not_found", 404)
+        if name in {"models/view", "models/apply"}:
+            from .role_models import RoleModels
+
+            require(
+                isinstance(body, dict) and isinstance(body.get("actor_id"), str),
+                "invalid_input",
+                400,
+            )
+            models = RoleModels(self)
+            async with self._actor_lock(body["actor_id"]):
+                if name == "models/apply":
+                    await self.p.local_work.run_settled(
+                        models.apply, body, console.config["principal"]
+                    )
+                else:
+                    require(set(body) == {"actor_id"}, "invalid_input", 400)
+                result = await self.p.local_work.run(models.view, body["actor_id"])
+                require(
+                    await self.p.local_work.run(console.session_valid, session),
+                    "session_expired",
+                    401,
+                )
+                return result
+        require(name in {"view", "apply", "retry", "cancel", "delete"}, "not_found", 404)
         if name == "view":
             from .provider_catalog import model_capabilities
 
@@ -718,11 +759,15 @@ class RoleRuntime:
             companion = await self._remote(
                 self.p.settings["core"], "/internal/v1/role-runtime/manage", {"operation": "list"}
             )
-            rows = await self.p.local_work.run(self.directory)
+            all_rows = await self.p.local_work.run(self.directory, True)
+            rows = [row for row in all_rows if not row.get("deleted")]
+            deleted = {row["actor_id"] for row in all_rows if row.get("deleted")}
             providers = await self.p.local_work.run(self.p.provider_catalog.view)
             return {
                 "roles": rows,
-                "legacy_roles": companion.get("legacy_roles", []),
+                "legacy_roles": [
+                    item for item in companion.get("legacy_roles", []) if item["id"] not in deleted
+                ],
                 "profiles": [
                     {
                         "id": p["id"],
@@ -782,8 +827,10 @@ class RoleRuntime:
                         403,
                     )
                 row = await self.p.local_work.run_settled(self._begin, body)
-            elif name == "cancel":
-                row = await self.p.local_work.run_settled(self._begin_cancel, body)
+            elif name in {"cancel", "delete"}:
+                row = await self.p.local_work.run_settled(
+                    self._begin_cancel, body, name == "delete"
+                )
             else:
                 require(
                     isinstance(body, dict) and set(body) == {"actor_id", "client_id"},
