@@ -19,6 +19,25 @@ class ProviderAuthority:
                 principal["kind"] == "service" and principal["service"] == service, "forbidden", 403
             )
 
+    def _publication(self, db, provider_id, revision, now, static_max):
+        row = db.execute(
+            "SELECT * FROM provider_publications WHERE provider_id=? AND "
+            "provider_revision=? AND revoked=0 AND usable_until>? "
+            "ORDER BY version DESC LIMIT 1",
+            (provider_id, revision, now + 120),
+        ).fetchone()
+        if row is not None:
+            return row["version"], row["usable_until"]
+        version = db.execute("SELECT max(version) FROM provider_publications").fetchone()[0]
+        version = max(version or 0, static_max, 1_000_000_000) + 1
+        until = now + min(self.platform.models.max_lifetime, 3600)
+        require(until - now >= 120, "dependency_unavailable", 503)
+        db.execute(
+            "INSERT INTO provider_publications VALUES (?,?,?,?,0)",
+            (version, provider_id, revision, until),
+        )
+        return version, until
+
     def select(self, header, body):
         require(self.catalog is not None, "dependency_unavailable", 503)
         require(
@@ -99,39 +118,46 @@ class ProviderAuthority:
                 "SELECT * FROM provider_turn_grants WHERE turn_id=?", (body["turn_id"],)
             ).fetchone()
             if grant is not None:
-                require(grant["scope_digest"] == digest(body), "version_conflict", 409)
+                require(
+                    grant["scope_digest"] == digest(body)
+                    and grant["caller_service"] == body["caller_service"]
+                    and grant["workload"] == body["workload"],
+                    "version_conflict",
+                    409,
+                )
                 row = db.execute(
                     "SELECT * FROM provider_publications WHERE version=?", (grant["version"],)
                 ).fetchone()
                 require(
-                    row is not None and not row["revoked"] and row["usable_until"] > now + 65,
+                    row is not None and not row["revoked"],
                     "forbidden",
                     410,
                 )
                 version, until = row["version"], row["usable_until"]
                 provider_id, revision = row["provider_id"], row["provider_revision"]
+                if until <= now + 65:
+                    # Renew this original turn's exact pin, never the current
+                    # default/function/role selection. Validate inside the same
+                    # transaction before moving its grant to a fresh version.
+                    document, encrypted = self.catalog._row(db, provider_id, revision)
+                    require(
+                        document["enabled"] and document["source_enabled"]
+                        and encrypted is not None,
+                        "provider_unavailable",
+                        409,
+                    )
+                    version, until = self._publication(db, provider_id, revision, now, static_max)
+                    changed = db.execute(
+                        "UPDATE provider_turn_grants SET version=? WHERE turn_id=? AND version=? "
+                        "AND scope_digest=? AND caller_service=? AND workload=?",
+                        (version, body["turn_id"], grant["version"], grant["scope_digest"],
+                         body["caller_service"], body["workload"]),
+                    ).rowcount
+                    require(changed == 1, "version_conflict", 409)
             else:
                 require(selected["configured"], "dependency_unavailable", 503)
                 provider_id, revision = selected["provider_id"], selected["provider_revision"]
-                row = db.execute(
-                    "SELECT * FROM provider_publications WHERE provider_id=? AND "
-                    "provider_revision=? AND revoked=0 AND usable_until>? "
-                    "ORDER BY version DESC LIMIT 1",
-                    (provider_id, revision, now + 120),
-                ).fetchone()
-                if row is None:
-                    version = db.execute(
-                        "SELECT max(version) FROM provider_publications"
-                    ).fetchone()[0]
-                    version = max(version or 0, static_max, 1_000_000_000) + 1
-                    until = now + min(self.platform.models.max_lifetime, 3600)
-                    require(until - now >= 120, "dependency_unavailable", 503)
-                    db.execute(
-                        "INSERT INTO provider_publications VALUES (?,?,?,?,0)",
-                        (version, provider_id, revision, until),
-                    )
-                else:
-                    version, until = row["version"], row["usable_until"]
+                version, until = self._publication(db, provider_id, revision, now, static_max)
                 db.execute(
                     "INSERT INTO provider_turn_grants VALUES (?,?,?,?,?)",
                     (

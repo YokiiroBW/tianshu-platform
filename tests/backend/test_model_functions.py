@@ -186,6 +186,131 @@ class ModelFunctionsTests(unittest.IsolatedAsyncioTestCase):
         )
         return runtime
 
+    @staticmethod
+    def grant_request(turn):
+        return dict(
+            turn_id=turn,
+            actor_id="actor:a",
+            person_id="person:a",
+            audience="self_private",
+            conversation_id="conversation:a",
+            caller_service="companion",
+            workload="companion.text",
+            function_id="memory",
+        )
+
+    async def test_expired_original_turn_renews_exact_pin_without_extending_other_turns(self):
+        body = self.grant_request("turn:expired-original")
+        body["caller_service"] = "companion_background"
+        credential = "Bearer " + os.environ["TS_FUNCTION_BACKGROUND"]
+        first = self.authority.select(credential, body)
+        other_body = self.grant_request("turn:other-original")
+        other_body["caller_service"] = body["caller_service"]
+        other = self.authority.select(credential, other_body)
+        self.assertEqual(first["config_version"], other["config_version"])
+        with self.catalog._transaction() as db:
+            original_publication = tuple(db.execute(
+                "SELECT * FROM provider_publications WHERE version=?", (first["config_version"],)
+            ).fetchone())
+            original_other = tuple(db.execute(
+                "SELECT * FROM provider_turn_grants WHERE turn_id=?", (other_body["turn_id"],)
+            ).fetchone())
+        # A changed current function binding cannot redirect the original turn.
+        self.catalog.functions.set_binding(**self.binding("memory"))
+        self.authority.clock = lambda: first["expires_at"] + 1
+        renewed = self.authority.select(credential, body)
+        self.assertGreater(renewed["config_version"], first["config_version"])
+        self.assertGreater(renewed["expires_at"], self.authority.clock() + 65)
+        self.assertEqual(renewed, self.authority.select(credential, body))
+        runtime = self.authority.runtime(bearer("GATEWAY"), {
+            "turn_id": body["turn_id"], "caller_service": body["caller_service"],
+            "workload": body["workload"], "config_version": renewed["config_version"],
+        })
+        self.assertEqual(runtime["provider_id"], self.providers[0]["provider_id"])
+        self.assertEqual(runtime["provider_revision"], 1)
+        with self.catalog._transaction() as db:
+            self.assertEqual(original_publication, tuple(db.execute(
+                "SELECT * FROM provider_publications WHERE version=?", (first["config_version"],)
+            ).fetchone()))
+            self.assertEqual(original_other, tuple(db.execute(
+                "SELECT * FROM provider_turn_grants WHERE turn_id=?", (other_body["turn_id"],)
+            ).fetchone()))
+            self.assertEqual(db.execute("SELECT count(*) FROM provider_turn_grants").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT count(*) FROM provider_publications").fetchone()[0], 2)
+
+    async def test_original_turn_with_insufficient_remaining_lease_renews(self):
+        body = self.grant_request("turn:short-original")
+        first = self.authority.select(bearer("COMPANION"), body)
+        self.authority.clock = lambda: first["expires_at"] - 65
+        renewed = self.authority.select(bearer("COMPANION"), body)
+        self.assertNotEqual(first["config_version"], renewed["config_version"])
+        with self.catalog._transaction() as db:
+            self.assertEqual(db.execute(
+                "SELECT usable_until FROM provider_publications WHERE version=?",
+                (first["config_version"],),
+            ).fetchone()[0], first["expires_at"])
+
+    async def test_expired_original_turn_still_rechecks_identity_scope_and_revocation(self):
+        body = self.grant_request("turn:protected-original")
+        first = self.authority.select(bearer("COMPANION"), body)
+        self.authority.clock = lambda: first["expires_at"] + 1
+        for header, changed, code in (
+            (bearer("GATEWAY"), body, "forbidden"),
+            (bearer("COMPANION"), {**body, "conversation_id": "conversation:other"}, "version_conflict"),
+            (bearer("COMPANION"), {**body, "function_id": "writing"}, "version_conflict"),
+        ):
+            with self.subTest(code=code, changed=changed):
+                with self.assertRaises(Fault) as caught:
+                    self.authority.select(header, changed)
+                self.assertEqual(caught.exception.code, code)
+        with self.catalog._transaction() as db:
+            db.execute("UPDATE provider_publications SET revoked=1 WHERE version=?",
+                       (first["config_version"],))
+        with self.assertRaises(Fault) as caught:
+            self.authority.select(bearer("COMPANION"), body)
+        self.assertEqual((caught.exception.code, caught.exception.status), ("forbidden", 410))
+        with self.catalog._transaction() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM provider_publications").fetchone()[0], 1)
+            self.assertEqual(db.execute(
+                "SELECT version FROM provider_turn_grants WHERE turn_id=?", (body["turn_id"],)
+            ).fetchone()[0], first["config_version"])
+
+    async def test_expired_original_turn_cannot_renew_changed_or_disabled_provider(self):
+        for change in ("model", "disabled"):
+            with self.subTest(change=change):
+                body = self.grant_request("turn:changed-" + change)
+                first = self.authority.select(bearer("COMPANION"), body)
+                provider = next(item for item in self.catalog.view()["providers"]
+                                if item["provider_id"] == self.providers[0]["provider_id"])
+                self.catalog.save(
+                    client_id="change-original-" + change,
+                    provider_id=provider["provider_id"], expected_revision=provider["revision"],
+                    name=provider["name"], base_url=provider["base_url"],
+                    model_id="changed-model" if change == "model" else provider["model_id"],
+                    enabled=change != "disabled",
+                )
+                self.authority.clock = lambda: first["expires_at"] + 1
+                with self.assertRaises(Fault) as caught:
+                    self.authority.select(bearer("COMPANION"), body)
+                self.assertEqual(caught.exception.code, "revision_conflict")
+                with self.catalog._transaction() as db:
+                    self.assertEqual(db.execute(
+                        "SELECT version FROM provider_turn_grants WHERE turn_id=?", (body["turn_id"],)
+                    ).fetchone()[0], first["config_version"])
+                if change == "model":
+                    # Re-enable selection via the real catalogue for the next case.
+                    revised = next(item for item in self.catalog.view()["providers"]
+                                   if item["provider_id"] == provider["provider_id"])
+                    self.catalog.record_test(
+                        client_id="test-revised-" + change, provider_id=revised["provider_id"],
+                        expected_revision=revised["revision"], outcome="succeeded",
+                    )
+                    self.catalog.set_default(
+                        client_id="default-revised", provider_id=revised["provider_id"],
+                        expected_revision=revised["revision"],
+                        expected_default_revision=self.catalog.view()["default"]["revision"],
+                    )
+
     async def test_defaults_persistence_reset_conflict_and_invalidated_revision(self):
         self.assertEqual(7, len(self.catalog.view()["functions"]))
         body = self.binding()
