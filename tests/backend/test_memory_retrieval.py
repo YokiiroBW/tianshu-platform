@@ -1,14 +1,76 @@
+import asyncio
 import json
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+
+from aiohttp import web
 
 from services.platform.contracts import Fault
 from services.platform.external_catalog import ExternalCatalog
 from services.platform.memory_retrieval import MemoryRetrieval, PREFIX
+from services.platform.provider_management import ProviderManagement
+
+
+class RetrievalGatewayResponseTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.document = {"vectors": [[0.1234567890123456] * 4096]}
+        self.raw = json.dumps(self.document).encode()
+        self.calls = []
+
+        async def peer(request):
+            self.calls.append((request.headers.get("Authorization"), await request.json()))
+            response = web.StreamResponse(headers={"Content-Type": "application/json"})
+            await response.prepare(request)
+            await response.write(self.raw[:16])
+            # A positive read(n) can return this first fragment before the JSON is complete.
+            await asyncio.sleep(0.03)
+            for offset in range(16, len(self.raw), 16384):
+                await response.write(self.raw[offset : offset + 16384])
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/internal/v1/provider-self-service/embed", peer)
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        self.addAsyncCleanup(runner.cleanup)
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = runner.addresses[0][1]
+        platform = SimpleNamespace(provider_catalog=None, settings={"provider_self_service": {
+            "gateway_url": f"http://127.0.0.1:{port}", "gateway_token_env": "SYNTHETIC_TOKEN",
+        }})
+        self.client = ProviderManagement(platform, SimpleNamespace())
+        self.context = SimpleNamespace(provider_id="synthetic", revision=1,
+            protocol="openai-chat-completions", base_url="https://unused.invalid",
+            model_id="synthetic-4096", api_key="synthetic-only")
+
+    async def test_delayed_vector_response_is_complete_through_retrieval(self):
+        self.assertGreater(len(self.raw), 65536)
+        retrieval = MemoryRetrieval(SimpleNamespace(), SimpleNamespace(providers=self.client))
+        with patch.object(retrieval, "connection", return_value=vars(self.context)), patch(
+            "services.platform.provider_management.secret", return_value="synthetic-token"
+        ):
+            result = await retrieval.execute({}, "embed", {"texts": ["synthetic"]})
+        self.assertEqual(result, self.document)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][0], "Bearer synthetic-token")
+        self.assertEqual(self.calls[0][1]["payload"], {"texts": ["synthetic"]})
+
+    async def test_response_byte_limit_accepts_boundary_and_rejects_one_extra_byte(self):
+        self.raw = b'{"padding":"' + b'x' * (1048576 - 14) + b'"}'
+        self.assertEqual(len(self.raw), 1048576)
+        with patch("services.platform.provider_management.secret", return_value="synthetic-token"):
+            result = await self.client.gateway_request("embed", self.context)
+            self.assertEqual(len(result["padding"]), 1048576 - 14)
+            self.raw += b' '
+            with self.assertRaises(Fault) as error:
+                await self.client.gateway_request("embed", self.context)
+        self.assertEqual((error.exception.code, error.exception.status), ("dependency_unavailable", 503))
 
 
 async def run(function, *args):

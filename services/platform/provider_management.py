@@ -327,8 +327,10 @@ class ProviderManagement:
                     headers={"Authorization": "Bearer " + token},
                     allow_redirects=False,
                 ) as response:
-                    raw = await response.content.read(1_048_577)
-                    require(len(raw) <= 1_048_576, "dependency_unavailable", 503)
+                    raw = bytearray()
+                    async for chunk in response.content.iter_chunked(65_536):
+                        raw.extend(chunk)
+                        require(len(raw) <= 1_048_576, "dependency_unavailable", 503)
                     document = json.loads(raw)
                     if response.status != 200:
                         code = document.get("code") if isinstance(document, dict) else None
