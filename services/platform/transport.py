@@ -35,6 +35,7 @@ async def management_call(settings, path, payload, *, session_factory=None):
             "/internal/v1/role-runtime/manage",
             "/internal/v1/role-runtime/authorize",
             "/internal/v1/life-generation/retry",
+            "/internal/v1/memory/learning/recover",
         },
         "invalid_input",
         400,

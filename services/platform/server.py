@@ -12,6 +12,7 @@ from threading import Event
 from aiohttp import web
 
 from . import diagnostics, diagnostics_config, model_origin_renewal, runtime_health
+from . import memory_learning_management
 from .bot_delivery import PREFIX as DELIVERY_PREFIX
 from .bot_delivery import ROUTES as DELIVERY_ROUTES
 from .contracts import Fault, loads, require
@@ -219,7 +220,9 @@ def create_app(platform, probe=None, *, console=None, public=False, trusted_loca
             try:
                 async with asyncio.timeout(5):
                     limit = (
-                        45 * 1024 * 1024
+                        4096
+                        if request.path == memory_learning_management.PATH
+                        else 45 * 1024 * 1024
                         if request.path == DELIVERY_PREFIX + "send"
                         else 256 * 1024
                         if request.path == actor_capability_http.PATH
@@ -292,6 +295,7 @@ def create_app(platform, probe=None, *, console=None, public=False, trusted_loca
             actor_memory_call = request.path == ACTOR_MEMORY_AUTHORITY
             participation_call = request.path in PARTICIPATION_PATHS
             reading_call = request.path == "/internal/v1/books/reading"
+            learning_recovery = request.path == memory_learning_management.PATH
             require(
                 request.method == "POST"
                 and (
@@ -307,11 +311,14 @@ def create_app(platform, probe=None, *, console=None, public=False, trusted_loca
                     or actor_capability_call
                     or actor_memory_call
                     or participation_call
+                    or learning_recovery
                 ),
                 "not_found",
                 404,
             )
-            if participation_call:
+            if learning_recovery:
+                require(len(raw) <= 4096, "budget_exceeded", 413)
+            elif participation_call:
                 require(len(raw) <= 65536, "budget_exceeded", 413)
             elif actor_memory_call:
                 platform.actor_memory_authority.validate(body)
@@ -677,6 +684,17 @@ def create_app(platform, probe=None, *, console=None, public=False, trusted_loca
             )
         )
 
+    async def memory_learning_recover(request):
+        started = Event()
+        request[DELIVERY_MUTATION_STARTED] = started
+        result = await memory_learning_management.recover(
+            platform,
+            request.headers["Authorization"],
+            request[BODY],
+            started=started,
+        )
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
     async def reply_status(request):
         return web.json_response(
             await platform.local_work.run(
@@ -917,6 +935,7 @@ def create_app(platform, probe=None, *, console=None, public=False, trusted_loca
 
         app.cleanup_ctx.append(role_pump_context)
     if not public:
+        app.router.add_post(memory_learning_management.PATH, memory_learning_recover)
         app.router.add_post("/internal/v1/origins/resolve", resolve)
         app.router.add_post("/internal/v1/model-config/snapshot", snapshot)
         if platform.provider_catalog is not None:
