@@ -135,6 +135,7 @@ export const stateNames: Record<string, string> = {
   planned: "计划",
   running: "进行中",
   paused: "已暂停",
+  dormant: "暂未继续",
   completed: "已完成",
   cancelled: "已取消",
   open: "关注中",

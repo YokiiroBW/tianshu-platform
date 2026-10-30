@@ -19,6 +19,7 @@ RUNTIME_PACKAGES = {
     "reading-state/v1": "2dc05bb8658988a46e286de6ef283d49bfb286e45141a4d2cfc0501d79bf1ebb",
     "skills/v1": "0ad3a444e8bff26721c14664260d08b463feb3288a556364e1af35f3e277d0f2",
     "life-runtime/v2": "6c032c558d107615a19e49f1bde1c76f7a5994b14c484476f7a71aeab555cadf",
+    "life-runtime/v2.2": "3bc11ce63e134c68f20d2e6202cb7161482844d70b045971b1346fdd41b424c9",
     "image-backend/v1": "62e71dd2f42fb5b1376c439c362a555619da41cb7f7ae26d07acc1182b80ffbd",
     "bot-delivery/v2.1": "ee6b6ebcf2b46a53b8aff49ad4b7f3fd0bc1e0f5eaef0db8e4fbdb923c005350",
     "memory-context/v1": "aaf25b4446c3915d48e46c6f0f687a26b57f30ac1c4494085266a586f67953e8",
@@ -254,7 +255,7 @@ class Contracts:
             "reading-state",
         }:
             package, file = {
-                "life-runtime": ("life-runtime/v2", "life"),
+                "life-runtime": ("life-runtime/v2.2", "life"),
                 "bot-delivery": ("bot-delivery/v2.1", "delivery"),
                 "memory-context": ("memory-context/v1", "schema"),
                 "memory-context-v2": ("memory-context/v2", "schema"),

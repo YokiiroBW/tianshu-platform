@@ -161,7 +161,7 @@ function ActivityPanel({ access }: { access: LifeAccess }) {
           ...(editing?.checkpoint ?? { step: 0, position: 0, unit: "step" }),
           note,
         },
-        next_due_at: due ? new Date(due).getTime() / 1000 : null,
+        next_due_at: due ? new Date(due).getTime() / 1000 : state === "paused" ? Date.now() / 1000 + 60 : null,
         resume_condition: resume || null,
         sources: editing?.sources ?? [],
         result_refs: editing?.result_refs ?? [],
@@ -241,7 +241,7 @@ function ActivityPanel({ access }: { access: LifeAccess }) {
                   暂停
                 </button>
               )}
-              {row.state === "paused" && (
+              {(row.state === "paused" || row.state === "dormant") && (
                 <button
                   className="button"
                   disabled={action.busy}
@@ -317,7 +317,7 @@ function ActivityPanel({ access }: { access: LifeAccess }) {
                   setState(e.target.value as activities_record["state"])
                 }
               >
-                {["planned", "running", "paused", "completed"].map((x) => (
+                {(state === "dormant" ? ["dormant"] : ["planned", "running", "paused", "completed"]).map((x) => (
                   <option key={x} value={x}>
                     {showState(x)}
                   </option>

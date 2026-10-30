@@ -174,7 +174,7 @@ export type activities_record = {
   id: string;
   version: number;
   title: string;
-  state: "planned" | "running" | "paused" | "completed" | "cancelled";
+  state: "planned" | "running" | "paused" | "dormant" | "completed" | "cancelled";
   checkpoint: {
     step: number;
     position: number;
@@ -183,6 +183,7 @@ export type activities_record = {
   };
   next_due_at: number | null;
   resume_condition: string | null;
+  dormant_since?: number;
   sources: source_ref[];
   result_refs: content_ref[];
   scope: Record<string, unknown> | null;
